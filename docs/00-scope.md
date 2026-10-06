@@ -13,7 +13,7 @@ Subagent 使用原生 Jev 自动路由，支持显式消息、同 ID 续跑复�
 | 模块 | 当前职责 | 明确不负责 |
 | --- | --- | --- |
 | `work` | 保存递归工作树、当前位置和局部状态 | 执行任务、启动 Subagent、决定是否继续 |
-| `subagent` | 创建 Fresh／Inherited 子 Session；Jev 自动路由；短统一 ID（Job 与 Agent 耦合）；仅暴露 **`create`**、**`list`**、**`stop`** 三个生命周期原语；通过 write Unix Socket 实现双向消息流；投递消息后自动通知；双轨历史（Compacted Markdown + Clean JSONL）；支持 stop 后写 socket 自动 revive | 不与 `work` 硬绑定；不做结构化结果；不暴露 `wait` 阻塞接口（直接 `stop` 后读取历史）；不产生碎片化的多重 socket 与多重历史 |
+| `subagent` | 创建 Fresh／Inherited 子 Session；Jev 自动路由；短统一 ID（Job 与 Agent 耦合）；仅暴露 **`create`**、**`list`**、**`stop`** 三个生命周期原语；通过 write Unix Socket 实现单向消息投递；投递消息后自动通知；双轨历史（Compacted Markdown + Clean JSONL）；支持 stop 后写 socket 自动 revive | 不与 `work` 硬绑定；不做结构化结果；不暴露 `wait` 阻塞接口（直接 `stop` 后读取历史）；不产生碎片化的多重 socket 与多重历史 |
 | `capability` | 无参调用：作为阻塞式 **Inherited Subagent** 运行，继承调用方原生会话与同一物理模型（thinking low，并发检索 Tool／MCP／Skill 以及 npm 元数据），直接整合返回 Markdown 结果；返回后仅把选中的已注册可见工具声明为 active | 不执行能力，不安装、启用、下载、连接或批准第三方代码；不维护独立协议系统 |
 | `shell-preflight` | 在 Shell 执行前做语法检查（已挂载生效） | 后台进程管理、权限决策 |
 | `deepseek-search` | 用户自行安装的现成互联网搜索插件 | 本项目不另写接入或安装逻辑；不负责工作状态与 Agent 调度 |

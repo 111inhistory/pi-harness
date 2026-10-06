@@ -10,7 +10,7 @@
 
 - **极简控制原语**：仅暴露 **`create`**、**`list`**、**`stop`** 三个核心操作，不引入 `wait` / 同步阻塞等待；父 Agent 通过通知感知进度，或随时 `stop` 并拉取历史。
 - **废弃虚拟协议 IO**：彻底移除 `protocol-io` 及 `agent://`、`history://` 假文件协议，Pi 原生 `read`/`write` 保持 100% 纯净。
-- **IPC 通信通道**：子 Agent 运行时暴露 **Unix Domain Socket**，采用 **NDJSON (Newline-Delimited JSON)** 作为双向报文格式；轻量状态与完成事件通过 **Notification** 投递。
+- **IPC 通信通道**：子 Agent 运行时暴露 **Unix Domain Socket**，采用 **NDJSON (Newline-Delimited JSON)** 作为单向投递报文格式；投递后自动触发 Agent 消费，异常事件通过 Notification 向上层抛出。
 - **双轨历史规范（Dual History Tracks）**：
   1. **Compacted Markdown**（参考 OMP 设计）：高密度的执行与工具摘要，专门面向 LLM 快速消费。
   2. **Clean JSONL**（面向 grep / rg / jq）：剥离逐 token 流式碎片，保留完整结构化调用与结果，方便快速定位与排查。
@@ -124,7 +124,7 @@ type SubagentCreateBatch = {
 
 ### 1. Write Socket 通信
 
-- **单端点原则**：发起者通过系统工具向对应 Subagent 的 Unix Domain Socket（如 `/tmp/pi-subagents/<id>.sock`）写入数据流。
+- **单向投递原则**：发起者通过向对应 Subagent 的 Unix Domain Socket（如 `/tmp/pi-subagents/<id>.sock`）单向写入 NDJSON 报文完成消息投递，不走双向连接应答；子 Agent 的产出与进展统一通过双轨历史文件读取。
 - **报文格式**：统一采用 **NDJSON（Newline-Delimited JSON，换行分隔的 JSON）**。
 - **自动投递（Notification 内置）**：
   - 发起者向 Socket 投递消息后，由底层的通信监听器自动转发并唤醒对应 Subagent 处理，**不需要额外设计通知总线机制**。
