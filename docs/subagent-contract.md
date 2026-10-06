@@ -14,6 +14,7 @@
 - 废除原虚拟协议（Protocol IO 及 `agent://`、`history://`），Pi 原生工具回归纯粹文件系统；通信下沉到 Unix Domain Socket（NDJSON），原生 `write` 工具通过更换 write backend 适配 Socket 单向投递。
 - 双轨历史直接暴露物理路径给发起者：Compacted Markdown（参考 OMP，供 LLM 读）与 Clean JSONL（去流式碎片，供 grep/rg/jq 检索）。
 - 消息通过向 Socket 写入自动投递给对应 Agent，无需额外设计通知总线；仅在 subagent 异常时由宿主向上层抛出 Notification。
+- 广播必须分层次，不能只叫笼统的 `all`：严格按拓扑深度隔离，只发给发送者的直接子级（Main 发给 Depth 1，Depth 1 发给自己的 Depth 2），不跨层递归，不发给兄弟或祖先。
 - 持久化复用 Pi 的 SessionManager JSONL 与根会话 custom entry，不另写数据库或日志引擎。
 - worktree／文件系统隔离不在当前计划内。DeepSeek Search 是现成插件，由用户自行安装，本模块不增加安装或接入代码。
 
@@ -216,6 +217,19 @@ Job 状态为 `queued`、`running`、`stopping`、`completed`、`failed`、`canc
 
 - **触发条件**：仅在 Subagent 出现非预期异常（如进程崩溃、工具致命失败、单调时间硬超时、超出 Model Call 预算被硬熔断）时触发。
 - **机制**：由 Harness 宿主监控层捕获后，向上层父会话抛出轻量级的错误 Notification，告知发起者该 Subagent 异常终结及其退出原因。发起者随后可查阅 `summary.md` 或检索 `session.clean.jsonl` 排查详情。
+
+### 3. 分层次直接子级广播（Hierarchical Direct-Child Broadcast）
+
+广播必须具备清晰的层次界限，**不能只叫笼统的全局 `all`**，以防止全局越权与混淆：
+
+- **分层端点规范**：
+  - **Main（Depth 0 发起者）**：广播端点为 `/tmp/pi-subagents/main/children.sock`（或目标短名 `children`），仅广播给其直接子级（Depth 1 全体活跃 Agent）。
+  - **Depth 1 Agent（如 `sub_01`）**：广播端点为其专属子级端点 `/tmp/pi-subagents/sub_01/children.sock`（或 `sub_01:children`），仅广播给它自己派生的直接子级（Depth 2 全体活跃 Agent）。
+  - **Depth 2 Agent**：禁止派生子 Agent，因此不存在下级广播端点。
+- **广播行为**：
+  - 向对应的 `children.sock` 单向写入 NDJSON 报文后，宿主原子获取发送者**当前直接子 Agent** 的列表快照，并逐一并发投递；
+  - 严格禁止跨层递归扩散（Main 绝不直接穿透广播到 Depth 2）；禁止向父级或平级兄弟广播；
+  - 没有子节点时视为空成功返回；部分子节点处于 stopped 状态时，写入同样触发其以原 ID 进行 revive。
 
 ## 持久化、分支与 `/reload`
 
