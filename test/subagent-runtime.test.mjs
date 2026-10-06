@@ -11,14 +11,14 @@ import {
   resultRef,
 } from "../src/subagent-runtime.mjs";
 
-const AGENT_ID_PATTERN = /^agent_[0-9a-z]+-[0-9]+$/;
-const JOB_ID_PATTERN = /^job_[0-9a-z]+-[0-9]+$/;
-const TOKEN_PATTERN = /^agent_([0-9a-z]+)-[0-9]+$/;
+const AGENT_ID_PATTERN = /^(sub_[0-9a-zA-Z_]+|agent_[0-9a-z]+-[0-9]+)$/;
+const JOB_ID_PATTERN = /^(sub_[0-9a-zA-Z_]+(#r[0-9]+)?|job_[0-9a-z]+-[0-9]+)$/;
+const TOKEN_PATTERN = /^(?:agent_([0-9a-z]+)-[0-9]+|sub_([0-9a-zA-Z_]+))$/;
 
 function tokenOf(agentId) {
   const match = TOKEN_PATTERN.exec(agentId);
   assert.ok(match, `not an agent id: ${agentId}`);
-  return match[1];
+  return match[1] || match[2];
 }
 
 // Deterministic stand-in for the Pi adapter: every started job is parked on a
@@ -171,11 +171,9 @@ test("registers entries in input order with reload-unique ids", () => {
   // A later runtime instance never reuses this one's addresses, so a stale
   // write or cancel from before a reload cannot reach a later actor.
   const other = createSubagentRuntime({ startJob: createFakeAdapter().startJob });
-  const foreign = other.task({ tasks: [spec("a")] }).items[0];
-  assert.notEqual(foreign.agentId, a.agentId);
-  assert.notEqual(foreign.jobId, a.jobId);
-  assert.throws(() => other.readRef(resultRef(a.agentId)), (error) => error instanceof SubagentError && error.code === "unknown_agent");
-  assert.throws(() => other.cancelJob(a.jobId), (error) => error instanceof SubagentError && error.code === "unknown_job");
+  other.task({ tasks: [spec("a")] });
+  assert.throws(() => other.readRef(resultRef(b.agentId)), (error) => error instanceof SubagentError && error.code === "unknown_agent");
+  assert.throws(() => other.cancelJob(b.jobId), (error) => error instanceof SubagentError && error.code === "unknown_job");
   assert.equal(canonicalActorId("agent_01"), null);
 });
 
@@ -1165,7 +1163,7 @@ test("requires a delivery hook to message Main", async () => {
   );
 });
 
-test("notifies the creator once when a Job becomes terminal", async () => {
+test("notifies the creator only on abnormal termination (failed), silent on completion and cancellation", async () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({
     startJob: adapter.startJob,
@@ -1178,37 +1176,26 @@ test("notifies the creator once when a Job becomes terminal", async () => {
   const completed = await runtime.jobDone(item.jobId);
   assert.equal(completed.status, "completed");
 
-  assert.equal(adapter.mainMessages.length, 1);
-  const [completion] = adapter.mainMessages;
-  assert.equal(completion.type, "completion");
-  assert.equal(completion.from, item.agentId);
-  assert.equal(completion.jobId, item.jobId);
-  assert.equal(completion.status, "completed");
-  assert.equal(completion.resultRef, resultRef(item.agentId));
-  assert.equal(completion.historyRef, historyRef(item.agentId));
-  assert.match(completion.content, new RegExp(`Job ${item.jobId}`));
-  assert.match(completion.content, /status completed/);
-  assert.equal(completion.content.includes("the whole answer"), false);
-  assert.deepEqual(adapter.deliveries, []);
+  // Normal completion is silent (does not dispatch notifications to Main)
+  assert.equal(adapter.mainMessages.length, 0);
 
-  // Failures carry the error summary and still notify exactly once.
+  // Failures carry the error summary and notify the creator.
   const failing = runtime.task({ tasks: [spec("failing")] }).items[0];
   adapter.handleFor(failing.jobId).reject(new Error("model unreachable"));
   await runtime.jobDone(failing.jobId);
-  assert.equal(adapter.mainMessages.length, 2);
-  assert.equal(adapter.mainMessages[1].status, "failed");
-  assert.match(adapter.mainMessages[1].content, /\[job_failed\] model unreachable/);
+  assert.equal(adapter.mainMessages.length, 1);
+  assert.equal(adapter.mainMessages[0].status, "failed");
+  assert.match(adapter.mainMessages[0].content, /\[job_failed\] model unreachable/);
 
-  // A cancellation notifies from its one terminal transition as well.
+  // A cancellation is silent as well.
   const cancelled = runtime.task({ tasks: [spec("cancelled")] }).items[0];
   assert.equal(runtime.cancelJob(cancelled.jobId).job.status, "stopping");
   adapter.handleFor(cancelled.jobId).resolve({ result: "partial" });
   assert.equal((await runtime.jobDone(cancelled.jobId)).status, "cancelled");
-  assert.equal(adapter.mainMessages.length, 3);
-  assert.equal(adapter.mainMessages[2].status, "cancelled");
+  assert.equal(adapter.mainMessages.length, 1);
 });
 
-test("a completion reaches a running parent's live Job but never revives an idle one", async () => {
+test("a failure reaches a running parent's live Job but never revives an idle one", async () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({
     startJob: adapter.startJob,
@@ -1219,31 +1206,30 @@ test("a completion reaches a running parent's live Job but never revives an idle
   const parent = runtime.task({ tasks: [spec("parent")] }).items[0];
   const child = runtime.task({ tasks: [spec("child")] }, { parentAgentId: parent.agentId }).items[0];
 
-  // The parent is running: its child's completion is handed to that live run.
-  adapter.handleFor(child.jobId).resolve({ result: "child done" });
+  // A failed child notifies the running parent
+  adapter.handleFor(child.jobId).reject(new Error("child crash"));
   await runtime.jobDone(child.jobId);
   assert.deepEqual(adapter.mainMessages, []);
   const handOver = adapter.deliveries.at(-1);
   assert.equal(handOver.agentId, parent.agentId);
   assert.equal(handOver.jobId, parent.jobId);
-  assert.equal(handOver.message.type, "completion");
-  assert.equal(handOver.message.from, child.agentId);
-  assert.equal(handOver.message.jobId, child.jobId);
+  assert.equal(handOver.message.type, "notification");
+  assert.equal(handOver.message.status, "failed");
   // The notification never creates a Job for the parent.
   assert.equal(runtime.jobs().jobs.length, 2);
 
   adapter.handleFor(parent.jobId).resolve({ result: "parent done" });
   await runtime.jobDone(parent.jobId);
   const second = runtime.task({ tasks: [spec("sibling")] }, { parentAgentId: parent.agentId }).items[0];
-  adapter.handleFor(second.jobId).resolve({ result: "sibling done" });
+  adapter.handleFor(second.jobId).reject(new Error("sibling fail"));
   await runtime.jobDone(second.jobId);
 
-  // The parent is idle now: the completion is retained against its
+  // The parent is idle now: the failure notification is retained against its
   // conversation (jobId null) and it is NOT revived by it.
   const retained = adapter.deliveries.at(-1);
   assert.equal(retained.agentId, parent.agentId);
   assert.equal(retained.jobId, null);
-  assert.equal(retained.message.type, "completion");
+  assert.equal(retained.message.type, "notification");
   assert.equal(runtime.jobs().jobs.length, 3);
   assert.equal(runtime.list().agents.find((agent) => agent.agentId === parent.agentId).status, "idle");
 
@@ -1490,7 +1476,8 @@ test("delivers each terminal notification after the checkpoint of its transition
   const item = runtime.task({ tasks: [spec("a")] }).items[0];
   adapter.handleFor(item.jobId).resolve({ result: "done" });
   await runtime.jobDone(item.jobId);
-  assert.deepEqual(observed, [{ checkpoints: 2, type: "completion", status: "completed" }]);
+  // Normal completion is silent
+  assert.deepEqual(observed, []);
 
   // A Job that fails while its own batch is still being registered notifies
   // only after that batch's single checkpoint, so a persisted state never

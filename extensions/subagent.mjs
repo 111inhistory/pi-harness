@@ -85,6 +85,7 @@ import {
   SessionManager,
   SettingsManager,
   createAgentSession,
+  createWriteToolDefinition,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 
@@ -110,8 +111,8 @@ import {
 
 const MAX_CONCURRENCY = 4;
 const MAX_AGENT_DEPTH = 2;
-const HARNESS_TOOLS = ["create", "task", "list", "stop", "hub", "capability"];
-const ROOT_HARNESS_TOOLS = ["list", "stop", "hub", "capability"];
+const HARNESS_TOOLS = ["subagent_create", "subagent_list", "subagent_stop", "capability"];
+const ROOT_HARNESS_TOOLS = ["subagent_list", "subagent_stop", "capability"];
 const MESSAGE_CUSTOM_TYPE = "agent-message";
 const COMPLETION_CUSTOM_TYPE = "agent-completion";
 /** Reserved broadcast target; `all` is never an actor identity. */
@@ -205,27 +206,6 @@ export default function subagentExtension(pi) {
     await retireService(controller);
   });
   installSessionSurface(pi, (ctx) => rootService(controller, ctx), { allowInherited: true, parentAgentId: null, depth: 0 });
-  installSocketAwareWrite(pi);
-}
-
-function installSocketAwareWrite(pi) {
-  if (typeof pi.getAllTools !== "function") return;
-  const tools = pi.getAllTools();
-  const writeTool = tools.find((t) => t?.name === "write");
-  if (writeTool && typeof writeTool.execute === "function" && !writeTool._socketAware) {
-    const originalExecute = writeTool.execute;
-    writeTool.execute = async function (toolCallId, params, signal, onUpdate, ctx) {
-      if (typeof params?.path === "string" && params.path.endsWith(".sock")) {
-        const targetPath = params.path.startsWith("/") ? params.path : join(ctx?.cwd || process.cwd(), params.path);
-        await writeSocketOneWay(targetPath, params.content);
-        return {
-          content: [{ type: "text", text: `Successfully delivered message to socket ${params.path}` }],
-        };
-      }
-      return originalExecute.call(this, toolCallId, params, signal, onUpdate, ctx);
-    };
-    writeTool._socketAware = true;
-  }
 }
 
 /**
@@ -450,6 +430,18 @@ function restoreService(service, ctx) {
     );
   }
   service.ready = true;
+  // Re-establish sockets for all restored agents and hierarchical broadcast
+  try {
+    const list = service.runtime.list();
+    for (const agent of list.agents) {
+      if (agent.agentId !== "Main") {
+        ensureAgentSocketServer(service, agent.agentId);
+      }
+    }
+    ensureBroadcastSocketServer(service, null);
+  } catch {
+    // Non-fatal socket re-establishment
+  }
   // The restored snapshot may already differ from disk (interrupted Jobs became
   // terminal failures), so write the post-restore state once.
   checkpointNow(service);
@@ -866,19 +858,31 @@ const stopParameters = {
   },
 };
 
-function installSessionSurface(pi, resolveService, { allowInherited, parentAgentId, depth }) {
+function installSessionSurface(pi, resolveService, { allowInherited, parentAgentId, depth, cwd }) {
+  const workCwd = typeof cwd === "string" ? cwd : process.cwd();
   if (depth < MAX_AGENT_DEPTH) {
-    pi.registerTool(createTool(pi, resolveService, { allowInherited, parentAgentId, depth }));
-    pi.registerTool(taskTool(pi, resolveService, { allowInherited, parentAgentId, depth }));
+    pi.registerTool(createTool(pi, resolveService, { allowInherited, parentAgentId, depth, cwd: workCwd }));
   }
   pi.registerTool(listTool(resolveService));
   pi.registerTool(stopTool(resolveService));
-  pi.registerTool(hubTool(resolveService));
+
+  const writeOps = createSocketAwareWriteOperations({
+    onCheckStatus: (agentId) => {
+      try {
+        const service = resolveService();
+        const item = service?.runtime?.listDetailed({ id: agentId })?.items?.[0];
+        return item?.status ?? null;
+      } catch {
+        return null;
+      }
+    },
+  });
+  pi.registerTool(createWriteToolDefinition(workCwd, { operations: writeOps }));
 }
 
 function createTool(pi, resolveService, { allowInherited, parentAgentId, depth }) {
   return {
-    name: "create",
+    name: "subagent_create",
     label: "Create Subagent",
     description:
       "Create subagents that run in the background (deferred). Returns unified short id (sub_01), communication socket path " +
@@ -901,6 +905,11 @@ function createTool(pi, resolveService, { allowInherited, parentAgentId, depth }
         },
         captureInheritedContext: () => captureContextForChild(pi, ctx, depth + 1),
       });
+      // Guarantee sockets exist immediately for all created agents (running or queued)
+      for (const item of response.items) {
+        ensureAgentSocketServer(service, item.id);
+      }
+      ensureBroadcastSocketServer(service, parentAgentId);
       return respond(response);
     },
   };
@@ -908,7 +917,7 @@ function createTool(pi, resolveService, { allowInherited, parentAgentId, depth }
 
 function listTool(resolveService) {
   return {
-    name: "list",
+    name: "subagent_list",
     label: "List Subagents",
     description:
       "Query subagent status, budget usage, write socket path and dual history paths. Optionally filter by agent id.",
@@ -924,7 +933,7 @@ function listTool(resolveService) {
 
 function stopTool(resolveService) {
   return {
-    name: "stop",
+    name: "subagent_stop",
     label: "Stop Subagent",
     description:
       "Gracefully stop a running or queued subagent by id. Once stopped, its dual history files are flushed and ready to read. " +
@@ -935,91 +944,6 @@ function stopTool(resolveService) {
       assertOperational(service);
       const result = service.runtime.stop(params.id);
       return respond(result);
-    },
-  };
-}
-
-function taskTool(pi, resolveService, { allowInherited, parentAgentId, depth }) {
-  return {
-    name: "task",
-    label: "Task",
-    description:
-      "Create subagents that run in the background (deferred). Validates the whole batch first and registers it atomically; " +
-      "each registered entry gets a stable agentId and jobId, in input order. The subagent's role, model, thinking level and " +
-      "tools are chosen automatically; the caller supplies only context and the task text. Results are read later through " +
-      "agent://<agentId> and history://<agentId> (or hub jobs). Message a running or idle agent with write agent://<agentId> " +
-      "(agent://Main reaches this session, agent://all reaches this agent's direct children); an idle recipient is revived with " +
-      "a new Job that continues its conversation, while an agent that is still stopping its previous run rejects the write with " +
-      "agent_busy. Completion does not start a new parent turn, and this tool does not touch work items.",
-    parameters: taskParameters,
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const service = await resolveService(ctx);
-      assertOperational(service);
-      adoptParentModelRuntime(service, ctx.modelRegistry);
-      service.modelRegistry = ctx.modelRegistry;
-      const response = service.runtime.task(params, {
-        parentAgentId,
-        allowInherited,
-        origin: {
-          cwd: ctx.cwd,
-          trusted: ctx.isProjectTrusted(),
-          sessionId: ctx.sessionManager.getSessionId(),
-          agentId: parentAgentId,
-          mode: ctx.mode,
-        },
-        // The warning for non-transplantable parent tools is generated here, at
-        // capture time, and rides the snapshot: the runtime reports it on the
-        // entry and job views, and persistence carries it to a revival.
-        captureInheritedContext: () => captureContextForChild(pi, ctx, depth + 1),
-      });
-      return respond(response);
-    },
-  };
-}
-
-function hubTool(resolveService) {
-  return {
-    name: "hub",
-    label: "Hub",
-    description:
-      "Coordinate subagents. list: agents with their status. jobs: queued/running/stopping/terminal job snapshot, optionally filtered " +
-      "by jobIds. cancel: cancel one queued or running job without cancelling its siblings or parent; a cancelled running job keeps " +
-      "its slot until its native run exits.",
-    parameters: hubParameters,
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const service = await resolveService(ctx);
-      assertOperational(service);
-      const { op } = params;
-      if (op === "list") {
-        if (params.jobId !== undefined || params.jobIds !== undefined) {
-          throw new SubagentError("invalid_request", "hub list does not accept jobId or jobIds.");
-        }
-        return respond(service.runtime.list(params.status === undefined ? undefined : { status: params.status }));
-      }
-      if (op === "jobs") {
-        if (params.jobId !== undefined || params.status !== undefined) {
-          throw new SubagentError("invalid_request", "hub jobs accepts only the optional jobIds filter.");
-        }
-        return respond(service.runtime.jobs(params.jobIds === undefined ? undefined : { jobIds: params.jobIds }));
-      }
-      if (op === "cancel") {
-        if (typeof params.jobId !== "string" || params.jobId === "") {
-          throw new SubagentError("invalid_request", "hub cancel requires a jobId.");
-        }
-        if (params.status !== undefined || params.jobIds !== undefined) {
-          throw new SubagentError("invalid_request", "hub cancel accepts only jobId.");
-        }
-        const response = service.runtime.cancelJob(params.jobId);
-        const text = response.ok
-          ? response.job.status === "stopping"
-            ? `Job ${params.jobId} is stopping; its cancelled payload is published when the native run exits.`
-            : `Job ${params.jobId} cancelled.`
-          : response.reason === "stopping"
-            ? `Job ${params.jobId} is already stopping.`
-            : `Job ${params.jobId} already finished with status "${response.job.status}".`;
-        return respond({ ...response, message: text });
-      }
-      throw new SubagentError("invalid_request", `Unknown hub op "${String(op)}"; expected list, jobs or cancel.`);
     },
   };
 }
@@ -1206,12 +1130,10 @@ function watchBudget(budget, checkBudget) {
 function startPiJob(service, request) {
   let session = null;
   let updateRetainedTools = null;
-  // Teardown runs outside the run closure below, so the two operations it needs
-  // — refresh the actor record from the finished session, then checkpoint it —
-  // are handed back to this scope once the session exists.
   let finalizeActor = null;
   let unsubscribe = null;
   let unsubscribeBudget = null;
+  let unsubscribeClean = null;
   let cancelled = false;
   // Job cancellation reaches the two routing classifications through this
   // signal, so an aborted Job never dispatches a classifier request.
@@ -1445,11 +1367,76 @@ function startPiJob(service, request) {
     ensureAgentSocketServer(service, request.agentId);
     ensureBroadcastSocketServer(service, request.origin?.agentId ?? null);
 
-    const unsubscribeClean = session.subscribe((event) => {
-      if (event?.type === "tool_call" || event?.type === "tool_result" || event?.type === "message_end") {
-        appendCleanJsonl(request.agentId, event).catch(() => {});
-      }
+    unsubscribeClean = session.subscribe((event) => {
+      try {
+        if (!event || typeof event !== "object") return;
+        const type = event.type;
+        if (type === "message_start") {
+          appendCleanJsonl(request.agentId, {
+            type: "message_start",
+            role: event.message?.role,
+            timestamp: Date.now(),
+          }).catch((err) => {
+            service.ui?.notify?.(`Clean JSONL error on ${request.agentId}: ${err.message}`, "error");
+          });
+        } else if (type === "tool_execution_start") {
+          appendCleanJsonl(request.agentId, {
+            type: "tool_execution_start",
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            args: event.args,
+            timestamp: Date.now(),
+          }).catch((err) => {
+            service.ui?.notify?.(`Clean JSONL error on ${request.agentId}: ${err.message}`, "error");
+          });
+        } else if (type === "tool_execution_end") {
+          appendCleanJsonl(request.agentId, {
+            type: "tool_execution_end",
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            isError: event.isError,
+            result: event.result,
+            timestamp: Date.now(),
+          }).catch((err) => {
+            service.ui?.notify?.(`Clean JSONL error on ${request.agentId}: ${err.message}`, "error");
+          });
+        } else if (type === "message_end") {
+          appendCleanJsonl(request.agentId, {
+            type: "message_end",
+            role: event.message?.role,
+            stopReason: event.message?.stopReason,
+            usage: event.message?.usage,
+            timestamp: Date.now(),
+          }).catch((err) => {
+            service.ui?.notify?.(`Clean JSONL error on ${request.agentId}: ${err.message}`, "error");
+          });
+        }
+      } catch {}
     });
+
+    const flushSummaryOnTerminal = async (status, err = null) => {
+      try {
+        const msgs = jobMessages();
+        const partialText = readFinalText(msgs);
+        await writeCompactedSummary(
+          request.agentId,
+          {
+            name: request.spec?.name,
+            task: typeof request.spec?.task === "string" ? request.spec.task : "",
+            role: roleId,
+            model: modelRefOf(model)?.id ?? (typeof model === "string" ? model : null),
+            budget: request.budget.snapshot(),
+            result: partialText || (err ? `Terminated with error: ${err.message}` : "(No output recorded)"),
+            status,
+            error: err ? err.message : null,
+            round: isContinuation ? 2 : 1,
+          },
+          { append: isContinuation },
+        );
+      } catch (summaryErr) {
+        service.ui?.notify?.(`Failed to write summary for ${request.agentId}: ${summaryErr.message}`, "error");
+      }
+    };
 
     // Every finalized native message commits the Job's progress: the history
     // bounds move to the entry that just landed, and the actor record's leaf
@@ -1503,28 +1490,18 @@ function startPiJob(service, request) {
       await drainLiveMessages(live, sessionManager);
       throwIfBudgetFailed(request.budget);
       const finalResultText = readFinalText(jobMessages());
-      writeCompactedSummary(
-        request.agentId,
-        {
-          name: request.spec?.name,
-          task: typeof request.spec?.task === "string" ? request.spec.task : "",
-          role: roleId,
-          model: modelRefOf(model)?.id ?? (typeof model === "string" ? model : null),
-          budget: request.budget.snapshot(),
-          result: finalResultText,
-          status: "completed",
-          round: isContinuation ? 2 : 1,
-        },
-        { append: isContinuation },
-      ).catch(() => {});
+      await flushSummaryOnTerminal("completed");
       return {
         result: finalResultText,
         messages: readTranscript(entriesAfter(sessionManager, boundary)),
         history: { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
       };
     } catch (error) {
-      // A cancelled run is reported as cancelled by the registry, not as a failure.
-      if (cancelled) return cancelledOutcome(sessionManager, boundary);
+      if (cancelled) {
+        await flushSummaryOnTerminal("cancelled");
+        return cancelledOutcome(sessionManager, boundary);
+      }
+      await flushSummaryOnTerminal("failed", error);
       throwIfBudgetFailed(request.budget);
       throw error;
     }

@@ -194,11 +194,21 @@ export function writeSocketOneWay(socketPath, payload, { timeoutMs = 5000 } = {}
 export function createSocketAwareWriteOperations(baseOperations = {}) {
   const writeFile = baseOperations.writeFile || ((p, c) => fsp.writeFile(p, c, "utf-8"));
   const mkdir = baseOperations.mkdir || ((d) => fsp.mkdir(d, { recursive: true }));
+  const onCheckStatus = baseOperations.onCheckStatus;
 
   return {
     mkdir,
     async writeFile(absolutePath, content) {
       if (typeof absolutePath === "string" && absolutePath.endsWith(".sock")) {
+        const baseName = path.basename(absolutePath, ".sock");
+        if (typeof onCheckStatus === "function" && baseName && baseName !== "children") {
+          const status = onCheckStatus(baseName);
+          if (status === "stopping") {
+            const err = new Error(`agent_stopping: Subagent ${baseName} is currently stopping. Cannot accept messages until fully stopped.`);
+            err.code = "agent_stopping";
+            throw err;
+          }
+        }
         return writeSocketOneWay(absolutePath, content);
       }
       return writeFile(absolutePath, content);

@@ -168,7 +168,7 @@ const JOB_STATUSES = new Set([...LIVE_STATUSES, ...TERMINAL_STATUSES]);
 // never match a generated id, which keeps the broadcast target and the root
 // actor outside the resolvable actor space.
 const AGENT_ID_PATTERN = /^(agent_[0-9a-z]+-[0-9]+|sub_[0-9a-zA-Z_]+)$/;
-const JOB_ID_PATTERN = /^(job_[0-9a-z]+-[0-9]+|job_sub_[0-9a-zA-Z_]+|sub_[0-9a-zA-Z_]+)$/;
+const JOB_ID_PATTERN = /^(job_[0-9a-z]+-[0-9]+|job_sub_[0-9a-zA-Z_]+|sub_[0-9a-zA-Z_]+(#r[0-9]+)?)$/;
 const REF_PATTERN = /^(agent|history):\/\/((?!all$|Main$)(agent_[0-9a-z]+-[0-9]+|sub_[0-9a-zA-Z_]+))$/;
 const PROTOCOL_URI_PATTERN = /^(agent|history):\/\/(.*)$/;
 
@@ -410,7 +410,8 @@ function completionText(job) {
   if (job.error !== null && job.error !== undefined) {
     lines.push(`Error: [${job.error.code}] ${job.error.message}`);
   }
-  lines.push(`Result: ${resultRef(job.agentId)}`, `History: ${historyRef(job.agentId)}`);
+  const historyPaths = getSubagentHistoryPaths(job.agentId);
+  lines.push(`Summary: ${historyPaths.summary}`, `Clean JSONL: ${historyPaths.cleanJsonl}`);
   return lines.join("\n");
 }
 
@@ -727,10 +728,10 @@ export class SubagentRuntime {
   /** Create subagents batch according to the public contract (returns unified id, socket, history). */
   create(batch, options = {}) {
     const res = this.task(batch, options);
-    return {
+    const result = {
       items: res.items.map((item) => {
         const historyPaths = getSubagentHistoryPaths(item.agentId);
-        return {
+        const mapped = {
           id: item.agentId,
           name: item.name,
           status: item.status,
@@ -740,8 +741,16 @@ export class SubagentRuntime {
             cleanJsonl: historyPaths.cleanJsonl,
           },
         };
+        if (item.warnings !== undefined) {
+          mapped.warnings = item.warnings;
+        }
+        return mapped;
       }),
     };
+    if (res.warnings !== undefined) {
+      result.warnings = res.warnings;
+    }
+    return result;
   }
 
   /**
@@ -791,7 +800,7 @@ export class SubagentRuntime {
       const registered = [];
 
       for (const entry of entries) {
-        const agentId = this.#nextId("agent");
+        const agentId = this.#allocateAgentId(parentAgentId, depth);
         const agent = { agentId, name: entry.spec.name, parentAgentId, depth, status: "running", jobIds: [], pending: [] };
         this.#agents.set(agentId, agent);
         registered.push(
@@ -811,7 +820,7 @@ export class SubagentRuntime {
 
   /** Register one more Job for an existing agent. */
   #createJob(agent, { index = null, spec, origin = null, createdBy, continuedFromJobId = null }) {
-    const jobId = this.#nextId("job");
+    const jobId = continuedFromJobId ? `${agent.agentId}#r${agent.jobIds.length + 1}` : agent.agentId;
     const job = {
       jobId,
       agentId: agent.agentId,
@@ -866,17 +875,18 @@ export class SubagentRuntime {
     const items = [];
     for (const agent of this.#agents.values()) {
       if (targetId && agent.agentId !== targetId) continue;
-      if (filter?.status !== undefined && filter.status !== agent.status) continue;
-      const historyPaths = getSubagentHistoryPaths(agent.agentId);
       const liveJob = this.#liveJobOf(agent);
       const latestJob = agent.jobIds.length > 0 ? this.#jobs.get(agent.jobIds[agent.jobIds.length - 1]) : null;
       const budgetJob = liveJob || latestJob;
+      const currentStatus = liveJob ? liveJob.status : (agent.status === "idle" ? "stopped" : agent.status);
+      if (filter?.status !== undefined && filter.status !== currentStatus && filter.status !== agent.status) continue;
+      const historyPaths = getSubagentHistoryPaths(agent.agentId);
       items.push({
         id: agent.agentId,
         name: agent.name,
         depth: agent.depth,
         parentId: agent.parentAgentId ?? "Main",
-        status: agent.status,
+        status: currentStatus,
         budget: budgetJob?.budget ? budgetJob.budget.snapshot() : null,
         socket: getAgentSocketPath(agent.agentId),
         history: {
@@ -1176,6 +1186,7 @@ export class SubagentRuntime {
     return this.#withCheckpoint(() => {
       this.#agentSequence = restored.sequences.agent;
       this.#jobSequence = restored.sequences.job;
+      this.#syncSequencesFromActors(restored.actors);
       for (const actor of restored.actors) {
         this.#agents.set(actor.agentId, {
           agentId: actor.agentId,
@@ -1591,16 +1602,23 @@ export class SubagentRuntime {
   }
 
   #notifyTerminal(job) {
+    if (job.status !== "failed" && job.status !== "error") {
+      return;
+    }
     const creator = job.createdBy;
     if (typeof creator !== "string") return;
+    const historyPaths = getSubagentHistoryPaths(job.agentId);
     const envelope = {
-      type: "completion",
-      from: job.agentId,
-      content: completionText(job),
-      jobId: job.jobId,
+      type: "notification",
+      subagentId: job.agentId,
+      name: job.spec?.name,
       status: job.status,
-      resultRef: resultRef(job.agentId),
-      historyRef: historyRef(job.agentId),
+      content: completionText(job),
+      error: job.error ? String(job.error.message || job.error) : null,
+      history: {
+        summary: historyPaths.summary,
+        cleanJsonl: historyPaths.cleanJsonl,
+      },
     };
     if (creator === MAIN_ACTOR_ID) {
       if (this.#deliverToMain === null) return;
@@ -1611,9 +1629,6 @@ export class SubagentRuntime {
     const agent = this.#agents.get(creator);
     if (agent === undefined || this.#deliverMessage === null) return;
     const live = this.#liveJobOf(agent);
-    // A running creator takes the notification through its live Job; an idle,
-    // queued or stopping creator gets it appended to its conversation and is
-    // never woken by it.
     const targetJobId = live !== null && live.status === "running" ? live.jobId : null;
     const deliverMessage = this.#deliverMessage;
     this.#attempt(() => deliverMessage({ agentId: creator, jobId: targetJobId, message: envelope }));
@@ -1884,6 +1899,37 @@ export class SubagentRuntime {
       });
     }
     return resolved;
+  }
+
+  #childSequences = new Map();
+
+  #allocateAgentId(parentAgentId, depth) {
+    const parentKey = (!parentAgentId || parentAgentId === MAIN_ACTOR_ID)
+      ? "Main"
+      : parentAgentId;
+    const prefix = parentKey === "Main" ? "sub" : parentKey;
+    const currentSeq = (this.#childSequences.get(parentKey) ?? 0) + 1;
+    this.#childSequences.set(parentKey, currentSeq);
+    return `${prefix}_${String(currentSeq).padStart(2, "0")}`;
+  }
+
+  #syncSequencesFromActors(actors) {
+    if (!Array.isArray(actors)) return;
+    for (const actor of actors) {
+      if (!actor || typeof actor.agentId !== "string") continue;
+      const parentKey = (!actor.parentAgentId || actor.parentAgentId === MAIN_ACTOR_ID) ? "Main" : actor.parentAgentId;
+      const prefix = parentKey === "Main" ? "sub" : parentKey;
+      if (actor.agentId.startsWith(prefix + "_")) {
+        const numStr = actor.agentId.slice(prefix.length + 1);
+        const num = parseInt(numStr, 10);
+        if (!Number.isNaN(num)) {
+          const current = this.#childSequences.get(parentKey) ?? 0;
+          if (num > current) {
+            this.#childSequences.set(parentKey, num);
+          }
+        }
+      }
+    }
   }
 
   #nextId(kind) {

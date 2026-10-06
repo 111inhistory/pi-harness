@@ -28,7 +28,7 @@
 6. 完成事件是结果事实，不是继续执行的授权；失败、取消与重启都不自动重试工作。
 7. 双轨历史物理文件可重复读取；stop 后写 socket 自动 revive 续跑，在已有历史文件上以 append-only 追加写入，不产生碎片化多重历史文件。
 
-## `create`（原 `task` 批量创建入口）
+## `subagent_create`（原 `task` 批量创建入口）
 
 唯一的批量创建入口：
 
@@ -58,7 +58,7 @@ type TaskBatch = {
 - 不接受 `agent`、`role`、`model`、`thinking`、`effort`、`provider`、`preference`、`tools` 或结果 Schema；未知字段使整个批次校验失败，没有兼容别名。
 - 先校验整个批次和拓扑准入，再原子注册；失败不留下半创建任务。注册后一个 Job 的失败或取消不影响兄弟 Job。
 - 输入数组不表示依赖顺序；返回条目保持输入顺序。
-- `create` 不等待路由或任务完成，返回统一短 ID、当时状态、通信 Socket 路径及直接暴露的双轨历史文件路径：
+- `subagent_create` 不等待路由或任务完成，返回统一短 ID、当时状态、通信 Socket 路径及直接暴露的双轨历史文件路径：
 
 ```json
 {
@@ -162,7 +162,7 @@ flowchart TD
 
 ### 显式续跑与 Revive 治理
 
-向已 `stop` 或处于 idle 的 Agent 对应的 Unix Socket 写入新消息（NDJSON 报文）时，自动 revive 续跑，取得全新 Budget，并继续已有原生上下文及实际模型、thinking 和 active tools（包括 Capability 激活的工具）。不重走已经完成的角色／模型路由。
+向已 `subagent_stop` 或处于 idle 的 Agent 对应的 Unix Socket 写入新消息（NDJSON 报文）时，自动 revive 续跑，取得全新 Budget，并继续已有原生上下文及实际模型、thinking 和 active tools（包括 Capability 激活的工具）。不重走已经完成的角色／模型路由。
 
 已进入历史的原任务不重复注入。若旧运行在排队或初始化时结束、原任务尚未记录，保留初始 seed，并在新的显式消息触发时带入原任务。路由从未成功完成的 Fresh seed 可以在这次新运行中完成首次路由；这不是自动重试。
 
@@ -172,7 +172,7 @@ flowchart TD
 
 ## 调度、状态与 Budget
 
-当前所有 Job 都是 deferred。blocking、混合等待批次、`waiting` 和同步等待暂缓，不提供 `wait` 接口（随时可 `stop` 并拉取历史）。状态通过 `list` 查询，历史直接通过双轨文件读取。
+当前所有 Job 都是 deferred。blocking、混合等待批次、`waiting` 和同步等待暂缓，不提供 `wait` 接口（随时可 `subagent_stop` 并拉取历史）。状态通过 `subagent_list` 查询，历史直接通过双轨文件读取。
 
 ### 拓扑与并发
 
@@ -197,7 +197,7 @@ Job 状态为 `queued`、`running`、`stopping`、`completed`、`failed`、`canc
 - 第 hard 次可以执行，预计 hard+1 在请求前拒绝。达到 Soft 只提示一次，不暴露具体阈值。
 - Active Time 只在持有执行槽位时累计；queued 不计，stopping 等实际退出期间仍计。
 - Model Calls／Active Time 超限使用 `budget_exceeded`，lifetime 到期使用 `job_expired`；最终为 failed，不追加收尾模型调用，保留部分结果与历史。
-- Budget 不由模型配置，不跨父子聚合；`list` 只给只读用量、phase 与终态，不暴露 Profile 上限。
+- Budget 不由模型配置，不跨父子聚合；`subagent_list` 只给只读用量、phase 与终态，不暴露 Profile 上限。
 - 恢复只保留历史预算快照，不继续跨进程的 monotonic clock；显式续跑是新 Job、新 Budget。
 
 ## 通信架构：Write Socket 与 异常 Notification
@@ -258,15 +258,18 @@ Job 状态为 `queued`、`running`、`stopping`、`completed`、`failed`、`canc
 - checkpoint 或 seed 损坏、文件缺失、原生 leaf 不存在时显式报错，不悄悄初始化空上下文。存储写入失败会报告，不把内存里的已发生副作用伪装成已回滚。
 - `/reload` 重新注册当前 Session 的协议路由；每个会话拥有独立 EventBus，不泄漏到兄弟会话。
 
-## `list`、`stop` 与结果读取
+## `subagent_list`、`subagent_stop` 与结果读取
 
 生命周期控制与查询收敛为两项核心操作：
 
-## `list`、`stop` 与结果读取
+```
+Main/Subagent
+  ├── 状态查询 ──────> subagent_list(id?)
+  ├── 优雅停止 ──────> subagent_stop(id)
+  └── 结果/进展读取 ──> read / grep 文件: summary.md & session.clean.jsonl
+```
 
-生命周期控制与查询收敛为两项核心操作：
-
-### 1. `list`
+### 1. `subagent_list`
 
 查询当前活跃及历史的 Subagent 状态与花名册：
 
@@ -302,7 +305,7 @@ Job 状态为 `queued`、`running`、`stopping`、`completed`、`failed`、`canc
 }
 ```
 
-### 2. `stop`
+### 2. `subagent_stop`
 
 优雅停止指定短 ID 的任务：
 
@@ -320,7 +323,7 @@ Job 状态为 `queued`、`running`、`stopping`、`completed`、`failed`、`canc
 
 ### 3. 结果与历史读取
 
-不提供 `wait` 同步等待接口，发起者随时可直接 `stop` 并读取历史。
+不提供 `wait` 同步等待接口，发起者随时可直接 `subagent_stop` 并读取历史。
 
 结果与历史直接通过双轨物理文件读取，由 Harness 宿主在子会话生命周期内维护：
 
