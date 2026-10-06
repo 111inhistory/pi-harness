@@ -1,0 +1,14 @@
+{
+  "name": "pi-harness-interaction-mvp",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "demo": "node prototype/demo.mjs",
+    "smoke": "node prototype/demo.mjs --assert",
+    "cli": "node prototype/cli.mjs",
+    "test": "node --test",
+    "test:work": "node --test test/work.test.mjs",
+    "test:subagent": "node --test test/subagent-runtime.test.mjs",
+    "test:shell-preflight": "node --test test/shell-preflight.test.mjs"
+  }
+}

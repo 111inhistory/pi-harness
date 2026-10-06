@@ -1,0 +1,346 @@
+/**
+ * Capability Pi extension.
+ *
+ * Adds the no-argument `capability` tool to a session. A call starts an
+ * isolated internal Pi retrieval session (only `capability_search` and
+ * `submit_result`, no extensions, no built-in tools, its own fixed budget) that
+ * inherits the caller's native conversation — raw session entries, system
+ * prompt, model — so provider-returned blocks such as thinking with their
+ * signatures survive verbatim. The tool then returns the broker's grouped
+ * result for the refs the internal agent actually found and submitted, and
+ * declares the selected already-registered tools active in this session. It
+ * never installs, enables or executes anything.
+ *
+ * The same extension registers the capability-owned read protocols
+ * (`tool://`, `mcp://`, `skill://`, `npm://`) through installProtocolIO using
+ * the broker's `read()`. It registers no protocol writer.
+ */
+
+import { readFile } from "node:fs/promises";
+
+import {
+  DefaultResourceLoader,
+  SessionManager,
+  SettingsManager,
+  createAgentSession,
+  getAgentDir,
+  loadSkills,
+} from "@earendil-works/pi-coding-agent";
+
+import { installProtocolIO } from "./protocol-io.mjs";
+import {
+  CAPABILITY_PARAMETERS,
+  CAPABILITY_TOOL_DESCRIPTION,
+  CAPABILITY_TOOL_NAME,
+  createCapabilityBroker,
+} from "../src/capability-broker.mjs";
+import { createNpmMarketplace } from "../src/capability-marketplace.mjs";
+import {
+  CAPABILITY_DISCOVERY_SYSTEM_PROMPT,
+  capabilityBudgetWarning,
+  capabilityFailureResult,
+  createCapabilityDiscovery,
+} from "../src/capability-agent.mjs";
+import { installModelCallBudget } from "../src/pi-job-budget.mjs";
+import { captureInheritedContext } from "../src/inherited-context.mjs";
+
+/** `Model<Api>.api` of Pi virtual catalog entries (routed before a provider). */
+const VIRTUAL_MODEL_API = "pi-virtual";
+
+export default function capabilityExtension(pi) {
+  const service = {
+    agentDir: getAgentDir(),
+    marketplace: null,
+  };
+  const broker = createCapabilityBroker(createProviders(pi, service));
+
+  installProtocolIO(pi, { readers: capabilityReaders(broker) });
+
+  pi.registerTool({
+    name: CAPABILITY_TOOL_NAME,
+    label: "Capability",
+    description: CAPABILITY_TOOL_DESCRIPTION,
+    parameters: CAPABILITY_PARAMETERS,
+    async execute(toolCallId, _params, signal, _onUpdate, ctx) {
+      let result;
+      try {
+        const snapshot = captureInheritedContext(pi, ctx);
+        const discovery = createCapabilityDiscovery({
+          broker,
+          openSession: (request) => openInternalSession(pi, service, ctx, request, snapshot, toolCallId),
+        });
+        result = await discovery.discover({ cwd: ctx.cwd, signal });
+        if (result.status !== "failed") {
+          try {
+            const activation = activateSelectedTools(pi, result);
+            if (activation.warnings.length > 0) {
+              result = { ...result, warnings: [...result.warnings, ...activation.warnings] };
+            }
+          } catch (error) {
+            result = {
+              ...result,
+              warnings: [...result.warnings, `selected tools could not be activated: ${errorMessage(error)}`],
+            };
+          }
+        }
+      } catch (error) {
+        result = capabilityFailureResult(`capability discovery failed: ${errorMessage(error)}.`);
+      }
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+        details: result,
+        isError: result.status === "failed",
+      };
+    },
+  });
+}
+
+function createProviders(pi, service) {
+  return {
+    listTools: () => pi.getAllTools(),
+    listActiveTools: () => pi.getActiveTools(),
+    discoverSkills: (cwd) =>
+      loadSkills({
+        cwd,
+        agentDir: service.agentDir,
+        skillPaths: configuredSkillPaths(pi),
+        includeDefaults: true,
+      }),
+    readSkillFile: (filePath) => readFile(filePath, "utf8"),
+    searchRemote: (query, options) => marketplace(pi, service).searchRemote(query, options),
+    readRemote: (ref, options) => marketplace(pi, service).readRemote(ref, options),
+    listInstalledPackages: () => installedPackageSources(pi),
+  };
+}
+
+function configuredSkillPaths(pi) {
+  const settings = safeSettings(pi);
+  return Array.isArray(settings?.skills) ? settings.skills : [];
+}
+
+function safeSettings(pi) {
+  try {
+    return pi.getSettings?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The internal session's settings: a snapshot of the caller's effective settings
+ * in an in-memory manager.
+ *
+ * In-memory on purpose — no code path inside the child can persist a model,
+ * thinking level or any other preference back to the caller's or the user's
+ * settings files, because the child's manager has no file storage at all. The
+ * resource-source lists are emptied because the child disables every loader
+ * (no extensions, skills, prompt templates, themes, context files): resource
+ * resolution for the disabled loaders can otherwise install configured npm/git
+ * packages as a side effect (`DefaultResourceLoader.reload()` resolves the
+ * `packages` setting), which capability discovery must never trigger.
+ */
+function internalSettings(pi, trusted) {
+  const effective = safeSettings(pi);
+  const base = effective !== null && typeof effective === "object" ? effective : {};
+  return SettingsManager.inMemory(
+    { ...base, packages: [], extensions: [], skills: [], prompts: [], themes: [] },
+    { projectTrusted: trusted === true },
+  );
+}
+
+/** Pi's configured package sources; the installed identity check reads this. */
+function installedPackageSources(pi) {
+  const settings = safeSettings(pi);
+  return Array.isArray(settings?.packages) ? settings.packages : [];
+}
+
+function marketplace(pi, service) {
+  if (service.marketplace === null) {
+    service.marketplace = createNpmMarketplace({
+      // Installed packages never come back as installation requests; the
+      // helper fails closed when this source list is unavailable.
+      listInstalledPackages: () => installedPackageSources(pi),
+    });
+  }
+  return service.marketplace;
+}
+
+/** The read protocols capability owns. The wrapper hands the full URI through. */
+function capabilityReaders(broker) {
+  const read = (uri, ctx, options) =>
+    broker.read(String(uri), { cwd: ctx?.cwd, signal: options?.signal ?? ctx?.signal });
+  return { tool: read, mcp: read, skill: read, npm: read };
+}
+
+/**
+ * Declare the selected, already-registered tools active in this session.
+ *
+ * `getActiveTools`/`setActiveTools` is Pi's active-tool API: it declares the
+ * named registered tools to the model, records the change in the transcript,
+ * and ignores unknown and hidden names. This is tool activation — not
+ * installation or enablement: nothing is downloaded, loaded or connected and
+ * the current active set (read/write and everything else) is preserved. Every
+ * registered, non-hidden tool is loadable this way, including `direct` and
+ * `model-only` tools that were left inactive by the caller's tool allowlist or
+ * by `defaultActive: false`; a `hidden` tool is unreachable and skipped.
+ */
+function activateSelectedTools(pi, result) {
+  const registered = new Map();
+  for (const tool of pi.getAllTools()) registered.set(tool.name, tool);
+  const active = new Set(pi.getActiveTools());
+  const activate = [];
+  const seen = new Set();
+  const warnings = [];
+  for (const hit of [...result.tools, ...result.mcp]) {
+    const name = typeof hit?.name === "string" ? hit.name : "";
+    if (name === "" || seen.has(name)) continue;
+    seen.add(name);
+    const tool = registered.get(name);
+    if (tool === undefined) {
+      // A server-level `mcp://<server>` ref names no single registered tool;
+      // only a tool ref that lost its registration is reported.
+      if (hit?.kind === "tool") warnings.push(`selected tool "${name}" is not registered in this session`);
+      continue;
+    }
+    if (tool.exposure === "hidden") {
+      warnings.push(`selected tool "${name}" is hidden and cannot be activated`);
+      continue;
+    }
+    if (active.has(name)) continue;
+    activate.push(name);
+  }
+  if (activate.length > 0) pi.setActiveTools([...active, ...activate]);
+  return { activated: activate, warnings };
+}
+
+/**
+ * The internal session runs on the caller's inherited system context plus the
+ * fixed retrieval addendum: same environment/conventions, fixed role and rules.
+ */
+function inheritedSystemPrompt(snapshot) {
+  const inherited = typeof snapshot?.systemPrompt === "string" ? snapshot.systemPrompt.trim() : "";
+  return inherited === "" ? null : snapshot.systemPrompt;
+}
+
+/**
+ * The caller's exact current model. A physical selection is used as-is. A
+ * virtual selection must not be routed again for this conversation: the
+ * physical model that produced the calling `capability` tool call is the model
+ * whose thinking blocks and signatures are being inherited, so its identity is
+ * read from that assistant message and resolved through the caller's own
+ * runtime. When that identity cannot be proven, discovery fails explicitly
+ * instead of silently rerouting to another provider or model.
+ */
+function inheritedModel(snapshot, ctx, modelRuntime, toolCallId) {
+  const selected = snapshot?.model ?? ctx.model ?? null;
+  if (selected === null || typeof selected !== "object") return undefined;
+  if (selected.api !== VIRTUAL_MODEL_API) return selected;
+  const messages = ctx.sessionManager.buildSessionProjection().messages;
+  let producing = null;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+    if (
+      toolCallId === undefined ||
+      message.content.some((block) => block?.type === "toolCall" && block.id === toolCallId)
+    ) {
+      producing = message;
+      break;
+    }
+  }
+  const physical =
+    producing !== null && typeof producing.provider === "string" && typeof producing.model === "string"
+      ? modelRuntime.getPhysicalModel(producing.provider, producing.model)
+      : undefined;
+  if (physical !== undefined) return physical;
+  throw new Error(
+    "the caller selected a virtual model and the physical model that produced the calling capability request cannot be " +
+      "identified; refusing to reroute this conversation to another provider or model",
+  );
+}
+
+async function openInternalSession(pi, service, ctx, request, snapshot, toolCallId) {
+  const cwd = ctx.cwd;
+  const settings = internalSettings(pi, ctx.isProjectTrusted());
+  const modelRuntime = parentModelRuntime(ctx.modelRegistry);
+  const instructions =
+    typeof request.instructions === "string" && request.instructions !== ""
+      ? request.instructions
+      : CAPABILITY_DISCOVERY_SYSTEM_PROMPT;
+  const inheritedPrompt = inheritedSystemPrompt(snapshot);
+  const resourceLoader = new DefaultResourceLoader({
+    cwd,
+    agentDir: service.agentDir,
+    settingsManager: settings,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    ...(inheritedPrompt === null
+      ? { systemPrompt: instructions }
+      : { systemPrompt: inheritedPrompt, appendSystemPrompt: [instructions] }),
+  });
+  await resourceLoader.reload();
+  const model = inheritedModel(snapshot, ctx, modelRuntime, toolCallId);
+  const { session } = await createAgentSession({
+    cwd,
+    agentDir: service.agentDir,
+    settingsManager: settings,
+    modelRuntime,
+    ...(model ? { model } : {}),
+    thinkingLevel: "low",
+    sessionManager: SessionManager.inMemory(cwd, {}, snapshot.entries),
+    resourceLoader,
+    customTools: request.customTools,
+    tools: request.customTools.map((tool) => tool.name),
+  });
+  const cleanupBudget = installModelCallBudget(session, request.budget, {
+    beforeRequest: request.beforeRequest,
+    warningText: capabilityBudgetWarning,
+  });
+  // Messages the inherited context already carried never count as this run's
+  // output; only what the run appends from here does.
+  const inheritedMessages = new Set(session.state?.messages ?? []);
+  return {
+    async prompt(text) {
+      await session.prompt(text, { expandPromptTemplates: false });
+      return (session.state?.messages ?? []).filter((message) => !inheritedMessages.has(message));
+    },
+    abort: () => session.abort(),
+    dispose: () => {
+      cleanupBudget();
+      session.dispose();
+    },
+  };
+}
+
+/**
+ * The internal session must run on the parent session's exact ModelRuntime so
+ * extension-registered providers, virtual-model routing and runtime
+ * credentials stay available. Pi 0.99 builds `new ModelRegistry(<session
+ * runtime>)` (agent-session.js) and the compiled facade keeps that runtime as
+ * the plain property `runtime`; there is no public accessor. This is the single
+ * explicit compatibility boundary of this extension: when the bridge is
+ * unavailable, discovery fails with an explicit error instead of silently
+ * running on a runtime that lost those registrations.
+ */
+function parentModelRuntime(registry) {
+  const candidate = registry?.runtime;
+  const usable =
+    candidate !== null &&
+    typeof candidate === "object" &&
+    typeof candidate.streamSimple === "function" &&
+    typeof candidate.getAuth === "function" &&
+    typeof candidate.getRegisteredProviderIds === "function";
+  if (usable) return candidate;
+  throw new Error(
+    "this Pi build does not expose the session ModelRuntime through ModelRegistry.runtime, so capability discovery " +
+      "cannot reuse the parent session's provider registrations and virtual models; refusing to silently fall back " +
+      "to a fresh runtime",
+  );
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
