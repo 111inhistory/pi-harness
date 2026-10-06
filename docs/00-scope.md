@@ -32,9 +32,9 @@
 - `subagent` 执行切片：原子批量注册（`create`）、Fresh／Inherited 上下文、短统一 ID（Agent 与 Job 概念耦合）、全局并发队列、两层 4×4 派生限制、按深度 Job Budget、`list` 查询状态与预算、`stop` 优雅停止并落盘历史。
 - `subagent` 消息通信与双轨历史：通过适配了 Unix Socket 的 write backend 实现向子 Agent 的单向消息投递（NDJSON 报文）；支持分层次直接子级广播（不叫笼统的 `all`，严格绑定发送者的直接子级：Main 广播 Depth 1，Depth 1 广播自身的 Depth 2，不递归扩散）；向 Socket 写入自动投递给对应 Agent，仅在异常时由宿主抛出 Notification；`stop` 后向 Socket 写入自动 revive 续跑，每个 Agent 终身绑定单一固定 Socket 和单一固定的双轨历史文件（追加写入）；双轨历史直接暴露给发起者：Compacted Markdown（参考 OMP，供 LLM 消费）与 Clean JSONL（去流式碎片，供 grep/rg/jq 检索）。
 - `capability`：无参数调用，阻塞等待内部检索 Agent 的 `capability_search`／`submit_result` 三路并行检索 Tool／MCP／Skill；内部会话继承调用方原生会话条目、系统提示词与同一物理模型（thinking low），远端组仅以 npm 元数据列出未安装包；分支错误隔离，命中只带 `available`／`needs_approval`，返回后仅激活已注册可见的选中工具。
-- Pi Extension：`extensions/work.mjs`、`extensions/subagent.mjs`、`extensions/capability.mjs`、`extensions/protocol-io.mjs` 和 `extensions/shell-preflight.mjs` 可同时加载。
+- Pi Extension：`extensions/work.mjs`、`extensions/subagent.mjs`、`extensions/capability.mjs` 和 `extensions/shell-preflight.mjs` 保持独立设计。
 - `subagent` 自动路由：直接调用 Pi 内置 TypeSafe／OpenRouter 的 Jev，串行选择角色和模型，本地合成 thinking；不抽象未来分类器，也不增加 fallback 或重试。
-- `subagent` 通知、广播与持久化：完成事件复用消息通道但使用独立类型，不自动唤醒；`agent://all` 只发给发送者的直接子 Agent；注册表元数据写入根会话 custom entry，子对话使用 Pi 原生 JSONL。
+- `subagent` 持久化：注册表元数据写入根会话 custom entry，子对话使用 Pi 原生 JSONL 配合双轨历史落地。
 
 `work` 契约实现位于 `src/work.mjs`；旧的单节点原型已经完成迁移。
 

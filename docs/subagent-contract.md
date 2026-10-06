@@ -20,7 +20,7 @@
 
 ## 核心边界
 
-1. Agent 与 Job 概念完全耦合，使用统一简短 ID（如 `sub_01`），不发明双重 ID。显式写入可使已 stop 的 Agent 自动 revive 续跑。
+1. Agent 与 Job 概念完全耦合，使用统一简短 ID。层次化命名规范：Depth 1 为 `sub_01` ~ `sub_04`；Depth 2 由父级 ID 派生，为 `<parentId>_01` ~ `<parentId>_04`（如 `sub_01_01`），直观清晰且天然防止冲突。显式写入可使已 stop 的 Agent 自动 revive 续跑。
 2. Fresh 不继承父聊天历史；Inherited 只复制创建时的有效上下文，之后不自动同步，也不复制文件系统。
 3. 调用方提交工作说明，角色、模型、thinking 与工具装载由 Harness 决定，不是公开旋钮。
 4. Subagent 与 `work` 独立：创建、结束、失败或取消均不隐式修改工作项，也不自动编排下一步。
@@ -211,7 +211,13 @@ Job 状态为 `queued`、`running`、`stopping`、`completed`、`failed`、`canc
 - **报文格式**：统一采用 **NDJSON（Newline-Delimited JSON，换行分隔的 JSON）**。每条消息必须为完整单行 JSON 并以 `\n` 结尾。
 - **自动投递（Notification 内置）**：
   - 发起者向 Socket 投递消息后，由底层的通信监听器自动转发并唤醒对应 Subagent 处理，**不需要额外设计通知总线机制**。
-  - 正在流式执行时触发原生 steer；两轮之间先缓冲再排空；queued 在启动时接收；stopped 时自动触发 revive 续跑。
+
+| 目标 Agent 接收状态 | 写入行为 |
+| --- | --- |
+| `running`（正在执行） | 触发底层原生 steer；若在两轮/工具调用之间，先缓冲并在下一轮排空 |
+| `queued` | 缓冲入队，待任务获取执行槽位启动时作为初始追加消息接收 |
+| `stopping` | 拒绝写入并报错 `agent_stopping`；需等待其完全退出进入 stopped 后再写入以触发 revive |
+| `stopped` / `completed` / `failed` | 自动触发 **revive** 续跑！重新申请槽位，在原有双轨历史中追加写入 |
 
 ### 2. 异常 Notification（唯一外部通知例外）
 
@@ -236,7 +242,7 @@ Job 状态为 `queued`、`running`、`stopping`、`completed`、`failed`、`canc
 ### 存储位置
 
 - 根会话通过 `pi.appendEntry("subagent-state", checkpoint)` 保存注册表、Job、不可变初始结果、预算快照和 Actor 配置。这是非模型上下文元数据，恢复时只读取 `ctx.sessionManager.getBranch()` 上的最新 checkpoint，不合并废弃分支。
-- 子会话位于 `<agentDir>/subagent-sessions/<rootSessionId>/<agentId>.jsonl`，使用 Pi 原生 SessionManager 读取和追加。
+- 子会话位于 `<agentDir>/subagent-sessions/<rootSessionId>/<id>.jsonl`，使用 Pi 原生 SessionManager 读取和追加。
 - Inherited 的精确捕获分支只做一次标准 Pi JSONL seed 落盘；随后完全交给原生会话管理。根 checkpoint 只保留 seed 引用与长度，不递归内嵌完整父历史。
 - Job 历史保存原生 start/end entry 边界；Actor 保存自己的当前 leaf。读取历史使用原生 `getBranch()`，不把文件追加顺序当成上下文分支。
 - SDK 明确使用 in-memory 根会话时不写这些文件，也不承诺重启恢复。
@@ -256,15 +262,70 @@ Job 状态为 `queued`、`running`、`stopping`、`completed`、`failed`、`canc
 
 生命周期控制与查询收敛为两项核心操作：
 
-- `list`：查询 Subagent 花名册，含短 ID、名称、父子关系、深度、状态（queued／running／stopping／终态）及只读预算与双轨历史路径；Main 标记 `root: true`。
-- `stop`：优雅停止指定短 ID 的任务，不删除 Agent，不回滚已经发生的外部副作用；queued 立即移出，running 经 stopping 等待底层实际退出并刷盘双轨历史。
+## `list`、`stop` 与结果读取
+
+生命周期控制与查询收敛为两项核心操作：
+
+### 1. `list`
+
+查询当前活跃及历史的 Subagent 状态与花名册：
+
+```json
+{
+  "id": "sub_01" // 可选，省略则列出当前根会话下的全部 Agent
+}
+```
+
+返回值示例：
+
+```json
+{
+  "items": [
+    {
+      "id": "sub_01",
+      "name": "InspectParser",
+      "depth": 1,
+      "parentId": "main",
+      "status": "running",
+      "budget": {
+        "modelCalls": 12,
+        "activeTimeMs": 45000,
+        "phase": "normal"
+      },
+      "socket": "/tmp/pi-subagents/sub_01.sock",
+      "history": {
+        "summary": ".pi/subagents/sub_01/summary.md",
+        "cleanJsonl": ".pi/subagents/sub_01/session.clean.jsonl"
+      }
+    }
+  ]
+}
+```
+
+### 2. `stop`
+
+优雅停止指定短 ID 的任务：
+
+```json
+{
+  "id": "sub_01"
+}
+```
+
+- **行为**：
+  - 若任务处于 `queued`，立即移出队列并标记为 `cancelled`；
+  - 若任务处于 `running`，向子任务发送中止信号并置入 `stopping` 状态，等待底层当前工具或模型请求安全退出，完成后释放并发槽位并刷盘双轨历史；
+  - 任务停止后，发起者即可直接读取暴露的 `summary.md` 或 `session.clean.jsonl`；
+  - 不删除 Agent 实例，不回滚已经发生的外部副作用；随后向该 Agent 的 Socket 写入消息即可直接触发 revive。
+
+### 3. 结果与历史读取
 
 不提供 `wait` 同步等待接口，发起者随时可直接 `stop` 并读取历史。
 
-结果与历史直接通过双轨物理文件读取，不通过虚拟协议：
+结果与历史直接通过双轨物理文件读取，由 Harness 宿主在子会话生命周期内维护：
 
-- **Compacted Markdown（`summary.md`）**：参考 OMP 风格，浓缩任务目标、关键工具调用摘要与核心产出，专供 LLM 低成本阅读理解。
-- **Clean JSONL（`session.clean.jsonl`）**：剥离 token-by-token 流式碎片，保留完整结构化记录（`message_start`、`tool_call`、`tool_result`、`message_end`），专供 `grep`、`rg` 与 `jq` 高效定位排查。
+- **Compacted Markdown（`summary.md`）**：参考 OMP 风格，由宿主在各轮次及进入终态时浓缩维护任务目标、关键工具调用摘要与核心产出，专供 LLM 低成本阅读理解。
+- **Clean JSONL（`session.clean.jsonl`）**：由宿主在各事件发生时即时 Append 落盘，剥离 token-by-token 流式碎片，保留完整结构化记录（`message_start`、`tool_call`、`tool_result`、`message_end`），专供 `grep`、`rg` 与 `jq` 高效定位排查。
 - 历史文件支持重复读取；stop 后写 socket 自动 revive 续跑，在已有文件上以 Append-Only 追加写入，不产生多重文件碎片化。
 - 结构化结果校验不在契约中；最终答案保持原始文本。
 
