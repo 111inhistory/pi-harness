@@ -20,10 +20,10 @@
 
 ## 核心边界
 
-1. **会话与实体**：Agent 是可寻址、保留上下文的会话实体；Job 是该 Agent 的一次执行。
+1. **统一实体与短 ID**：不发明两套 ID，Agent 与 Job 概念完全耦合在一起，使用统一的简短 ID（如 `sub_01`）。
 2. **Fresh vs Inherited**：Fresh 不继承父聊天历史；Inherited 克隆创建时父会话的有效上下文快照，之后独立演进，互不自动同步，共享工作目录。
 3. **零侵入性**：Subagent 与 `work` 彻底解耦；创建、结束、失败或取消均不隐式修改 `work` 树。
-4. **无需 Wait 语义**：任务默认 deferred 执行；父 Agent 无需在原地阻塞等待，需要终结时直接 `stop`，随后读取双轨历史。
+4. **无需 Wait 语义**：任务默认 deferred 执行；父 Agent 无需在原地阻塞等待，需要终结时直接 `stop`，随后直接读取暴露的双轨历史文件。
 5. **真实 I/O**：拒绝一切“假装成文件”的虚拟协议方案。
 
 ---
@@ -63,38 +63,43 @@ type SubagentCreateBatch = {
   - 不接受手工指定 `model`、`thinking`、`role` 等参数；路由策略由 Harness 内置 Jev 全权决定。
 - **原子性与校验**：
   - 先校验拓扑准入（4×4 上限）与参数完整性，校验通过后原子注册。
-- **返回值**：
-  - 返回每个子任务的稳定唯一 ID、初始状态及通信 Socket 路径：
+- **返回值（直接暴露 Socket 与双轨历史路径）**：
+  - 返回每个子任务的统一短 ID、初始状态、通信 Socket 路径，以及**直接暴露给发起者的双轨历史文件绝对/相对路径**：
 
 ```json
 {
   "items": [
     {
+      "id": "sub_01",
       "name": "ParserAudit",
-      "agentId": "agent_7f3c21e4b9a2-01",
-      "jobId": "job_7f3c21e4b9a2-01",
       "status": "running",
-      "socketPath": "/tmp/pi-subagents/agent_7f3c21e4b9a2-01.sock"
+      "socket": "/tmp/pi-subagents/sub_01.sock",
+      "history": {
+        "summary": ".pi/subagents/sub_01/summary.md",
+        "cleanJsonl": ".pi/subagents/sub_01/session.clean.jsonl"
+      }
     }
   ]
 }
 ```
 
+- 发起者通过 **write socket** 直接向该子任务投递通信消息，通过普通文件工具直接读取 `summary.md` 或对 `session.clean.jsonl` 进行搜索。
+
 ### 2. `list`（状态与花名册查询）
 
-查询当前活跃及历史的 Subagent / Job 状态：
+查询当前活跃及历史的 Subagent 状态：
 
 ```json
 {
-  "agentId": "agent_7f3c21e4b9a2-01" // 可选，为空则返回全局花名册
+  "id": "sub_01" // 可选，为空则返回全局花名册
 }
 ```
 
 - 返回内容包括：
-  - Agent 层次深度（Depth 1 / Depth 2）。
+  - Agent 统一短 ID、层次深度（Depth 1 / Depth 2）。
   - 当前状态（`queued` / `running` / `stopping` / `completed` / `failed` / `cancelled`）。
   - 已消耗预算（Model Calls / Active Time）与额度信息。
-  - 双轨历史文件的本地存储路径。
+  - 对应的 Socket 路径与双轨历史文件路径。
 
 ### 3. `stop`（中止与取消）
 
@@ -102,42 +107,55 @@ type SubagentCreateBatch = {
 
 ```json
 {
-  "jobId": "job_7f3c21e4b9a2-01"
+  "id": "sub_01"
 }
 ```
 
 - **行为**：
   - 若任务处于 `queued`，立即移出队列并标记为 `cancelled`。
-  - 若任务处于 `running`，向子任务发送中止信号并置入 `stopping` 状态，等待底层当前工具或模型请求安全退出，完成后释放并发槽位并落盘历史。
-  - 任务停止后，父 Agent 即可随时直接检索并读取该子任务的双轨历史。
+  - 若任务处于 `running`，向子任务发送中止信号并置入 `stopping` 状态，等待底层当前工具或模型请求安全退出，完成后释放并发槽位并刷盘更新双轨历史。
+  - 任务停止后，发起者即可随时直接读取暴露的 `summary.md` 或 `session.clean.jsonl`。
 
 ---
 
-## 通信架构：Unix Domain Socket 与 Notification
+## 通信架构：Write Socket 与 异常 Notification
 
-彻底废弃原先的 `agent://` 与 `protocol-io` 虚拟协议，通信下沉为真实的 IPC 与系统通知。
+彻底废弃原先的 `agent://` 与 `protocol-io` 虚拟协议，通信与交互完全收敛。
 
-### 1. Unix Domain Socket (UDS)
+### 1. Write Socket 通信
 
-- **路径规则**：每个活跃 Subagent 启动时在系统运行时目录创建专用 Socket，例如：
-  `/tmp/pi-subagents/<agentId>.sock`（或 `$PI_CODING_AGENT_DIR/run/<agentId>.sock`）。
-- **报文协议**：统一采用 **NDJSON（Newline-Delimited JSON，换行分隔的 JSON）**。
-- **报文格式示例**：
-  ```json
-  {"type": "message", "content": "请重点检查第 42 行的边界处理", "timestamp": 1712000000}
-  {"type": "steer", "content": "停止当前搜索，转向测试覆盖分析", "timestamp": 1712000010}
-  ```
-- **特性支持**：
-  - 真实的双向全双工通道。
-  - 天然具备操作系统的背压控制（Backpressure）。
-  - 对端异常崩溃时触发断开通知，避免无感知死锁。
+- **单端点原则**：发起者通过系统工具向对应 Subagent 的 Unix Domain Socket（如 `/tmp/pi-subagents/<id>.sock`）写入数据流。
+- **报文格式**：统一采用 **NDJSON（Newline-Delimited JSON，换行分隔的 JSON）**。
+- **自动投递（Notification 内置）**：
+  - 发起者向 Socket 投递消息后，由底层的通信监听器自动转发并唤醒对应 Subagent 处理，**不需要额外设计通知总线机制**。
+  - 正常的对话消息与控制指令（如追加信息、引导提示）均通过向 Socket 写入 NDJSON 报文完成。
 
-### 2. 轻量级 Notification
+### 2. 异常 Notification（唯一外部通知例外）
 
-- 状态跃变（如进入 `running`、遇到断点/需审批事件、达到终态）时，子 Agent 向父会话投递原生 typed notification。
-- **通知原则**：
-  - 通知是只读事件通知，不附带海量聊天正文，不自动触发父 Agent 轮次（`triggerTurn: false`）。
-  - 父 Agent 在下一次正常轮次中，或通过外部观察可感知该通知。
+- **触发条件**：仅在 Subagent 出现非预期异常（如进程崩溃、工具致命失败、单调时间硬超时、超出 Model Call 预算被硬熔断）时触发。
+- **机制**：由 Harness 宿主监控层捕获后，向上层父会话抛出轻量级的错误 Notification，告知发起者该 Subagent 异常终结及其退出原因。发起者随后可查阅 `summary.md` 或检索 `session.clean.jsonl` 排查详情。
+
+### 3. Stop 后的 Revive 生命周期与资源治理
+
+在设计上，Subagent 在 `stop`（或任务执行完毕进入停止状态）之后，**允许通过发消息自动 revive 续跑**。为防止出现“地狱级别的过量 UNIX Socket”和“地狱级别的过量双重历史”，制定以下硬性治理规则：
+
+#### 规则 A：单一稳定 Socket 治理（防止 Socket 泄漏过量）
+- **一对一终身绑定**：每个 Subagent ID（如 `sub_01`）在其整个生命周期中，**只拥有一个唯一固定的 Socket 文件**。
+- **复用与重接管**：
+  - Subagent 处于 stopped 状态时，该 Socket 文件由宿主生命周期监听器维持接管，并不随意废弃重新分配新路径。
+  - 当发起者向该 Socket 写入新消息时，宿主检测到其处于 stopped 状态，**自动 revive 该 Subagent 会话并让其重新接管该原有 Socket**。
+  - 系统中的活跃 Socket 数量严格受两层 4×4 活跃拓扑上限（全局最多 21 个）约束，绝不随反复 stop/revive 而线性暴增。
+  - 只有在会话彻底被显式销毁清理（GC）时，才 unlink 移除该 Socket 文件。
+
+####规则 B：单一稳定双轨历史治理（防止历史文件碎片化雪崩）
+- **一对一终身绑定文件**：每个 Subagent 永远只对应一对固定路径的历史文件：
+  - `.pi/subagents/<id>/summary.md`
+  - `.pi/subagents/<id>/session.clean.jsonl`
+- **追加与合并（Append-Only）**：
+  - 当 Agent 被 revive 续跑产生新一轮交互时，**绝对不创建新的文件副本**（如严禁出现 `summary_2.md`、`session_part2.jsonl`）。
+  - **`session.clean.jsonl`**：完全以 Append-Only 方式在原文件末尾继续追加新的结构化行，通过递增的轮次标记（round/turn）或时间戳保持连续性。
+  - **`summary.md`**：在原 Markdown 文件末尾追加新轮次小节（如 `## Continuation / Round 2`），或按结构就地合并更新，保持单个聚合的 Markdown 历史。
+- 无论经过多少次 stop 和 revive 往复，发起者手头的历史文件路径永远恒定不变，`rg` / `jq` 检索目标永远精准唯一。
 
 ---
 
@@ -146,8 +164,8 @@ type SubagentCreateBatch = {
 每个子 Agent 产生的历史不再抽象为虚拟 URL，而是以物理文件清晰落盘为两种互补的形态：
 
 ```
-.pi/subagents/<agentId>/
-  ├── summary.md        # Compacted Markdown 历史（LLM 消费友好）
+.pi/subagents/<id>/
+  ├── summary.md          # Compacted Markdown 历史（LLM 消费友好）
   └── session.clean.jsonl # Clean JSONL 历史（grep / rg / jq 检索友好）
 ```
 
