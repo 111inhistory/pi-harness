@@ -141,6 +141,8 @@
 import { randomUUID } from "node:crypto";
 
 import { createJobBudget } from "./job-budget.mjs";
+import { getAgentSocketPath } from "./subagent-socket.mjs";
+import { getSubagentHistoryPaths } from "./subagent-history.mjs";
 
 const DEFAULT_MAX_CONCURRENCY = 4;
 const MAX_AGENT_DEPTH = 2;
@@ -165,9 +167,9 @@ const JOB_STATUSES = new Set([...LIVE_STATUSES, ...TERMINAL_STATUSES]);
 // process) can never reach an unrelated later actor. `all` and `Main` can
 // never match a generated id, which keeps the broadcast target and the root
 // actor outside the resolvable actor space.
-const AGENT_ID_PATTERN = /^agent_[0-9a-z]+-[0-9]+$/;
-const JOB_ID_PATTERN = /^job_[0-9a-z]+-[0-9]+$/;
-const REF_PATTERN = /^(agent|history):\/\/(agent_[0-9a-z]+-[0-9]+)$/;
+const AGENT_ID_PATTERN = /^(agent_[0-9a-z]+-[0-9]+|sub_[0-9a-zA-Z_]+)$/;
+const JOB_ID_PATTERN = /^(job_[0-9a-z]+-[0-9]+|job_sub_[0-9a-zA-Z_]+|sub_[0-9a-zA-Z_]+)$/;
+const REF_PATTERN = /^(agent|history):\/\/((?!all$|Main$)(agent_[0-9a-z]+-[0-9]+|sub_[0-9a-zA-Z_]+))$/;
 const PROTOCOL_URI_PATTERN = /^(agent|history):\/\/(.*)$/;
 
 /** Terminal state of a Job that was still live when the process went away. */
@@ -722,6 +724,26 @@ export class SubagentRuntime {
     return this.#maxConcurrency;
   }
 
+  /** Create subagents batch according to the public contract (returns unified id, socket, history). */
+  create(batch, options = {}) {
+    const res = this.task(batch, options);
+    return {
+      items: res.items.map((item) => {
+        const historyPaths = getSubagentHistoryPaths(item.agentId);
+        return {
+          id: item.agentId,
+          name: item.name,
+          status: item.status,
+          socket: getAgentSocketPath(item.agentId),
+          history: {
+            summary: historyPaths.summary,
+            cleanJsonl: historyPaths.cleanJsonl,
+          },
+        };
+      }),
+    };
+  }
+
   /**
    * Validate, atomically register and schedule a task batch.
    *
@@ -822,8 +844,10 @@ export class SubagentRuntime {
 
   /** Agent-level snapshot; job status is reported by jobs(), not here. */
   list(filter) {
+    const targetId = filter?.id || filter?.agentId;
     const agents = [];
     for (const agent of this.#agents.values()) {
+      if (targetId && agent.agentId !== targetId) continue;
       if (filter?.status !== undefined && filter.status !== agent.status) continue;
       agents.push({
         agentId: agent.agentId,
@@ -834,6 +858,34 @@ export class SubagentRuntime {
       });
     }
     return { agents };
+  }
+
+  /** Public contract view for list tool, including unified ID, socket and history paths. */
+  listDetailed(filter) {
+    const targetId = filter?.id || filter?.agentId;
+    const items = [];
+    for (const agent of this.#agents.values()) {
+      if (targetId && agent.agentId !== targetId) continue;
+      if (filter?.status !== undefined && filter.status !== agent.status) continue;
+      const historyPaths = getSubagentHistoryPaths(agent.agentId);
+      const liveJob = this.#liveJobOf(agent);
+      const latestJob = agent.jobIds.length > 0 ? this.#jobs.get(agent.jobIds[agent.jobIds.length - 1]) : null;
+      const budgetJob = liveJob || latestJob;
+      items.push({
+        id: agent.agentId,
+        name: agent.name,
+        depth: agent.depth,
+        parentId: agent.parentAgentId ?? "Main",
+        status: agent.status,
+        budget: budgetJob?.budget ? budgetJob.budget.snapshot() : null,
+        socket: getAgentSocketPath(agent.agentId),
+        history: {
+          summary: historyPaths.summary,
+          cleanJsonl: historyPaths.cleanJsonl,
+        },
+      });
+    }
+    return { items };
   }
 
   /** Job-level snapshot, optionally restricted to specific job ids. */
@@ -955,6 +1007,32 @@ export class SubagentRuntime {
       this.#beginStopping(job, "cancelled", { code: "cancelled", message: "Job cancelled while running." });
       return { ok: true, job: this.#jobView(job) };
     });
+  }
+
+  /**
+   * Stop one subagent by id gracefully.
+   * If queued, marks cancelled immediately. If running, enters stopping.
+   */
+  stop(target) {
+    const id = typeof target === "string" ? target : target?.id || target?.jobId || target?.agentId;
+    if (!id || typeof id !== "string") {
+      throw new SubagentError("invalid_request", "stop requires an id.");
+    }
+    const agent = this.#agents.get(id);
+    if (!agent) {
+      const job = this.#jobs.get(id);
+      if (job) {
+        const res = this.cancelJob(job.jobId);
+        return { ok: res.ok, id, status: res.job?.status ?? "stopping" };
+      }
+      throw new SubagentError("unknown_agent", `No subagent found with id "${id}".`);
+    }
+    const liveJob = this.#liveJobOf(agent);
+    if (liveJob) {
+      const res = this.cancelJob(liveJob.jobId);
+      return { ok: res.ok, id, status: res.job?.status ?? "stopping" };
+    }
+    return { ok: true, id, status: agent.status };
   }
 
   /**

@@ -96,12 +96,22 @@ import { installModelCallBudget } from "../src/pi-job-budget.mjs";
 import { routeSubagent } from "../src/subagent-routing.mjs";
 import { SUBAGENT_SESSIONS_DIR, createSubagentStore, SubagentStoreError } from "../src/subagent-storage.mjs";
 import capabilityExtension from "./capability.mjs";
-import { installProtocolIO } from "./protocol-io.mjs";
+import {
+  createAgentSocketServer,
+  createBroadcastSocketServer,
+  createSocketAwareWriteOperations,
+  getAgentSocketPath,
+} from "../src/subagent-socket.mjs";
+import {
+  appendCleanJsonl,
+  writeCompactedSummary,
+  getSubagentHistoryPaths,
+} from "../src/subagent-history.mjs";
 
 const MAX_CONCURRENCY = 4;
 const MAX_AGENT_DEPTH = 2;
-const HARNESS_TOOLS = ["task", "hub", "capability"];
-const ROOT_HARNESS_TOOLS = ["hub", "capability"];
+const HARNESS_TOOLS = ["create", "task", "list", "stop", "hub", "capability"];
+const ROOT_HARNESS_TOOLS = ["list", "stop", "hub", "capability"];
 const MESSAGE_CUSTOM_TYPE = "agent-message";
 const COMPLETION_CUSTOM_TYPE = "agent-completion";
 /** Reserved broadcast target; `all` is never an actor identity. */
@@ -195,6 +205,27 @@ export default function subagentExtension(pi) {
     await retireService(controller);
   });
   installSessionSurface(pi, (ctx) => rootService(controller, ctx), { allowInherited: true, parentAgentId: null, depth: 0 });
+  installSocketAwareWrite(pi);
+}
+
+function installSocketAwareWrite(pi) {
+  if (typeof pi.getAllTools !== "function") return;
+  const tools = pi.getAllTools();
+  const writeTool = tools.find((t) => t?.name === "write");
+  if (writeTool && typeof writeTool.execute === "function" && !writeTool._socketAware) {
+    const originalExecute = writeTool.execute;
+    writeTool.execute = async function (toolCallId, params, signal, onUpdate, ctx) {
+      if (typeof params?.path === "string" && params.path.endsWith(".sock")) {
+        const targetPath = params.path.startsWith("/") ? params.path : join(ctx?.cwd || process.cwd(), params.path);
+        await writeSocketOneWay(targetPath, params.content);
+        return {
+          content: [{ type: "text", text: `Successfully delivered message to socket ${params.path}` }],
+        };
+      }
+      return originalExecute.call(this, toolCallId, params, signal, onUpdate, ctx);
+    };
+    writeTool._socketAware = true;
+  }
 }
 
 /**
@@ -246,6 +277,17 @@ async function retireService(controller) {
   controller.service = null;
   service.active = false;
   service.closed = true;
+
+  if (service.socketServers) {
+    for (const server of service.socketServers.values()) {
+      try {
+        await server.close();
+      } catch {
+        // ignore close error during retirement
+      }
+    }
+    service.socketServers.clear();
+  }
   // Every Job that has not reached a terminal state — queued, running or
   // stopping. A queued one ends immediately; a running one keeps its slot until
   // the adapter's native run settles.
@@ -300,6 +342,8 @@ function createService(controller, ctx) {
     liveJobs: new Map(),
     /** Retained session descriptors, so an idle agent keeps its conversation. */
     retained: new Map(),
+    /** Live Unix Domain Socket servers mapped by actor id or broadcast key. */
+    socketServers: new Map(),
     runtime: null,
   };
   service.runtime = createSubagentRuntime({
@@ -747,12 +791,152 @@ function checkpointAppendedAnchor(service, agentId, anchor) {
   persistActors(service);
 }
 
+function ensureAgentSocketServer(service, agentId) {
+  if (service.socketServers.has(agentId)) return;
+  try {
+    const server = createAgentSocketServer({
+      id: agentId,
+      onMessage: (msg) => {
+        const content = typeof msg === "string" ? msg : msg?.content || JSON.stringify(msg);
+        service.runtime
+          ?.sendMessage({
+            from: "Main",
+            to: agentId,
+            content,
+          })
+          .catch((err) => {
+            service.ui?.notify?.(`Failed to deliver socket message to ${agentId}: ${err.message}`, "error");
+          });
+      },
+      onError: (err) => {
+        service.ui?.notify?.(`Socket error on ${agentId}: ${err.message}`, "error");
+      },
+    });
+    service.socketServers.set(agentId, server);
+  } catch {
+    // Socket initialization error is non-fatal for session startup
+  }
+}
+
+function ensureBroadcastSocketServer(service, parentId) {
+  const normId = parentId || "main";
+  const key = `broadcast:${normId}`;
+  if (service.socketServers.has(key)) return;
+  try {
+    const server = createBroadcastSocketServer({
+      parentId: normId,
+      getDirectChildren: () => {
+        const list = service.runtime?.list();
+        const pId = normId === "main" || normId === "Main" ? null : normId;
+        return (list?.agents ?? []).filter((a) => a.parentAgentId === pId).map((a) => a.agentId);
+      },
+      deliverMessage: (childId, msg) => {
+        const content = typeof msg === "string" ? msg : msg?.content || JSON.stringify(msg);
+        return service.runtime?.sendMessage({
+          from: normId === "main" || normId === "Main" ? "Main" : normId,
+          to: childId,
+          content,
+        });
+      },
+    });
+    service.socketServers.set(key, server);
+  } catch {
+    // Broadcast socket initialization error is non-fatal
+  }
+}
+
+const listParameters = {
+  type: "object",
+  properties: {
+    id: {
+      type: "string",
+      description: "Optional subagent id to query a specific agent. Omit to list all agents.",
+    },
+  },
+};
+
+const stopParameters = {
+  type: "object",
+  required: ["id"],
+  properties: {
+    id: {
+      type: "string",
+      description: "The subagent id to stop.",
+    },
+  },
+};
+
 function installSessionSurface(pi, resolveService, { allowInherited, parentAgentId, depth }) {
   if (depth < MAX_AGENT_DEPTH) {
+    pi.registerTool(createTool(pi, resolveService, { allowInherited, parentAgentId, depth }));
     pi.registerTool(taskTool(pi, resolveService, { allowInherited, parentAgentId, depth }));
   }
+  pi.registerTool(listTool(resolveService));
+  pi.registerTool(stopTool(resolveService));
   pi.registerTool(hubTool(resolveService));
-  installProtocolIO(pi, protocolSurface(resolveService, parentAgentId));
+}
+
+function createTool(pi, resolveService, { allowInherited, parentAgentId, depth }) {
+  return {
+    name: "create",
+    label: "Create Subagent",
+    description:
+      "Create subagents that run in the background (deferred). Returns unified short id (sub_01), communication socket path " +
+      "and dual history file paths (summary.md and session.clean.jsonl). Message the subagent by writing to its socket.",
+    parameters: taskParameters,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const service = await resolveService(ctx);
+      assertOperational(service);
+      adoptParentModelRuntime(service, ctx.modelRegistry);
+      service.modelRegistry = ctx.modelRegistry;
+      const response = service.runtime.create(params, {
+        parentAgentId,
+        allowInherited,
+        origin: {
+          cwd: ctx.cwd,
+          trusted: ctx.isProjectTrusted(),
+          sessionId: ctx.sessionManager.getSessionId(),
+          agentId: parentAgentId,
+          mode: ctx.mode,
+        },
+        captureInheritedContext: () => captureContextForChild(pi, ctx, depth + 1),
+      });
+      return respond(response);
+    },
+  };
+}
+
+function listTool(resolveService) {
+  return {
+    name: "list",
+    label: "List Subagents",
+    description:
+      "Query subagent status, budget usage, write socket path and dual history paths. Optionally filter by agent id.",
+    parameters: listParameters,
+    async execute(_toolCallId, params) {
+      const service = await resolveService();
+      assertOperational(service);
+      const result = service.runtime.listDetailed(params);
+      return respond(result);
+    },
+  };
+}
+
+function stopTool(resolveService) {
+  return {
+    name: "stop",
+    label: "Stop Subagent",
+    description:
+      "Gracefully stop a running or queued subagent by id. Once stopped, its dual history files are flushed and ready to read. " +
+      "Writing a message to its socket later will revive it.",
+    parameters: stopParameters,
+    async execute(_toolCallId, params) {
+      const service = await resolveService();
+      assertOperational(service);
+      const result = service.runtime.stop(params.id);
+      return respond(result);
+    },
+  };
 }
 
 function taskTool(pi, resolveService, { allowInherited, parentAgentId, depth }) {
@@ -1258,6 +1442,15 @@ function startPiJob(service, request) {
     // until its final outcome, so every live read resolves the native entries.
     request.recordHistory(undefined, { startEntryId: boundary, endEntryId: boundary });
 
+    ensureAgentSocketServer(service, request.agentId);
+    ensureBroadcastSocketServer(service, request.origin?.agentId ?? null);
+
+    const unsubscribeClean = session.subscribe((event) => {
+      if (event?.type === "tool_call" || event?.type === "tool_result" || event?.type === "message_end") {
+        appendCleanJsonl(request.agentId, event).catch(() => {});
+      }
+    });
+
     // Every finalized native message commits the Job's progress: the history
     // bounds move to the entry that just landed, and the actor record's leaf
     // anchor follows it (a custom message that never reaches the file never
@@ -1309,8 +1502,23 @@ function startPiJob(service, request) {
       assertRunCompleted(messages);
       await drainLiveMessages(live, sessionManager);
       throwIfBudgetFailed(request.budget);
+      const finalResultText = readFinalText(jobMessages());
+      writeCompactedSummary(
+        request.agentId,
+        {
+          name: request.spec?.name,
+          task: typeof request.spec?.task === "string" ? request.spec.task : "",
+          role: roleId,
+          model: modelRefOf(model)?.id ?? (typeof model === "string" ? model : null),
+          budget: request.budget.snapshot(),
+          result: finalResultText,
+          status: "completed",
+          round: isContinuation ? 2 : 1,
+        },
+        { append: isContinuation },
+      ).catch(() => {});
       return {
-        result: readFinalText(jobMessages()),
+        result: finalResultText,
         messages: readTranscript(entriesAfter(sessionManager, boundary)),
         history: { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
       };
@@ -1327,6 +1535,7 @@ function startPiJob(service, request) {
     // activation can open tools mid-run — never the pre-run allowlist.
     if (!service.closed) finalizeActor?.();
     stopBudgetWatch();
+    unsubscribeClean?.();
     unsubscribeBudget?.();
     unsubscribe?.();
     session?.dispose();
