@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { createSubagentRuntime, SubagentError } from "../src/subagent-runtime.mjs";
-import { createSocketAwareWriteOperations, getAgentSocketPath } from "../src/subagent-socket.mjs";
-import { getSubagentHistoryPaths } from "../src/subagent-history.mjs";
+import { createSocketAwareWriteOperations, getAgentSocketPath, deriveSessionUid } from "../src/subagent-socket.mjs";
+import { getSubagentHistoryPaths, appendCleanJsonl } from "../src/subagent-history.mjs";
 
 function harness(t, options = {}) {
   const started = [];
@@ -196,4 +200,60 @@ test("terminal notifications are emitted once only for failure, not normal compl
   runtime.listDetailed();
   await runtime.jobDone(failed.id);
   assert.equal(delivered.length, 1, "polls and repeated stop must not resend an error notification");
+});
+
+test("depth-2 failure notification is delivered to depth-1 parent via deliverMessage, not to main", async (t) => {
+  const mainDelivered = [];
+  const parentDelivered = [];
+  const { runtime, started } = harness(t, {
+    deliverToMain: (msg) => mainDelivered.push(msg),
+    deliverMessage: (req) => parentDelivered.push(req),
+    maxConcurrency: 4,
+  });
+  const parent = runtime.create({ tasks: [task("parent")] }).items[0];
+  const child = runtime.create({ tasks: [task("child")] }, { parentAgentId: parent.id }).items[0];
+  started[1].fail(new Error("depth-2 child failed"));
+  await runtime.jobDone(child.id);
+  assert.equal(mainDelivered.length, 0, "Main must not receive depth-2 failure notification directly");
+  assert.equal(parentDelivered.length, 1, "Parent must receive depth-2 failure notification");
+  assert.equal(parentDelivered[0].agentId, parent.id);
+  assert.equal(parentDelivered[0].message.type, "notification");
+  assert.equal(parentDelivered[0].message.subagentId, child.id);
+});
+
+test("broadcast write rejects cross-hierarchy senders without mutating from", async () => {
+  const ops = createSocketAwareWriteOperations({
+    senderId: "main",
+    resolveEndpoint: async (p) => {
+      if (p.includes("sub_01/children.sock")) return { isManaged: true, isBroadcast: true, parentId: "sub_01" };
+      return { isManaged: false };
+    },
+  });
+  await assert.rejects(
+    ops.writeFile("/tmp/sub_01/children.sock", '{"content":"test"}\n'),
+    (err) => err.code === "invalid_target",
+  );
+});
+
+test("deriveSessionUid produces stable 6-character hex hash", () => {
+  const uid1 = deriveSessionUid("session-12345");
+  const uid2 = deriveSessionUid("session-12345");
+  const uid3 = deriveSessionUid("session-67890");
+  assert.equal(uid1.length, 6);
+  assert.equal(uid1, uid2);
+  assert.notEqual(uid1, uid3);
+  assert.equal(deriveSessionUid(null), "default");
+});
+
+test("history paths and writes bind to session cwd", async () => {
+  const tmpCwd = await fsp.mkdtemp(path.join(tmpdir(), "pi-hist-cwd-"));
+  try {
+    const paths = getSubagentHistoryPaths("sub_01", ".pi/subagents", { cwd: tmpCwd });
+    assert.equal(paths.summary, ".pi/subagents/sub_01/summary.md");
+    assert.equal(paths.resolvedSummary, path.join(tmpCwd, ".pi/subagents/sub_01/summary.md"));
+    await appendCleanJsonl("sub_01", { type: "message_start", role: "assistant" }, { baseDir: ".pi/subagents", cwd: tmpCwd });
+    assert.ok(fs.existsSync(paths.resolvedCleanJsonl));
+  } finally {
+    await fsp.rm(tmpCwd, { recursive: true, force: true });
+  }
 });

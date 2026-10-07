@@ -659,6 +659,8 @@ export class SubagentRuntime {
   #readHistory;
   #maxConcurrency;
   #allowInherited;
+  #socketDir;
+  #historyDir;
 
   #agents = new Map();
   #jobs = new Map();
@@ -687,6 +689,8 @@ export class SubagentRuntime {
       readHistory,
       maxConcurrency = DEFAULT_MAX_CONCURRENCY,
       allowInherited = true,
+      socketDir,
+      historyDir,
     } = options;
 
     if (typeof startJob !== "function") {
@@ -718,6 +722,8 @@ export class SubagentRuntime {
     this.#readHistory = readHistory ?? null;
     this.#maxConcurrency = maxConcurrency;
     this.#allowInherited = allowInherited;
+    this.#socketDir = socketDir;
+    this.#historyDir = historyDir;
     this.#idToken = randomUUID().replaceAll("-", "");
   }
 
@@ -730,12 +736,12 @@ export class SubagentRuntime {
     const res = this.task(batch, options);
     const result = {
       items: res.items.map((item) => {
-        const historyPaths = getSubagentHistoryPaths(item.agentId);
+        const historyPaths = getSubagentHistoryPaths(item.agentId, this.#historyDir);
         const mapped = {
           id: item.agentId,
           name: item.name,
           status: item.status,
-          socket: getAgentSocketPath(item.agentId),
+          socket: getAgentSocketPath(item.agentId, this.#socketDir),
           history: {
             summary: historyPaths.summary,
             cleanJsonl: historyPaths.cleanJsonl,
@@ -880,7 +886,7 @@ export class SubagentRuntime {
       const budgetJob = liveJob || latestJob;
       const currentStatus = liveJob ? liveJob.status : (agent.status === "idle" ? "stopped" : agent.status);
       if (filter?.status !== undefined && filter.status !== currentStatus && filter.status !== agent.status) continue;
-      const historyPaths = getSubagentHistoryPaths(agent.agentId);
+      const historyPaths = getSubagentHistoryPaths(agent.agentId, this.#historyDir);
       items.push({
         id: agent.agentId,
         name: agent.name,
@@ -888,7 +894,7 @@ export class SubagentRuntime {
         parentId: agent.parentAgentId ?? "Main",
         status: currentStatus,
         budget: budgetJob?.budget ? budgetJob.budget.snapshot() : null,
-        socket: getAgentSocketPath(agent.agentId),
+        socket: getAgentSocketPath(agent.agentId, this.#socketDir),
         history: {
           summary: historyPaths.summary,
           cleanJsonl: historyPaths.cleanJsonl,
@@ -1607,7 +1613,7 @@ export class SubagentRuntime {
     }
     const creator = job.createdBy;
     if (typeof creator !== "string") return;
-    const historyPaths = getSubagentHistoryPaths(job.agentId);
+    const historyPaths = getSubagentHistoryPaths(job.agentId, this.#historyDir);
     const envelope = {
       type: "notification",
       subagentId: job.agentId,

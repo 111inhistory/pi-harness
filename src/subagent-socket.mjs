@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import net from "node:net";
@@ -5,6 +6,13 @@ import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
 export const DEFAULT_SOCKET_DIR = process.env.PI_SUBAGENT_SOCKET_DIR || "/tmp/pi-subagents";
+
+export function deriveSessionUid(sessionId) {
+  if (!sessionId || typeof sessionId !== "string") {
+    return "default";
+  }
+  return crypto.createHash("sha256").update(sessionId).digest("hex").slice(0, 6);
+}
 
 export function getAgentSocketPath(id, socketDir = DEFAULT_SOCKET_DIR) {
   return path.join(socketDir, `${id}.sock`);
@@ -217,7 +225,7 @@ export function createSocketAwareWriteOperations(baseOperations = {}) {
           const expectedParent = ep.parentId || "main";
           const normExpected = (expectedParent === "Main" || expectedParent === "main") ? "main" : expectedParent;
           const normSender = (senderId === "Main" || senderId === "main") ? "main" : senderId;
-          if (normSender !== normExpected && normSender !== "main") {
+          if (normSender !== normExpected) {
             const err = new Error("invalid_target: Sender is not the parent of this broadcast endpoint.");
             err.code = "invalid_target";
             throw err;
@@ -251,7 +259,7 @@ export function createSocketAwareWriteOperations(baseOperations = {}) {
               err.code = "invalid_message";
               throw err;
             }
-            parsed.from = ep?.isBroadcast ? (ep.parentId || senderId) : senderId;
+            parsed.from = senderId;
           }
           processedLines.push(JSON.stringify(parsed));
         }

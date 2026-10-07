@@ -102,6 +102,8 @@ import {
   createBroadcastSocketServer,
   createSocketAwareWriteOperations,
   getAgentSocketPath,
+  getBroadcastSocketPath,
+  deriveSessionUid,
 } from "../src/subagent-socket.mjs";
 import {
   appendCleanJsonl,
@@ -267,6 +269,7 @@ async function retireService(controller) {
       }
     }
     service.socketServers.clear();
+    service.registeredSockets?.clear();
   }
   // Every Job that has not reached a terminal state — queued, running or
   // stopping. A queued one ends immediately; a running one keeps its slot until
@@ -299,10 +302,21 @@ async function retireService(controller) {
 
 /** One root session's runtime, storage and retained actor records. */
 function createService(controller, ctx) {
+  const sessionId = ctx?.sessionManager?.getSessionId?.() || ctx?.sessionId || "default";
+  const sessionUid = deriveSessionUid(sessionId);
+  const baseSocketDir = process.env.PI_SUBAGENT_SOCKET_DIR || "/tmp/pi-subagents";
+  const socketDir = path.join(baseSocketDir, sessionUid);
+  const historyDir = path.join(".pi/subagents", sessionUid);
+  const cwd = ctx?.cwd ?? process.cwd();
+
   const service = {
     controller,
     agentDir: controller.agentDir,
     settings: controller.settings,
+    sessionUid,
+    socketDir,
+    historyDir,
+    cwd,
     active: true,
     closed: false,
     /** False until the restored registry is adopted, so mid-restore state is never saved. */
@@ -324,10 +338,13 @@ function createService(controller, ctx) {
     retained: new Map(),
     /** Live Unix Domain Socket servers mapped by actor id or broadcast key. */
     socketServers: new Map(),
+    registeredSockets: new Map(),
     runtime: null,
   };
   service.runtime = createSubagentRuntime({
     maxConcurrency: MAX_CONCURRENCY,
+    socketDir,
+    historyDir,
     startJob: (job) => startPiJob(service, job),
     deliverMessage: (request) => deliverMessage(service, request),
     deliverToMain: (message) => deliverToMain(service, message),
@@ -713,7 +730,7 @@ async function deliverToMain(service, message) {
  */
 async function deliverMessage(service, { agentId, jobId, message }) {
   if (!service.active) return { accepted: false, reason: "runtime_retired" };
-  if (message?.type === "completion") {
+  if (message?.type === "completion" || message?.type === "notification") {
     // The append is awaited: a rejected native append must stay inside the
     // completion's own one-attempt boundary instead of escaping as an
     // unhandled rejection from a discarded promise. Its outcome never affects
@@ -786,8 +803,10 @@ function checkpointAppendedAnchor(service, agentId, anchor) {
 function ensureAgentSocketServer(service, agentId) {
   if (service.socketServers.has(agentId)) return;
   try {
+    const socketPath = getAgentSocketPath(agentId, service.socketDir);
     const server = createAgentSocketServer({
       id: agentId,
+      socketDir: service.socketDir,
       onMessage: (msg) => {
         const content = typeof msg === "string" ? msg : msg?.content || JSON.stringify(msg);
         const from = (typeof msg === "object" && msg !== null && typeof msg.from === "string" && msg.from !== "")
@@ -808,6 +827,11 @@ function ensureAgentSocketServer(service, agentId) {
       },
     });
     service.socketServers.set(agentId, server);
+    service.registeredSockets?.set(path.resolve(socketPath), {
+      isManaged: true,
+      isBroadcast: false,
+      targetId: agentId,
+    });
   } catch {
     // Socket initialization error is non-fatal for session startup
   }
@@ -818,8 +842,10 @@ function ensureBroadcastSocketServer(service, parentId) {
   const key = `broadcast:${normId}`;
   if (service.socketServers.has(key)) return;
   try {
+    const broadcastSocketPath = getBroadcastSocketPath(normId, service.socketDir);
     const server = createBroadcastSocketServer({
       parentId: normId,
+      socketDir: service.socketDir,
       getDirectChildren: () => {
         const list = service.runtime?.list();
         const pId = normId === "main" || normId === "Main" ? null : normId;
@@ -835,6 +861,11 @@ function ensureBroadcastSocketServer(service, parentId) {
       },
     });
     service.socketServers.set(key, server);
+    service.registeredSockets?.set(path.resolve(broadcastSocketPath), {
+      isManaged: true,
+      isBroadcast: true,
+      parentId: normId,
+    });
   } catch {
     // Broadcast socket initialization error is non-fatal
   }
@@ -885,21 +916,9 @@ function installSessionSurface(pi, resolveService, { allowInherited, parentAgent
         const service = await resolveService();
         if (!service) return { isManaged: false };
         const norm = path.resolve(socketPath);
-        const sockDir = service.socketDir || process.env.PI_SUBAGENT_SOCKET_DIR || "/tmp/pi-subagents";
-        const normSockDir = path.resolve(sockDir);
-        const rel = path.relative(normSockDir, norm);
-        if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
-          if (rel.endsWith("/children.sock") || rel === "main/children.sock") {
-            const parentId = path.dirname(rel);
-            return { isManaged: true, isBroadcast: true, parentId };
-          }
-          if (rel.endsWith(".sock") && !rel.includes(path.sep)) {
-            const id = path.basename(rel, ".sock");
-            const exists = service.runtime?.listDetailed({ id })?.items?.length > 0;
-            if (exists) {
-              return { isManaged: true, isBroadcast: false, targetId: id };
-            }
-          }
+        const registered = service.registeredSockets?.get(norm);
+        if (registered) {
+          return registered;
         }
         return { isManaged: false };
       } catch {
@@ -1380,12 +1399,6 @@ function startPiJob(service, request) {
     };
     unsubscribeBudget = installModelCallBudget(session, request.budget);
 
-    if (cancelled) {
-      await flushSummaryOnTerminal("cancelled");
-      await session.abort();
-      return { result: "", messages: [] };
-    }
-
     // This Job's history is scoped by the append-only SessionManager tree: the
     // boundary is the leaf at start, and native compaction appends entries
     // instead of rewriting or dropping them. The boundary is recorded before
@@ -1399,56 +1412,21 @@ function startPiJob(service, request) {
     ensureAgentSocketServer(service, request.agentId);
     ensureBroadcastSocketServer(service, request.origin?.agentId ?? null);
 
-    unsubscribeClean = session.subscribe((event) => {
-      try {
-        if (!event || typeof event !== "object") return;
-        const type = event.type;
-        if (type === "message_start") {
-          appendCleanJsonl(request.agentId, {
-            type: "message_start",
-            role: event.message?.role,
-            timestamp: Date.now(),
-          }).catch((err) => {
-            service.ui?.notify?.(`Clean JSONL error on ${request.agentId}: ${err.message}`, "error");
-          });
-        } else if (type === "tool_execution_start") {
-          appendCleanJsonl(request.agentId, {
-            type: "tool_execution_start",
-            toolCallId: event.toolCallId,
-            toolName: event.toolName,
-            args: event.args,
-            timestamp: Date.now(),
-          }).catch((err) => {
-            service.ui?.notify?.(`Clean JSONL error on ${request.agentId}: ${err.message}`, "error");
-          });
-        } else if (type === "tool_execution_end") {
-          appendCleanJsonl(request.agentId, {
-            type: "tool_execution_end",
-            toolCallId: event.toolCallId,
-            toolName: event.toolName,
-            isError: event.isError,
-            result: event.result,
-            timestamp: Date.now(),
-          }).catch((err) => {
-            service.ui?.notify?.(`Clean JSONL error on ${request.agentId}: ${err.message}`, "error");
-          });
-        } else if (type === "message_end") {
-          appendCleanJsonl(request.agentId, {
-            type: "message_end",
-            role: event.message?.role,
-            content: event.message?.content,
-            stopReason: event.message?.stopReason,
-            usage: event.message?.usage,
-            timestamp: Date.now(),
-          }).catch((err) => {
-            service.ui?.notify?.(`Clean JSONL error on ${request.agentId}: ${err.message}`, "error");
-          });
+    let cleanAppendChain = Promise.resolve();
+    const queueCleanAppend = (event) => {
+      cleanAppendChain = cleanAppendChain.then(async () => {
+        try {
+          await appendCleanJsonl(request.agentId, event, { baseDir: service.historyDir, cwd: service.cwd });
+        } catch (err) {
+          service.ui?.notify?.(`Clean JSONL error on ${request.agentId}: ${err.message}`, "error");
         }
-      } catch {}
-    });
+      });
+      return cleanAppendChain;
+    };
 
     const flushSummaryOnTerminal = async (status, err = null) => {
       try {
+        await cleanAppendChain;
         const msgs = jobMessages();
         const partialText = readFinalText(msgs);
         await writeCompactedSummary(
@@ -1464,12 +1442,59 @@ function startPiJob(service, request) {
             error: err ? err.message : null,
             round: isContinuation ? 2 : 1,
           },
-          { append: isContinuation },
+          { append: isContinuation, baseDir: service.historyDir, cwd: service.cwd },
         );
       } catch (summaryErr) {
         service.ui?.notify?.(`Failed to write summary for ${request.agentId}: ${summaryErr.message}`, "error");
       }
     };
+
+    if (cancelled) {
+      await cleanAppendChain;
+      await flushSummaryOnTerminal("cancelled");
+      await session.abort();
+      return { result: "", messages: [] };
+    }
+
+    unsubscribeClean = session.subscribe((event) => {
+      try {
+        if (!event || typeof event !== "object") return;
+        const type = event.type;
+        if (type === "message_start") {
+          queueCleanAppend({
+            type: "message_start",
+            role: event.message?.role,
+            timestamp: Date.now(),
+          });
+        } else if (type === "tool_execution_start") {
+          queueCleanAppend({
+            type: "tool_execution_start",
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            args: event.args,
+            timestamp: Date.now(),
+          });
+        } else if (type === "tool_execution_end") {
+          queueCleanAppend({
+            type: "tool_execution_end",
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            isError: event.isError,
+            result: event.result,
+            timestamp: Date.now(),
+          });
+        } else if (type === "message_end") {
+          queueCleanAppend({
+            type: "message_end",
+            role: event.message?.role,
+            content: event.message?.content,
+            stopReason: event.message?.stopReason,
+            usage: event.message?.usage,
+            timestamp: Date.now(),
+          });
+        }
+      } catch {}
+    });
 
     // Every finalized native message commits the Job's progress: the history
     // bounds move to the entry that just landed, and the actor record's leaf

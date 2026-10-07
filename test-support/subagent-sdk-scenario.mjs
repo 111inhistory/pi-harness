@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { AssistantMessageEventStream, getSystemMessageText, getCurrentTools } from "@earendil-works/pi-ai";
 import subagentExtension from "../extensions/subagent.mjs";
+import { deriveSessionUid } from "../src/subagent-socket.mjs";
 import { deferred, waitFor } from "./async.mjs";
 
 const scenario = process.argv[2];
@@ -141,6 +142,8 @@ assert.deepEqual(resourceLoader.getExtensions().errors, [], "extension initializ
 const { session } = await createAgentSession({ cwd, agentDir, sessionManager, settingsManager, resourceLoader, modelRuntime: runtime, model, thinkingLevel: "low" });
 const extensionErrors = [];
 await session.bindExtensions({ onError: (error) => extensionErrors.push(error) });
+const sessionUid = deriveSessionUid(sessionManager.getSessionId());
+const sessionSocketDir = path.join(socketDir, sessionUid);
 let toolSequence = 0;
 async function call(name, params) {
   const tool = session.getToolDefinition(name);
@@ -180,17 +183,17 @@ try {
     for (const name of ["create", "list", "stop", "task", "hub", "wait"]) assert.equal(names.includes(name), false);
     await assert.rejects(call("subagent_create", { tasks: [{ task: "valid" }, { task: "invalid", model: "override" }] }));
     assert.deepEqual((await call("subagent_list", {})).details.items, []);
-    await assert.rejects(fsp.stat(socketDir), { code: "ENOENT" });
+    await assert.rejects(fsp.stat(sessionSocketDir), { code: "ENOENT" });
     const gate = controlledGate();
     controls.classify = (_, options) => abortable(gate, options.signal);
     const result = await call("subagent_create", { context: "Explicit batch context", tasks: [{ task: "Initial assignment" }, { task: "Stopped during routing" }] });
     const [first, second] = result.details.items;
     assert.deepEqual(result.details.items.map((r) => r.id), ["sub_01", "sub_02"]);
     for (const actor of [first, second]) {
-      assert.equal(actor.socket, path.join(socketDir, `${actor.id}.sock`));
+      assert.equal(actor.socket, path.join(sessionSocketDir, `${actor.id}.sock`));
       assert.ok((await fsp.stat(actor.socket)).isSocket(), "socket is available before routing finishes");
     }
-    assert.ok((await fsp.stat(path.join(socketDir, "main", "children.sock"))).isSocket());
+    assert.ok((await fsp.stat(path.join(sessionSocketDir, "main", "children.sock"))).isSocket());
     await call("write", { path: "ordinary.txt", content: "Native filesystem write" });
     assert.equal(await fsp.readFile(path.join(cwd, "ordinary.txt"), "utf8"), "Native filesystem write");
     await writeForDelivery(first.socket, '{"content":"Buffered during routing"}\n');
@@ -254,7 +257,7 @@ try {
     controls.chat = async (request) => {
       const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "write");
       if (request.text.includes("SOCKET_SENDER_ACTOR") && !wrote) {
-        return toolAnswer("write", { path: path.join(socketDir, "sub_02.sock"), content: '{"content":"PEER_SOURCE_MARKER"}\n' }, "peer-write");
+        return toolAnswer("write", { path: path.join(sessionSocketDir, "sub_02.sock"), content: '{"content":"PEER_SOURCE_MARKER"}\n' }, "peer-write");
       }
       if (request.text.includes("SOCKET_RECEIVER_ACTOR")) await receiverExit.promise;
       return textAnswer("actor done");
@@ -368,6 +371,12 @@ try {
       if (request.text.includes("SPAWN_MARKER") && !spawned) {
         return toolAnswer("subagent_create", { tasks: [{ name: "ChildOne", task: "Queued assignment one" }, { name: "ChildTwo", task: "Queued assignment two" }] }, "create-children");
       }
+      if (scenario === "broadcast" && request.text.includes("SPAWN_MARKER")) {
+        const broadcastSent = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "write");
+        if (spawned && !broadcastSent) {
+          return toolAnswer("write", { path: path.join(sessionSocketDir, "sub_01", "children.sock"), content: '{"content":"CHILD_BROADCAST_ONLY"}\n' }, "child-broadcast");
+        }
+      }
       if (!request.text.includes("Queued assignment")) await exit.promise;
       return textAnswer("Local actor finished");
     };
@@ -387,8 +396,9 @@ try {
       await writeForDelivery(children[0].socket, '{"content":"Buffered queued message"}\n');
       assert.equal((await call("subagent_stop", { id: children[1].id })).details.status, "cancelled");
     } else {
-      await writeForDelivery(path.join(socketDir, "main", "children.sock"), '{"content":"ROOT_BROADCAST_ONLY"}\n');
-      await writeForDelivery(path.join(socketDir, "sub_01", "children.sock"), '{"content":"CHILD_BROADCAST_ONLY"}\n');
+      // Main must not broadcast across hierarchy into sub_01's child endpoint
+      await assert.rejects(call("write", { path: path.join(sessionSocketDir, "sub_01", "children.sock"), content: '{"content":"OVERSTEP"}\n' }), (err) => err.message.includes("invalid_target"));
+      await writeForDelivery(path.join(sessionSocketDir, "main", "children.sock"), '{"content":"ROOT_BROADCAST_ONLY"}\n');
     }
     exit.resolve();
     await Promise.all([...roots, ...children].map((actor) => stopped(actor.id)));

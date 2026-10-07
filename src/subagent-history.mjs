@@ -4,26 +4,32 @@ import path from "node:path";
 
 export const DEFAULT_HISTORY_DIR = ".pi/subagents";
 
-export function getSubagentHistoryPaths(id, baseDir = DEFAULT_HISTORY_DIR) {
+export function getSubagentHistoryPaths(id, baseDir = DEFAULT_HISTORY_DIR, options = {}) {
+  const cwd = typeof options === "string" ? options : options?.cwd;
   const dir = path.join(baseDir, id);
+  const resolvedDir = cwd ? path.resolve(cwd, dir) : path.resolve(dir);
   return {
     dir,
     summary: path.join(dir, "summary.md"),
     cleanJsonl: path.join(dir, "session.clean.jsonl"),
+    resolvedDir,
+    resolvedSummary: path.join(resolvedDir, "summary.md"),
+    resolvedCleanJsonl: path.join(resolvedDir, "session.clean.jsonl"),
   };
 }
 
-export async function ensureHistoryDir(id, baseDir = DEFAULT_HISTORY_DIR) {
-  const { dir } = getSubagentHistoryPaths(id, baseDir);
-  await fsp.mkdir(dir, { recursive: true });
-  return dir;
+export async function ensureHistoryDir(id, baseDir = DEFAULT_HISTORY_DIR, options = {}) {
+  const cwd = typeof options === "string" ? options : options?.cwd;
+  const { resolvedDir } = getSubagentHistoryPaths(id, baseDir, { cwd });
+  await fsp.mkdir(resolvedDir, { recursive: true });
+  return resolvedDir;
 }
 
 /**
  * Append one clean structural event to session.clean.jsonl.
  * Strips any streaming token chunks and keeps semantic line events.
  */
-export async function appendCleanJsonl(id, event, { baseDir = DEFAULT_HISTORY_DIR } = {}) {
+export async function appendCleanJsonl(id, event, { baseDir = DEFAULT_HISTORY_DIR, cwd } = {}) {
   if (!event || typeof event !== "object") return;
 
   // Filter out raw stream deltas if passed accidentally
@@ -31,15 +37,15 @@ export async function appendCleanJsonl(id, event, { baseDir = DEFAULT_HISTORY_DI
     return;
   }
 
-  const { cleanJsonl } = getSubagentHistoryPaths(id, baseDir);
-  await ensureHistoryDir(id, baseDir);
+  const { resolvedCleanJsonl, resolvedDir } = getSubagentHistoryPaths(id, baseDir, { cwd });
+  await fsp.mkdir(resolvedDir, { recursive: true });
 
   const line = JSON.stringify({
     ...event,
     timestamp: event.timestamp || Date.now(),
   }) + "\n";
 
-  await fsp.appendFile(cleanJsonl, line, "utf-8");
+  await fsp.appendFile(resolvedCleanJsonl, line, "utf-8");
 }
 
 /**
@@ -60,14 +66,14 @@ export async function writeCompactedSummary(
     error = null,
     round = 1,
   },
-  { append = false, baseDir = DEFAULT_HISTORY_DIR } = {},
+  { append = false, baseDir = DEFAULT_HISTORY_DIR, cwd } = {},
 ) {
-  const { summary } = getSubagentHistoryPaths(id, baseDir);
-  await ensureHistoryDir(id, baseDir);
+  const { resolvedSummary, resolvedDir } = getSubagentHistoryPaths(id, baseDir, { cwd });
+  await fsp.mkdir(resolvedDir, { recursive: true });
 
   const sections = [];
 
-  if (!append || round === 1 || !fs.existsSync(summary)) {
+  if (!append || round === 1 || !fs.existsSync(resolvedSummary)) {
     sections.push(`# Subagent Summary: ${name || id} (${id})`);
     sections.push(`- **Status**: \`${status}\``);
     if (role) sections.push(`- **Role**: \`${role}\``);
@@ -110,11 +116,11 @@ export async function writeCompactedSummary(
 
   const content = sections.join("\n") + "\n";
 
-  if (append && fs.existsSync(summary)) {
-    await fsp.appendFile(summary, "\n" + content, "utf-8");
+  if (append && fs.existsSync(resolvedSummary)) {
+    await fsp.appendFile(resolvedSummary, "\n" + content, "utf-8");
   } else {
-    await fsp.writeFile(summary, content, "utf-8");
+    await fsp.writeFile(resolvedSummary, content, "utf-8");
   }
 
-  return summary;
+  return resolvedSummary;
 }

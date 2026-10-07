@@ -168,8 +168,8 @@ flowchart TD
 已进入历史的原任务不重复注入。若旧运行在排队或初始化时结束、原任务尚未记录，保留初始 seed，并在新的显式消息触发时带入原任务。路由从未成功完成的 Fresh seed 可以在这次新运行中完成首次路由；这不是自动重试。
 
 **防止资源泄漏的硬性治理规则**：
-1. **单一稳定 Socket 治理**：每个短 ID（如 `sub_01`）终身只拥有一个唯一的 Socket 文件（`/tmp/pi-subagents/sub_01.sock`）。Agent 处于 stopped 状态时，Socket 由宿主监听器维持接管，收到新写入自动 revive 该会话，严禁每次 revive 创建新 socket 导致 socket 泄漏过量。
-2. **单一稳定双轨历史治理**：每个短 ID 终身只对应一对固定的历史文件（`summary.md` 与 `session.clean.jsonl`）。revive 续跑产生的记录以 Append-Only 方式在原有文件末尾追加（Markdown 追加续写小节，JSONL 追加新行），严禁产生多份分裂碎片化的历史文件。
+1. **单一稳定 Socket 治理**：每个短 ID（如 `sub_01`）在当前根会话命名空间内（物理路径基于根 Session ID 派生的 6 位短 hash UID：`/tmp/pi-subagents/<uid>/<id>.sock`）终身只拥有一个唯一的 Socket 文件。Agent 处于 stopped 状态时，Socket 由宿主监听器维持接管，收到新写入自动 revive 该会话，严禁每次 revive 创建新 socket 导致 socket 泄漏过量。
+2. **单一稳定双轨历史治理**：每个短 ID 在会话工作区物理路径下（`.pi/subagents/<uid>/<id>/`，基目录绑定根会话 cwd）终身只对应一对固定的历史文件（`summary.md` 与 `session.clean.jsonl`）。revive 续跑产生的记录以 Append-Only 方式在原有文件末尾追加（Markdown 追加续写小节，JSONL 追加新行），严禁产生多份分裂碎片化的历史文件。所有终态转换（completed、cancelled、failed）发布前，必须等待 Clean JSONL 串行追加链完全落盘。
 
 ## 调度、状态与 Budget
 
@@ -249,11 +249,11 @@ Agent 调用原生 write：     {"content":"请核对解析器边界条件。"}\
 广播必须具备清晰的层次界限，**不能只叫笼统的全局 `all`**，以防止全局越权与混淆：
 
 - **分层端点规范**：
-  - **Main（Depth 0 发起者）**：广播端点为 `/tmp/pi-subagents/main/children.sock`（或目标短名 `children`），仅广播给其直接子级（Depth 1 全体活跃 Agent）。
-  - **Depth 1 Agent（如 `sub_01`）**：广播端点为其专属子级端点 `/tmp/pi-subagents/sub_01/children.sock`（或 `sub_01:children`），仅广播给它自己派生的直接子级（Depth 2 全体活跃 Agent）。
+  - **Main（Depth 0 发起者）**：广播端点为 `/tmp/pi-subagents/<uid>/main/children.sock`（或目标短名 `children`），仅广播给其直接子级（Depth 1 全体活跃 Agent）。Main 严禁越层写入 Depth 1 的 `children.sock`（违者拒绝抛出 `invalid_target`），且报文始终保留真实发送者。
+  - **Depth 1 Agent（如 `sub_01`）**：广播端点为其专属子级端点 `/tmp/pi-subagents/<uid>/sub_01/children.sock`（或 `sub_01:children`），仅广播给它自己派生的直接子级（Depth 2 全体活跃 Agent）。
   - **Depth 2 Agent**：禁止派生子 Agent，因此不存在下级广播端点。
 - **广播行为**：
-  - 向对应的 `children.sock` 单向写入 NDJSON 报文后，先校验报文的宿主绑定发送者与端点所属父节点一致；宿主随后原子获取该发送者**当前直接子 Agent** 的列表快照，并逐一并发投递，每个接收者保留同一个真实 `from`；
+  - 向对应的 `children.sock` 单向写入 NDJSON 报文后，先校验报文的宿主绑定发送者与端点所属父节点严格一致；宿主随后原子获取该发送者**当前直接子 Agent** 的列表快照，并逐一并发投递，每个接收者保留同一个真实 `from`；
   - 严格禁止跨层递归扩散（Main 绝不直接穿透广播到 Depth 2）；禁止向父级或平级兄弟广播；
   - 没有子节点时视为空成功返回；部分子节点处于 stopped 状态时，写入同样触发其以原 ID 进行 revive。
 
