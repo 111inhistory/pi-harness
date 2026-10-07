@@ -6,10 +6,11 @@ import { once } from "node:events";
 import net from "node:net";
 import path from "node:path";
 import {
-  createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
+  createAgentSession, createWriteToolDefinition, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { AssistantMessageEventStream, getSystemMessageText, getCurrentTools } from "@earendil-works/pi-ai";
 import subagentExtension from "../extensions/subagent.mjs";
+import capabilityExtension from "../extensions/capability.mjs";
 import { deriveSessionUid } from "../src/subagent-socket.mjs";
 import { deferred, waitFor } from "./async.mjs";
 
@@ -129,7 +130,9 @@ const resourceLoader = new DefaultResourceLoader({
   cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
   ...(scenario === "inherited" ? { systemPrompt: "Custom inherited system identity" } : {}),
   extensionFactories: [
-    { name: "subagent", factory: subagentExtension },
+    ...(["namespace", "namespace-leaf", "capability-missing"].includes(scenario) ? [{ name: "capability", factory: capabilityExtension }] : []),
+    ...(scenario === "capability-missing" ? [] : [{ name: "subagent", factory: subagentExtension }]),
+    ...(scenario === "namespace-reverse" ? [{ name: "capability", factory: capabilityExtension }] : []),
     { name: "external-test-tool", factory(pi) {
       pi.registerTool({ name: "external_test_tool", label: "External Test Tool", description: "A non-transplantable test extension tool.",
         parameters: { type: "object", properties: {} }, execute: async () => ({ content: [{ type: "text", text: "unused" }] }),
@@ -177,9 +180,104 @@ async function events(file) {
 }
 
 try {
-  if (scenario === "surface") {
+  if (scenario === "capability-missing") {
+    const result = await call("capability", {});
+    assert.equal(result.isError, true);
+    assert.equal(result.details.status, "failed");
+    assert.match(result.details.warnings.join("\n"), /requires the Subagent extension/);
+    assert.equal(chats.length, 0, "dependency failure must not spend a model call");
+    assert.equal(classifications.length, 0);
+  } else if (scenario === "namespace-leaf") {
+    let leafResult;
+    controls.chat = (request) => {
+      const tools = getCurrentTools(request.context.messages).map((tool) => tool.name);
+      const resultOf = (name) => request.context.messages.findLast((message) => message.role === "toolResult" && message.toolName === name);
+      if (tools.includes("capability_search")) {
+        assert.deepEqual(tools.sort(), ["capability_search", "submit_result"]);
+        const search = resultOf("capability_search");
+        if (!search) return toolAnswer("capability_search", { query: "namespace://subagent", src: "local" });
+        const found = JSON.parse(search.content.find((part) => part.type === "text").text);
+        assert.equal(found.tools.length, 1);
+        assert.deepEqual(found.tools[0].tools.map((tool) => tool.name), ["subagent_list", "subagent_stop"]);
+        return toolAnswer("submit_result", { refs: [found.tools[0].ref] });
+      }
+      if (request.text.includes("NAMESPACE_LEAF")) {
+        assert.equal(tools.includes("subagent_create"), false);
+        const result = resultOf("capability");
+        if (!result) return toolAnswer("capability", {});
+        leafResult = JSON.parse(result.content.find((part) => part.type === "text").text);
+        assert.notEqual(leafResult.status, "failed", JSON.stringify(leafResult));
+        return textAnswer("Leaf namespace discovery done");
+      }
+      if (!resultOf("subagent_create")) return toolAnswer("subagent_create", { tasks: [{ task: "NAMESPACE_LEAF" }] });
+      return textAnswer("Parent done");
+    };
+    const parent = await create("NAMESPACE_PARENT");
+    await waitFor(() => leafResult, { label: "Depth 2 capability discovery" });
+    await stopped(parent.id);
+    await stopped(parent.id + "_01");
+    assert.deepEqual(leafResult.tools[0].tools.map((tool) => tool.name), ["subagent_list", "subagent_stop"]);
+  } else if (scenario === "namespace" || scenario === "namespace-reverse") {
+    const members = ["subagent_create", "subagent_list", "subagent_stop"];
+    const initial = session.getActiveToolNames();
+    assert.ok(members.every((name) => !initial.includes(name)));
+    assert.doesNotMatch(session.systemPrompt, /subagent_create|one JSON object per line/);
+    const nativeWrite = createWriteToolDefinition(cwd);
+    assert.equal(session.getToolDefinition("write").description, nativeWrite.description);
+    controls.chat = (request) => {
+      assert.deepEqual(getCurrentTools(request.context.messages).map((tool) => tool.name).sort(), ["capability_search", "submit_result"]);
+      const search = request.context.messages.findLast((message) => message.role === "toolResult" && message.toolName === "capability_search");
+      if (!search) return toolAnswer("capability_search", { query: "subagent", src: "local" });
+      const found = JSON.parse(search.content.find((part) => part.type === "text").text);
+      const namespaces = found.tools.filter((hit) => hit.namespace === "subagent");
+      assert.equal(namespaces.length, 1, "matching members must collapse to one namespace candidate");
+      assert.equal(namespaces[0].ref, "namespace://subagent");
+      assert.deepEqual(namespaces[0].tools.map((tool) => tool.name), members);
+      return toolAnswer("submit_result", { refs: [namespaces[0].ref] });
+    };
+    const discovery = (await call("capability", {})).details;
+    assert.equal(discovery.tools.length, 1, JSON.stringify(discovery));
+    assert.equal(discovery.tools[0].kind, "namespace");
+    assert.equal(discovery.tools[0].namespace, "subagent");
+    assert.deepEqual(discovery.tools[0].tools.map((tool) => tool.name), members);
+    assert.match(discovery.tools[0].instructions, /one JSON object per line/);
+    assert.ok(members.every((name) => session.getActiveToolNames().includes(name)));
+    assert.equal(session.getToolDefinition("write").description, nativeWrite.description);
+    const metadata = await call("read", { path: discovery.tools[0].ref });
+    assert.match(metadata.content[0].text, /subagent_stop/);
+    assert.match(metadata.content[0].text, /one JSON object per line/);
+    const gate = deferred();
+    controls.classify = (_, options) => abortable(gate, options.signal);
+    controls.chat = () => textAnswer("Namespace child done");
+    const actor = await create("Namespace task");
+    await writeForDelivery(actor.socket, '{"content":"Namespace buffered message"}\n');
+    gate.resolve();
+    await stopped(actor.id);
+    assert.match(chats.at(-1).text, /Namespace buffered message/);
+  } else if (scenario === "surface") {
     const names = session.getActiveToolNames();
-    for (const name of ["subagent_create", "subagent_list", "subagent_stop", "write"]) assert.ok(names.includes(name));
+    const subagents = ["subagent_create", "subagent_list", "subagent_stop"];
+    assert.ok(names.includes("write"));
+    for (const name of subagents) {
+      assert.equal(names.includes(name), false, "Subagent is registered but not active by default");
+      const tool = session.getToolDefinition(name);
+      assert.equal(tool.defaultActive, false);
+      assert.equal(tool.namespace.name, "subagent");
+      assert.ok(tool.promptSnippet?.length > 0);
+      assert.ok(tool.promptGuidelines?.length > 0);
+    }
+    assert.doesNotMatch(session.systemPrompt, /subagent_create|one JSON object per line/);
+    const nativeWrite = createWriteToolDefinition(cwd);
+    for (const field of ["description", "promptSnippet", "promptGuidelines", "parameters"]) {
+      assert.deepEqual(session.getToolDefinition("write")[field], nativeWrite[field]);
+    }
+    session.setActiveToolsByName([...names, ...subagents]);
+    const modelPrompt = session.systemPrompt;
+    assert.match(modelPrompt, /Fresh agents need self-contained task\/context/);
+    assert.match(modelPrompt, /The host binds the sender; omit from and to/);
+    assert.match(modelPrompt, /stopped means ended, not necessarily succeeded/);
+    assert.equal(modelPrompt.match(/Normal completion does not wake you/g).length, 1, "shared namespace rules are deduplicated");
+    assert.match(session.getToolDefinition("subagent_stop").description, /does not wait for shutdown/);
     for (const name of ["create", "list", "stop", "task", "hub", "wait"]) assert.equal(names.includes(name), false);
     await assert.rejects(call("subagent_create", { tasks: [{ task: "valid" }, { task: "invalid", model: "override" }] }));
     assert.deepEqual((await call("subagent_list", {})).details.items, []);
@@ -205,6 +303,9 @@ try {
     assert.match(chats[0].text, /Explicit batch context/);
     assert.match(chats[0].text, /Initial assignment/);
     assert.match(chats[0].text, /Buffered during routing/);
+    const childPrompt = chats[0].context.messages.filter((message) => message.role === "system").map(getSystemMessageText).join("\n");
+    assert.match(childPrompt, /Normal completion does not wake you/);
+    assert.match(childPrompt, /The host binds the sender; omit from and to/);
     assert.equal((await item(first.id)).budget.modelCalls, 3, "two classifiers plus one native chat");
   } else if (scenario === "external-socket") {
     const exit = controlledGate();
@@ -364,20 +465,43 @@ try {
     assert.equal(chats[1].text.split("Steering marker exactly once").length - 1, 1);
     assert.equal(chats[1].text.split("One original assignment").length - 1, 1);
     assert.equal(sessionManager.getBranch().filter((entry) => entry.type === "custom_message").length, 0, "normal completion must be silent");
-  } else if (scenario === "queued" || scenario === "broadcast") {
+  } else if (scenario === "parallel") {
+    const exit = controlledGate();
+    controls.chat = async (request) => {
+      const spawned = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent_create");
+      if (request.text.includes("PARALLEL_PARENT") && !spawned) {
+        return toolAnswer("subagent_create", { tasks: [1, 2, 3, 4].map((index) => ({ task: `Parallel child assignment ${index}` })) });
+      }
+      await exit.promise;
+      return textAnswer("Parallel actor finished");
+    };
+    const roots = (await call("subagent_create", { tasks: [1, 2, 3, 4].map((index) => ({ task: `PARALLEL_PARENT ${index}` })) })).details.items;
+    const actors = await waitFor(async () => {
+      const all = (await call("subagent_list", {})).details.items;
+      return all.length === 20 && all.every((actor) => actor.status === "running") && chats.length === 24 && all;
+    }, { label: "four parents and sixteen native children running together" });
+    assert.equal(actors.filter((actor) => actor.depth === 1).length, 4);
+    assert.equal(actors.filter((actor) => actor.depth === 2).length, 16);
+    for (const parent of roots) {
+      assert.equal(actors.filter((actor) => actor.parentId === parent.id).length, 4);
+    }
+    for (const actor of actors) assert.ok((await fsp.stat(actor.socket)).isSocket());
+    exit.resolve();
+    await Promise.all(actors.map((actor) => stopped(actor.id)));
+  } else if (scenario === "broadcast") {
     const exit = controlledGate();
     controls.chat = async (request) => {
       const spawned = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent_create");
       if (request.text.includes("SPAWN_MARKER") && !spawned) {
-        return toolAnswer("subagent_create", { tasks: [{ name: "ChildOne", task: "Queued assignment one" }, { name: "ChildTwo", task: "Queued assignment two" }] }, "create-children");
+        return toolAnswer("subagent_create", { tasks: [{ name: "ChildOne", task: "Child assignment one" }, { name: "ChildTwo", task: "Child assignment two" }] }, "create-children");
       }
-      if (scenario === "broadcast" && request.text.includes("SPAWN_MARKER")) {
+      if (request.text.includes("SPAWN_MARKER")) {
         const broadcastSent = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "write");
         if (spawned && !broadcastSent) {
           return toolAnswer("write", { path: path.join(sessionSocketDir, "sub_01", "children.sock"), content: '{"content":"CHILD_BROADCAST_ONLY"}\n' }, "child-broadcast");
         }
       }
-      if (!request.text.includes("Queued assignment")) await exit.promise;
+      await exit.promise;
       return textAnswer("Local actor finished");
     };
     const roots = (await call("subagent_create", { tasks: [
@@ -387,33 +511,22 @@ try {
     const children = await waitFor(async () => {
       const all = (await call("subagent_list", {})).details.items;
       const found = all.filter((actor) => actor.depth === 2);
-      return found.length === 2 && found.every((actor) => actor.status === "queued") && found;
-    }, { label: "depth-2 children queued behind four active parents" });
+      return found.length === 2 && found.every((actor) => actor.status === "running") &&
+        chats.filter((request) => request.text.includes("Child assignment")).length === 2 && found;
+    }, { label: "depth-2 children run alongside four active parents" });
     assert.deepEqual(children.map((child) => child.id), ["sub_01_01", "sub_01_02"]);
-    for (const child of children) assert.ok((await fsp.stat(child.socket)).isSocket());
-    assert.equal(chats.some((request) => request.text.includes("Queued assignment")), false);
-    if (scenario === "queued") {
-      await writeForDelivery(children[0].socket, '{"content":"Buffered queued message"}\n');
-      assert.equal((await call("subagent_stop", { id: children[1].id })).details.status, "cancelled");
-    } else {
-      // Main must not broadcast across hierarchy into sub_01's child endpoint
-      await assert.rejects(call("write", { path: path.join(sessionSocketDir, "sub_01", "children.sock"), content: '{"content":"OVERSTEP"}\n' }), (err) => err.message.includes("invalid_target"));
-      await writeForDelivery(path.join(sessionSocketDir, "main", "children.sock"), '{"content":"ROOT_BROADCAST_ONLY"}\n');
-    }
+    await assert.rejects(call("write", { path: path.join(sessionSocketDir, "sub_01", "children.sock"), content: '{"content":"OVERSTEP"}\n' }), (err) => err.message.includes("invalid_target"));
+    await writeForDelivery(path.join(sessionSocketDir, "main", "children.sock"), '{"content":"ROOT_BROADCAST_ONLY"}\n');
     exit.resolve();
     await Promise.all([...roots, ...children].map((actor) => stopped(actor.id)));
-    const childRequests = chats.filter((request) => request.text.includes("Queued assignment"));
-    assert.equal(childRequests.length, scenario === "queued" ? 1 : 2);
-    for (const request of childRequests) {
-      assert.equal(request.text.includes("ROOT_BROADCAST_ONLY"), false, "Main must not recursively broadcast to grandchildren");
-      if (scenario === "queued") assert.match(request.text, /Buffered queued message/);
-      else assert.match(request.text, /CHILD_BROADCAST_ONLY/);
+    const childRequests = chats.filter((request) => request.text.includes("Child assignment"));
+    assert.ok(childRequests.every((request) => !request.text.includes("ROOT_BROADCAST_ONLY")), "Main must not recursively broadcast to grandchildren");
+    for (const name of ["Child assignment one", "Child assignment two"]) {
+      assert.match(childRequests.filter((request) => request.text.includes(name)).at(-1).text, /CHILD_BROADCAST_ONLY/);
     }
-    const rootRequests = chats.filter((request) => !request.text.includes("Queued assignment"));
+    const rootRequests = chats.filter((request) => !request.text.includes("Child assignment"));
     assert.ok(rootRequests.every((request) => !request.text.includes("CHILD_BROADCAST_ONLY")), "child broadcasts must not reach ancestors or peers");
-    if (scenario === "broadcast") {
-      assert.equal(rootRequests.filter((request) => request.text.includes("ROOT_BROADCAST_ONLY")).length, 4);
-    }
+    assert.equal(rootRequests.filter((request) => request.text.includes("ROOT_BROADCAST_ONLY")).length, 4);
   } else if (scenario === "inherited") {
     sessionManager.appendMessage({ role: "user", content: "Captured parent context marker", timestamp: Date.now() });
     sessionManager.appendMessage(assistant([

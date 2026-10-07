@@ -2,7 +2,7 @@
 
 ## 状态
 
-本文件是针对 `25963a7` 的实现方案，尚未实施，不替代 `subagent-contract.md`。目标是收敛现有代码的所有权和异步边界，而不是新增调度框架、鉴权、回执或自动重试。
+本文件记录针对 `25963a7` 提出的生命周期方案，具体已实现行为以 `subagent-contract.md` 为准。后续明确修订：删除独立的全局执行上限，只保留每父节点宽度与两层深度限制；Job 注册即为 running，删除任务排队状态与调度队列；尚未开始使用，不保留旧状态兼容。目标是收敛现有代码的所有权和异步边界，而不是新增调度框架、鉴权、回执或自动重试。
 
 ## 1. 当前调用链与问题根源
 
@@ -10,8 +10,8 @@
 
 ```text
 runtime.task/create
-  -> #createJob（Budget、队列、原始 seed）
-  -> #pump / #start（占槽、startActive）
+  -> #createJob（整批原子注册、Budget、原始 seed）
+  -> #start（逐个直接启动、startActive）
   -> startPiJob(request)
        路由 -> resourceLoader.reload -> createAgentSession
        -> session.prompt -> drainLiveMessages
@@ -28,11 +28,11 @@ runtime.task/create
 1. `handle.done` 同时代表原生执行退出和历史收尾完成。Runtime 只有等摘要写完，才能决定摘要应该写什么。
 2. `startPiJob` 的 `cancelled` 同时表示显式 stop、预算 abort、service retirement，不能作为终态原因。
 3. adapter 先计算 `finalStatus`，Runtime 的 `#finish/#fail` 又计算一遍。异步写入期间还可以更改结果。
-4. queued cancel 在 `cancelJob` 直接 `#end`，路由／资源初始化错误也可能在摘要逻辑之前退出，生命周期不覆盖所有入口。
+4. 原先启动前取消直接 `#end`，路由／资源初始化错误也可能在摘要逻辑之前退出，生命周期不覆盖所有入口；现在所有这些入口都应统一收尾。
 5. `allocatedAgentIdsBySession` 属于 extension controller；reload 会创建新 controller。它不是完整的根会话身份账本。
 6. `retireService` 在设置 retirement Promise、取消 Job 之前就等待 Socket close，先后关系倒置。
 
-现有可保留的部分：4 个执行槽、两层宽度限制、queued 缓冲、原生 steer、`drainLiveMessages`、SessionManager 分支 anchor、根 checkpoint、6 位 UID、分层 Socket 注册表、串行 Clean JSONL 写链。
+现有可保留的部分：两层宽度限制、注册阶段消息缓冲、原生 steer、`drainLiveMessages`、SessionManager 分支 anchor、根 checkpoint、6 位 UID、分层 Socket 注册表、串行 Clean JSONL 写链。
 
 ## 2. 所有权
 
@@ -40,7 +40,7 @@ runtime.task/create
 | --- | --- | --- |
 | Root session 身份记录 | Session ID／UID、已分配 Actor ID | 分支内 Actor 的运行状态 |
 | 当前 branch service | 当前可见 registry、retained 描述、Socket、每 Job 写链 | 重新决定终态 |
-| Runtime Job | 队列、槽位、停止原因、Budget、唯一 terminal outcome | 操作 SDK 或生成摘要 |
+| Runtime Job | 批次启动顺序、拓扑名额、停止原因、Budget、唯一 terminal outcome | 操作 SDK 或生成摘要 |
 | SDK run handle | abort、session、steer／pending、原生执行和退出 | 判定 cancelled/failed、写终态摘要 |
 | 历史收尾函数 | 接收确定 outcome，写尾记录和摘要 | 检查取消标志、Budget、读回改写旧摘要 |
 
@@ -51,12 +51,12 @@ runtime.task/create
 不公开 registered、starting、quiescing 等多余状态。路由、资源加载、SDK 创建都仍属于 running。
 
 ```text
-queued  ---------------------------> finalizing -> completed / cancelled / failed
-   |                                     ^
-   v                                     |
-running -> stopping（等待原生退出）--------+
-   |
-   +------ 原生执行正常退出／报错 ---------+
+running（注册、初始化、执行）
+   ├── 未调用 adapter 就取消／失败 ──> finalizing
+   ├── 原生执行正常退出／报错 ───────> finalizing
+   └── stopping（等待原生退出）──────> finalizing
+                                       ↓
+                           completed / cancelled / failed
 ```
 
 ### finalizing 的含义
@@ -70,7 +70,7 @@ running -> stopping（等待原生退出）--------+
 
 这是明确修订：模型已经退出后，stop 不再把结果从 completed 改为 cancelled。不能一边允许取消修改结果，一边承诺摘要只追加一次。
 
-保守保留现有槽位释放位置：直到收尾结束再释放 `#running` 的槽位和父节点活跃名额，避免引入第二套调度计数。finalizing 也属于 LIVE_STATUSES。Budget 在执行退出时冻结；磁盘收尾不再算模型执行预算。由此修订“持槽期间全部计 active”的描述，明确槽位在收尾阶段仅用于阻止重叠运行。
+直到收尾结束再释放 Actor 占用和父节点活跃名额，finalizing 也属于 LIVE_STATUSES。不设置全局执行槽位，不保留仅用于全局并发限流的 `#running` Set。Budget 在执行退出时冻结；磁盘收尾不再算模型执行预算。
 
 ## 4. 拆开执行和收尾：具体接口
 
@@ -110,9 +110,9 @@ createSubagentRuntime({
 
 `finalizeJob` 对 Pi-free Runtime 测试可省略，省略等同无 I/O 收尾。真实 extension 必须安装它。
 
-`#finish`、`#fail` 不直接 `#end`，共同进入一次性的 `#beginFinalization(job, execution)`。queued cancel、queued lifetime 到期、startJob 同步抛错、非法 handle，也走这个入口。
+`#finish`、`#fail` 不直接 `#end`，共同进入一次性的 `#beginFinalization(job, execution)`。启动前取消／预算到期、startJob 同步抛错、非法 handle，也走这个入口。
 
-每 Job 保存一个 finalization Promise；不是重试机制，只防止多个事件重复进入同一收尾。
+Job 在调用收尾 hook 之前同步进入 finalizing；finalizing／terminal 状态本身防止重入，不另存永久 Promise Map。
 
 ### 4.3 裁决和冻结必须在第一个 await 前完成
 
@@ -123,7 +123,7 @@ createSubagentRuntime({
 3. 原生执行失败：failed，保留原生错误。
 4. 其余：completed。
 
-`cancelJob` 在 queued/running 阶段也先观察 Budget：已经耗尽的预算不能被这次 stop 改成 cancelled；否则接受显式取消。已接受的取消之后 Budget 不再升级为另一个失败，这与当前 JobBudget 的 first-terminal-wins 一致，不采用“预算永远高于取消”的第二套规则。
+`cancelJob` 在 running 阶段先观察 Budget：已经耗尽的预算不能被这次 stop 改成 cancelled；否则接受显式取消。已接受的取消之后 Budget 不再升级为另一个失败，这与当前 JobBudget 的 first-terminal-wins 一致，不采用“预算永远高于取消”的第二套规则。
 
 现有 JobBudget 尚不能冻结“普通工具／模型错误导致的 failed”。需要提供一个内部 settle API（或等价调整 terminate），能冻结 completed/cancelled/failed，保留计数；Runtime 唯一调用。不能通过 `model_final` 把失败 Budget 快照伪装成 completed。
 
@@ -134,7 +134,7 @@ createSubagentRuntime({
 `finalizeJob` 顺序：
 
 1. 等待已经封口的 Clean JSONL 串行写链。
-2. 追加一条 `job_end`，包含内部 jobId、round、status、error、Budget。未执行的 queued cancel／路由失败也因此有可读记录，不伪造 user/assistant 消息。
+2. 追加一条 `job_end`，包含内部 jobId、round、status、error、Budget。未执行的启动前取消／路由失败也因此有可读记录，不伪造 user/assistant 消息。
 3. 写该 Job 的一段 Markdown。round 从 Runtime 的 Job 顺序提供，不能继续把所有 continuation 固定写成 Round 2。
 4. 返回写入结果，Runtime 才 `#end`：发布终态、完成 jobDone、释放槽位、保存 checkpoint，再尝试一次失败 Notification。
 
@@ -150,7 +150,7 @@ createSubagentRuntime({
 
 ## 6. 普通消息和非唤醒通知
 
-普通消息维持现有行为：queued 缓冲、running steer／轮间缓冲、stopping 拒绝、terminal 显式 revive。新增 finalizing 的 busy 分支，不把消息存进正在销毁的 live run，也不因为收到消息而改变冻结的 outcome。
+普通消息维持现有行为：running 中尚未初始化 SDK 时缓冲启动输入、执行中 steer／轮间缓冲、stopping 拒绝、terminal 显式 revive。新增 finalizing 的 busy 分支，不把消息存进正在销毁的 live run，也不因为收到消息而改变冻结的 outcome。
 
 父 Agent 正在 finalizing 时，子失败通知等待该父 Job 的收尾 Promise 完成，然后走已有 retained 自定义消息追加路径，checkpoint 新 anchor；不能再进入已封口的 SDK run。若此时 service 已退休则放弃。它依然是一次非唤醒追加，不建立收件箱或重试队列。
 
@@ -165,7 +165,7 @@ createSubagentRuntime({
 - 根 SessionManager 的 `getEntries()` 返回所有分支的 entries；激活/reload 时扫描其中的 `subagent-state` 注册 Actor ID，构建根级已分配集合。
 - 当前可见 Actor/Job 仍只从 `getBranch()` 的最新 checkpoint 恢复，两种读取用途不能混淆。
 - 进程内分配记录同步更新根级集合；现有 `onAgentIdAllocated` 可保留。完成完整批次校验后才分配，允许已分配 ID 留空洞，不重新使用。
-- 注册后的 checkpoint 必须包含 Actor，即使 queued、路由未完成、没有子 session 文件；因此根会话重新加载仍能从废弃分支发现这个 ID。
+- 注册后的 checkpoint 必须包含 Actor，即使 adapter 尚未调用、路由未完成、没有子 session 文件；因此根会话重新加载仍能从废弃分支发现这个 ID。
 - 只在 root activation/reload 扫描全部 entries，不在每次模型事件或 list 轮询扫描。
 
 这避免新增身份数据库／目录 marker。遵循原生 SessionManager 的持久化边界：没有被原生持久化的 entry 不承诺跨进程保留，memory-only session 也不承诺重启恢复。
@@ -179,14 +179,14 @@ Fresh 只为新分配 Actor 建 session，已有 Actor revive 必须从其 retai
 退役顺序：
 
 1. 同步标记 service 不接受新工作；禁止 Socket 新投递、create、revive。
-2. 对 queued/running 请求取消；stopping 等真实退出；finalizing 只等待，不重新取消。
+2. 对 running 请求取消；stopping 等真实退出；finalizing 只等待，不重新取消。
 3. 同时停止 Socket listener，关闭其已有连接。server.close 不能因一个未结束连接阻止发出 Job abort。
 4. 等待所有 Job 的 finalization/jobDone；不跳过最后的 retained/anchor 捕获。活动 checkpoint 与退役快照的保存由 lifecycle owner 决定，不能让 `service.closed` 直接抹掉最后的会话位置。
 5. 清理句柄、liveJobs、retained，再暴露新 service。
 
 重建时按完整拓扑注册单点端点、Main 广播、已有孩子的 Depth 1 广播端点。保留当前修复。
 
-跨进程恢复中 queued/running/stopping/finalizing 都视为 interrupted，不自动重跑或重发通知。不承诺 root checkpoint 与两个派生历史文件原子一致，也不在恢复时重放摘要；root registry 是生命周期事实来源，部分历史可用于诊断。
+跨进程恢复中 running/stopping/finalizing 都视为 interrupted，不自动重跑或重发通知。不承诺 root checkpoint 与两个派生历史文件原子一致，也不在恢复时重放摘要；root registry 是生命周期事实来源，部分历史可用于诊断。
 
 ## 9. 对现有代码的修改落点
 
@@ -210,7 +210,7 @@ Fresh 只为新分配 Actor 建 session，已有 Actor revive 必须从其 retai
 
 必须用事件屏障而非固定 sleep 验证：
 
-1. queued cancel、queued expiry、分类失败、loader 失败、SDK 创建失败、模型失败、正常完成都恰好 finalize 一次。
+1. 启动前取消、启动前预算到期、分类失败、loader 失败、SDK 创建失败、模型失败、正常完成都恰好 finalize 一次。
 2. stop 在 routing/tool/model 中被接受；原生退出前保留槽位；退出后 outcome 固定。
 3. 延迟 JSONL 和 Markdown：finalizing 可见、write busy、stop 明确未接受、terminal 等待刷盘，只有一段摘要。
 4. 预算失败与 stop 的先后顺序按已接受 verdict 固定；无 SDK abort 错误覆盖它。

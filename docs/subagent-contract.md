@@ -19,6 +19,12 @@
 - 持久化复用 Pi 的 SessionManager JSONL 与根会话 custom entry，不另写数据库或日志引擎。
 - worktree／文件系统隔离不在当前计划内。DeepSeek Search 是现成插件，由用户自行安装，本模块不增加安装或接入代码。
 
+## 默认发现与启用
+
+- 三个控制工具归入原生 `subagent` namespace，注册时默认不 active（Fresh 子 Agent 的显式工具装载计划不变）；Depth 2 只注册 list／stop，不注册 create。
+- Capability 依赖 Subagent 扩展已加载，但不要求其工具 active。按一个 namespace 候选返回共同说明与全部可达成员，选中后将可直接声明的成员一起激活。
+- Socket 通信与生命周期规则归 namespace 的共同说明；普通 `write` 的模型说明与 schema 保持原生，仅替换 Socket-aware backend。
+
 ## 核心边界
 
 1. Agent 与 Job 概念完全耦合，使用统一简短 ID。层次化命名规范：Depth 1 为 `sub_01` ~ `sub_04`；Depth 2 由父级 ID 派生，为 `<parentId>_01` ~ `<parentId>_04`（如 `sub_01_01`），直观清晰且天然防止冲突。显式写入可使已 stop 的 Agent 自动 revive 续跑。
@@ -179,16 +185,16 @@ flowchart TD
 
 - Main 为 depth 0，最多 4 个活跃直接子 Agent。
 - 每个 depth-1 Agent 最多 4 个活跃 depth-2 子 Agent；depth 2 不注册 `task`。
-- `queued`、`running`、`stopping` 均占父节点的活跃名额。原生运行退出并进入终态后释放。
-- 全局执行并发为 4，超出时排队；排队不能绕过每父节点的宽度限制。
+- `running`、`stopping`、`finalizing` 均占父节点的活跃名额。收尾完成并发布终态后释放。
+- 不设置独立的全局 Job 并发上限，也不设置任务队列。批次先原子注册全部 Actor／Job，再直接启动所有通过拓扑校验的 Job；4 个 Depth 1 和 16 个 Depth 2 可以同时运行。
 - 包含 Main 在内最多 21 个**活跃** Actor；已完成的 idle Actor 可以继续保留，不把它们算作活跃名额。
 
 Agent 状态为 `running`（有非终态 Job）或 `idle`。`parked` 资源策略未实现。
 
-Job 状态为 `queued`、`running`、`stopping`、`finalizing`、`completed`、`failed`、`cancelled`。
+Job 状态为 `running`、`stopping`、`finalizing`、`completed`、`failed`、`cancelled`。`running` 从注册开始，包括路由、资源加载、SDK 初始化和原生执行。
 - **取消与预算终止**：取消运行中的 Job 或触发预算终止时，先进入 `stopping`，直到原生模型／工具退出。
 - **解耦执行与终态收尾**：原生运行退出后，同步冻结终态裁决（Outcome Freezing），进入 `finalizing` 状态。在 `finalizing` 期间保留并发槽位，继续拒绝外部写入（返回 `agent_busy`）；由终态委托（`finalizeJob`）依次完成 Clean JSONL 串行写链排空、追加 `job_end` 语义事件，并单次写入 `summary.md` 摘要；收尾完成后进入 terminal 状态并释放槽位。
-- **排队中取消**：处于 `queued` 的任务被取消或生命周期耗尽时，直接移出队列并同步进入终态（`cancelled` 或 `failed`），不启动原生会话，不占用执行槽位。
+- **启动前取消**：注册后、adapter 尚未调用时接受取消或预算终止，不调用 adapter，直接进入统一 `finalizing` 收尾；不额外定义排队或等待状态。
 - **根会话 Actor ID 全局账本**：短统一 ID（如 `sub_01`）由宿主根会话作用域内的持久记录管理，在同一根会话分支切换或 reload 恢复时，扫描根会话历史中所有分支的 `subagent-state` 条目构建全局已分配集合，绝不跨分支或跨 reload 发生短 ID 碰撞重用。
 - **确定性退役**：宿主服务退役（`retireService`）在同步步骤内建立注销登记（无 await 缝隙），并发调用等待同一 Promise；先发出全局取消，异步断开 Socket，最终等待所有 live Job 收尾完成后安全重置。
 
@@ -201,7 +207,7 @@ Job 状态为 `queued`、`running`、`stopping`、`finalizing`、`completed`、`
 
 - 聊天、Compact 摘要及摘要重试在共享 stream 边界预扣；Fresh 的两次 Jev classify 也各预扣一次同 Job 的 Model Call。Tool Call 不单独计数。
 - 第 hard 次可以执行，预计 hard+1 在请求前拒绝。达到 Soft 只提示一次，不暴露具体阈值。
-- Active Time 只在持有执行槽位时累计；queued 不计，stopping 等实际退出期间仍计。
+- Active Time 从 adapter 启动开始累计，stopping 等实际退出期间仍计。finalizing 只刷盘、不继续计执行预算；不设置全局执行槽位。
 - Model Calls／Active Time 超限使用 `budget_exceeded`，lifetime 到期使用 `job_expired`；最终为 failed，不追加收尾模型调用，保留部分结果与历史。
 - Budget 不由模型配置，不跨父子聚合；`subagent_list` 只给只读用量、phase 与终态，不暴露 Profile 上限。
 - 恢复只保留历史预算快照，不继续跨进程的 monotonic clock；显式续跑是新 Job、新 Budget。
@@ -229,7 +235,7 @@ Agent 调用原生 write：     {"content":"请核对解析器边界条件。"}\
 
 - `content` 是非空消息文本。Agent 不填写 `from`；`from` 是宿主保留字段，由该原生 `write` 工具所属的会话绑定：根会话为 `main`，子会话为自己的短 ID（例如 `sub_01`、`sub_01_02`）。复活后仍是同一发送者 ID，不使用某轮的内部 Job ID。
 - 原生 write backend 逐条解析受管理端点的输入帧，注入真实发送者。调用方自行提交 `from` 应在发送前以 `invalid_message` 拒绝，不接受伪装为 Main、父级或兄弟的覆盖。普通文件和外部 Socket 不受这一字段规则影响。
-- 目标由 Socket 路径确定，不接受报文中的 `to` 来改写路由。接收监听器必须保留经宿主绑定的 `from`，将它带入运行中的 steer、queued 缓冲、revive 初始消息及对应原生上下文／Clean JSONL；不能统一改写为 Main。
+- 目标由 Socket 路径确定，不接受报文中的 `to` 来改写路由。接收监听器必须保留经宿主绑定的 `from`，将它带入运行中的 steer、SDK 初始化消息缓冲、revive 初始消息及对应原生上下文／Clean JSONL；不能统一改写为 Main。
 - **身份边界**：`from` 是来源标记，本身不是认证凭据。所有 Agent 共用宿主进程与工作目录，不能声称只校验 JSON 中的 ID、或只校验 Unix peer PID／UID 就证明了 Actor 身份。受管理端点需要可信的宿主来源绑定；其具体传输校验机制仍待定。本轮只定义原生 write 路径，不新增外部客户端投递入口。不具备来源绑定的原始连接不得默认归为 Main 或某个已注册 Agent，也不得以自报的 `from` 获得权限。
 - 单点消息中的发送者与目标可以不同；广播必须校验实际发送者正是该 `children.sock` 的所属父节点，否则以 `invalid_target` 拒绝，不能借写入其它父节点的端点扩大广播范围。
 
@@ -239,8 +245,7 @@ Agent 调用原生 write：     {"content":"请核对解析器边界条件。"}\
 
 | 目标 Agent 接收状态 | 写入行为 |
 | --- | --- |
-| `running`（正在执行） | 触发底层原生 steer；若在两轮/工具调用之间，先缓冲并在下一轮排空 |
-| `queued` | 缓冲入队，待任务获取执行槽位启动时作为初始追加消息接收 |
+| `running`（初始化或执行中） | SDK 尚未就绪时缓冲为启动输入；执行中触发原生 steer，轮间消息在下一轮排空 |
 | `stopping` | 拒绝写入并报错 `agent_stopping`；需等待其完全退出进入 stopped 后再写入以触发 revive |
 | `stopped` / `completed` / `failed` | 自动触发 **revive** 续跑！重新申请槽位，在原有双轨历史中追加写入 |
 
@@ -278,7 +283,7 @@ Agent 调用原生 write：     {"content":"请核对解析器边界条件。"}\
 - 新创建的 ID 使用新的随机命名空间，废弃分支或旧运行实例的地址不会意外命中另一个新 Actor。其它根会话不通过猜 ID 获得访问。
 - 恢复以选中根分支的 checkpoint 为准：子会话回到对应 leaf，不带入后来废弃分支的轮次。原生文件中超出 checkpoint 的尾部不会自动被采纳或重放。
 - 原生消息结束时更新历史边界和 checkpoint；首次任务已记录与否也按保存的分支判断，不能根据另一个分支的消息清除待发送任务。
-- 恢复时的 queued／running／stopping Job 变为 `failed`，错误为 `interrupted`；不自动重跑模型、工具或副作用。用户／Agent 的新显式消息才创建续跑 Job。
+- 恢复时的 running／stopping／finalizing Job 变为 `failed`，错误为 `interrupted`；不自动重跑模型、工具或副作用。用户／Agent 的新显式消息才创建续跑 Job。
 - 正常生命周期切换先停止旧服务并等待原生 Job 实际退出，再暴露新服务；旧回调不能污染后来的根会话，也不能与同一 Actor 的新运行重叠。
 - checkpoint 或 seed 损坏、文件缺失、原生 leaf 不存在时显式报错，不悄悄初始化空上下文。存储写入失败会报告，不把内存里的已发生副作用伪装成已回滚。
 - `/reload` 重新注册当前 Session 的协议路由；每个会话拥有独立 EventBus，不泄漏到兄弟会话。
@@ -341,9 +346,10 @@ Main/Subagent
 ```
 
 - **行为**：
-  - 若任务处于 `queued`，立即移出队列并标记为 `cancelled`；
-  - 若任务处于 `running`，向子任务发送中止信号并置入 `stopping` 状态，等待底层当前工具或模型请求安全退出，完成后释放并发槽位并刷盘双轨历史；
-  - 任务停止后，发起者即可直接读取暴露的 `summary.md` 或 `session.clean.jsonl`；
+  - 若 adapter 尚未启动，跳过原生执行，直接进入统一收尾；
+  - 若任务处于 `running` 且 adapter 已启动，发送中止信号并进入 `stopping`，等待初始化、工具或模型请求退出，再进入 `finalizing` 刷盘；
+  - 若任务处于 `finalizing`，不再接受取消，不改变已冻结的 outcome；
+  - stop 返回 `stopping`／`finalizing` 只表示生命周期仍未结束；终态发布后历史写入已结束，发起者可读取 `summary.md` 或 `session.clean.jsonl`，写入失败则报告历史错误；
   - 不删除 Agent 实例，不回滚已经发生的外部副作用；随后向该 Agent 的 Socket 写入消息即可直接触发 revive。
 
 ### 3. 结果与历史读取

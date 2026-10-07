@@ -149,10 +149,10 @@ test("rejects malformed batches and every unknown task field", () => {
 
 test("registers entries in input order with distinct actor and Job IDs within a registry", () => {
   const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob, maxConcurrency: 1 });
+  const runtime = createSubagentRuntime({ startJob: adapter.startJob });
 
   const first = runtime.task({ context: "shared background", tasks: [spec("a"), spec("b")] });
-  assert.deepEqual(first.items.map((item) => [item.name, item.status]), [["a", "running"], ["b", "queued"]]);
+  assert.deepEqual(first.items.map((item) => [item.name, item.status]), [["a", "running"], ["b", "running"]]);
   const [a, b] = first.items;
   for (const item of first.items) {
     assert.match(item.agentId, AGENT_ID_PATTERN);
@@ -177,33 +177,25 @@ test("registers entries in input order with distinct actor and Job IDs within a 
   assert.equal(canonicalActorId("agent_01"), null);
 });
 
-test("queues jobs beyond maxConcurrency and frees slots in order", async () => {
+test("runs all twenty descendants concurrently while enforcing each parent's width", async () => {
   const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob, maxConcurrency: 2 });
-
-  const items = runtime.task({ tasks: [spec("a"), spec("b"), spec("c"), spec("d")] }).items;
-  assert.deepEqual(items.map((item) => item.status), ["running", "running", "queued", "queued"]);
-  assert.deepEqual(adapter.started.map((handle) => handle.job.jobId), [items[0].jobId, items[1].jobId]);
-
-  adapter.handleFor(items[0].jobId).resolve({ result: "one", messages: [] });
-  await runtime.jobDone(items[0].jobId);
-  assert.deepEqual(adapter.started.map((handle) => handle.job.jobId), [items[0].jobId, items[1].jobId, items[2].jobId]);
-  assert.deepEqual(
-    runtime.jobs().jobs.map((job) => job.status),
-    ["completed", "running", "running", "queued"],
-  );
-
-  adapter.handleFor(items[1].jobId).resolve({ result: "two" });
-  await runtime.jobDone(items[1].jobId);
-  adapter.handleFor(items[2].jobId).resolve({ result: "three" });
-  await runtime.jobDone(items[2].jobId);
-  adapter.handleFor(items[3].jobId).resolve({ result: "four" });
-  await runtime.jobDone(items[3].jobId);
-  assert.deepEqual(
-    runtime.jobs().jobs.map((job) => job.status),
-    ["completed", "completed", "completed", "completed"],
-  );
-  assert.deepEqual(runtime.list().agents.map((agent) => agent.status), ["idle", "idle", "idle", "idle"]);
+  const runtime = createSubagentRuntime({ startJob: adapter.startJob });
+  const roots = runtime.task({ tasks: ["a", "b", "c", "d"].map(spec) }).items;
+  const children = roots.flatMap((parent) => runtime.task({
+    tasks: ["one", "two", "three", "four"].map(spec),
+  }, { parentAgentId: parent.agentId }).items);
+  const all = [...roots, ...children];
+  assert.equal(adapter.started.length, 20);
+  assert.ok(all.every((item) => item.status === "running"));
+  assert.ok(adapter.started.every((handle) => handle.job.budget.snapshot().running));
+  assert.throws(() => runtime.task({ tasks: [spec("fifth")] }), (error) => error.code === "child_limit_exceeded");
+  for (const parent of roots) {
+    assert.throws(() => runtime.task({ tasks: [spec("fifth")] }, { parentAgentId: parent.agentId }), (error) => error.code === "child_limit_exceeded");
+  }
+  for (const item of all) adapter.handleFor(item.jobId).resolve({ result: item.name });
+  await Promise.all(all.map((item) => runtime.jobDone(item.jobId)));
+  assert.ok(runtime.jobs().jobs.every((job) => job.status === "completed"));
+  assert.ok(runtime.list().agents.every((agent) => agent.status === "idle"));
 });
 
 test("validates Fresh and inherited specs and snapshots the parent context once per batch", () => {
@@ -377,7 +369,7 @@ test("gives each inherited child its own native entries and session identity", (
 
 test("isolates failures to the failing job", async () => {
   const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob, maxConcurrency: 2 });
+  const runtime = createSubagentRuntime({ startJob: adapter.startJob });
   const items = runtime.task({ tasks: [spec("bad"), spec("good")] }).items;
 
   adapter.handleFor(items[0].jobId).reject(new Error("model unreachable"));
@@ -423,24 +415,31 @@ test("rejects adapters that do not return a job handle", async () => {
   assert.equal(snapshot.error.code, "invalid_adapter");
 });
 
-test("cancel of a queued job is terminal and never starts it", async () => {
+test("cancellation during batch registration prevents the not-yet-started sibling from starting", async () => {
   const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob, maxConcurrency: 1 });
+  let notStarted;
+  const runtime = createSubagentRuntime({ startJob(request) {
+    if (request.spec.name === "a") {
+      const sibling = runtime.jobs().jobs.find((job) => job.name === "b");
+      assert.equal(sibling.status, "running");
+      notStarted = runtime.cancelJob(sibling.jobId);
+    }
+    return adapter.startJob(request);
+  } });
   const items = runtime.task({ tasks: [spec("a"), spec("b")] }).items;
 
-  const queued = runtime.cancelJob(items[1].jobId);
-  assert.equal(queued.ok, true);
-  assert.equal(queued.job.status, "cancelled");
-  assert.deepEqual(queued.job.error, { code: "cancelled", message: "Job cancelled before it started." });
-  assert.deepEqual(await runtime.jobDone(items[1].jobId), queued.job);
+  assert.equal(notStarted.ok, true);
+  assert.equal(notStarted.job.status, "cancelled");
+  assert.deepEqual(notStarted.job.error, { code: "cancelled", message: "Job cancelled before it started." });
+  assert.deepEqual(await runtime.jobDone(items[1].jobId), notStarted.job);
   assert.equal(adapter.started.length, 1);
   assert.deepEqual(runtime.cancelJob(items[1].jobId).reason, "already_finished");
   assert.throws(() => runtime.cancelJob("job_missing-9"), (error) => error instanceof SubagentError && error.code === "unknown_job");
 });
 
-test("a cancelled run keeps its slots until the native handle exits", async () => {
+test("a cancelled run keeps its actor active without blocking its sibling", async () => {
   const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob, maxConcurrency: 1 });
+  const runtime = createSubagentRuntime({ startJob: adapter.startJob });
   const items = runtime.task({ tasks: [spec("a"), spec("b")] }).items;
   const [first, sibling] = items;
 
@@ -449,10 +448,9 @@ test("a cancelled run keeps its slots until the native handle exits", async () =
   assert.equal(stopping.job.status, "stopping");
   assert.equal(stopping.job.stopping, "cancelled");
   assert.equal(adapter.handleFor(first.jobId).cancelled, true);
-  // Physical and topology slots stay occupied: the sibling is still queued and
-  // the agent still counts as running.
-  assert.deepEqual(adapter.started.map((handle) => handle.job.jobId), [first.jobId]);
-  assert.equal(runtime.jobs({ jobIds: [sibling.jobId] }).jobs[0].status, "queued");
+  // Cancellation keeps this actor active, but does not block its sibling.
+  assert.deepEqual(adapter.started.map((handle) => handle.job.jobId), [first.jobId, sibling.jobId]);
+  assert.equal(runtime.jobs({ jobIds: [sibling.jobId] }).jobs[0].status, "running");
   assert.equal(runtime.list().agents[0].status, "running");
   assert.deepEqual(runtime.cancelJob(first.jobId).reason, "stopping");
 
@@ -485,7 +483,7 @@ test("a cancelled run keeps its slots until the native handle exits", async () =
     { role: "assistant", content: [{ type: "text", text: "partial" }] },
   ]);
 
-  // The freed slot starts the sibling only after the cancelled run exited.
+  // The sibling was already running and is unaffected by the cancelled exit.
   assert.deepEqual(adapter.started.map((handle) => handle.job.jobId), [first.jobId, sibling.jobId]);
   assert.equal(runtime.jobs({ jobIds: [sibling.jobId] }).jobs[0].status, "running");
   assert.deepEqual(runtime.cancelJob(first.jobId).reason, "already_finished");
@@ -493,7 +491,7 @@ test("a cancelled run keeps its slots until the native handle exits", async () =
 
 test("keeps agent state and job state in separate snapshots", async () => {
   const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob, maxConcurrency: 1 });
+  const runtime = createSubagentRuntime({ startJob: adapter.startJob });
   const items = runtime.task({ tasks: [spec("a"), spec("b")] }).items;
 
   assert.deepEqual(runtime.list({ status: "running" }).agents, [
@@ -613,7 +611,7 @@ test("serves repeatable result and history references", async () => {
 
 test("enforces four active children per parent and two nesting levels atomically", async () => {
   const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob, maxConcurrency: 32 });
+  const runtime = createSubagentRuntime({ startJob: adapter.startJob });
 
   const roots = runtime.task({ tasks: [spec("a"), spec("b"), spec("c"), spec("d")] }).items;
   assert.deepEqual(runtime.list().agents.map((agent) => agent.depth), [1, 1, 1, 1]);
@@ -653,7 +651,6 @@ test("enforces four active children per parent and two nesting levels atomically
 
 test("surfaces exhausted budgets without exposing profile limits", async () => {
   const runtime = createSubagentRuntime({
-    maxConcurrency: 1,
     startJob(job) {
       for (let call = 1; call <= 201; call += 1) job.budget.beginModelCall();
       return { done: Promise.reject(new Error("provider call should not start")) };
@@ -672,13 +669,12 @@ test("surfaces exhausted budgets without exposing profile limits", async () => {
   assert.equal("profile" in failed.budget, false);
 });
 
-test("an observed active-time failure stops the run and holds its slots until the handle exits", async () => {
+test("an observed active-time failure stops only its actor until the handle exits", async () => {
   await withFakeClock(async (clock) => {
     const adapter = createFakeAdapter();
     const runtime = createSubagentRuntime({
       startJob: adapter.startJob,
       deliverToMain: adapter.deliverToMain,
-      maxConcurrency: 1,
     });
     const items = runtime.task({ tasks: [spec("a"), spec("b")] }).items;
     const [first, sibling] = items;
@@ -708,8 +704,8 @@ test("an observed active-time failure stops the run and holds its slots until th
     assert.equal(stopping.status, "stopping");
     assert.equal(stopping.stopping, "failed");
     assert.equal(runtime.list().agents[0].status, "running");
-    assert.equal(runtime.jobs({ jobIds: [sibling.jobId] }).jobs[0].status, "queued");
-    assert.deepEqual(adapter.started.map((entry) => entry.job.jobId), [first.jobId]);
+    assert.equal(runtime.jobs({ jobIds: [sibling.jobId] }).jobs[0].status, "running");
+    assert.deepEqual(adapter.started.map((entry) => entry.job.jobId), [first.jobId, sibling.jobId]);
     // A stopping agent rejects writes, and nothing terminal is published
     // while the aborted run is still unwinding.
     await assert.rejects(
@@ -737,8 +733,8 @@ test("an observed active-time failure stops the run and holds its slots until th
     assert.equal(adapter.mainMessages[0].status, "failed");
     assert.match(adapter.mainMessages[0].content, /status failed\./);
 
-    // The freed slot starts the sibling, and a still later observation of the
-    // finished Job changes nothing either.
+    // The sibling was already running; a later observation of the finished
+    // Job changes nothing either.
     assert.deepEqual(adapter.started.map((entry) => entry.job.jobId), [first.jobId, sibling.jobId]);
     assert.equal(handle.job.checkBudget().terminal.status, "failed");
     assert.equal(handle.cancelCount, 1);
@@ -753,7 +749,6 @@ test("a Budget failure observed before the native handle exists is never lost or
   await withFakeClock(async (clock) => {
     const adapter = createFakeAdapter();
     const runtime = createSubagentRuntime({
-      maxConcurrency: 1,
       startJob(request) {
         clock.now = 120 * 60 * 1000;
         assert.equal(request.checkBudget().terminal.status, "failed");
@@ -797,8 +792,6 @@ test("a Budget failure observed before the native handle exists is never lost or
 
 test("rejects invalid runtime options", () => {
   assert.throws(() => createSubagentRuntime({}), (error) => error instanceof SubagentError && error.code === "invalid_options");
-  assert.throws(() => createSubagentRuntime({ startJob: () => {}, maxConcurrency: 0 }), (error) => error.code === "invalid_options");
-  assert.throws(() => createSubagentRuntime({ startJob: () => {}, maxConcurrency: 1.5 }), (error) => error.code === "invalid_options");
   assert.throws(() => createSubagentRuntime({ startJob: () => {}, allowInherited: "yes" }), (error) => error.code === "invalid_options");
   assert.throws(() => createSubagentRuntime({ startJob: () => {}, onStateChange: "nope" }), (error) => error.code === "invalid_options");
   assert.throws(() => createSubagentRuntime({ startJob: () => {}, readHistory: 5 }), (error) => error.code === "invalid_options");
@@ -827,20 +820,26 @@ test("delivers a message to a running agent without waiting for a response", asy
   assert.equal(runtime.jobs({ jobIds: [item.jobId] }).jobs[0].status, "running");
 });
 
-test("holds a message for a queued agent until that job starts", async () => {
+test("buffers a message during batch registration until the recipient starts", async () => {
   const adapter = createFakeAdapter();
+  let receipt;
   const runtime = createSubagentRuntime({
-    startJob: adapter.startJob,
+    startJob(request) {
+      if (request.spec.name === "a") {
+        const sibling = runtime.jobs().jobs.find((job) => job.name === "b");
+        receipt = runtime.sendMessage({ from: "Main", to: sibling.agentId, content: "start with the tests" });
+      }
+      return adapter.startJob(request);
+    },
     deliverMessage: adapter.deliverMessage,
-    maxConcurrency: 1,
   });
   const items = runtime.task({ tasks: [spec("a"), spec("b")] }).items;
   const [first, second] = items;
 
-  const receipt = await runtime.sendMessage({ from: "Main", to: second.agentId, content: "start with the tests" });
+  receipt = await receipt;
   assert.deepEqual(receipt, { ok: true, to: second.agentId, jobId: second.jobId });
   assert.deepEqual(adapter.deliveries, []);
-  assert.equal(adapter.started.length, 1);
+  assert.equal(adapter.started.length, 2);
 
   adapter.handleFor(first.jobId).resolve({ result: "one" });
   await runtime.jobDone(first.jobId);
@@ -924,21 +923,25 @@ test("revives an idle agent with a new Job, continuedFromJobId and a fresh Budge
   assert.equal(runtime.jobs({ jobIds: [receipt.jobId] }).jobs[0].continuedFromJobId, item.jobId);
 });
 
-test("a task cancelled while queued is revived from its original seed", async () => {
+test("a task cancelled before its batch start is revived from its original seed", async () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({
-    startJob: adapter.startJob,
+    startJob(request) {
+      if (request.spec.name === "a") {
+        const sibling = runtime.jobs().jobs.find((job) => job.name === "notStarted");
+        assert.equal(runtime.cancelJob(sibling.jobId).job.status, "cancelled");
+      }
+      return adapter.startJob(request);
+    },
     deliverMessage: adapter.deliverMessage,
-    maxConcurrency: 1,
   });
   const items = runtime.task({
     context: "batch background",
-    tasks: [spec("a"), { name: "queued", task: "later work" }],
+    tasks: [spec("a"), { name: "notStarted", task: "later work" }],
   }).items;
-  const [first, queued] = items;
+  const [first, notStarted] = items;
 
-  assert.deepEqual(runtime.cancelJob(queued.jobId).job.status, "cancelled");
-  await runtime.jobDone(queued.jobId);
+  await runtime.jobDone(notStarted.jobId);
   assert.equal(adapter.started.length, 1);
   // Nothing retries the cancelled task on its own.
   adapter.handleFor(first.jobId).resolve({ result: "one" });
@@ -947,9 +950,9 @@ test("a task cancelled while queued is revived from its original seed", async ()
 
   // The explicit write revives an actor whose first native session was never
   // created: one continuation Job that still carries the original seed.
-  const receipt = await runtime.sendMessage({ from: "Main", to: queued.agentId, content: "begin now" });
+  const receipt = await runtime.sendMessage({ from: "Main", to: notStarted.agentId, content: "begin now" });
   const revived = adapter.handleFor(receipt.jobId);
-  assert.equal(revived.job.continuedFromJobId, queued.jobId);
+  assert.equal(revived.job.continuedFromJobId, notStarted.jobId);
   assert.equal(revived.job.spec.kind, "continuation");
   assert.equal(revived.job.spec.seed.task, "later work");
   assert.equal(revived.job.spec.seed.context, "batch background");
@@ -962,7 +965,6 @@ test("rejects a write that would exceed four active children", async () => {
   const runtime = createSubagentRuntime({
     startJob: adapter.startJob,
     deliverMessage: adapter.deliverMessage,
-    maxConcurrency: 8,
   });
   const roots = runtime.task({ tasks: [spec("a"), spec("b"), spec("c"), spec("d")] }).items;
 
@@ -1110,16 +1112,17 @@ test("rejects a write that arrives before any delivery hook is wired", async () 
   );
   assert.deepEqual(adapter.deliveries, []);
 
-  // Without a hand-over hook a running agent cannot take the message, and a
-  // queued one still receives it at start.
-  const noHook = createSubagentRuntime({ startJob: adapter.startJob, maxConcurrency: 1 });
+  // Without a hand-over hook neither running sibling can take a message.
+  const noHook = createSubagentRuntime({ startJob: adapter.startJob });
   const items = noHook.task({ tasks: [spec("a"), spec("b")] }).items;
   await assert.rejects(
     noHook.sendMessage({ from: "Main", to: items[0].agentId, content: "held" }),
     (error) => error instanceof SubagentError && error.code === "agent_busy",
   );
-  const queued = await noHook.sendMessage({ from: "Main", to: items[1].agentId, content: "held" });
-  assert.deepEqual(queued, { ok: true, to: items[1].agentId, jobId: items[1].jobId });
+  await assert.rejects(
+    noHook.sendMessage({ from: "Main", to: items[1].agentId, content: "held" }),
+    (error) => error instanceof SubagentError && error.code === "agent_busy",
+  );
   assert.equal(noHook.jobs().jobs.length, 2);
 });
 
@@ -1202,7 +1205,6 @@ test("a failure reaches a running parent's live Job but never revives an idle on
     startJob: adapter.startJob,
     deliverMessage: adapter.deliverMessage,
     deliverToMain: adapter.deliverToMain,
-    maxConcurrency: 8,
   });
   const parent = runtime.task({ tasks: [spec("parent")] }).items[0];
   const child = runtime.task({ tasks: [spec("child")] }, { parentAgentId: parent.agentId }).items[0];
@@ -1247,7 +1249,6 @@ test("broadcast reaches the sender's direct children only", async () => {
   const runtime = createSubagentRuntime({
     startJob: adapter.startJob,
     deliverMessage: adapter.deliverMessage,
-    maxConcurrency: 32,
   });
   const roots = runtime.task({ tasks: [spec("a"), spec("b"), spec("c")] }).items;
   const nested = runtime.task({ tasks: [spec("a1"), spec("a2")] }, { parentAgentId: roots[0].agentId }).items;
@@ -1293,7 +1294,6 @@ test("broadcast reports partial outcomes and revives idle children like any sing
   const runtime = createSubagentRuntime({
     startJob: adapter.startJob,
     deliverMessage: adapter.deliverMessage,
-    maxConcurrency: 32,
   });
   const roots = runtime.task({ tasks: [spec("a"), spec("b"), spec("c")] }).items;
 
@@ -1347,7 +1347,7 @@ test("a label is not an actor id: a child named all is reached by id only", asyn
 
 test("carries the adapter's inherited warnings on the entry and job views", async () => {
   const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob, deliverMessage: adapter.deliverMessage, maxConcurrency: 4 });
+  const runtime = createSubagentRuntime({ startJob: adapter.startJob, deliverMessage: adapter.deliverMessage });
   const warning = "Not transplantable through Pi's public API, so the inherited child does not have them: mystery.";
   const snapshot = { systemPrompt: "parent", tools: ["read"], entries: [], warnings: [warning] };
 
@@ -1437,7 +1437,7 @@ test("checkpoints the state at mutating boundaries and never during read-only po
   runtime.readProtocol("agent://");
   assert.equal(states.length, 1);
 
-  // A message held for a running Job is not a registry mutation; a queued Job
+  // A message handed to a running adapter is not a registry mutation; an initializing Job
   // holding one is.
   await runtime.sendMessage({ from: "Main", to: item.agentId, content: "status?" });
   assert.equal(states.length, 1);
@@ -1604,14 +1604,23 @@ test("rejects persisted states that cannot describe this registry", async () => 
 
 test("restores exactly the persisted registry and resolves restored transcripts natively", async () => {
   const adapter = createFakeAdapter();
+  let state;
+  let second;
   const runtime = createSubagentRuntime({
-    startJob: adapter.startJob,
+    startJob(request) {
+      const handle = adapter.startJob(request);
+      if (request.spec.name === "nested") {
+        second = runtime.task({ context: "second background", tasks: [{ name: "second", task: "second work" }] }).items[0];
+        runtime.sendMessage({ from: "Main", to: second.agentId, content: "start with the tests" });
+        state = runtime.exportState();
+      }
+      return handle;
+    },
     deliverMessage: adapter.deliverMessage,
     deliverToMain: adapter.deliverToMain,
-    maxConcurrency: 1,
   });
-  // One terminal Job, one running Job and one queued Job that holds a message:
-  // the state has to describe all three at once.
+  // Capture one terminal Job and two independently running Jobs.
+  // Messages for the second live adapter are delivered rather than scheduled.
   const first = runtime.task({ context: "batch background", tasks: [{ name: "first", task: "first work" }] }).items[0];
   const handle = adapter.handleFor(first.jobId);
   handle.job.recordHistory([{ role: "assistant", content: [{ type: "text", text: "working" }] }], { startEntryId: "e0", endEntryId: "e1" });
@@ -1623,14 +1632,11 @@ test("restores exactly the persisted registry and resolves restored transcripts 
   await runtime.jobDone(first.jobId);
 
   const nested = runtime.task({ tasks: [spec("nested")] }, { parentAgentId: first.agentId }).items[0];
-  const second = runtime.task({ context: "second background", tasks: [{ name: "second", task: "second work" }] }).items[0];
-  await runtime.sendMessage({ from: "Main", to: second.agentId, content: "start with the tests" });
   assert.deepEqual(
     runtime.jobs().jobs.map((job) => job.status),
-    ["completed", "running", "queued"],
+    ["completed", "running", "running"],
   );
 
-  const state = runtime.exportState();
   const serialized = JSON.stringify(state);
   // JSON-safe, and free of both live transcripts and registry recursion.
   assert.deepEqual(JSON.parse(serialized), state);
@@ -1645,10 +1651,8 @@ test("restores exactly the persisted registry and resolves restored transcripts 
   assert.deepEqual(jobOf(first.jobId).history, { startEntryId: "e0", endEntryId: "e2" });
   assert.equal(jobOf(nested.jobId).createdBy, first.agentId);
   assert.equal(jobOf(second.jobId).createdBy, "Main");
-  assert.equal(jobOf(second.jobId).status, "queued");
-  assert.deepEqual(state.pending, [
-    { agentId: second.agentId, messages: [{ type: "message", from: "Main", content: "start with the tests" }] },
-  ]);
+  assert.equal(jobOf(second.jobId).status, "running");
+  assert.deepEqual(state.pending, []);
   assert.deepEqual(
     state.actors.map((actor) => [actor.agentId, actor.depth, actor.jobIds.length]),
     [
@@ -1738,7 +1742,7 @@ test("restores exactly the persisted registry and resolves restored transcripts 
   assert.equal(revivedHandle.job.spec.seed.context, "second background");
   assert.deepEqual(
     revivedHandle.job.pendingMessages.map((envelope) => envelope.content),
-    ["start with the tests", "begin now"],
+    ["begin now"],
   );
 
   // New allocations never alias the restored namespace.
@@ -1752,7 +1756,6 @@ test("restore rebuilds the Job order exactly as persisted, never grouped by acto
   const runtime = createSubagentRuntime({
     startJob: adapter.startJob,
     deliverMessage: adapter.deliverMessage,
-    maxConcurrency: 4,
   });
   const a = runtime.task({ tasks: [spec("a")] }).items[0];
   const b = runtime.task({ tasks: [spec("b")] }).items[0];

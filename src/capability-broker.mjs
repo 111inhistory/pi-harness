@@ -36,14 +36,16 @@
  * excluded from search and rejected by `read`. MCP identity comes from the
  * tool's `namespace` (`mcp__<server>`), the harness `mcp__<server>__<tool>` name,
  * or an explicit `mcp:<server>[/<tool>]` source path, in that order of specificity.
- * A tool with a parseable MCP identity is reported only by the MCP branch under
- * its `mcp://` ref (its `tool://` alias is rejected); MCP-sourced tools whose
- * server identity cannot be parsed keep the ordinary tool fallback.
+ * Every namespace is one candidate with all visible members and shared
+ * instructions, addressed by namespace://. MCP tools with no native namespace
+ * use a server-level mcp:// candidate. Member lookups return the whole group. MCP-sourced tools without a
+ * parseable identity keep the ordinary tool fallback (or their ordinary namespace).
  *
  * Hits carry stable URI refs, and `read(ref, { cwd, signal })` resolves exact
  * known resources only:
  *
  *   tool://<encoded-name>                     -> tool metadata JSON
+ *   namespace://<encoded-name>                -> namespace instructions and all visible tool metadata
  *   mcp://<encoded-server>[/<encoded-tool>]   -> server/tool metadata JSON
  *   skill://<encoded-name>                    -> full skill body text
  *   npm://<encoded-package>@<version>         -> npm package metadata JSON
@@ -51,7 +53,7 @@
  * Unknown schemes, malformed refs, unknown or hidden resources and unreadable
  * skill bodies fail explicitly; nothing is fabricated. Ranking is the v2 fixed
  * ladder: exact ref, identifier/name, token+prefix recall, then single-edit
- * fuzzy — and fuzzy fires only after the primary local groups have settled with
+ * fuzzy — candidate limits apply after namespace grouping. Fuzzy fires only after the primary local groups have settled with
  * no ref/name/token hit anywhere among them (the remote group applies the same
  * rule inside its own branch). Hits carry only the two public states
  * (available / needs_approval), never activation or connection substates; the
@@ -71,9 +73,10 @@ import { PI_PACKAGE_KEYWORD, packageNameFromSource } from "./capability-marketpl
 export const CAPABILITY_TOOL_NAME = "capability";
 
 export const CAPABILITY_TOOL_DESCRIPTION =
-  "Discover capabilities for the current task. Takes no arguments: it uses the current conversation to search the " +
-  "session's tools, MCP servers and tools, procedural skills, and installable npm packages, and returns the relevant " +
-  "candidates with stable refs. Discovery is read-only: it never installs, enables, or executes third-party code.";
+  "Find reusable skills and task guidance alongside tools and MCP capabilities for the current task. " +
+  "Uses this conversation; no arguments. Returns relevant refs and availability, including uninstalled package candidates. " +
+  "A namespace is one candidate with its tools and shared instructions. " +
+  "May activate selected tools already registered in this session, but never installs packages or executes capabilities.";
 
 /**
  * Model-visible schema of the public tool. Empty on purpose: the request is the
@@ -96,8 +99,8 @@ export const CAPABILITY_SEARCH_PARAMETERS = Object.freeze({
       type: "string",
       minLength: 1,
       description:
-        "Keywords for the capability you need, or a ref from an earlier result " +
-        "(tool://read, mcp://firefox_devtools/list_pages, skill://firefox-existing-profile, npm://pkg@1.0.0) " +
+        "Keywords for relevant guidance (workflows, rules, preferences, or background) or tools, or a ref from an earlier result " +
+        "(tool://read, namespace://subagent, mcp://firefox_devtools, skill://firefox-existing-profile, npm://pkg@1.0.0) " +
         "for an exact lookup.",
     }),
     src: Object.freeze({
@@ -121,7 +124,7 @@ export const SUBMIT_RESULT_PARAMETERS = Object.freeze({
       type: "array",
       items: Object.freeze({ type: "string" }),
       description:
-        "Refs from this invocation's capability_search results, most relevant first. Empty when nothing is relevant; " +
+        "Relevant skill/guidance and tool refs from this invocation's capability_search results, most relevant first. Empty when nothing is relevant; " +
         "refs that no search returned are rejected.",
     }),
   }),
@@ -131,8 +134,8 @@ export const SUBMIT_RESULT_PARAMETERS = Object.freeze({
 
 /** Deterministic bounds for every result list, body read and remote request. */
 export const CAPABILITY_LIMITS = Object.freeze({
-  tools: 8,
-  mcp: 8,
+  tools: 8, // standalone tools or whole namespaces, not member count
+  mcp: 8, // whole MCP groups
   skills: 6,
   remote: 5,
   skillBodies: 6,
@@ -150,7 +153,7 @@ export const CAPABILITY_LIMITS = Object.freeze({
   remoteTimeoutMs: 10_000,
 });
 
-const CAPABILITY_SCHEMES = new Set(["tool", "mcp", "skill", "npm"]);
+const CAPABILITY_SCHEMES = new Set(["tool", "namespace", "mcp", "skill", "npm"]);
 const MCP_NAME_PREFIX = "mcp__";
 const DEFAULT_EXPOSURE = "direct";
 
@@ -601,6 +604,7 @@ function normalizeToolInfo(entry, activeNames) {
     namespaceName,
     namespaceServer: namespaceName.startsWith(MCP_NAME_PREFIX) ? namespaceName.slice(MCP_NAME_PREFIX.length) : "",
     namespaceDescription: typeof namespace.description === "string" ? namespace.description : "",
+    namespaceInstructions: typeof namespace.instructions === "string" ? namespace.instructions : "",
     active: activeNames.has(name),
     isMcp: false,
     mcpIdentity: null,
@@ -765,10 +769,70 @@ function buildToolHit(tool, classified, limits) {
   };
 }
 
+function memberSummary(tool, limits) {
+  return {
+    ref: tool.mcpIdentity ? mcpRef(tool.mcpIdentity.server, tool.mcpIdentity.tool) : toolRef(tool.name),
+    name: tool.name,
+    ...(tool.mcpIdentity?.tool ? { tool: tool.mcpIdentity.tool } : {}),
+    description: truncate(tool.description, limits.descriptionChars),
+    exposure: tool.exposure,
+  };
+}
+
+function buildNamespaceHit(name, group, classified, limits) {
+  return {
+    ref: `namespace://${encodeURIComponent(name)}`,
+    name,
+    namespace: name,
+    kind: "namespace",
+    description: truncate(group.find((tool) => tool.namespaceDescription)?.namespaceDescription ?? "", limits.descriptionChars),
+    instructions: group.find((tool) => tool.namespaceInstructions)?.namespaceInstructions ?? "",
+    status: "available",
+    match: classified.match,
+    score: classified.score,
+    reason: classified.reason ?? `matched ${classified.labels.join(", ")}`,
+    toolCount: group.length,
+    tools: group.map((tool) => memberSummary(tool, limits)),
+  };
+}
+
+/** Collapse matching members before applying the candidate limit. */
+function groupToolHits(hits, registry, limits) {
+  const groups = new Map();
+  const toolsByName = new Map(registry.tools.map((tool) => [tool.name, tool]));
+  for (const tool of registry.tools) {
+    const name = tool.namespaceServer ? "" : tool.namespaceName;
+    if (!name) continue;
+    const group = groups.get(name) ?? [];
+    group.push(tool);
+    groups.set(name, group);
+  }
+  const best = new Map();
+  for (const hit of hits) {
+    const name = hit.kind === "namespace" ? hit.namespace : toolsByName.get(hit.name)?.namespaceName;
+    const key = name ? `namespace://${encodeURIComponent(name)}` : hit.ref;
+    const previous = best.get(key);
+    if (!previous || compareHits(hit, previous.hit) < 0) best.set(key, { hit, name });
+  }
+  return [...best.values()].map(({ hit, name }) => {
+    if (!name) return hit;
+    const classified = { match: hit.match, score: hit.score, labels: [], reason: hit.reason };
+    return buildNamespaceHit(name, groups.get(name), classified, limits);
+  }).sort(compareHits);
+}
+
 async function searchToolHits(registryPromise, context, limits) {
   const registry = await registryPromise;
   const covered = new Set();
   const hits = [];
+
+  if (context.ref !== null && context.ref.scheme === "namespace") {
+    const name = decodePart(context.ref.rest);
+    const group = registry.tools.filter((tool) => !tool.namespaceServer && tool.namespaceName === name);
+    if (group.length === 0) return { hits, fuzzy: [], covered, warnings: registry.tools.some((tool) => tool.namespaceName === name) ? [] : [`namespace "${name}" did not resolve`] };
+    hits.push(buildNamespaceHit(name, group, { match: "ref", score: REF_SCORE, labels: ["ref"] }, limits));
+    return { hits, fuzzy: [], covered, warnings: [] };
+  }
 
   if (context.ref !== null && context.ref.scheme === "tool") {
     const warnings = [];
@@ -786,14 +850,14 @@ async function searchToolHits(registryPromise, context, limits) {
     }
     // A tool with a parseable MCP identity is addressed by its mcp:// ref; the
     // tool:// alias would give one capability two identities.
-    if (tool.mcpIdentity !== null) {
+    if (tool.mcpIdentity !== null && (!tool.namespaceName || tool.namespaceServer)) {
       warnings.push(
         `ref "${context.query}" names an MCP tool; MCP tools are addressed by their mcp://<server>/<tool> ref`,
       );
       return { hits, fuzzy: [], covered, warnings };
     }
     hits.push(buildToolHit(tool, { match: "ref", score: REF_SCORE, labels: ["ref"], tokens: new Set() }, limits));
-    return { hits, fuzzy: [], covered, warnings };
+    return { hits: groupToolHits(hits, registry, limits), fuzzy: [], covered, warnings };
   }
 
   const matched = [];
@@ -802,18 +866,22 @@ async function searchToolHits(registryPromise, context, limits) {
     // One capability, one identity: a tool whose server and tool halves are
     // parseable is reported by the MCP branch under its mcp:// ref only.
     // MCP-sourced tools without a parseable identity keep this fallback.
-    if (tool.mcpIdentity !== null) continue;
+    if (tool.mcpIdentity !== null && (!tool.namespaceName || tool.namespaceServer)) continue;
     const candidate = {
       fields: [
         { label: "name", weight: 5, text: tool.name },
         { label: "description", weight: 2, text: tool.description },
+        { label: "namespace", weight: 5, text: tool.namespaceName },
+        { label: "namespace description", weight: 2, text: tool.namespaceDescription },
+        { label: "instructions", weight: 2, text: tool.namespaceInstructions },
         { label: "parameters", weight: 2, text: tool.parametersText },
         { label: "source", weight: 1, text: `${tool.source} ${tool.path} ${tool.namespaceName}` },
       ],
-      identifiers: [tool.name],
+      identifiers: [tool.name, tool.namespaceName].filter(Boolean),
       fuzzyFields: [
         { label: "name", weight: 5, text: tool.name },
-        { label: "description", weight: 2, text: tool.description },
+        { label: "namespace", weight: 5, text: tool.namespaceName },
+        { label: "description", weight: 2, text: `${tool.description} ${tool.namespaceDescription}` },
       ],
     };
     const classified = classifyCandidate(candidate, context, limits);
@@ -825,8 +893,7 @@ async function searchToolHits(registryPromise, context, limits) {
     for (const token of classified.tokens) covered.add(token);
     hits.push(buildToolHit(tool, classified, limits));
   }
-  hits.sort(compareHits);
-  return { hits: hits.slice(0, limits.tools), fuzzy, covered, warnings: [] };
+  return { hits: groupToolHits(hits, registry, limits).slice(0, limits.tools), fuzzy, covered, warnings: [], registry };
 }
 
 function mcpIdentifiers(hit) {
@@ -850,27 +917,12 @@ function mcpIdentifiers(hit) {
   return identifiers.filter((identifier) => typeof identifier === "string" && identifier.length >= 3);
 }
 
-function buildMcpToolHit(tool, classified, limits) {
-  const identity = tool.mcpIdentity;
-  return {
-    ref: mcpRef(identity.server, identity.tool),
-    name: tool.name,
-    description: truncate(tool.description, limits.descriptionChars),
-    kind: "mcp",
-    status: "available",
-    match: classified.match,
-    score: classified.score,
-    server: identity.server,
-    ...(identity.tool !== undefined ? { tool: identity.tool } : {}),
-    reason: `matched ${classified.labels.length > 0 ? classified.labels.join(", ") : "query"}; server from ${identity.basis}`,
-  };
-}
 
 function buildMcpServerHit(server, group, classified, limits) {
   const description = group.find((tool) => tool.namespaceDescription.length > 0)?.namespaceDescription ?? "";
   return {
-    ref: mcpServerRef(server),
-    name: server,
+    ref: group[0].namespaceName ? `namespace://${encodeURIComponent(group[0].namespaceName)}` : mcpServerRef(server),
+    name: group[0].namespaceName || server,
     description: truncate(
       description.length > 0 ? description : `MCP server with ${group.length} registered tool(s)`,
       limits.descriptionChars,
@@ -880,7 +932,10 @@ function buildMcpServerHit(server, group, classified, limits) {
     match: classified.match,
     score: classified.score,
     server,
+    ...(group[0].namespaceName ? { namespace: group[0].namespaceName } : {}),
+    instructions: group.find((tool) => tool.namespaceInstructions)?.namespaceInstructions ?? "",
     toolCount: group.length,
+    tools: group.map((tool) => memberSummary(tool, limits)),
     reason: `matched ${classified.labels.length > 0 ? classified.labels.join(", ") : "query"}`,
   };
 }
@@ -890,129 +945,73 @@ async function searchMcpHits(registryPromise, context, limits) {
   const warnings = [];
   const covered = new Set();
   const hits = [];
-  const mcpTools = [];
   const groups = new Map();
-
   for (const tool of registry.tools) {
-    if (!tool.isMcp) continue;
+    if (!tool.isMcp || (tool.namespaceName && !tool.namespaceServer)) continue;
     if (tool.mcpIdentity === null) {
       warnings.push(`mcp tool "${tool.name}" exposes no parseable server identity`);
       continue;
     }
-    mcpTools.push(tool);
-    const group = groups.get(tool.mcpIdentity.server) ?? [];
+    const key = tool.namespaceName ? `namespace://${tool.namespaceName}` : mcpServerRef(tool.mcpIdentity.server);
+    const group = groups.get(key) ?? [];
     group.push(tool);
-    groups.set(tool.mcpIdentity.server, group);
+    groups.set(key, group);
+  }
+
+  if (context.ref?.scheme === "namespace") {
+    const name = decodePart(context.ref.rest);
+    const group = [...groups.values()].find((members) => members[0].namespaceName === name);
+    if (group) hits.push(buildMcpServerHit(group[0].mcpIdentity.server, group, { match: "ref", score: REF_SCORE, labels: ["ref"] }, limits));
+    return { hits, fuzzy: [], covered, warnings };
   }
 
   if (context.ref !== null && context.ref.scheme === "mcp") {
-    let server = null;
-    let toolName = undefined;
+    let server, toolName;
     try {
       const slash = context.ref.rest.indexOf("/");
-      if (slash === -1) {
-        server = decodePart(context.ref.rest);
-      } else {
-        server = decodePart(context.ref.rest.slice(0, slash));
-        const encodedTool = context.ref.rest.slice(slash + 1);
-        if (encodedTool.length > 0) toolName = decodePart(encodedTool);
-      }
+      server = decodePart(slash === -1 ? context.ref.rest : context.ref.rest.slice(0, slash));
+      if (slash !== -1 && context.ref.rest.slice(slash + 1)) toolName = decodePart(context.ref.rest.slice(slash + 1));
     } catch (error) {
       warnings.push(`mcp ref lookup failed: ${errorMessage(error, limits)}`);
       return { hits, fuzzy: [], covered, warnings };
     }
-    const group = groups.get(server) ?? [];
-    if (group.length === 0) {
-      warnings.push(`ref "${context.query}" did not resolve to a visible MCP server`);
-      return { hits, fuzzy: [], covered, warnings };
-    }
-    if (toolName !== undefined) {
-      const tool = group.find((candidate) => candidate.mcpIdentity.tool === toolName || candidate.name === toolName);
-      if (tool === undefined) {
-        warnings.push(`ref "${context.query}" did not resolve to a visible MCP tool`);
-        return { hits, fuzzy: [], covered, warnings };
-      }
-      hits.push(buildMcpToolHit(tool, { match: "ref", score: REF_SCORE, labels: ["ref"], tokens: new Set() }, limits));
-      return { hits, fuzzy: [], covered, warnings };
-    }
-    hits.push(buildMcpServerHit(server, group, { match: "ref", score: REF_SCORE, labels: ["ref"] }, limits));
+    const matches = [...groups.values()].filter((group) => group.some((tool) => tool.mcpIdentity.server === server &&
+      (toolName === undefined || tool.mcpIdentity.tool === toolName || tool.name === toolName)));
+    if (matches.length === 0) warnings.push(`ref "${context.query}" did not resolve to a visible MCP ${toolName === undefined ? "server" : "tool"}`);
+    for (const group of matches) hits.push(buildMcpServerHit(group[0].mcpIdentity.server, group, { match: "ref", score: REF_SCORE, labels: ["ref"] }, limits));
     return { hits, fuzzy: [], covered, warnings };
   }
 
-  const matched = [];
-  const unmatchedTools = [];
-  for (const tool of mcpTools) {
-    const identity = tool.mcpIdentity;
+  const fuzzy = [];
+  for (const group of groups.values()) {
+    const server = group[0].mcpIdentity.server;
+    const names = [group[0].namespaceName, ...group.flatMap((tool) => [tool.mcpIdentity.server, tool.name, tool.mcpIdentity.tool])].filter(Boolean);
+    const description = group.map((tool) => `${tool.description} ${tool.namespaceDescription}`).join(" ");
     const candidate = {
       fields: [
-        { label: "tool name", weight: 5, text: tool.name },
-        { label: "server name", weight: 5, text: identity.server },
-        { label: "description", weight: 2, text: tool.description },
-        { label: "source", weight: 1, text: `${tool.path} ${tool.namespaceDescription}` },
+        { label: "server name", weight: 5, text: server },
+        { label: "tool name", weight: 5, text: names.join(" ") },
+        { label: "description", weight: 2, text: description },
+        { label: "instructions", weight: 2, text: group.find((tool) => tool.namespaceInstructions)?.namespaceInstructions ?? "" },
+        { label: "source", weight: 1, text: group.map((tool) => tool.path).join(" ") },
       ],
-      identifiers: [
-        tool.name,
-        identity.server,
-        ...(identity.tool !== undefined ? [identity.tool, `${identity.server}/${identity.tool}`] : []),
-      ],
+      identifiers: [...names, ...group.map((tool) => `${server}/${tool.mcpIdentity.tool ?? ""}`)],
       fuzzyFields: [
-        { label: "tool name", weight: 5, text: tool.name },
-        { label: "server name", weight: 5, text: identity.server },
-        { label: "description", weight: 2, text: tool.description },
+        { label: "server name", weight: 5, text: server },
+        { label: "tool name", weight: 5, text: names.join(" ") },
+        { label: "description", weight: 2, text: description },
       ],
     };
     const classified = classifyCandidate(candidate, context, limits);
-    if (classified !== null) matched.push({ tool, classified });
-    else unmatchedTools.push({ kind: "tool", tool, candidate });
-  }
-
-  const matchedServers = new Set();
-  for (const { tool, classified } of matched) {
+    if (classified === null) {
+      fuzzy.push({ server, group, candidate });
+      continue;
+    }
     for (const token of classified.tokens) covered.add(token);
-    hits.push(buildMcpToolHit(tool, classified, limits));
-    matchedServers.add(tool.mcpIdentity.server);
+    hits.push({ ...buildMcpServerHit(server, group, classified, limits), reason: `matched ${classified.labels.join(", ")}; server from ${group[0].mcpIdentity.basis}` });
   }
-
-  // One stable server-level ref per matched server: the server-level match when
-  // the query names the server itself, otherwise a rollup of its best tool. A
-  // tool whose identity carried no tool half already claims `mcp://<server>`
-  // (registeredName), so the ref is never emitted twice.
-  const unmatchedServers = [];
-  for (const [server, group] of groups) {
-    const alreadyClaimed = hits.some((hit) => hit.ref === mcpServerRef(server));
-    const serverCandidate = {
-      fields: [
-        { label: "server name", weight: 5, text: server },
-        { label: "description", weight: 2, text: group.find((tool) => tool.namespaceDescription.length > 0)?.namespaceDescription ?? "" },
-        { label: "source", weight: 1, text: `${server} ${group[0]?.path ?? ""}` },
-      ],
-      identifiers: [server],
-      fuzzyFields: [{ label: "server name", weight: 5, text: server }],
-    };
-    const serverClassified = classifyCandidate(serverCandidate, context, limits);
-    if (serverClassified !== null) {
-      if (alreadyClaimed) continue;
-      for (const token of serverClassified.tokens) covered.add(token);
-      hits.push(buildMcpServerHit(server, group, serverClassified, limits));
-      continue;
-    }
-    if (alreadyClaimed) continue;
-    if (!matchedServers.has(server)) {
-      unmatchedServers.push({ kind: "server", server, group, candidate: serverCandidate });
-      continue;
-    }
-    const best = matched
-      .filter((entry) => entry.tool.mcpIdentity.server === server)
-      .reduce((left, right) => (right.classified.score > left.classified.score ? right : left));
-    hits.push(buildMcpServerHit(server, group, {
-      match: best.classified.match,
-      score: best.classified.score,
-      labels: best.classified.labels,
-    }, limits));
-  }
-
   hits.sort(compareHits);
-  return { hits: hits.slice(0, limits.mcp), fuzzy: [...unmatchedTools, ...unmatchedServers], covered, warnings };
+  return { hits: hits.slice(0, limits.mcp), fuzzy, covered, warnings };
 }
 
 function buildSkillHit(skill, classified, body, limits, exact) {
@@ -1413,8 +1412,8 @@ function mergeCaveats(found, limits) {
  */
 function bindAndExtract(skillHits, toolHits, mcpHits, bodies, limits) {
   const anchors = [
-    ...toolHits.map((hit) => ({ ref: hit.ref, identifiers: [hit.name, hit.ref] })),
-    ...mcpHits.map((hit) => ({ ref: hit.ref, identifiers: mcpIdentifiers(hit) })),
+    ...toolHits.map((hit) => ({ ref: hit.ref, identifiers: [hit.name, hit.ref, ...ensureArray(hit.tools).flatMap((tool) => [tool.name, tool.ref])] })),
+    ...mcpHits.map((hit) => ({ ref: hit.ref, identifiers: [...mcpIdentifiers(hit), ...ensureArray(hit.tools).flatMap((tool) => [tool.name, tool.ref, tool.tool].filter(Boolean))] })),
   ];
   const found = [];
   const bySkill = new Map();
@@ -1468,23 +1467,17 @@ function applyFuzzyPhase({ tools, mcp, skills }, context, limits) {
       for (const token of classified.tokens) tools.covered.add(token);
       fuzzyHits.push(buildToolHit(entry.tool, classified, limits));
     }
-    fuzzyHits.sort(compareHits);
-    tools.hits = fuzzyHits.slice(0, limits.tools);
+    tools.hits = groupToolHits(fuzzyHits, tools.registry, limits).slice(0, limits.tools);
   }
   if (mcp !== undefined) {
-    const toolHits = [];
-    const serverHits = [];
+    const fuzzyHits = [];
     for (const entry of ensureArray(mcp.fuzzy)) {
       const classified = classifyFuzzy(entry.candidate, context, limits);
       if (classified === null) continue;
       for (const token of classified.tokens) mcp.covered.add(token);
-      if (entry.kind === "tool") toolHits.push(buildMcpToolHit(entry.tool, classified, limits));
-      else serverHits.push(buildMcpServerHit(entry.server, entry.group, classified, limits));
+      fuzzyHits.push(buildMcpServerHit(entry.server, entry.group, classified, limits));
     }
-    // A tool with no parseable tool half claims `mcp://<server>`; keep one ref.
-    const claimed = new Set(toolHits.map((hit) => hit.ref));
-    const fuzzyHits = [...serverHits.filter((hit) => !claimed.has(hit.ref)), ...toolHits].sort(compareHits);
-    mcp.hits = fuzzyHits.slice(0, limits.mcp);
+    mcp.hits = fuzzyHits.sort(compareHits).slice(0, limits.mcp);
   }
   if (skills !== undefined) {
     const fuzzyHits = [];
@@ -1661,6 +1654,14 @@ export function createCapabilityBroker(providers = {}) {
     return JSON.stringify(toolPayload(tool), null, 2);
   }
 
+  async function readNamespace(ref, rest) {
+    const name = decodePart(rest);
+    const registry = await snapshotRegistry(providers);
+    const group = registry.tools.filter((tool) => tool.namespaceName === name);
+    if (group.length === 0) throw new Error(`unknown namespace: ${ref}`);
+    return JSON.stringify({ ...buildNamespaceHit(name, group, { match: "ref", score: REF_SCORE, labels: ["ref"] }, CAPABILITY_LIMITS), tools: group.map(toolPayload) }, null, 2);
+  }
+
   async function readMcp(ref, rest, limits) {
     const slash = rest.indexOf("/");
     const server = decodePart(slash === -1 ? rest : rest.slice(0, slash));
@@ -1678,6 +1679,8 @@ export function createCapabilityBroker(providers = {}) {
           kind: "mcp",
           server,
           description: group.find((tool) => tool.namespaceDescription.length > 0)?.namespaceDescription ?? "",
+          ...(group[0].namespaceName ? { namespace: group[0].namespaceName } : {}),
+          instructions: group.find((tool) => tool.namespaceInstructions)?.namespaceInstructions ?? "",
           active: group.some((tool) => tool.active),
           tools: group.map((tool) => ({
             ref: mcpRef(server, tool.mcpIdentity.tool),
@@ -1748,6 +1751,9 @@ export function createCapabilityBroker(providers = {}) {
     switch (parsed.scheme) {
       case "tool":
         text = await readTool(ref, parsed.rest);
+        break;
+      case "namespace":
+        text = await readNamespace(ref, parsed.rest);
         break;
       case "mcp":
         text = await readMcp(ref, parsed.rest, CAPABILITY_LIMITS);

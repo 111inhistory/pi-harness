@@ -12,7 +12,7 @@
  * never installs, enables or executes anything.
  *
  * The same extension registers the capability-owned read protocols
- * (`tool://`, `mcp://`, `skill://`, `npm://`) through installProtocolIO using
+ * (`tool://`, `namespace://`, `mcp://`, `skill://`, `npm://`) through read-only installProtocolIO using
  * the broker's `read()`. It registers no protocol writer.
  */
 
@@ -54,16 +54,29 @@ export default function capabilityExtension(pi) {
   };
   const broker = createCapabilityBroker(createProviders(pi, service));
 
-  installProtocolIO(pi, { readers: capabilityReaders(broker) });
+  // Subagent owns the Socket-aware native write backend; Capability only adds readers.
+  installProtocolIO(pi, { readers: capabilityReaders(broker), readOnly: true });
 
   pi.registerTool({
     name: CAPABILITY_TOOL_NAME,
     label: "Capability",
     description: CAPABILITY_TOOL_DESCRIPTION,
+    promptSnippet: "Find reusable guidance and capabilities for the current task",
+    promptGuidelines: [
+      "Use capability to find missing capabilities or reuse established guidance and specialized tools before inventing a workflow or building a replacement, for example for Word editing or PPT creation.",
+      "Use capability for task-level discovery of guidance and tool names. For unfamiliar tools used through codemode, inspect the interface with describeTool or describeNamespace before calling it. Do not use searchTools as a separate discovery workflow.",
+      "Skills may contain workflows, rules, preferences, fixed background, or descriptions. Read relevant guidance and use it alongside tool interfaces; a generic tool description may not fit the current task.",
+      "Reuse relevant findings throughout the task. Search again when requirements change or a new capability gap appears, not before every tool call.",
+      "A needs_approval result is a candidate, not permission to install or execute it.",
+    ],
     parameters: CAPABILITY_PARAMETERS,
     async execute(toolCallId, _params, signal, _onUpdate, ctx) {
       let result;
       try {
+        const subagentTools = pi.getAllTools().filter((tool) => tool.namespace?.name === "subagent");
+        if (!["subagent_list", "subagent_stop"].every((name) => subagentTools.some((tool) => tool.name === name && tool.exposure !== "hidden"))) {
+          throw new Error("Capability requires the Subagent extension to be loaded; its tools need not be active.");
+        }
         const snapshot = captureInheritedContext(pi, ctx);
         const discovery = createCapabilityDiscovery({
           broker,
@@ -169,7 +182,7 @@ function marketplace(pi, service) {
 function capabilityReaders(broker) {
   const read = (uri, ctx, options) =>
     broker.read(String(uri), { cwd: ctx?.cwd, signal: options?.signal ?? ctx?.signal });
-  return { tool: read, mcp: read, skill: read, npm: read };
+  return { tool: read, namespace: read, mcp: read, skill: read, npm: read };
 }
 
 /**
@@ -191,7 +204,8 @@ function activateSelectedTools(pi, result) {
   const activate = [];
   const seen = new Set();
   const warnings = [];
-  for (const hit of [...result.tools, ...result.mcp]) {
+  const selected = [...result.tools, ...result.mcp].flatMap((hit) => Array.isArray(hit.tools) ? hit.tools : [hit]);
+  for (const hit of selected) {
     const name = typeof hit?.name === "string" ? hit.name : "";
     if (name === "" || seen.has(name)) continue;
     seen.add(name);
@@ -206,7 +220,7 @@ function activateSelectedTools(pi, result) {
       warnings.push(`selected tool "${name}" is hidden and cannot be activated`);
       continue;
     }
-    if (active.has(name)) continue;
+    if (active.has(name) || tool.exposure === "codemode" || tool.exposure === "deferred") continue;
     activate.push(name);
   }
   if (activate.length > 0) pi.setActiveTools([...active, ...activate]);

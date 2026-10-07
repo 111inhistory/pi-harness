@@ -34,7 +34,11 @@ export default function workExtension(pi) {
     name: "work",
     label: "Work",
     description:
-      "Manage an in-memory recursive TODO tree. Add ordered item/branch subtrees atomically, change the viewing focus, render the tree, and manage node descriptions. This tool records work only; it does not execute tasks or launch subagents.",
+      "Manage an in-memory work tree. Actions: add (attach, items), focus (id), show (optional id, depth, full), desc.add (nodeId, content), desc.delete (nodeId, entryId), desc.query (nodeId, optional query). Records work only; does not execute tasks.",
+    promptSnippet: "Record and inspect a recursive work tree",
+    promptGuidelines: [
+      "Use returned node IDs for work operations. focus changes only the view; it does not start, stop, or complete work.",
+    ],
     parameters: workParameters,
     async execute(_toolCallId, params) {
       const response = dispatch({ tool: "work", ...params });

@@ -203,12 +203,11 @@ Model Call 限制已经约束模型能够发起工具批次的循环次数。具
 
 以下时间不计入：
 
-- `queued`；
 - 未来显式支持的 `waiting`。
 
 `parked`（目标设计的 Agent 状态，当前未实现）不是 Job 状态；Agent parked 前，其 Job 已经进入终态，Budget 也已经冻结。
 
-`lifetimeMs` 从 Job 创建时开始按 monotonic clock 计算，是独立的绝对资源租约。它没有 soft 阶段；到期后立即 abort 当前执行或等待，将 Job 标记为 `failed`，使用 `termination: "lifetime_expired"` 和 `error.code: "job_expired"`。它用于防止 queued（以及目标设计的 waiting）Job 永久残留，不等于工作预算。
+`lifetimeMs` 从 Job 创建时开始按 monotonic clock 计算，是独立的绝对资源租约。它没有 soft 阶段；到期后立即 abort 当前执行或等待，将 Job 标记为 `failed`，使用 `termination: "lifetime_expired"` 和 `error.code: "job_expired"`。它用于约束 Job 从注册到执行结束的总寿命，不等于工作预算；当前不设置任务队列或 waiting 状态。
 
 ### Token 与费用
 
@@ -384,13 +383,13 @@ Main Agent（depth 0）
 - 每个 `depth 1` Agent 最多有 4 个活跃直接子 Agent；
 - `depth 2` Agent 不注册 `task` 创建入口，不能继续派生；
 - 限制按父 Agent 的活跃直接子节点计算，不是生命周期累计创建数；
-- `queued`、`running` 和 `stopping` 都占用一个活跃子节点名额；
+- `running`、`stopping` 和 `finalizing` 都占用一个活跃子节点名额；
 - `completed`、`failed`、`cancelled` 不占用名额；
 - 创建或 revive 会导致活跃直接子节点超过 4 时，整个请求在注册前原子拒绝；
 - 子节点进入终态并等原生运行退出后释放名额，父 Agent 可以再创建新的子节点；
 - 一批 `task` 条目不得部分创建后再因宽度限制失败。
 
-21 是拓扑上的活跃 Agent 硬上限。实际同时执行模型或工具的数量仍可受独立的全局调度并发配置限制；调度器可以让活跃 Agent 排队，但不能借排队绕过每个父节点 4 个活跃子节点的限制。
+21 是包含 Main 的拓扑活跃 Actor 上限。没有独立的全局 Job 并发限制；4 个 Depth 1 和 16 个 Depth 2 可以同时执行。每个父节点仍最多 4 个活跃直接子节点，stopping／finalizing 未结束前仍占该名额。
 
 新 Job 根据其 Agent 的固定深度选择 `JOB_BUDGET_BY_DEPTH[depth]`。同一个 Agent 的 continuation Job 仍使用该深度的 Profile；不存在父子共享或跨树累计的 Budget。
 
@@ -398,7 +397,7 @@ Main Agent（depth 0）
 
 | 事件 | Budget 行为 |
 |---|---|
-| Job 在 `queued` | 不计 Active Time |
+| Job 已注册、adapter 尚未调用 | 不计 Active Time，不另设排队状态 |
 | Job 获得执行槽位 | 开始或恢复 Active Time |
 | Tool 完成后继续模型循环 | 不重置 |
 | Provider 错误后 Harness 重试 | 不回滚 |
@@ -496,8 +495,8 @@ Capability 搜索与安装分为三道门：
 - `task` 的模型可见 Schema 不新增 Budget 字段。
 - 每次聊天 Provider 请求（含 Compact 摘要与摘要重试）在共享 stream 边界预扣；Fresh 路由的两次 native classify 分别预扣；超过 hard 的请求在发送前被拒绝。
 - Tool Call 不作为统一 Budget 维度；参数规模、副作用和并发由具体工具控制。
-- queued 不消耗 Active Time；取消、预算终止与 lifetime 到期通过 `stopping` 等原生运行退出。
-- `lifetimeMs` 到期会以 `job_expired` 终止 queued 或 running Job。
+- Active Time 从 adapter 启动开始累计；取消、预算终止与 lifetime 到期等待实际退出，尚未调用 adapter 则直接统一收尾。
+- `lifetimeMs` 到期会以 `job_expired` 终止 running Job，包括初始化期间。
 - Soft 只提示一次；Hard 可靠中止，不追加额外的收尾模型调用。
 - 模型正常返回后 Job 终止，不能在同一 Job 上重置 Budget。
 - 取消或 Budget 终止不会级联到批次中其他任务。

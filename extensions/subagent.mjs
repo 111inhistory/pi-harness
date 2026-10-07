@@ -1,83 +1,9 @@
 /**
- * Subagent Pi extension.
- *
- * Registers model-facing `task` and `hub`, creates real Fresh/Inherited Pi
- * child sessions, enforces the two-level 4x4 topology, wires every Job Budget
- * into the Provider preflight and monotonic-time abort path, and connects the
- * runtime's message routing to native Pi message APIs.
- *
- * Routing:
- * - A Fresh Job's role, chat model, thinking level and tool allowlist are
- *   chosen by `src/subagent-routing.mjs` (two native Jev classifications)
- *   inside the Job itself, before its session exists, on the Job's own Budget.
- *   The caller supplies only the batch `context` and the `task` text. The
- *   resolved role, model and effective loadout are recorded in the actor's
- *   persisted record, so a revival reuses them and never reroutes; an actor
- *   whose routing never completed may route once on a later explicit message.
- * - Inherited Jobs keep the parent snapshot's model, thinking level, prompt
- *   and conversation; they never route.
- *
- * Messaging:
- * - `read`/`write` protocol support comes from the shared protocol installer:
- *   this extension registers the `agent` and `history` readers plus the
- *   `agent` writer for every surface (host = Main, each child = its agent).
- * - The writer binds the sender to the surface owner, so a child cannot spoof
- *   Main or a peer; `agent://all` is write-only and fans out to the sender's
- *   direct children through the runtime.
- * - A running child receives a message through native steering; a message that
- *   arrives between turns is delivered by that Job's own end-of-turn loop, so
- *   every message reaches the session exactly once and consumed steering is
- *   never replayed.
- * - A queued child receives its messages when the Job starts; an idle child is
- *   revived with a NEW Job (`continuedFromJobId`) rebuilt on its retained
- *   native session — or, when its first Job never ran at all (cancelled while
- *   queued), on the original seed that Job carries, so a never-started actor
- *   still gets its assignment and its first native session. The conversation
- *   continues with a fresh Budget and the original `agent://` result stays
- *   immutable.
- * - Job completion notifies its creator once, as a typed `agent-completion`
- *   native custom message: the root session receives it durably without
- *   starting a turn, a child creator receives it in its own conversation.
- *   Completion never creates a Job and never wakes an idle actor; only an
- *   explicit message does.
- *
- * History:
- * - Each Job's `history://` transcript is collected from the append-only
- *   SessionManager entry tree between the Job's start boundary and its current
- *   leaf, so native compaction neither truncates nor duplicates a Job's own
- *   messages. The recorded native entry ids are persisted with the rest of the
- *   registry state, so a restored Job's slice stays sealed at the leaf it
- *   reached instead of growing with a later continuation.
- *
- * Persistence (src/subagent-storage.mjs):
- * - The root session's active branch carries `subagent-state` custom entries
- *   (`pi.appendEntry`), each one JSON-safe checkpoint of the runtime registry
- *   plus the actor records; inherited snapshots are stored once as a native
- *   seeded session file and referenced from then on.
- * - Every actor owns one native Pi session file under
- *   `<agentDir>/subagent-sessions/<rootSessionId>/<agentId>.jsonl`; a record
- *   also carries the actor's native leaf anchor, so restarting from an earlier
- *   root branch (or a checkpoint) continues exactly the conversation that
- *   branch saw instead of turns a later branch appended. Restoring an anchor
- *   uses native tree navigation, which leaves the newer turns as an abandoned
- *   child branch.
- * - Jobs that were queued, running or stopping when the process went away are
- *   restored as explicitly failed interrupted Jobs: side effects are never
- *   rerun, and their history is sealed at the actor's checkpoint anchor.
- * - A checkpoint is the authoritative recovery point. Leaf anchors, per-Job
- *   history bounds and the recorded assignment are committed at every finalized
- *   native message — including a Job's first user message, before its provider
- *   request is dispatched — so an interrupted run recovers the progress it
- *   actually committed. Native turns a child file appended after the last
- *   checkpoint stay in that file as an abandoned child branch; recovery does
- *   not adopt them and never guesses from file order.
- * - Leaving a root session (reload, new, resume, fork, tree navigation) retires
- *   the old service and waits for every pending Job's native run to exit before
- *   the restored runtime is exposed, so two runs can never share one actor.
- * - A memory-only SDK root stays memory-only: no checkpoint entries are
- *   appended and no session files are written for it.
- *
- * The extension still does not implement blocking or schema output validation.
+ * Subagent tools, native SDK execution, socket delivery and history finalization.
+ * Fresh jobs route on their own Budget; Inherited jobs retain the parent identity.
+ * Each actor keeps its session and branch anchor across explicit revivals.
+ * Runtime owns terminal outcomes; this adapter runs the SDK and writes history.
+ * Root checkpoints are branch-scoped, while actor IDs are root-session-scoped.
  */
 
 import {
@@ -91,14 +17,12 @@ import {
 
 import path, { join } from "node:path";
 
-import { SubagentError, copyInheritedEntries, createSubagentRuntime, parseProtocolRef } from "../src/subagent-runtime.mjs";
+import { SubagentError, copyInheritedEntries, createSubagentRuntime } from "../src/subagent-runtime.mjs";
 import { captureInheritedContext } from "../src/inherited-context.mjs";
 import { installModelCallBudget } from "../src/pi-job-budget.mjs";
 import { routeSubagent } from "../src/subagent-routing.mjs";
 import { SUBAGENT_SESSIONS_DIR, createSubagentStore, SubagentStoreError } from "../src/subagent-storage.mjs";
 import capabilityExtension from "./capability.mjs";
-import fs from "node:fs";
-const fsp = fs.promises;
 import {
   createAgentSocketServer,
   createBroadcastSocketServer,
@@ -113,23 +37,33 @@ import {
   getSubagentHistoryPaths,
 } from "../src/subagent-history.mjs";
 
-const MAX_CONCURRENCY = 4;
 const MAX_AGENT_DEPTH = 2;
 const HARNESS_TOOLS = ["subagent_create", "subagent_list", "subagent_stop", "capability"];
 const ROOT_HARNESS_TOOLS = ["subagent_list", "subagent_stop", "capability"];
 const MESSAGE_CUSTOM_TYPE = "agent-message";
 const COMPLETION_CUSTOM_TYPE = "agent-completion";
-/** Reserved broadcast target; `all` is never an actor identity. */
-const BROADCAST_ACTOR_ID = "all";
 /** Job statuses that never reached a terminal state in their own process. */
-const LIVE_JOB_STATUSES = new Set(["queued", "running", "stopping"]);
+const LIVE_JOB_STATUSES = new Set(["running", "stopping", "finalizing"]);
+
+const SUBAGENT_NAMESPACE = Object.freeze({
+  name: "subagent",
+  description: "Delegate independent background tasks, exchange messages, and collect their results.",
+  instructions: [
+    "Where available, use subagent_create to delegate independent tasks. Fresh agents need self-contained task/context; inheritContext copies this session's snapshot. Agents share the working directory; avoid simultaneous edits to the same files.",
+    "Each parent can have four active children, with two child levels. Normal completion does not wake you; use subagent_list and read history.summary for the outcome or history.cleanJsonl for full messages.",
+    "running includes initialization; stopping waits for execution exit; finalizing writes history; stopped means ended, not necessarily succeeded. Use subagent_stop only to cancel unwanted work.",
+    'To send a message, use write with the returned socket path and one JSON object per line: {"content":"Please check the tests"}, ending with a newline. This is an exception to write\'s file-only guidance. The host binds the sender; omit from and to.',
+    "A successful write is not a task result. Writing to a stopped agent starts a new run; wait for stopped before messaging an agent that is stopping or finalizing.",
+    "Your children.sock endpoint broadcasts only to your direct children, never recursively. Query progress when needed, not in a tight loop.",
+  ].join("\n"),
+});
 
 const taskParameters = {
   type: "object",
   properties: {
     context: {
       type: "string",
-      description: "Explicit background shared by every task in this batch.",
+      description: "Background, constraints, and source material shared by every task in this batch.",
     },
     tasks: {
       type: "array",
@@ -139,10 +73,10 @@ const taskParameters = {
         type: "object",
         properties: {
           name: { type: "string", description: "Caller-facing label; defaults to none." },
-          task: { type: "string", description: "Self-contained instruction for this subagent." },
+          task: { type: "string", description: "Self-contained assignment: deliverable, scope, and how to verify completion." },
           inheritContext: {
             type: "boolean",
-            description: "Create an Inherited Subagent from this session's context snapshot instead of a Fresh Subagent.",
+            description: "Copy this session's conversation, system prompt, model, and thinking at creation time. Default false: start without this session's chat history.",
           },
         },
         required: ["task"],
@@ -151,30 +85,6 @@ const taskParameters = {
     },
   },
   required: ["tasks"],
-  additionalProperties: false,
-};
-
-const hubParameters = {
-  type: "object",
-  properties: {
-    op: {
-      type: "string",
-      enum: ["list", "jobs", "cancel"],
-      description: "list: agents and their status. jobs: job snapshot. cancel: cancel one job.",
-    },
-    status: {
-      type: "string",
-      enum: ["running", "idle"],
-      description: "Only for op \"list\": keep agents in this status.",
-    },
-    jobIds: {
-      type: "array",
-      items: { type: "string" },
-      description: "Only for op \"jobs\": restrict the snapshot to these job IDs.",
-    },
-    jobId: { type: "string", description: "Only for op \"cancel\": the job to cancel." },
-  },
-  required: ["op"],
   additionalProperties: false,
 };
 
@@ -270,7 +180,7 @@ async function retireService(controller) {
     : [];
 
   for (const job of liveJobs) {
-    if (job.status === "queued" || job.status === "running") {
+    if (job.status === "running") {
       try {
         service.runtime.cancelJob(job.jobId);
       } catch {
@@ -320,9 +230,6 @@ function createService(controller, ctx) {
   const historyDir = path.join(".pi/subagents", sessionUid);
   const cwd = ctx?.cwd ?? process.cwd();
 
-  if (!controller.allocatedAgentIdsBySession) {
-    controller.allocatedAgentIdsBySession = new Map();
-  }
   let allocatedAgentIds = controller.allocatedAgentIdsBySession.get(sessionId);
   if (!allocatedAgentIds) {
     allocatedAgentIds = new Set();
@@ -380,19 +287,14 @@ function createService(controller, ctx) {
     /** Live Unix Domain Socket servers mapped by actor id or broadcast key. */
     socketServers: new Map(),
     registeredSockets: new Map(),
-    jobAppendChains: new Map(),
-    jobMeta: new Map(),
-    jobSpecs: new Map(),
+    /** Per-run history writer and metadata, released after finalization. */
+    jobHistory: new Map(),
     runtime: null,
   };
-  const isAgentIdTaken = (candidateId) => {
-    return service.allocatedAgentIds.has(candidateId);
-  };
   service.runtime = createSubagentRuntime({
-    maxConcurrency: MAX_CONCURRENCY,
     socketDir,
     historyDir,
-    isAgentIdTaken,
+    isAgentIdTaken: (id) => service.allocatedAgentIds.has(id),
     onAgentIdAllocated: (agentId) => service.allocatedAgentIds.add(agentId),
     startJob: (job) => startPiJob(service, job),
     finalizeJob: (arg) => finalizePiJob(service, arg),
@@ -503,7 +405,7 @@ function restoreService(service, ctx) {
     const parentsWithChildren = new Set();
     for (const agent of list.agents) {
       if (agent.agentId !== "Main") {
-        service.allocatedAgentIds?.add(agent.agentId);
+        service.allocatedAgentIds.add(agent.agentId);
         ensureAgentSocketServer(service, agent.agentId);
       }
       if (agent.parentAgentId && agent.parentAgentId !== "Main") {
@@ -702,50 +604,6 @@ function isPlainObject(value) {
 }
 
 /**
- * Protocol surface for one session.
- *
- * Scheme handlers are bound to the surface owner: the writer's sender is the
- * surface owner (a child can never spoof Main or a peer), and the caller's
- * signal is forwarded so an aborted write never changes runtime state. The
- * service is resolved per call, so a root-session replacement is picked up
- * without reinstalling the surface.
- */
-function protocolSurface(resolveService, parentAgentId) {
-  const actorId = parentAgentId ?? "Main";
-  const reader = async (uri, ctx) => {
-    const service = await resolveService(ctx);
-    assertOperational(service);
-    const parsed = parseProtocolRef(uri);
-    if (parsed === null) {
-      throw new SubagentError(
-        "invalid_ref",
-        `${JSON.stringify(uri)} is not a supported subagent reference; use agent://, agent://<agentId> or history://<agentId>.`,
-      );
-    }
-    const mainStatus = typeof ctx?.isIdle === "function" ? (ctx.isIdle() ? "idle" : "running") : undefined;
-    return JSON.stringify(service.runtime.readProtocol(uri, { mainStatus }), null, 2);
-  };
-  const writer = async (uri, content, ctx, options) => {
-    const service = await resolveService(ctx);
-    assertOperational(service);
-    const parsed = parseProtocolRef(uri);
-    if (parsed !== null && parsed.kind === "broadcast") {
-      // Write-only: fans out to the sender's direct children through the same
-      // single-target send each child would get, and reports each recipient.
-      return service.runtime.sendMessage({ from: actorId, to: BROADCAST_ACTOR_ID, content, signal: options?.signal });
-    }
-    if (parsed === null || parsed.kind !== "result") {
-      throw new SubagentError(
-        "invalid_ref",
-        `Only agent://<agentId>, agent://Main and agent://all are writable; ${JSON.stringify(uri)} is not a message target.`,
-      );
-    }
-    return service.runtime.sendMessage({ from: actorId, to: parsed.agentId, content, signal: options?.signal });
-  };
-  return { readers: { agent: reader, history: reader }, writers: { agent: writer } };
-}
-
-/**
  * Deliver a message to the root session through native Pi messaging.
  *
  * An explicit peer message may wake the root session. A Job completion is a
@@ -781,7 +639,7 @@ async function deliverToMain(service, message) {
 /**
  * A completion keeps the same native custom-message path as a peer message, but
  * with its own type and without prompting: the runtime passes the creator's
- * live running Job id, or null when the creator is idle, queued or stopping. A
+ * live running Job id, or null when the creator is idle, stopping or finalizing. A
  * live creator gets the notice at the end of its current turn; an idle creator
  * gets it appended durably to its retained conversation, where its next normal
  * turn reads it. It never creates a Job, and it is attempted exactly once.
@@ -989,10 +847,13 @@ function installSessionSurface(pi, resolveService, { allowInherited, parentAgent
 function createTool(pi, resolveService, { allowInherited, parentAgentId, depth }) {
   return {
     name: "subagent_create",
+    namespace: SUBAGENT_NAMESPACE,
+    defaultActive: false,
     label: "Create Subagent",
     description:
-      "Create subagents that run in the background (deferred). Returns unified short id (sub_01), communication socket path " +
-      "and dual history file paths (summary.md and session.clean.jsonl). Message the subagent by writing to its socket.",
+      "Create independent background agents. Returns each agent's id, status, socket, and history paths; does not wait for results.",
+    promptSnippet: "Delegate independent tasks to background agents",
+    promptGuidelines: SUBAGENT_NAMESPACE.instructions.split("\n"),
     parameters: taskParameters,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const service = await resolveService(ctx);
@@ -1011,9 +872,8 @@ function createTool(pi, resolveService, { allowInherited, parentAgentId, depth }
         },
         captureInheritedContext: () => captureContextForChild(pi, ctx, depth + 1),
       });
-      // Guarantee sockets exist immediately for all created agents (running or queued)
+      // Publish stable endpoints for every registered actor.
       for (const item of response.items) {
-        service.allocatedAgentIds?.add(item.id);
         ensureAgentSocketServer(service, item.id);
       }
       ensureBroadcastSocketServer(service, parentAgentId);
@@ -1025,9 +885,13 @@ function createTool(pi, resolveService, { allowInherited, parentAgentId, depth }
 function listTool(resolveService) {
   return {
     name: "subagent_list",
+    namespace: SUBAGENT_NAMESPACE,
+    defaultActive: false,
     label: "List Subagents",
     description:
-      "Query subagent status, budget usage, write socket path and dual history paths. Optionally filter by agent id.",
+      "List agent status, budget usage, socket, and history paths. Optionally filter by id. Does not wait for completion.",
+    promptSnippet: "Check background agent progress and history paths",
+    promptGuidelines: SUBAGENT_NAMESPACE.instructions.split("\n"),
     parameters: listParameters,
     async execute(_toolCallId, params) {
       const service = await resolveService();
@@ -1041,10 +905,13 @@ function listTool(resolveService) {
 function stopTool(resolveService) {
   return {
     name: "subagent_stop",
+    namespace: SUBAGENT_NAMESPACE,
+    defaultActive: false,
     label: "Stop Subagent",
     description:
-      "Gracefully stop a running or queued subagent by id. Once stopped, its dual history files are flushed and ready to read. " +
-      "Writing a message to its socket later will revive it.",
+      "Request cancellation of an agent by id. May return stopping or finalizing while execution or history writes finish; does not wait for shutdown.",
+    promptSnippet: "Cancel a background agent's current run",
+    promptGuidelines: SUBAGENT_NAMESPACE.instructions.split("\n"),
     parameters: stopParameters,
     async execute(_toolCallId, params) {
       const service = await resolveService();
@@ -1258,8 +1125,7 @@ function startPiJob(service, request) {
   // acknowledgement bookkeeping: a message native steering took is owned by
   // that session and is never replayed.
   const live = { jobId: request.jobId, agentId: request.agentId, session: null, pending: [], steers: new Set(), closed: false };
-  // Messages the runtime assigned to this Job (queued at start, or the trigger
-  // of a revival Job) run first.
+  // Startup input assigned to this Job, including the trigger of a revival, runs first.
   for (const message of request.pendingMessages) {
     live.pending.push({ from: message.from, content: message.content, text: formatPeerMessage(message) });
   }
@@ -1276,7 +1142,7 @@ function startPiJob(service, request) {
       throw new SubagentError("runtime_closed", "This subagent runtime was retired; the Job was not started.");
     }
     // A continuation whose actor never started — a task cancelled while it was
-    // still queued — rebuilds its first native session from the original seed;
+    // before SDK initialization — rebuilds its first native session from the original seed;
     // an actor that already has a conversation ignores the seed entirely.
     const spec = request.spec;
     const seed = isContinuation ? (spec.seed ?? null) : spec;
@@ -1474,21 +1340,17 @@ function startPiJob(service, request) {
       ensureBroadcastSocketServer(service, request.agentId);
     }
 
-    service.jobSpecs.set(request.jobId, request.spec);
-    service.jobMeta.set(request.jobId, { roleId, model });
-
-    let cleanAppendChain = Promise.resolve();
+    const history = { spec: request.spec, roleId, model, appendChain: Promise.resolve() };
+    service.jobHistory.set(request.jobId, history);
     const queueCleanAppend = (event) => {
-      cleanAppendChain = cleanAppendChain.then(async () => {
+      history.appendChain = history.appendChain.then(async () => {
         try {
           await appendCleanJsonl(request.agentId, event, { baseDir: service.historyDir, cwd: service.cwd });
         } catch (err) {
           service.ui?.notify?.(`Clean JSONL error on ${request.agentId}: ${err.message}`, "error");
         }
       });
-      return cleanAppendChain;
     };
-    service.jobAppendChains.set(request.jobId, () => cleanAppendChain);
 
     let jobErr = null;
 
@@ -1593,21 +1455,13 @@ function startPiJob(service, request) {
     }
 
     if (jobErr) throw jobErr;
-    if (cancelled) {
-      return {
-        status: "cancelled",
-        result: readFinalText(jobMessages()),
-        messages: readTranscript(entriesAfter(sessionManager, boundary)),
-        history: { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
-      };
-    }
     return {
-      status: "completed",
+      status: cancelled ? "cancelled" : "completed",
       result: readFinalText(jobMessages()),
       messages: readTranscript(entriesAfter(sessionManager, boundary)),
       history: { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
     };
-  })().finally(async () => {
+  })().finally(() => {
     live.closed = true;
     service.liveJobs.delete(request.jobId);
     // A revival reuses the loadout the run actually ended with — capability
@@ -1617,9 +1471,7 @@ function startPiJob(service, request) {
     unsubscribeClean?.();
     unsubscribeBudget?.();
     unsubscribe?.();
-    try {
-      await session?.dispose();
-    } catch {}
+    session?.dispose();
   });
 
   return {
@@ -1639,45 +1491,40 @@ function startPiJob(service, request) {
  * Invoked once per job by Runtime with frozen outcome.
  */
 async function finalizePiJob(service, { job, outcome }) {
-  const getChain = service.jobAppendChains?.get(job.jobId);
-  if (getChain) {
-    try {
-      await getChain();
-    } catch {}
+  const { spec = {}, roleId, model, appendChain } = service.jobHistory.get(job.jobId) ?? {};
+  try {
+    await appendChain;
+    await appendCleanJsonl(
+      job.agentId,
+      {
+        type: "job_end",
+        jobId: outcome.jobId,
+        round: outcome.round,
+        status: outcome.status,
+        error: outcome.error,
+        budget: outcome.budget,
+        timestamp: Date.now(),
+      },
+      { baseDir: service.historyDir, cwd: service.cwd },
+    );
+    await writeCompactedSummary(
+      job.agentId,
+      {
+        name: spec.name ?? job.name,
+        task: typeof spec.task === "string" ? spec.task : "",
+        role: roleId ?? null,
+        model: modelRefOf(model)?.id ?? (typeof model === "string" ? model : null),
+        budget: outcome.budget,
+        result: outcome.result || (outcome.error ? `Terminated with error: ${outcome.error.message}` : "(No output recorded)"),
+        status: outcome.status,
+        error: outcome.error?.message ?? null,
+        round: outcome.round,
+      },
+      { append: outcome.round > 1, baseDir: service.historyDir, cwd: service.cwd },
+    );
+  } finally {
+    service.jobHistory.delete(job.jobId);
   }
-
-  await appendCleanJsonl(
-    job.agentId,
-    {
-      type: "job_end",
-      jobId: outcome.jobId,
-      round: outcome.round,
-      status: outcome.status,
-      error: outcome.error,
-      budget: outcome.budget,
-      timestamp: Date.now(),
-    },
-    { baseDir: service.historyDir, cwd: service.cwd },
-  );
-
-  const isContinuation = outcome.round > 1;
-  const spec = service.jobSpecs?.get(job.jobId) ?? {};
-  const meta = service.jobMeta?.get(job.jobId) ?? {};
-  await writeCompactedSummary(
-    job.agentId,
-    {
-      name: spec.name ?? job.name,
-      task: typeof spec.task === "string" ? spec.task : "",
-      role: meta.roleId ?? null,
-      model: modelRefOf(meta.model)?.id ?? (typeof meta.model === "string" ? meta.model : null),
-      budget: outcome.budget,
-      result: outcome.result || (outcome.error ? `Terminated with error: ${outcome.error.message}` : "(No output recorded)"),
-      status: outcome.status,
-      error: outcome.error ? outcome.error.message : null,
-      round: outcome.round,
-    },
-    { append: isContinuation, baseDir: service.historyDir, cwd: service.cwd },
-  );
 }
 
 /** The model identity a revival resolves through the catalog. */
@@ -2007,16 +1854,6 @@ function entriesAfter(sessionManager, boundary) {
   return at === -1 ? [] : branch.slice(at + 1);
 }
 
-/** Partial output of an aborted run; the registry reports the Job as cancelled. */
-function cancelledOutcome(sessionManager, boundary) {
-  const entries = entriesAfter(sessionManager, boundary);
-  return {
-    result: readFinalText(messagesOf(entries)),
-    messages: readTranscript(entries),
-    history: { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
-  };
-}
-
 /**
  * Classify the attempt that just settled. `AgentSession.prompt()` resolves on a
  * provider failure too — the transcript just keeps an assistant message with
@@ -2102,7 +1939,7 @@ function composePrompt(assignment, messages) {
 /**
  * Peer messages for a revival Job. When the actor never recorded anything —
  * its first Job was stopped during setup, or cancelled while it was still
- * queued — the original assignment is restated before them, so the new Job
+ * before SDK initialization — the original assignment is restated before them, so the new Job
  * has the context its conversation is missing.
  */
 function composeContinuationPrompt(messages, assignment) {

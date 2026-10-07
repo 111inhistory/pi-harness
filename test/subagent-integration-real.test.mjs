@@ -32,7 +32,11 @@ async function scenario(t, name) {
 }
 
 for (const [name, description] of [
-  ["surface", "real tool surface, atomic validation, native file/socket write and pre-session buffering"],
+  ["surface", "inactive Subagent surface, explicit activation, atomic validation and native file/socket write"],
+  ["namespace", "Capability discovers one Subagent namespace and activates all members while preserving native write prompts and Socket backend"],
+  ["namespace-reverse", "Subagent and Capability compose in the reverse extension load order"],
+  ["namespace-leaf", "Depth 2 Capability accepts the loaded two-tool Subagent namespace"],
+  ["capability-missing", "missing Subagent dependency fails before any internal model request"],
   ["external-socket", "native write to a non-Subagent socket preserves payload and cannot affect a same-named stopping Agent"],
   // These sender regressions exercise the newly revised contract, not a claimed implementation fix.
   ["sender-wire", "native child write identifies its owner in the outbound NDJSON"],
@@ -41,7 +45,7 @@ for (const [name, description] of [
   ["revive", "explicit revival retains the listener, appends both histories and does not reroute"],
   ["history", "real native tool execution retains complete clean history and the final summary"],
   ["steer", "a running actor consumes native steering exactly once in the same Job"],
-  ["queued", "queued depth-2 sockets buffer messages and stop removes a queued task without executing it"],
+  ["parallel", "four parents and sixteen children execute concurrently without a global Job cap"],
   ["broadcast", "real hierarchical broadcast reaches only direct children, never ancestors or peers"],
   ["inherited", "Inherited captures signed native context, tools warnings, identity and thinking without routing"],
   ["stopping", "native socket write rejects stopping and only revives after actual model exit"],

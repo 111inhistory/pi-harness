@@ -2,17 +2,18 @@
  * Protocol IO extension: protocol-aware `read`/`write` for one Pi session.
  *
  * `installProtocolIO(pi, { readers, writers })` makes the session's `read`
- * tool resolve protocol URIs registered by this session's extensions and makes
- * `write` accept the writable ones (only `agent://<id>` in this harness).
+ * tool resolve protocol URIs registered by this session's extensions. In read-only
+ * mode it leaves write entirely to the session's native/Socket-aware backend;
+ * otherwise it also installs the protocol-aware write adapter.
  * Everything else — every ordinary filesystem path, every explicit local
  * `file://` URL, every offset/limit, every image read, every approval — goes
  * to Pi's native read/write definitions unchanged; only the tool and
  * `path`/`content` descriptions gain a short note about registered URIs, while
  * the native schema, prompt snippet, guidelines and renderers stay intact.
  *
- * Both `extensions/capability.mjs` (tool/mcp/skill/npm readers) and
- * `extensions/subagent.mjs` (agent/history readers, agent writer) call this
- * installer during extension load. The first call of a session installs the
+ * Capability installs tool/namespace/mcp/skill/npm readers with readOnly: true.
+ * It requires the Subagent extension, which independently owns the Socket-aware
+ * native write backend. Other protocol readers can share this installer. The first call of a session installs the
  * read/write overrides and owns the session's scheme router; later calls merge
  * their schemes into the same router, so registrations compose and no
  * duplicate tools are registered. Sessions (including child sessions) are
@@ -27,7 +28,7 @@ import { installProtocolOverrides } from "../src/protocol-io.mjs";
 
 /**
  * @param {{ registerTool: Function, getSettings?: Function, events: { emit: Function, on: Function } }} pi Extension API.
- * @param {{ readers?: Record<string, Function>, writers?: Record<string, Function> }} [routes]
+ * @param {{ readers?: Record<string, Function>, writers?: Record<string, Function>, readOnly?: boolean }} [routes]
  *   Reader: `async (uri, ctx, options) -> string` (full text; the override
  *   applies native offset/limit and truncation). Writer: `async (uri, content,
  *   ctx, options) -> unknown`, whose result becomes the tool text (a string is
@@ -38,10 +39,11 @@ import { installProtocolOverrides } from "../src/protocol-io.mjs";
  *   `file` is reserved for local file URLs and cannot be registered.
  * @returns {{ owner: boolean, router: object, dispose: () => void }}
  */
-export function installProtocolIO(pi, { readers = {}, writers = {} } = {}) {
+export function installProtocolIO(pi, { readers = {}, writers = {}, readOnly = false } = {}) {
   return installProtocolOverrides(pi, {
     readers,
     writers,
+    readOnly,
     createNativeRead: createReadToolDefinition,
     createNativeWrite: createWriteToolDefinition,
     nativeReadOptions: () => nativeReadOptions(pi),

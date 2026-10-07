@@ -105,6 +105,54 @@ function toolOf(state, name) {
   return state.requests[0].customTools.find((tool) => tool.name === name);
 }
 
+test("discovery supplies guidance-aware instructions and returns selected skill and tool refs together", async () => {
+  const broker = createFakeBroker({ results: { firefox: groupedResult([TOOL_HIT, SKILL_HIT, REMOTE_HIT]) } });
+  const { result, state } = await runDiscovery({
+    broker,
+    async behavior({ request, text }) {
+      assert.match(request.instructions, /rules, preferences, fixed background/);
+      assert.match(request.instructions, /Generic tool descriptions do not replace/);
+      assert.match(request.instructions, /Search local resources first/);
+      assert.match(text, /guidance and tool refs together/);
+      const search = request.customTools.find((tool) => tool.name === CAPABILITY_SEARCH_TOOL_NAME);
+      const submit = request.customTools.find((tool) => tool.name === SUBMIT_RESULT_TOOL_NAME);
+      assert.match(search.description, /reusable guidance and missing operations/);
+      assert.match(submit.description, /guidance and tool refs together/);
+      await search.execute("search", { query: "firefox", src: "local" });
+      await submit.execute("submit", { refs: [SKILL_HIT.ref, TOOL_HIT.ref] });
+      return [];
+    },
+  });
+  assert.deepEqual(result.skills, [SKILL_HIT]);
+  assert.deepEqual(result.tools, [TOOL_HIT]);
+  assert.deepEqual(result.remote, [], "unselected candidates are not returned");
+  assert.equal(state.prompts.length, 1);
+  assert.equal(state.disposals, 1);
+});
+
+test("a namespace is submitted by its group ref and retains all member metadata", async () => {
+  const namespace = {
+    ref: "namespace://subagent", kind: "namespace", name: "subagent", namespace: "subagent",
+    status: "available", instructions: "Collect results with subagent_list.", toolCount: 2,
+    tools: [{ ref: "tool://subagent_create", name: "subagent_create" }, { ref: "tool://subagent_list", name: "subagent_list" }],
+  };
+  const broker = createFakeBroker({ results: { agents: { ...groupedResult(), tools: [namespace] } } });
+  const { result } = await runDiscovery({
+    broker,
+    async behavior({ request }) {
+      const search = request.customTools.find((tool) => tool.name === CAPABILITY_SEARCH_TOOL_NAME);
+      const submit = request.customTools.find((tool) => tool.name === SUBMIT_RESULT_TOOL_NAME);
+      await search.execute("search", { query: "agents", src: "local" });
+      const member = await submit.execute("member", { refs: [namespace.tools[0].ref] });
+      assert.equal(member.isError, true, "members are not independent candidates");
+      assert.match(member.content[0].text, /Unknown ref/);
+      await submit.execute("group", { refs: [namespace.ref] });
+      return [];
+    },
+  });
+  assert.deepEqual(result.tools, [namespace]);
+});
+
 test("invented refs are rejected and accepted refs return their real metadata", async () => {
   const broker = createFakeBroker({ results: { firefox: groupedResult([TOOL_HIT, MCP_HIT, SKILL_HIT, REMOTE_HIT]) } });
   const { result, state } = await runDiscovery({

@@ -7,7 +7,8 @@ import test from "node:test";
 
 import { createSubagentRuntime, SubagentError } from "../src/subagent-runtime.mjs";
 import { createSocketAwareWriteOperations, getAgentSocketPath, deriveSessionUid } from "../src/subagent-socket.mjs";
-import { getSubagentHistoryPaths, appendCleanJsonl, writeCompactedSummary } from "../src/subagent-history.mjs";
+import { getSubagentHistoryPaths, appendCleanJsonl } from "../src/subagent-history.mjs";
+import { deferred } from "../test-support/async.mjs";
 
 function harness(t, options = {}) {
   const started = [];
@@ -29,7 +30,7 @@ function harness(t, options = {}) {
     },
   });
   t.after(async () => {
-    // Stop queued jobs before resolving running ones, so teardown cannot start more work.
+    // Request cancellation before resolving native handles; retirement waits for actual exits.
     for (const actor of runtime.list().agents) runtime.stop(actor.agentId);
     for (const handle of started) handle.finish();
     await Promise.all(runtime.jobs().jobs.map((job) => runtime.jobDone(job.jobId)));
@@ -100,11 +101,11 @@ test("public create preserves inherited warnings and captures one independent sn
   assert.deepEqual(response.items[1].warnings, [warning]);
 });
 
-test("public list filters actors, exposes usage but not budget limits, and follows queued/stopping/terminal states", async (t) => {
-  const { runtime, started } = harness(t, { maxConcurrency: 1 });
-  const [first, second] = runtime.create({ tasks: [task("running"), task("queued")] }).items;
+test("public list filters actors, exposes usage but not budget limits, and follows running/stopping/terminal states", async (t) => {
+  const { runtime, started } = harness(t);
+  const [first, second] = runtime.create({ tasks: [task("running"), task("sibling")] }).items;
   const before = runtime.listDetailed();
-  assert.deepEqual(before.items.map((item) => item.status), ["running", "queued"]);
+  assert.deepEqual(before.items.map((item) => item.status), ["running", "running"]);
   const item = before.items[0];
   assert.equal(item.depth, 1);
   assert.equal(item.parentId, "Main");
@@ -118,7 +119,9 @@ test("public list filters actors, exposes usage but not budget limits, and follo
   assert.deepEqual(filtered[0].history, item.history);
   assert.ok(filtered[0].budget.activeTimeMs >= item.budget.activeTimeMs);
   assert.deepEqual(runtime.listDetailed({ id: "missing" }), { items: [] });
-  assert.equal(runtime.stop(second.id).status, "cancelled");
+  assert.equal(runtime.stop(second.id).status, "stopping");
+  started[1].finish();
+  await runtime.jobDone(second.id);
   assert.equal(runtime.stop(first.id).status, "stopping");
   assert.equal(runtime.listDetailed({ id: first.id }).items[0].status, "stopping");
   started[0].finish();
@@ -130,18 +133,18 @@ test("public list filters actors, exposes usage but not budget limits, and follo
   assert.equal(final.budget.terminal.status, "cancelled");
 });
 
-test("public stop retains the slot until native exit, never starts a cancelled queued task, and is repeatable", async (t) => {
-  const { runtime, started } = harness(t, { maxConcurrency: 1 });
-  const [first, second] = runtime.create({ tasks: [task("running"), task("queued")] }).items;
-  assert.equal(runtime.stop(second.id).status, "cancelled");
+test("public stop waits for its native exit without blocking a running sibling and is repeatable", async (t) => {
+  const { runtime, started } = harness(t);
+  const [first, second] = runtime.create({ tasks: [task("running"), task("sibling")] }).items;
+  assert.equal(runtime.listDetailed({ id: second.id }).items[0].status, "running");
   assert.equal(runtime.stop(first.id).status, "stopping");
   assert.equal(runtime.stop(first.id).ok, false);
   assert.equal(started[0].cancelCount, 1);
   await assert.rejects(runtime.sendMessage({ from: "Main", to: first.id, content: "too early" }), errorCode("agent_busy"));
-  assert.equal(started.length, 1);
+  assert.equal(started.length, 2);
   started[0].finish("partial");
   assert.equal((await runtime.jobDone(first.id)).status, "cancelled");
-  assert.equal(started.length, 1);
+  assert.equal(started.length, 2);
   assert.equal(runtime.stop(first.id).ok, true);
   assert.throws(() => runtime.stop("unknown_agent"), errorCode("unknown_agent"));
   assert.throws(() => runtime.stop(), errorCode("invalid_request"));
@@ -179,13 +182,12 @@ test("socket write preflight rejects stopping before attempting to connect", asy
 
 test("terminal notifications are emitted once only for failure, not normal completion or explicit cancellation", async (t) => {
   const delivered = [];
-  const { runtime, started } = harness(t, { deliverToMain: (msg) => delivered.push(msg), maxConcurrency: 2 });
-  const [normal, stopped, queued] = runtime.create({ tasks: [task("normal"), task("stopped"), task("queued")] }).items;
-  runtime.stop(queued.id);
+  const { runtime, started } = harness(t, { deliverToMain: (msg) => delivered.push(msg) });
+  const [normal, stopped] = runtime.create({ tasks: [task("normal"), task("stopped")] }).items;
   runtime.stop(stopped.id);
   started[0].finish("success");
   started[1].finish("cancelled");
-  await Promise.all([runtime.jobDone(normal.id), runtime.jobDone(stopped.id), runtime.jobDone(queued.id)]);
+  await Promise.all([runtime.jobDone(normal.id), runtime.jobDone(stopped.id)]);
   assert.deepEqual(delivered, []);
   const failed = runtime.create({ tasks: [task("failure")] }).items[0];
   started[2].fail(new Error("provider failed"));
@@ -208,7 +210,6 @@ test("depth-2 failure notification is delivered to depth-1 parent via deliverMes
   const { runtime, started } = harness(t, {
     deliverToMain: (msg) => mainDelivered.push(msg),
     deliverMessage: (req) => parentDelivered.push(req),
-    maxConcurrency: 4,
   });
   const parent = runtime.create({ tasks: [task("parent")] }).items[0];
   const child = runtime.create({ tasks: [task("child")] }, { parentAgentId: parent.id }).items[0];
@@ -279,37 +280,30 @@ test("fresh agent does not reuse actor IDs taken by earlier branches", () => {
   const resB = runtimeB.create({ tasks: [{ name: "T2", task: "Do task B" }] });
   assert.equal(resB.items[0].id, "sub_02", "Must allocate sub_02 without reusing sub_01 from unpersisted actor in branch A");
 });
-
-test("summary markdown corrects completed status to cancelled when cancellation arrives during write", async () => {
-  const tmpCwd = await fsp.mkdtemp(path.join(tmpdir(), "pi-summary-cancel-"));
-  try {
-    const summaryPath = await writeCompactedSummary(
-      "sub_01",
-      {
-        name: "test-task",
-        task: "task text",
-        status: "completed",
-        result: "preliminary result",
-      },
-      { baseDir: ".pi/subagents", cwd: tmpCwd },
-    );
-    // Simulate stop arriving during/immediately after Markdown write: fix status to cancelled
-    let summaryText = await fsp.readFile(summaryPath, "utf-8");
-    assert.ok(summaryText.includes("- **Status**: `completed`"));
-    const target = "- **Status**: `completed`";
-    const lastIdx = summaryText.lastIndexOf(target);
-    const updated = summaryText.slice(0, lastIdx) + "- **Status**: `cancelled`" + summaryText.slice(lastIdx + target.length);
-    await fsp.writeFile(summaryPath, updated, "utf-8");
-
-    const fixedText = await fsp.readFile(summaryPath, "utf-8");
-    assert.ok(fixedText.includes("- **Status**: `cancelled`"));
-    assert.ok(!fixedText.includes("- **Status**: `completed`"));
-  } finally {
-    await fsp.rm(tmpCwd, { recursive: true, force: true });
-  }
+test("finalization rejects reentrant stop and runs once per Job across revival", { timeout: 3000 }, async () => {
+  const finalized = [];
+  const runtime = createSubagentRuntime({
+    startJob: () => ({ done: Promise.resolve({ result: "done", messages: [] }) }),
+    finalizeJob({ job, outcome }) {
+      const stop = runtime.cancelJob(job.jobId);
+      assert.equal(stop.ok, false);
+      assert.equal(stop.reason, "finalizing");
+      finalized.push({ jobId: job.jobId, status: outcome.status, round: outcome.round });
+    },
+  });
+  const actor = runtime.create({ tasks: [task("reentrant")] }).items[0];
+  await runtime.jobDone(actor.id);
+  const next = await runtime.sendMessage({ from: "Main", to: actor.id, content: "continue" });
+  await runtime.jobDone(next.jobId);
+  assert.deepEqual(finalized, [
+    { jobId: actor.id, status: "completed", round: 1 },
+    { jobId: next.jobId, status: "completed", round: 2 },
+  ]);
+  assert.equal(runtime.jobs().jobs.every((job) => job.status === "completed"), true);
 });
 
-test("lifecycle: finalizing state blocks new writes with agent_busy and settles frozen outcome after finalizeJob", async () => {
+test("lifecycle: finalizing state blocks new writes with agent_busy and settles frozen outcome after finalizeJob", { timeout: 3000 }, async (t) => {
+  const entered = deferred();
   let finalizeResolve;
   const finalizePromise = new Promise((resolve) => {
     finalizeResolve = resolve;
@@ -327,8 +321,9 @@ test("lifecycle: finalizing state blocks new writes with agent_busy and settles 
       done: jobHandlePromise,
       cancel() {},
     }),
-    finalizeJob: async ({ job, outcome }) => {
+    finalizeJob: async ({ outcome }) => {
       finalizedOutcome = outcome;
+      entered.resolve();
       await finalizePromise;
     },
     deliverMessage: async () => ({ accepted: true }),
@@ -336,11 +331,14 @@ test("lifecycle: finalizing state blocks new writes with agent_busy and settles 
 
   const created = runtime.create({ tasks: [{ name: "T1", task: "Do work" }] });
   const actorId = created.items[0].id;
+  t.after(async () => {
+    finalizeResolve();
+    await runtime.jobDone(actorId);
+  });
 
   // 1. Native execution resolves
   jobHandleResolve({ result: "native work done", messages: [] });
-  // Wait a microtask turn so runtime's `#finish` enters `#beginFinalization`
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await entered.promise;
 
   // 2. Status should be finalizing, actor is live/busy
   const jobState = runtime.jobs({ jobIds: [actorId] }).jobs[0];
@@ -361,6 +359,40 @@ test("lifecycle: finalizing state blocks new writes with agent_busy and settles 
   assert.equal(finalJobState.historyState, "ready");
   assert.equal(finalizedOutcome.status, "completed");
   assert.equal(finalizedOutcome.result, "native work done");
+});
+
+test("cancellation before adapter invocation still finalizes once without native execution", { timeout: 3000 }, async (t) => {
+  const native = deferred();
+  const history = deferred();
+  const finalized = [];
+  const started = [];
+  const runtime = createSubagentRuntime({
+    startJob(request) {
+      started.push(request.spec.name);
+      const sibling = runtime.jobs().jobs.find((job) => job.name === "notStarted");
+      assert.equal(sibling.status, "running", "registration must not expose a separate waiting state");
+      runtime.cancelJob(sibling.jobId);
+      return { done: native.promise };
+    },
+    async finalizeJob({ job, outcome }) {
+      finalized.push({ name: job.name, status: outcome.status });
+      await history.promise;
+    },
+  });
+  const actors = runtime.create({ tasks: [task("first"), task("notStarted")] }).items;
+  t.after(async () => {
+    native.resolve({ result: "done" });
+    history.resolve();
+    await Promise.all(actors.map((actor) => runtime.jobDone(actor.id)));
+  });
+  assert.deepEqual(started, ["first"]);
+  assert.equal(runtime.jobs().jobs[1].status, "finalizing");
+  assert.deepEqual(finalized, [{ name: "notStarted", status: "cancelled" }]);
+  history.resolve();
+  const ended = await runtime.jobDone(actors[1].id);
+  assert.equal(ended.status, "cancelled");
+  assert.equal(ended.historyState, "ready");
+  assert.equal(finalized.length, 1);
 });
 
 test("lifecycle: finalizeJob failure records historyState error while preserving original completion status", async () => {

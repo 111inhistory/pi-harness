@@ -323,6 +323,89 @@ test("propagates caller aborts instead of reporting a partial result", async () 
   );
 });
 
+test("a namespace returns all visible members as one candidate, including on member and fuzzy lookup", async () => {
+  const namespace = { name: "agents", description: "Independent workers", instructions: "NamespaceOnlyNeedle: collect results before concluding." };
+  const members = Array.from({ length: 20 }, (_, index) => ({
+    name: "worker_" + index, description: index === 0 ? "UniqueOperation" : "Complementary operation",
+    namespace, exposure: index === 19 ? "hidden" : "direct", parameters: { type: "object", properties: {} },
+  }));
+  const before = structuredClone(members);
+  const broker = createCapabilityBroker({ listTools: () => members, listActiveTools: () => [], discoverSkills: () => [] });
+  for (const query of ["UniqueOperation", "NamespaceOnlyNeedle", "namespace://agents", "tool://worker_0", "agens"]) {
+    const result = await broker.search({ query, src: "local" });
+    assert.equal(result.tools.length, 1, query);
+    const hit = result.tools[0];
+    assert.equal(hit.kind, "namespace");
+    assert.equal(hit.ref, "namespace://agents");
+    assert.equal(hit.toolCount, 19);
+    assert.deepEqual(hit.tools.map((tool) => tool.name), members.slice(0, 19).map((tool) => tool.name));
+    assert.equal(hit.instructions, namespace.instructions);
+    if (query === "agens") assert.equal(hit.match, "fuzzy");
+  }
+  const metadata = JSON.parse(await broker.read("namespace://agents"));
+  assert.equal(metadata.tools.length, 19);
+  assert.ok(metadata.tools.every((tool) => tool.parameters.type === "object"));
+  await assert.rejects(broker.read("namespace://missing"), /unknown namespace/);
+  assert.deepEqual(members, before);
+});
+
+test("candidate limits count namespaces rather than their members for tools and MCP", async () => {
+  for (const mcp of [false, true]) {
+    const members = Array.from({ length: 10 }, (_, group) => Array.from({ length: 20 }, (_, index) => ({
+      name: mcp ? `mcp__group_${group}__operation_${index}` : `operation_${group}_${index}`,
+      description: "CandidateLimitNeedle",
+      namespace: { name: (mcp ? "mcp__" : "") + "group_" + group },
+      exposure: "codemode",
+    }))).flat();
+    const broker = createCapabilityBroker({ listTools: () => members, listActiveTools: () => [], discoverSkills: () => [] });
+    const result = await broker.search({ query: "CandidateLimitNeedle", src: "local" });
+    const hits = mcp ? result.mcp : result.tools;
+    assert.equal(hits.length, mcp ? CAPABILITY_LIMITS.mcp : CAPABILITY_LIMITS.tools);
+    assert.equal(new Set(hits.map((hit) => hit.ref)).size, hits.length);
+    assert.ok(hits.every((hit) => hit.toolCount === 20 && hit.tools.length === 20));
+  }
+});
+
+test("an ordinary namespace groups MCP-sourced and ordinary tools together", async () => {
+  const namespace = { name: "mixed", description: "Mixed capability" };
+  const tools = [
+    { ...BASH, namespace },
+    { ...LIST_PAGES, namespace },
+  ];
+  const broker = createCapabilityBroker({ listTools: () => tools, listActiveTools: () => [], discoverSkills: () => [] });
+  const result = await broker.search({ query: "list pages", src: "local" });
+  assert.equal(result.tools.length, 1);
+  assert.deepEqual(result.mcp, []);
+  assert.equal(result.tools[0].ref, "namespace://mixed");
+  assert.deepEqual(result.tools[0].tools.map((tool) => tool.name), tools.map((tool) => tool.name));
+  assert.equal(JSON.parse(await broker.read(result.tools[0].ref)).tools.length, 2);
+});
+
+test("MCP candidate identity follows native namespaces, not inferred backend server names", async () => {
+  const namespace = { name: "mcp__bundle", instructions: "SharedNamespaceNeedle" };
+  const first = { ...LIST_PAGES, namespace, sourceInfo: { source: "mcp", path: "mcp:first/list_pages" } };
+  const second = { ...RESTART_FIREFOX, namespace, sourceInfo: { source: "mcp", path: "mcp:second/restart_firefox" } };
+  const broker = createCapabilityBroker({ listTools: () => [first, second], listActiveTools: () => [], discoverSkills: () => [] });
+  for (const query of ["SharedNamespaceNeedle", "namespace://mcp__bundle", "mcp://second/restart_firefox"]) {
+    const result = await broker.search({ query, src: "local" });
+    assert.deepEqual(result.tools, []);
+    assert.deepEqual(result.warnings, []);
+    assert.equal(result.mcp.length, 1);
+    assert.equal(result.mcp[0].ref, "namespace://mcp__bundle");
+    assert.deepEqual(result.mcp[0].tools.map((tool) => tool.name), [first.name, second.name]);
+  }
+  assert.equal(JSON.parse(await broker.read("namespace://mcp__bundle")).tools.length, 2);
+  const split = createCapabilityBroker({
+    listTools: () => [
+      { ...first, namespace: { name: "mcp__one" }, description: "SplitNamespaceNeedle" },
+      { ...second, namespace: { name: "mcp__two" }, sourceInfo: { source: "mcp", path: "mcp:first/restart_firefox" }, description: "SplitNamespaceNeedle" },
+    ],
+    listActiveTools: () => [], discoverSkills: () => [],
+  });
+  const result = await split.search({ query: "SplitNamespaceNeedle", src: "local" });
+  assert.deepEqual(result.mcp.map((hit) => hit.ref), ["namespace://mcp__one", "namespace://mcp__two"]);
+});
+
 test("classifies exact refs, identifiers, tokens and single-edit fuzzy", async () => {
   const broker = createCapabilityBroker(plainProviders());
 
@@ -333,12 +416,12 @@ test("classifies exact refs, identifiers, tokens and single-edit fuzzy", async (
   assert.deepEqual(exact.missingCapabilities, []);
 
   const named = await broker.search({ query: "list pages", src: "local", cwd: "/tmp" });
-  const namedTool = named.mcp.find((hit) => hit.ref === "mcp://firefox_devtools/list_pages");
+  const namedTool = named.mcp.find((hit) => hit.ref === "namespace://mcp__firefox_devtools");
   assert.ok(namedTool, "list pages must resolve the MCP tool by its tool-half identifier");
   assert.equal(namedTool.match, "name");
 
   const prefixed = await broker.search({ query: "devtool", src: "local", cwd: "/tmp" });
-  const prefixHit = prefixed.mcp.find((hit) => hit.ref === "mcp://firefox_devtools/list_pages");
+  const prefixHit = prefixed.mcp.find((hit) => hit.ref === "namespace://mcp__firefox_devtools");
   assert.ok(prefixHit, "devtool must recall devtools through the prefix tier");
   assert.equal(prefixHit.match, "token");
 
@@ -458,10 +541,13 @@ test("reads MCP identity from namespace, minted name and explicit provenance pat
       }),
     );
     const result = await broker.search({ query: item.query, src: "local", cwd: "/tmp" });
-    const hit = result.mcp.find((entry) => entry.ref === item.expected.ref);
-    assert.ok(hit, `missing MCP hit ${item.expected.ref} for query "${item.query}"`);
+    assert.equal(result.mcp.length, 1);
+    const hit = result.mcp[0];
+    assert.equal(hit.ref, item.tool.namespace ? `namespace://${item.tool.namespace.name}` : `mcp://${item.expected.server}`);
     assert.equal(hit.server, item.expected.server);
-    assert.equal(hit.tool, item.expected.tool);
+    assert.equal(hit.tools.length, 1);
+    assert.equal(hit.tools[0].ref, item.expected.ref);
+    assert.equal(hit.tools[0].name, item.tool.name);
     assert.match(hit.reason, new RegExp(`server from ${item.expected.basis}`));
   }
 
@@ -500,23 +586,19 @@ test("binds skills to matched refs and extracts their caveats", async () => {
   const skill = result.skills.find((hit) => hit.ref === "skill://firefox-existing-profile");
   assert.ok(skill, "the firefox skill must be recalled");
   assert.match(skill.reason, /body/);
-  assert.deepEqual(skill.bindsTo, [
-    "mcp://firefox_devtools",
-    "mcp://firefox_devtools/list_pages",
-    "mcp://firefox_devtools/restart_firefox",
-  ]);
+  assert.deepEqual(skill.bindsTo, ["namespace://mcp__firefox_devtools"]);
 
   const prohibition = skill.caveats.find((caveat) => caveat.kind === "prohibition");
   assert.ok(prohibition, "the prohibition sentence must become a caveat");
   assert.equal(prohibition.failureVisibility, "silent");
-  assert.deepEqual(prohibition.targets, ["mcp://firefox_devtools/restart_firefox"]);
+  assert.deepEqual(prohibition.targets, ["namespace://mcp__firefox_devtools"]);
   assert.deepEqual(prohibition.sources, [
     { skill: "skill://firefox-existing-profile", filePath: FIREFOX_SKILL.filePath, section: "限制", where: "body" },
   ]);
-  assert.ok(skill.caveats.some((caveat) => caveat.kind === "precondition" && caveat.targets.includes("mcp://firefox_devtools")));
+  assert.ok(skill.caveats.some((caveat) => caveat.kind === "precondition" && caveat.targets.includes("namespace://mcp__firefox_devtools")));
   assert.ok(
     skill.caveats.some(
-      (caveat) => caveat.kind === "verification" && caveat.targets.includes("mcp://firefox_devtools/list_pages"),
+      (caveat) => caveat.kind === "verification" && caveat.targets.includes("namespace://mcp__firefox_devtools"),
     ),
   );
   assert.equal(skill.caveats[0].kind, "prohibition", "silent prohibitions rank first");
@@ -537,7 +619,7 @@ test("extracts a caveat from a skill description that names a hit", async () => 
   assert.ok(skill);
   const caveat = skill.caveats.find((entry) => entry.sources.some((source) => source.where === "description"));
   assert.ok(caveat, "a description-named anchor must still produce a caveat");
-  assert.deepEqual(caveat.targets, ["mcp://firefox_devtools/list_pages"]);
+  assert.deepEqual(caveat.targets, ["namespace://mcp__firefox_devtools"]);
 });
 
 test("reads skill bodies through the bounded default file reader", async () => {
@@ -736,10 +818,16 @@ test("an exact npm ref is an installation request only for an eligible uninstall
   assert.ok(missingSource.warnings.some((warning) => /installed packages are not configured/.test(warning)));
 });
 
-test("reports a parseable MCP tool only once, under its mcp:// ref", async () => {
+test("reports an MCP namespace once, with all visible members under its namespace ref", async () => {
   const broker = createCapabilityBroker(plainProviders());
   const result = await broker.search({ query: "list pages", src: "local", cwd: "/tmp" });
-  assert.ok(result.mcp.some((hit) => hit.ref === "mcp://firefox_devtools/list_pages"));
+  assert.equal(result.mcp.length, 1);
+  assert.equal(result.mcp[0].ref, "namespace://mcp__firefox_devtools");
+  assert.deepEqual(result.mcp[0].tools.map((tool) => tool.name), [LIST_PAGES.name, RESTART_FIREFOX.name]);
+  assert.equal(result.mcp[0].toolCount, 2);
+  const exactMember = await broker.search({ query: "mcp://firefox_devtools/list_pages", src: "local" });
+  assert.deepEqual(exactMember.mcp.map((hit) => hit.ref), ["namespace://mcp__firefox_devtools"]);
+  assert.deepEqual(exactMember.mcp[0].tools.map((tool) => tool.name), [LIST_PAGES.name, RESTART_FIREFOX.name]);
   assert.ok(
     result.tools.every((hit) => hit.name !== LIST_PAGES.name),
     "the same MCP tool must not also appear under a tool:// identity",

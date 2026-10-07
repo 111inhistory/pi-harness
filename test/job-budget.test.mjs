@@ -148,7 +148,7 @@ test("accrues Active Time only while running and expires at the active hard limi
   const clock = createClock();
   const budget = createJobBudget({ depth: 2, now: clock.now });
 
-  clock.advance(30 * MINUTE); // queued
+  clock.advance(30 * MINUTE); // Budget created, active execution not yet started
   assert.equal(budget.check().terminal, null);
   assert.equal(budget.snapshot().activeTimeMs, 0);
 

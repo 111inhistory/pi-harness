@@ -1,141 +1,11 @@
 /**
- * Subagent registry, scheduler, topology admission, message routing, Job
- * Budget ownership and serializable registry state.
- *
- * This module is deliberately Pi-free: it owns batch validation, atomic
- * registration, reload-unique ids, queueing, depth/width limits, statuses,
- * cancellation, result/history references, one Budget per Job and the state
- * the adapter persists into native Pi storage. Execution is delegated to an
- * injected `startJob` adapter. The Pi extension in extensions/subagent.mjs
- * supplies that adapter; tests use deterministic fakes.
- *
- * Public batch: `{ context?, tasks: [{ name?, task, inheritContext? }] }`.
- * Role and model selection, tool resolution and prompt construction happen
- * inside the adapter's job starter after routing; the registry only carries
- * the assignment (task plus batch context) and the inherited-context snapshot
- * that one capture instant produced per child.
- *
- * Messaging:
- * - `sendMessage({from, to, content})` accepts one message for a same-runtime
- *   agent or for the reserved `Main` actor and answers with a plain success
- *   result (`{ok, to, jobId}`) as soon as the message entered a delivery path,
- *   never after a model response.
- * - Envelopes are typed. An explicit write is
- *   `{type: "message", from, content}`; a terminal notification is
- *   `{type: "completion", from, content, jobId, status, resultRef, historyRef}`.
- *   `type` and `from` are host-owned: message text can never forge a
- *   completion, and completions are only ever produced by the runtime.
- * - A running recipient takes the message exactly once through the adapter
- *   (`deliverMessage`). When the run closes while that hand-over is in flight
- *   the write makes one fresh transition instead of parking state: the agent is
- *   now idle and gets one continuation Job, or the write is rejected with
- *   `agent_busy`.
- * - A recipient whose Job is queued receives the message when that Job starts;
- *   an idle recipient is revived with an explicit NEW Job that continues its
- *   retained native conversation (`continuedFromJobId`) on a fresh Budget. The
- *   continuation also carries the actor's original seed (the first Job's spec),
- *   which the adapter needs only when the actor never started at all — a task
- *   cancelled while queued has no retained session to continue.
- * - Delivery carries no bookkeeping: no message ids, no acknowledgements, no
- *   automatic retry of failed work and no replay of already consumed steering.
- *   `agent.pending` is only the minimal queue that bridges a write and the
- *   start of the Job that carries it.
- * - Reviving an idle agent is part of the same topology accounting as creating
- *   a child: the write is rejected atomically while the parent already holds
- *   the maximum number of active children.
- * - `to: "all"` (canonical `agent://all`) is a reserved, write-only broadcast
- *   target: it fans one write out to the sender's DIRECT children only — never
- *   itself, an ancestor, a sibling or a grandchild — through the same
- *   single-target send each child would get on its own, so idle children are
- *   revived under the ordinary admission rules. The answer reports every
- *   recipient explicitly (`{ok, to: "all", sent: [{to, jobId}], errors:
- *   [{to, code, message}]}`); an empty child set succeeds. Partial fanout is
- *   never hidden and never retried.
- * - Terminal transitions notify: a Job notifies its creator exactly once, at
- *   the single point where it becomes terminal, with its Job, actor, status,
- *   result and history references and an error summary — never the answer
- *   itself. The creator is the `parentAgentId` a batch was created for, or the
- *   sender of the message that revived the actor; the root creator is `Main`.
- *   Main is notified through `deliverToMain`; an agent creator is notified
- *   through `deliverMessage` with its live running Job id, or with `jobId:
- *   null` when it is idle, queued or stopping, so the adapter appends the
- *   notification to that agent's conversation without starting a turn. A
- *   completion never creates a Job, never revives an idle actor, is attempted
- *   exactly once, is never replayed after a reload and can never change a
- *   Job's outcome.
- * - One capture instant per batch, one deep copy per child: sibling inherited
- *   sessions never share append-only entries or a session identity, and the
- *   captured snapshot is never mutated by a session that consumes it.
- * - The original `agent://` result is immutable; later activity is exposed
- *   through `history://`.
- *
- * Lifecycle:
- * - Cancelling a running Job or letting its Budget expire stops the native run
- *   but keeps the concurrency and topology slot (`status: "stopping"`) until
- *   the adapter's `done` settles. Only then is the immutable terminal payload
- *   published and `jobDone` released, so no successor Job can overlap an
- *   unwinding session and no reader observes a payload that changes later.
- * - A `stopping` agent rejects new writes with `agent_busy`.
- * - Each runtime instance namespaces its ids with a fresh UUID, so an address
- *   discarded by a reload (or from an earlier process) can never alias a later
- *   actor or Job.
- *
- * Adapter hooks (all optional except `startJob`):
- * - `startJob(request)`: runs one Job. `request.pendingMessages` are the typed
- *   envelopes assigned to this Job at start; the adapter reports its outcome
- *   through `done` (`{result, messages, history}`) and exposes partial history
- *   with `request.recordHistory(messages, {startEntryId, endEntryId})`.
- *   `request.checkBudget()` returns the same verdict as `request.budget.check()`
- *   and routes an observed hard failure through the runtime immediately: a
- *   running Job stops its native run (cancelling the handle, including one
- *   assigned only after this call) and keeps its slots until that run exits,
- *   so the terminal outcome is published exactly when the adapter's `done`
- *   settles. A later observation is a plain read of the frozen verdict.
- * - `deliverMessage({agentId, jobId, message})`: hands an envelope to a live
- *   running Job; returns `{accepted: true}` when that Job took it. `jobId` is
- *   `null` when a completion is appended for an actor that has no running Job.
- * - `deliverToMain(message)`: delivers an envelope to the root session.
- * - `onStateChange(state)`: called at every mutating boundary with a fresh,
- *   JSON-safe copy of `exportState()`. It is never called for read-only polls
- *   and it must not throw: a settled transition cannot be rolled back, so the
- *   runtime ignores callback failures and the adapter owns reporting
- *   persistence errors.
- * - `readHistory({agentId, jobId, history})`: resolves, synchronously, the
- *   native transcript of a Job whose in-memory messages are gone (restored
- *   state) from the native entry bounds; returns the same serialized message
- *   array the adapter passed to `recordHistory`. Without it, restored
- *   transcripts fail explicitly, and a pending read is refused.
- *
- * Persistence (state version 1):
- * - `exportState()` returns actors (id, label, parent link, depth, job ids),
- *   jobs (status, spec, origin, creator, immutable result, public error, native
- *   history bounds, public Budget snapshot) and every pending envelope. Actor
- *   status is derived from Job statuses and is never persisted.
- * - Transcripts are not duplicated into the state; each Job keeps only the
- *   native entry bounds it last recorded, and restored reads resolve the native
- *   entries through `readHistory`.
- * - A job's inherited-context snapshot is exported with its native entries
- *   array SHARED, never cloned: a captured context can be large and can itself
- *   contain registry snapshots. The adapter must replace `spec.inheritedContext`
- *   in the exported copy with a native seed-session reference before persisting
- *   and hydrate it back before `restoreState`, so a persisted state never
- *   embeds a whole conversation or a nested registry snapshot.
- * - Non-fatal warnings the adapter records on that snapshot
- *   (`spec.inheritedContext.warnings`, e.g. inherited tools Pi cannot
- *   transplant) ride the `task` entry and `hub jobs` views, including through a
- *   revival (through the continuation's seed) and a restore.
- * - `restoreState(state)` validates exactly this shape, preserves every
- *   restored actor and Job id and its immutable terminal result, and
- *   terminalizes every Job that was still queued, running or stopping as
- *   `failed` with `interrupted`: interrupted work is never re-run and never
- *   re-notified. New allocations use a fresh id namespace, so ids from an
- *   abandoned branch can never alias a later actor.
- *
- * Current boundaries:
- * - Every accepted job is deferred.
- * - Agent states are `running` / `idle`; there is no parked state, but idle
- *   agents can be revived by an explicit message.
- * - Nothing here talks to `work`, and Job completion never wakes Main.
+ * Pi-independent Subagent lifecycle.
+ * Batches register atomically, then every admitted Job starts directly.
+ * Limits apply to each parent's active children and nesting depth, not global concurrency.
+ * Runtime owns cancellation, Budget verdicts, finalization and terminal publication.
+ * Messages received before an adapter is ready are buffered as startup input.
+ * Explicit messages revive idle actors on their retained context or original seed.
+ * Checkpoints restore actor identity and native history bounds without replaying work.
  */
 
 import { randomUUID } from "node:crypto";
@@ -144,7 +14,6 @@ import { createJobBudget } from "./job-budget.mjs";
 import { getAgentSocketPath } from "./subagent-socket.mjs";
 import { getSubagentHistoryPaths } from "./subagent-history.mjs";
 
-const DEFAULT_MAX_CONCURRENCY = 4;
 const MAX_AGENT_DEPTH = 2;
 const MAX_ACTIVE_CHILDREN = 4;
 
@@ -157,8 +26,8 @@ const STATE_VERSION = 1;
 const BATCH_FIELDS = new Set(["context", "tasks"]);
 const TASK_FIELDS = new Set(["name", "task", "inheritContext"]);
 
-/** A Job occupies its agent, its concurrency slot and its topology slot. */
-const LIVE_STATUSES = new Set(["queued", "running", "stopping", "finalizing"]);
+/** A live Job occupies its actor and its parent's active-child allowance. */
+const LIVE_STATUSES = new Set(["running", "stopping", "finalizing"]);
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const JOB_STATUSES = new Set([...LIVE_STATUSES, ...TERMINAL_STATUSES]);
 
@@ -657,7 +526,7 @@ function restoreEnvelope(value, where, actorsById) {
  * Registry + scheduler for subagents.
  *
  * task(batch, options) validates the whole batch, registers every entry in
- * input order, and then starts as many jobs as the concurrency cap allows.
+ * input order, then starts every admitted Job without a global execution cap.
  * Nothing touches the registry before validation succeeds.
  */
 export class SubagentRuntime {
@@ -666,7 +535,6 @@ export class SubagentRuntime {
   #deliverToMain;
   #onStateChange;
   #readHistory;
-  #maxConcurrency;
   #allowInherited;
   #socketDir;
   #historyDir;
@@ -676,13 +544,9 @@ export class SubagentRuntime {
 
   #agents = new Map();
   #jobs = new Map();
-  #queue = [];
-  #running = new Set();
   #handles = new Map();
   #lifetimeTimers = new Map();
   #waiters = new Map();
-  #finalizations = new Map();
-  #pumping = false;
   #agentSequence = 0;
   #jobSequence = 0;
   #idToken;
@@ -700,7 +564,6 @@ export class SubagentRuntime {
       deliverToMain,
       onStateChange,
       readHistory,
-      maxConcurrency = DEFAULT_MAX_CONCURRENCY,
       allowInherited = true,
       socketDir,
       historyDir,
@@ -727,9 +590,6 @@ export class SubagentRuntime {
     if (readHistory !== undefined && typeof readHistory !== "function") {
       throw new SubagentError("invalid_options", "readHistory must be a function when provided.");
     }
-    if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
-      throw new SubagentError("invalid_options", `maxConcurrency must be an integer >= 1, received ${describe(maxConcurrency)}.`);
-    }
     if (typeof allowInherited !== "boolean") {
       throw new SubagentError("invalid_options", "allowInherited must be a boolean.");
     }
@@ -742,7 +602,6 @@ export class SubagentRuntime {
     this.#deliverToMain = deliverToMain ?? null;
     this.#onStateChange = onStateChange ?? null;
     this.#readHistory = readHistory ?? null;
-    this.#maxConcurrency = maxConcurrency;
     this.#allowInherited = allowInherited;
     this.#socketDir = socketDir;
     this.#historyDir = historyDir;
@@ -750,10 +609,6 @@ export class SubagentRuntime {
     this.#onAgentIdAllocated = typeof onAgentIdAllocated === "function" ? onAgentIdAllocated : null;
     this.#finalizeJob = typeof finalizeJob === "function" ? finalizeJob : null;
     this.#idToken = randomUUID().replaceAll("-", "");
-  }
-
-  get maxConcurrency() {
-    return this.#maxConcurrency;
   }
 
   /** Create subagents batch according to the public contract (returns unified id, socket, history). */
@@ -844,7 +699,8 @@ export class SubagentRuntime {
         );
       }
 
-      this.#pump();
+      // Register the complete batch before any adapter can observe or start it.
+      for (const job of registered) this.#start(job);
       return { items: registered.map((job) => this.#itemView(job)) };
     });
   }
@@ -859,7 +715,7 @@ export class SubagentRuntime {
       spec,
       origin,
       createdBy,
-      status: "queued",
+      status: "running",
       result: null,
       error: null,
       // Native entry bounds of the transcript this Job recorded, and the live
@@ -875,7 +731,6 @@ export class SubagentRuntime {
     };
     agent.jobIds.push(jobId);
     this.#jobs.set(jobId, job);
-    this.#queue.push(jobId);
     this.#scheduleLifetime(job);
     this.#refreshAgent(agent.agentId);
     this.#markDirty();
@@ -948,7 +803,7 @@ export class SubagentRuntime {
    *
    * The sender identity comes from the host surface, never from message text.
    * The receipt means "this message entered a delivery path" — a live Job took
-   * it, a queued Job will take it at start, or an idle agent was revived with a
+   * it, a starting adapter will receive buffered input, or an idle agent was revived with a
    * new Job for it — and never waits for a model response.
    *
    * Reviving an idle agent creates a Job, so it is admitted exactly like a new
@@ -1017,8 +872,8 @@ export class SubagentRuntime {
   /**
    * Cancel one job without touching any other job or agent.
    *
-   * A queued Job is terminal immediately. A running Job stops its native run
-   * but stays `stopping` (still holding its concurrency and topology slot)
+   * A Job whose adapter has not started goes directly through finalization.
+   * A started Job stays `stopping` (occupying its actor and topology allowance)
    * until the adapter's handle settles, then publishes its cancelled payload.
    *
    * @returns {{ ok: boolean, reason?: string, job: object }}
@@ -1040,36 +895,19 @@ export class SubagentRuntime {
       const budgetVerdict = job.budget.check();
       if (budgetVerdict.terminal?.status === "failed") {
         const error = publicBudgetError(budgetVerdict.terminal.error);
-        if (job.status === "queued") {
-          const at = this.#queue.indexOf(job.jobId);
-          if (at !== -1) this.#queue.splice(at, 1);
-          job.budget.terminate({ reason: "failed", error });
-          this.#end(job, { status: "failed", error });
-          return { ok: false, reason: "budget_exceeded", job: this.#jobView(job) };
-        } else if (job.status === "running") {
-          this.#beginStopping(job, "failed", error);
-        }
+        this.#beginStopping(job, "failed", error);
         return { ok: false, reason: "budget_exceeded", job: this.#jobView(job) };
       }
 
-      if (job.status === "queued") {
-        const at = this.#queue.indexOf(job.jobId);
-        if (at !== -1) this.#queue.splice(at, 1);
-        job.budget.terminate({ reason: "cancelled" });
-        this.#end(job, { status: "cancelled", error: { code: "cancelled", message: "Job cancelled before it started." } });
-        return { ok: true, job: this.#jobView(job) };
-      }
-
-      // Running: stop the native run and keep the slot until it has exited, so
-      // the aborted session never overlaps a successor Job on the same agent.
-      this.#beginStopping(job, "cancelled", { code: "cancelled", message: "Job cancelled while running." });
+      const message = this.#handles.has(job.jobId) ? "Job cancelled while running." : "Job cancelled before it started.";
+      this.#beginStopping(job, "cancelled", { code: "cancelled", message });
       return { ok: true, job: this.#jobView(job) };
     });
   }
 
   /**
    * Stop one subagent by id gracefully.
-   * If queued, marks cancelled immediately. If running, enters stopping.
+   * Stops native execution, or finalizes immediately if no adapter has started.
    */
   stop(target) {
     const id = typeof target === "string" ? target : target?.id || target?.jobId || target?.agentId;
@@ -1218,7 +1056,7 @@ export class SubagentRuntime {
    * The runtime must be fresh: a reload builds a new runtime and restores into
    * it, so no live Job can be overwritten by an older snapshot. Every restored
    * actor and Job keeps its original id and its immutable terminal result,
-   * while a Job that was still queued, running or stopping becomes `failed`
+   * while a Job that was still running, stopping or finalizing becomes `failed`
    * with `interrupted` — it is never re-run and never re-notified.
    *
    * @returns {{ actors: number, jobs: number, interrupted: string[] }}
@@ -1389,49 +1227,32 @@ export class SubagentRuntime {
     };
   }
 
-  // Re-entrant-safe: a synchronous start failure calls back into #pump while
-  // the active loop is still running, and that loop already re-checks capacity.
-  #pump() {
-    if (this.#pumping) return;
-    this.#pumping = true;
-    try {
-      while (this.#running.size < this.#maxConcurrency && this.#queue.length > 0) {
-        const jobId = this.#queue.shift();
-        const job = this.#jobs.get(jobId);
-        if (!job || job.status !== "queued") continue;
-        this.#start(job);
-      }
-    } finally {
-      this.#pumping = false;
-    }
-  }
-
   #start(job) {
     return this.#withCheckpoint(() => {
-      job.status = "running";
-      this.#running.add(job.jobId);
-      this.#markDirty();
+      if (job.status !== "running" || this.#handles.has(job.jobId)) return;
 
       const budgetStart = job.budget.startActive();
       if (!budgetStart.ok) {
         const terminal = budgetStart.terminal;
-        this.#end(
-          job,
-          terminal?.status ?? "failed",
-          publicBudgetError(terminal?.error) ?? { code: "budget_exceeded", message: "Job execution budget exhausted." },
-        );
+        this.#beginFinalization(job, {
+          status: terminal?.status ?? "failed",
+          error: publicBudgetError(terminal?.error) ?? { code: "budget_exceeded", message: "Job execution budget exhausted." },
+        });
         return;
       }
 
+      // Reserve the handle entry before invoking the adapter so synchronous aborts
+      // wait for its returned handle rather than finalizing a run still starting.
+      this.#handles.set(job.jobId, null);
       let handle;
       try {
         handle = this.#startJob(this.#jobRequest(job));
       } catch (error) {
-        this.#failStart(job, errorInfo(error, "start_failed"));
+        this.#fail(job, errorInfo(error, "start_failed"));
         return;
       }
       if (!isPlainObject(handle) || typeof handle.done?.then !== "function") {
-        this.#failStart(job, {
+        this.#fail(job, {
           code: "invalid_adapter",
           message: "The startJob adapter must return an object with a done promise (and optionally cancel()).",
         });
@@ -1444,7 +1265,7 @@ export class SubagentRuntime {
       // that the handle exists. The slots are released only when it exits.
       if (job.stopping !== null) this.#cancelHandle(job);
       handle.done.then(
-        (outcome) => this.#finish(job, outcome),
+        (outcome) => this.#beginFinalization(job, outcome),
         (error) => this.#fail(job, error),
       );
     });
@@ -1452,8 +1273,7 @@ export class SubagentRuntime {
 
   #jobRequest(job) {
     const agent = this.#agents.get(job.agentId);
-    // Messages are assigned at start, not at registration, so a message that
-    // arrives while the Job is queued still belongs to this run.
+    // Assign startup input to the run when its adapter is invoked.
     const pending = agent === undefined ? [] : agent.pending.splice(0);
     return {
       agentId: job.agentId,
@@ -1484,118 +1304,72 @@ export class SubagentRuntime {
   }
 
   #beginFinalization(job, execution = {}) {
-    if (this.#finalizations.has(job.jobId)) {
-      return this.#finalizations.get(job.jobId);
-    }
+    if (job.status === "finalizing" || TERMINAL_STATUSES.has(job.status)) return;
 
     job.budget.pauseActive();
     clearTimeout(this.#lifetimeTimers.get(job.jobId));
     this.#lifetimeTimers.delete(job.jobId);
 
     const payload = isPlainObject(execution) ? execution : {};
-    if (payload.messages && Array.isArray(payload.messages)) {
-      job.messages = cloneValue(payload.messages);
-    }
-    if (payload.result !== undefined && payload.result !== null) {
-      job.result = cloneValue(payload.result);
-    }
+    if (Array.isArray(payload.messages)) job.messages = cloneValue(payload.messages);
+    if (payload.result !== undefined && payload.result !== null) job.result = cloneValue(payload.result);
     const bounds = historyBounds(payload.history);
-    if (bounds !== null) {
-      job.history = bounds;
-    }
+    if (bounds !== null) job.history = bounds;
 
-    let finalStatus;
-    let finalError = null;
-
+    let status;
+    let error = null;
     if (job.stopping !== null) {
-      finalStatus = job.stopping.status;
-      finalError = job.stopping.error ?? null;
-      if (finalStatus === "cancelled") {
-        job.budget.terminate({ reason: "cancelled" });
-      } else if (finalStatus === "failed") {
-        job.budget.terminate({ reason: "failed", error: finalError });
-      }
+      ({ status, error } = job.stopping);
     } else {
-      const budgetVerdict = job.budget.check();
-      if (budgetVerdict.terminal?.status === "failed") {
-        finalStatus = "failed";
-        finalError = publicBudgetError(budgetVerdict.terminal.error);
-        job.budget.terminate({ reason: "failed", error: finalError });
+      const terminal = job.budget.check().terminal;
+      if (terminal?.status === "failed") {
+        status = "failed";
+        error = publicBudgetError(terminal.error);
       } else if (payload.error || payload.status === "failed") {
-        finalStatus = "failed";
-        finalError = errorInfo(payload.error, "job_failed");
-        job.budget.terminate({ reason: "failed", error: finalError });
+        status = "failed";
+        error = errorInfo(payload.error, "job_failed");
       } else if (payload.status === "cancelled") {
-        finalStatus = "cancelled";
-        finalError = { code: "cancelled", message: "Job cancelled." };
-        job.budget.terminate({ reason: "cancelled" });
+        status = "cancelled";
+        error = { code: "cancelled", message: "Job cancelled." };
       } else {
-        finalStatus = "completed";
-        job.budget.terminate({ reason: "model_final" });
+        status = "completed";
       }
     }
+    job.budget.terminate({ reason: status === "completed" ? "model_final" : status, error });
 
     const agent = this.#agents.get(job.agentId);
-    const calculatedRound = agent ? Math.max(1, agent.jobIds.indexOf(job.jobId) + 1) : (job.continuedFromJobId ? 2 : 1);
-
-    const frozenOutcome = Object.freeze({
-      status: finalStatus,
-      error: finalError,
+    const outcome = Object.freeze({
+      status,
+      error,
       result: job.result,
       messages: job.messages,
       history: job.history,
       budget: job.budget.snapshot(),
       jobId: job.jobId,
-      round: calculatedRound,
+      round: Math.max(1, agent.jobIds.indexOf(job.jobId) + 1),
     });
 
+    // Set before calling the hook: reentrant stop or finalization cannot change this outcome.
     job.status = "finalizing";
-
-    if (typeof this.#finalizeJob === "function") {
-      const promise = (async () => {
-        let historyState = "ready";
-        let historyError = null;
-        try {
-          await this.#finalizeJob({ job: this.#jobView(job), outcome: frozenOutcome });
-        } catch (err) {
-          historyState = "error";
-          historyError = errorInfo(err, "history_write_failed");
-        }
-        this.#end(job, {
-          status: frozenOutcome.status,
-          error: frozenOutcome.error,
-          historyState,
-          historyError,
-        });
-        return this.#jobView(job);
-      })();
-      this.#finalizations.set(job.jobId, promise);
-      return promise;
+    if (this.#finalizeJob === null) {
+      this.#end(job, outcome);
+      return;
     }
-
-    this.#end(job, {
-      status: frozenOutcome.status,
-      error: frozenOutcome.error,
-    });
-    const resolved = Promise.resolve(this.#jobView(job));
-    this.#finalizations.set(job.jobId, resolved);
-    return resolved;
-  }
-
-  #finish(job, outcome) {
-    this.#beginFinalization(job, outcome);
+    return (async () => {
+      let historyState = "ready";
+      let historyError = null;
+      try {
+        await this.#finalizeJob({ job: this.#jobView(job), outcome });
+      } catch (err) {
+        historyState = "error";
+        historyError = errorInfo(err, "history_write_failed");
+      }
+      this.#end(job, { status, error, historyState, historyError });
+    })();
   }
 
   #fail(job, error) {
     this.#beginFinalization(job, { error });
-  }
-
-  #failStart(job, error) {
-    if (job.stopping !== null) {
-      this.#beginFinalization(job, { status: job.stopping.status, error: job.stopping.error });
-    } else {
-      this.#beginFinalization(job, { status: "failed", error });
-    }
   }
 
   #checkBudget(job) {
@@ -1603,11 +1377,7 @@ export class SubagentRuntime {
       const verdict = job.budget.check();
       if (verdict.terminal?.status !== "failed") return verdict;
       const error = publicBudgetError(verdict.terminal.error);
-      if (job.status === "queued") {
-        const at = this.#queue.indexOf(job.jobId);
-        if (at !== -1) this.#queue.splice(at, 1);
-        this.#end(job, { status: "failed", error });
-      } else if (job.status === "running") {
+      if (job.status === "running") {
         this.#beginStopping(job, "failed", error);
       }
       return verdict;
@@ -1622,7 +1392,7 @@ export class SubagentRuntime {
         this.#lifetimeTimers.delete(job.jobId);
         if (TERMINAL_STATUSES.has(job.status) || job.status === "stopping") return;
         // The same observation the adapter takes through `checkBudget()`: an
-        // expired lease routes to the queued or stopping terminal path there.
+        // an expired lease stops execution through that shared observation point.
         if (this.#checkBudget(job).terminal?.status !== "failed") schedule();
       }, remaining);
       timer.unref?.();
@@ -1633,7 +1403,7 @@ export class SubagentRuntime {
 
   /**
    * Stop a running Job's native run and hold its slots until the adapter's
-   * `done` settles. `#finish` / `#fail` observe `job.stopping` and publish the
+   * `done` settles. `#beginFinalization` observes `job.stopping` and publishes the
    * one terminal payload from there.
    */
   #beginStopping(job, status, error) {
@@ -1643,7 +1413,8 @@ export class SubagentRuntime {
       this.#markDirty();
       clearTimeout(this.#lifetimeTimers.get(job.jobId));
       this.#lifetimeTimers.delete(job.jobId);
-      this.#cancelHandle(job);
+      if (this.#handles.has(job.jobId)) this.#cancelHandle(job);
+      else this.#beginFinalization(job);
     });
   }
 
@@ -1673,7 +1444,6 @@ export class SubagentRuntime {
       if (terminalInfo.historyError !== undefined && terminalInfo.historyError !== null) {
         job.historyError = terminalInfo.historyError;
       }
-      this.#running.delete(job.jobId);
       this.#handles.delete(job.jobId);
       this.#markDirty();
       this.#settle(job);
@@ -1691,7 +1461,6 @@ export class SubagentRuntime {
       for (const resolve of waiters) resolve(view);
     }
     this.#refreshAgent(job.agentId);
-    this.#pump();
   }
 
   /**
@@ -1775,7 +1544,7 @@ export class SubagentRuntime {
    *
    * A continuation has no task of its own; it carries the agent's original
    * seed (the first Job's spec) so an actor that never started at all — a task
-   * cancelled while it was still queued, so no native session exists — can
+   * cancelled before its SDK initialized, so no native session exists — can
    * still be revived into its first session. The adapter uses the seed only
    * when there is no retained conversation; a live session is never re-seeded
    * and never re-runs the original task on its own.
@@ -1854,8 +1623,7 @@ export class SubagentRuntime {
   }
 
   /**
-   * One ordinary single-target write: hand over to the live Job, hold it for a
-   * queued Job, or revive an idle agent with a continuation Job.
+   * Hand over to a live adapter, buffer startup input, or explicitly revive an idle actor.
    */
   async #sendToAgent(plan) {
     const agent = this.#agents.get(plan.to);
@@ -1872,7 +1640,7 @@ export class SubagentRuntime {
         if (refusal !== null) throw refusal;
         agent.pending.push(this.#messageEnvelope(plan));
         const revived = this.#scheduleContinuation(agent, plan.from);
-        this.#pump();
+        this.#start(revived);
         return this.#receipt(plan, revived.jobId);
       }
       if (live.status === "stopping") {
@@ -1881,8 +1649,8 @@ export class SubagentRuntime {
       if (live.status === "finalizing") {
         throw this.#busyError(agent, "finalizing");
       }
-      if (live.status === "queued") {
-        // A queued Job owns the agent and picks the message up when it starts.
+      if (!this.#handles.has(live.jobId)) {
+        // A registered sibling has not entered its adapter yet; buffer its initial input.
         agent.pending.push(this.#messageEnvelope(plan));
         this.#markDirty();
         return this.#receipt(plan, live.jobId);

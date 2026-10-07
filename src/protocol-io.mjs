@@ -396,12 +396,14 @@ export function createProtocolOverrides({ router, createNativeRead, createNative
  * Every extension that owns protocol schemes calls this once during load with
  * its own `(pi, { readers, writers })`; the first call installs the tool
  * overrides (which replace the built-ins of the same name in the session tool
- * registry), the rest merge their schemes into the same router.
+ * registry), the rest merge their schemes into the same router. readOnly skips
+ * write registration when another extension owns the native write backend; a
+ * joining installer does not change the elected owner's registration mode.
  *
  * @param {{ registerTool: Function, events: { emit: Function, on: Function } }} pi
- * @param {{ readers?: object, writers?: object, createNativeRead: Function, createNativeWrite: Function, nativeReadOptions?: Function }} options
+ * @param {{ readers?: object, writers?: object, createNativeRead: Function, createNativeWrite: Function, nativeReadOptions?: Function, readOnly?: boolean }} options
  */
-export function installProtocolOverrides(pi, { readers = {}, writers = {}, createNativeRead, createNativeWrite, nativeReadOptions } = {}) {
+export function installProtocolOverrides(pi, { readers = {}, writers = {}, createNativeRead, createNativeWrite, nativeReadOptions, readOnly = false } = {}) {
   if (!pi || typeof pi.registerTool !== "function") {
     throw new ProtocolIOError("invalid_pi_api", "installProtocolOverrides requires a Pi ExtensionAPI with registerTool().");
   }
@@ -416,7 +418,7 @@ export function installProtocolOverrides(pi, { readers = {}, writers = {}, creat
   if (!attached.owner) return attached;
   const overrides = createProtocolOverrides({ router: attached.router, createNativeRead, createNativeWrite, nativeReadOptions });
   pi.registerTool(overrides.read);
-  pi.registerTool(overrides.write);
+  if (!readOnly) pi.registerTool(overrides.write);
   return attached;
 }
 

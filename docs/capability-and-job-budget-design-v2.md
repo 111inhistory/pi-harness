@@ -27,7 +27,7 @@
 - `task` 创建 deferred Job；blocking、持久化恢复和完整消息机制尚未落地。
 - Inherited Subagent 会复制创建时的父会话上下文快照。
 - Pi 当前公开 API 不提供其他 Extension 工具的 execute handle；不能把任意 Extension Tool 直接移植进子 Session。
-- 当前 Subagent 并发上限为 4。
+- 当前约束为每个父节点最多 4 个活跃直接子 Agent；不另设全局 Job 并发上限。
 
 暴露面分两层：主 Agent 只看到 `capability`；实际执行检索的 Agent 暴露 `capability_search`（检索）与 `submit_result`（提交结果）两个工具，不提供 `task` 入口，也不会通过模型可见的 `task` 递归调用自己。
 
@@ -357,12 +357,11 @@ Model Call 限制已经约束模型能够发起工具批次的循环次数。具
 
 以下时间不计入：
 
-- `queued`；
 - 未来显式支持的 `waiting`。
 
 `parked` 是 Agent 状态，不是 Job 状态。Agent parked 前，其 Job 已经进入终态，Budget 也已经冻结。
 
-`lifetimeMs` 从 Job 创建时开始按 monotonic clock 计算，是独立的绝对资源租约。它没有 soft 阶段；到期后立即 abort 当前执行或等待，将 Job 标记为 `failed`，使用 `termination: "lifetime_expired"` 和 `error.code: "job_expired"`。它用于防止 queued/waiting Job 永久残留，不等于工作预算。
+`lifetimeMs` 从 Job 创建时开始按 monotonic clock 计算，是独立的绝对资源租约。它没有 soft 阶段；到期后立即 abort 当前执行或等待，将 Job 标记为 `failed`，使用 `termination: "lifetime_expired"` 和 `error.code: "job_expired"`。它用于约束 Job 从注册到执行结束的总寿命，不等于工作预算；当前不设置任务队列，waiting 仍非当前实现。
 
 ### Token 与费用
 
@@ -538,13 +537,13 @@ Main Agent（depth 0）
 - 每个 `depth 1` Agent 最多有 4 个活跃直接子 Agent；
 - `depth 2` Agent 不注册 `task` 创建入口，不能继续派生；
 - 限制按父 Agent 的活跃直接子节点计算，不是生命周期累计创建数；
-- `queued`、`running`、`waiting` 和 `cancelling` 都占用一个活跃子节点名额；
+- `running`、`waiting` 和 `cancelling` 都占用一个活跃子节点名额（waiting 为目标设计，非当前实现）；
 - `completed`、`failed`、`cancelled` 和 `parked` 不占用名额；
 - 创建或 revive 会导致活跃直接子节点超过 4 时，整个请求在注册前原子拒绝；
 - 子节点进入终态或 parked 后释放名额，父 Agent 可以再创建新的子节点；
 - 一批 `task` 条目不得部分创建后再因宽度限制失败。
 
-21 是拓扑上的活跃 Agent 硬上限。实际同时执行模型或工具的数量仍可受独立的全局调度并发配置限制；调度器可以让活跃 Agent 排队，但不能借排队绕过每个父节点 4 个活跃子节点的限制。
+21 是包含 Main 的拓扑活跃 Actor 上限。没有独立的全局 Job 并发限制；4 个 Depth 1 和 16 个 Depth 2 可以同时执行。每个父节点仍最多 4 个活跃直接子节点，stopping／finalizing 未结束前仍占该名额。
 
 新 Job 根据其 Agent 的固定深度选择 `JOB_BUDGET_BY_DEPTH[depth]`。同一个 Agent 的 continuation Job 仍使用该深度的 Profile；不存在父子共享或跨树累计的 Budget。
 
@@ -552,7 +551,7 @@ Main Agent（depth 0）
 
 | 事件 | Budget 行为 |
 |---|---|
-| Job 在 `queued` | 不计 Active Time |
+| Job 已注册、adapter 尚未调用 | 不计 Active Time，不另设排队状态 |
 | Job 获得执行槽位 | 开始或恢复 Active Time |
 | Tool 完成后继续模型循环 | 不重置 |
 | Provider 错误后 Harness 重试 | 不回滚 |
@@ -656,8 +655,8 @@ test/
 - `task` 的模型可见 Schema 不新增 Budget 字段。
 - Model Call 在 Provider 请求前计数。
 - Tool Call 不作为统一 Budget 维度；参数规模、副作用和并发由具体工具控制。
-- queued/waiting 不消耗 Active Time；`parked` 只属于 Agent，不属于 Job。
-- `lifetimeMs` 到期会以 `job_expired` 终止 queued、waiting 或 running Job。
+- 尚未调用 adapter 或目标设计的 waiting 不消耗 Active Time；`parked` 只属于 Agent，不属于 Job。
+- `lifetimeMs` 到期会以 `job_expired` 终止 running Job；waiting 仍非当前实现。
 - Soft 只提示一次；Hard 可靠中止，不追加额外的收尾模型调用。
 - 模型正常返回后 Job 终止，不能在同一 Job 上重置 Budget。
 - 取消或 Budget 终止不会级联到批次中其他任务。
