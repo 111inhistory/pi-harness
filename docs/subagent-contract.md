@@ -185,7 +185,12 @@ flowchart TD
 
 Agent 状态为 `running`（有非终态 Job）或 `idle`。`parked` 资源策略未实现。
 
-Job 状态为 `queued`、`running`、`stopping`、`completed`、`failed`、`cancelled`。取消运行中的 Job 或触发预算终止时，先进入 `stopping`，直到原生模型／工具退出；期间保留并发槽位并拒绝新消息为 `agent_busy`，不让同一 Agent 重叠运行。
+Job 状态为 `queued`、`running`、`stopping`、`finalizing`、`completed`、`failed`、`cancelled`。
+- **取消与预算终止**：取消运行中的 Job 或触发预算终止时，先进入 `stopping`，直到原生模型／工具退出。
+- **解耦执行与终态收尾**：原生运行退出后，同步冻结终态裁决（Outcome Freezing），进入 `finalizing` 状态。在 `finalizing` 期间保留并发槽位，继续拒绝外部写入（返回 `agent_busy`）；由终态委托（`finalizeJob`）依次完成 Clean JSONL 串行写链排空、追加 `job_end` 语义事件，并单次写入 `summary.md` 摘要；收尾完成后进入 terminal 状态并释放槽位。
+- **排队中取消**：处于 `queued` 的任务被取消或生命周期耗尽时，直接移出队列并同步进入终态（`cancelled` 或 `failed`），不启动原生会话，不占用执行槽位。
+- **根会话 Actor ID 全局账本**：短统一 ID（如 `sub_01`）由宿主根会话作用域内的持久记录管理，在同一根会话分支切换或 reload 恢复时，扫描根会话历史中所有分支的 `subagent-state` 条目构建全局已分配集合，绝不跨分支或跨 reload 发生短 ID 碰撞重用。
+- **确定性退役**：宿主服务退役（`retireService`）在同步步骤内建立注销登记（无 await 缝隙），并发调用等待同一 Promise；先发出全局取消，异步断开 Socket，最终等待所有 live Job 收尾完成后安全重置。
 
 ### 每 Job 的固定预算
 

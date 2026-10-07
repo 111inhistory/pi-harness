@@ -308,3 +308,82 @@ test("summary markdown corrects completed status to cancelled when cancellation 
     await fsp.rm(tmpCwd, { recursive: true, force: true });
   }
 });
+
+test("lifecycle: finalizing state blocks new writes with agent_busy and settles frozen outcome after finalizeJob", async () => {
+  let finalizeResolve;
+  const finalizePromise = new Promise((resolve) => {
+    finalizeResolve = resolve;
+  });
+  let jobHandleResolve;
+  const jobHandlePromise = new Promise((resolve) => {
+    jobHandleResolve = resolve;
+  });
+
+  let finalizedOutcome = null;
+
+  const runtime = createSubagentRuntime({
+    startJob: () => ({
+      request: {},
+      done: jobHandlePromise,
+      cancel() {},
+    }),
+    finalizeJob: async ({ job, outcome }) => {
+      finalizedOutcome = outcome;
+      await finalizePromise;
+    },
+    deliverMessage: async () => ({ accepted: true }),
+  });
+
+  const created = runtime.create({ tasks: [{ name: "T1", task: "Do work" }] });
+  const actorId = created.items[0].id;
+
+  // 1. Native execution resolves
+  jobHandleResolve({ result: "native work done", messages: [] });
+  // Wait a microtask turn so runtime's `#finish` enters `#beginFinalization`
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  // 2. Status should be finalizing, actor is live/busy
+  const jobState = runtime.jobs({ jobIds: [actorId] }).jobs[0];
+  assert.equal(jobState.status, "finalizing");
+
+  // A socket/sendMessage write during finalizing must be rejected with agent_busy
+  await assert.rejects(
+    runtime.sendMessage({ from: "Main", to: actorId, content: "ping during finalizing" }),
+    (err) => err.code === "agent_busy",
+  );
+
+  // 3. Resolve finalization (I/O done)
+  finalizeResolve();
+  await runtime.jobDone(actorId);
+
+  const finalJobState = runtime.jobs({ jobIds: [actorId] }).jobs[0];
+  assert.equal(finalJobState.status, "completed");
+  assert.equal(finalJobState.historyState, "ready");
+  assert.equal(finalizedOutcome.status, "completed");
+  assert.equal(finalizedOutcome.result, "native work done");
+});
+
+test("lifecycle: finalizeJob failure records historyState error while preserving original completion status", async () => {
+  const runtime = createSubagentRuntime({
+    startJob: () => ({
+      request: {},
+      done: Promise.resolve({ result: "work done successfully", messages: [] }),
+      cancel() {},
+    }),
+    finalizeJob: async () => {
+      throw new Error("Disk full or permission denied during summary write");
+    },
+    deliverMessage: async () => ({ accepted: true }),
+  });
+
+  const created = runtime.create({ tasks: [{ name: "T1", task: "Do work" }] });
+  const actorId = created.items[0].id;
+
+  await runtime.jobDone(actorId);
+
+  const finalJobState = runtime.jobs({ jobIds: [actorId] }).jobs[0];
+  assert.equal(finalJobState.status, "completed", "Job status must remain completed despite history write failure");
+  assert.equal(finalJobState.historyState, "error");
+  assert.equal(finalJobState.historyError?.code, "history_write_failed");
+  assert.match(finalJobState.historyError?.message, /Disk full/);
+});

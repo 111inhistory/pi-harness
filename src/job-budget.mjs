@@ -60,8 +60,8 @@ const PHASE_RANK = new Map(BUDGET_PHASES.map((phase, index) => [phase, index]));
 
 const OPTION_FIELDS = new Set(["depth", "jobId", "now", "profile"]);
 const SNAPSHOT_FIELDS = new Set(["detail"]);
-const TERMINATE_FIELDS = new Set(["reason"]);
-const TERMINATE_REASONS = new Set(["model_final", "cancelled"]);
+const TERMINATE_FIELDS = new Set(["reason", "error"]);
+const TERMINATE_REASONS = new Set(["model_final", "cancelled", "failed"]);
 
 const PROFILE_FIELDS = new Set(["modelCalls", "activeTimeMs", "lifetimeMs"]);
 const LIMIT_FIELDS = new Set(["soft", "hard"]);
@@ -130,6 +130,15 @@ function cancelledTerminal() {
     termination: "cancelled",
     truncated: true,
     error: { code: "cancelled", message: "Job cancelled." },
+  };
+}
+
+function failedTerminal(error = null) {
+  return {
+    status: "failed",
+    termination: "job_failed",
+    truncated: false,
+    error: error ? { code: error.code || "job_failed", message: error.message } : { code: "job_failed", message: "Job failed." },
   };
 }
 
@@ -384,7 +393,15 @@ export class JobBudget {
     if (this.#terminal) return refused("already_terminal", this.#terminal);
 
     const nowMs = this.#readClock();
-    this.#settle(reason === "model_final" ? completedTerminal() : cancelledTerminal(), nowMs);
+    let term;
+    if (reason === "model_final") {
+      term = completedTerminal();
+    } else if (reason === "cancelled") {
+      term = cancelledTerminal();
+    } else {
+      term = failedTerminal(options.error);
+    }
+    this.#settle(term, nowMs);
     return Object.freeze({ ok: true, terminal: this.#terminal });
   }
 

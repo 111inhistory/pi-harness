@@ -158,7 +158,7 @@ const BATCH_FIELDS = new Set(["context", "tasks"]);
 const TASK_FIELDS = new Set(["name", "task", "inheritContext"]);
 
 /** A Job occupies its agent, its concurrency slot and its topology slot. */
-const LIVE_STATUSES = new Set(["queued", "running", "stopping"]);
+const LIVE_STATUSES = new Set(["queued", "running", "stopping", "finalizing"]);
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const JOB_STATUSES = new Set([...LIVE_STATUSES, ...TERMINAL_STATUSES]);
 
@@ -200,10 +200,19 @@ function describe(value) {
 }
 
 function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof Error) return error.message;
+  if (isPlainObject(error) && typeof error.message === "string") return error.message;
+  return String(error);
 }
 
 function errorInfo(error, fallbackCode) {
+  if (isPlainObject(error)) {
+    const code = typeof error.code === "string" ? error.code : fallbackCode;
+    const message = typeof error.message === "string" ? error.message : errorMessage(error);
+    const info = { code, message };
+    if (isPlainObject(error.detail)) info.detail = cloneValue(error.detail);
+    return info;
+  }
   const code = error instanceof Error && typeof error.code === "string" ? error.code : fallbackCode;
   const info = { code, message: errorMessage(error) };
   if (error && typeof error === "object" && isPlainObject(error.detail)) info.detail = cloneValue(error.detail);
@@ -663,6 +672,7 @@ export class SubagentRuntime {
   #historyDir;
   #isAgentIdTaken;
   #onAgentIdAllocated;
+  #finalizeJob;
 
   #agents = new Map();
   #jobs = new Map();
@@ -671,6 +681,7 @@ export class SubagentRuntime {
   #handles = new Map();
   #lifetimeTimers = new Map();
   #waiters = new Map();
+  #finalizations = new Map();
   #pumping = false;
   #agentSequence = 0;
   #jobSequence = 0;
@@ -695,10 +706,14 @@ export class SubagentRuntime {
       historyDir,
       isAgentIdTaken,
       onAgentIdAllocated,
+      finalizeJob,
     } = options;
 
     if (typeof startJob !== "function") {
       throw new SubagentError("invalid_options", "A startJob adapter function is required.");
+    }
+    if (finalizeJob !== undefined && typeof finalizeJob !== "function") {
+      throw new SubagentError("invalid_options", "finalizeJob must be a function when provided.");
     }
     if (deliverMessage !== undefined && typeof deliverMessage !== "function") {
       throw new SubagentError("invalid_options", "deliverMessage must be a function when provided.");
@@ -733,6 +748,7 @@ export class SubagentRuntime {
     this.#historyDir = historyDir;
     this.#isAgentIdTaken = typeof isAgentIdTaken === "function" ? isAgentIdTaken : null;
     this.#onAgentIdAllocated = typeof onAgentIdAllocated === "function" ? onAgentIdAllocated : null;
+    this.#finalizeJob = typeof finalizeJob === "function" ? finalizeJob : null;
     this.#idToken = randomUUID().replaceAll("-", "");
   }
 
@@ -1014,21 +1030,38 @@ export class SubagentRuntime {
       if (TERMINAL_STATUSES.has(job.status)) {
         return { ok: false, reason: "already_finished", job: this.#jobView(job) };
       }
+      if (job.status === "finalizing") {
+        return { ok: false, reason: "finalizing", job: this.#jobView(job) };
+      }
       if (job.status === "stopping") {
         return { ok: false, reason: "stopping", job: this.#jobView(job) };
+      }
+
+      const budgetVerdict = job.budget.check();
+      if (budgetVerdict.terminal?.status === "failed") {
+        const error = publicBudgetError(budgetVerdict.terminal.error);
+        if (job.status === "queued") {
+          const at = this.#queue.indexOf(job.jobId);
+          if (at !== -1) this.#queue.splice(at, 1);
+          job.budget.terminate({ reason: "failed", error });
+          this.#end(job, { status: "failed", error });
+          return { ok: false, reason: "budget_exceeded", job: this.#jobView(job) };
+        } else if (job.status === "running") {
+          this.#beginStopping(job, "failed", error);
+        }
+        return { ok: false, reason: "budget_exceeded", job: this.#jobView(job) };
       }
 
       if (job.status === "queued") {
         const at = this.#queue.indexOf(job.jobId);
         if (at !== -1) this.#queue.splice(at, 1);
         job.budget.terminate({ reason: "cancelled" });
-        this.#end(job, "cancelled", { code: "cancelled", message: "Job cancelled before it started." });
+        this.#end(job, { status: "cancelled", error: { code: "cancelled", message: "Job cancelled before it started." } });
         return { ok: true, job: this.#jobView(job) };
       }
 
       // Running: stop the native run and keep the slot until it has exited, so
       // the aborted session never overlaps a successor Job on the same agent.
-      job.budget.terminate({ reason: "cancelled" });
       this.#beginStopping(job, "cancelled", { code: "cancelled", message: "Job cancelled while running." });
       return { ok: true, job: this.#jobView(job) };
     });
@@ -1450,68 +1483,121 @@ export class SubagentRuntime {
     }
   }
 
-  #finish(job, outcome) {
-    return this.#withCheckpoint(() => {
-      const payload = isPlainObject(outcome) ? outcome : {};
-      const messages = Array.isArray(payload.messages) ? cloneValue(payload.messages) : job.messages;
-      const result = payload.result === undefined ? job.result : cloneValue(payload.result);
-      // The terminal outcome may repeat the native bounds the last
-      // recordHistory call reported; it never has to.
-      const bounds = historyBounds(payload.history);
-      if (bounds !== null) job.history = bounds;
+  #beginFinalization(job, execution = {}) {
+    if (this.#finalizations.has(job.jobId)) {
+      return this.#finalizations.get(job.jobId);
+    }
 
-      if (job.stopping !== null) {
-        // Cancelled or expired: keep the partial output of the aborted run and
-        // publish one frozen terminal payload now that the native handle exited.
-        if (messages !== null) job.messages = messages;
-        if (result !== null) job.result = result;
-        this.#end(job, job.stopping.status, job.stopping.error);
-        return;
+    job.budget.pauseActive();
+    clearTimeout(this.#lifetimeTimers.get(job.jobId));
+    this.#lifetimeTimers.delete(job.jobId);
+
+    const payload = isPlainObject(execution) ? execution : {};
+    if (payload.messages && Array.isArray(payload.messages)) {
+      job.messages = cloneValue(payload.messages);
+    }
+    if (payload.result !== undefined && payload.result !== null) {
+      job.result = cloneValue(payload.result);
+    }
+    const bounds = historyBounds(payload.history);
+    if (bounds !== null) {
+      job.history = bounds;
+    }
+
+    let finalStatus;
+    let finalError = null;
+
+    if (job.stopping !== null) {
+      finalStatus = job.stopping.status;
+      finalError = job.stopping.error ?? null;
+      if (finalStatus === "cancelled") {
+        job.budget.terminate({ reason: "cancelled" });
+      } else if (finalStatus === "failed") {
+        job.budget.terminate({ reason: "failed", error: finalError });
       }
-      if (job.status !== "running") return;
+    } else {
+      const budgetVerdict = job.budget.check();
+      if (budgetVerdict.terminal?.status === "failed") {
+        finalStatus = "failed";
+        finalError = publicBudgetError(budgetVerdict.terminal.error);
+        job.budget.terminate({ reason: "failed", error: finalError });
+      } else if (payload.error || payload.status === "failed") {
+        finalStatus = "failed";
+        finalError = errorInfo(payload.error, "job_failed");
+        job.budget.terminate({ reason: "failed", error: finalError });
+      } else if (payload.status === "cancelled") {
+        finalStatus = "cancelled";
+        finalError = { code: "cancelled", message: "Job cancelled." };
+        job.budget.terminate({ reason: "cancelled" });
+      } else {
+        finalStatus = "completed";
+        job.budget.terminate({ reason: "model_final" });
+      }
+    }
 
-      job.messages = messages;
-      job.result = result;
-      const terminal = job.budget.terminate({ reason: "model_final" }).terminal;
-      this.#end(job, terminal?.status ?? "completed", publicBudgetError(terminal?.error));
+    const agent = this.#agents.get(job.agentId);
+    const calculatedRound = agent ? Math.max(1, agent.jobIds.indexOf(job.jobId) + 1) : (job.continuedFromJobId ? 2 : 1);
+
+    const frozenOutcome = Object.freeze({
+      status: finalStatus,
+      error: finalError,
+      result: job.result,
+      messages: job.messages,
+      history: job.history,
+      budget: job.budget.snapshot(),
+      jobId: job.jobId,
+      round: calculatedRound,
     });
+
+    job.status = "finalizing";
+
+    if (typeof this.#finalizeJob === "function") {
+      const promise = (async () => {
+        let historyState = "ready";
+        let historyError = null;
+        try {
+          await this.#finalizeJob({ job: this.#jobView(job), outcome: frozenOutcome });
+        } catch (err) {
+          historyState = "error";
+          historyError = errorInfo(err, "history_write_failed");
+        }
+        this.#end(job, {
+          status: frozenOutcome.status,
+          error: frozenOutcome.error,
+          historyState,
+          historyError,
+        });
+        return this.#jobView(job);
+      })();
+      this.#finalizations.set(job.jobId, promise);
+      return promise;
+    }
+
+    this.#end(job, {
+      status: frozenOutcome.status,
+      error: frozenOutcome.error,
+    });
+    const resolved = Promise.resolve(this.#jobView(job));
+    this.#finalizations.set(job.jobId, resolved);
+    return resolved;
+  }
+
+  #finish(job, outcome) {
+    this.#beginFinalization(job, outcome);
   }
 
   #fail(job, error) {
-    return this.#withCheckpoint(() => {
-      if (job.stopping !== null) {
-        this.#end(job, job.stopping.status, job.stopping.error);
-        return;
-      }
-      const terminal = job.budget.check().terminal;
-      if (terminal?.status === "failed") {
-        this.#end(job, "failed", publicBudgetError(terminal.error));
-        return;
-      }
-      this.#end(job, "failed", errorInfo(error, "job_failed"));
-    });
+    this.#beginFinalization(job, { error });
   }
 
-  /**
-   * A run that never reached a handle still publishes a stopping outcome that
-   * was already observed and checkpointed during `startJob`: the Budget
-   * failure the adapter saw is not replaced by the start failure that followed
-   * it. Without an observed failure this is the start failure itself.
-   */
   #failStart(job, error) {
-    if (job.stopping !== null) this.#end(job, job.stopping.status, job.stopping.error);
-    else this.#end(job, "failed", error);
+    if (job.stopping !== null) {
+      this.#beginFinalization(job, { status: job.stopping.status, error: job.stopping.error });
+    } else {
+      this.#beginFinalization(job, { status: "failed", error });
+    }
   }
 
-  /**
-   * Observation point shared by the adapter (`request.checkBudget()`) and the
-   * runtime's own lifetime timer: settle the Budget, then route an observed
-   * hard failure through the one transition that owns it. A queued Job fails
-   * in place; a running Job stops its native run first, keeps its slots until
-   * that run exits and is published from there — never earlier. Once the Job
-   * is stopping or terminal this is a plain read of the frozen verdict, so a
-   * repeated observation cannot cancel twice or notify twice.
-   */
   #checkBudget(job) {
     return this.#withCheckpoint(() => {
       const verdict = job.budget.check();
@@ -1520,7 +1606,7 @@ export class SubagentRuntime {
       if (job.status === "queued") {
         const at = this.#queue.indexOf(job.jobId);
         if (at !== -1) this.#queue.splice(at, 1);
-        this.#end(job, "failed", error);
+        this.#end(job, { status: "failed", error });
       } else if (job.status === "running") {
         this.#beginStopping(job, "failed", error);
       }
@@ -1575,13 +1661,18 @@ export class SubagentRuntime {
     }
   }
 
-  #end(job, status, error) {
+  #end(job, terminalInfo) {
     this.#withCheckpoint(() => {
-      job.budget.pauseActive();
       clearTimeout(this.#lifetimeTimers.get(job.jobId));
       this.#lifetimeTimers.delete(job.jobId);
-      job.status = status;
-      job.error = error ?? null;
+      job.status = terminalInfo.status;
+      job.error = terminalInfo.error ?? null;
+      if (terminalInfo.historyState !== undefined) {
+        job.historyState = terminalInfo.historyState;
+      }
+      if (terminalInfo.historyError !== undefined && terminalInfo.historyError !== null) {
+        job.historyError = terminalInfo.historyError;
+      }
       this.#running.delete(job.jobId);
       this.#handles.delete(job.jobId);
       this.#markDirty();
@@ -1786,6 +1877,9 @@ export class SubagentRuntime {
       }
       if (live.status === "stopping") {
         throw this.#busyError(agent, "stopping");
+      }
+      if (live.status === "finalizing") {
+        throw this.#busyError(agent, "finalizing");
       }
       if (live.status === "queued") {
         // A queued Job owns the agent and picks the message up when it starts.
@@ -2009,6 +2103,8 @@ export class SubagentRuntime {
     if (TERMINAL_STATUSES.has(job.status)) {
       item.resultRef = resultRef(job.agentId);
       item.historyRef = historyRef(job.agentId);
+      if (job.historyState !== undefined) item.historyState = job.historyState;
+      if (job.historyError !== undefined && job.historyError !== null) item.historyError = job.historyError;
     }
     const warnings = inheritedWarnings(job.spec);
     if (warnings.length > 0) item.warnings = warnings;
@@ -2029,6 +2125,8 @@ export class SubagentRuntime {
     if (TERMINAL_STATUSES.has(job.status)) {
       view.resultRef = resultRef(job.agentId);
       view.historyRef = historyRef(job.agentId);
+      if (job.historyState !== undefined) view.historyState = job.historyState;
+      if (job.historyError !== undefined && job.historyError !== null) view.historyError = job.historyError;
     }
     if (job.error !== null) view.error = cloneValue(job.error);
     const budget = this.#budgetView(job);

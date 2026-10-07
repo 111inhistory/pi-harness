@@ -258,40 +258,47 @@ async function activateRootSession(controller, ctx) {
  * continue.
  */
 async function retireService(controller) {
+  if (controller.retirement) return controller.retirement;
   const service = controller.service;
-  if (service === null) return controller.retirement ?? undefined;
+  if (service === null) return undefined;
   controller.service = null;
   service.active = false;
   service.closed = true;
 
-  if (service.socketServers) {
-    for (const server of service.socketServers.values()) {
+  const liveJobs = service.runtime
+    ? service.runtime.jobs().jobs.filter((job) => LIVE_JOB_STATUSES.has(job.status))
+    : [];
+
+  for (const job of liveJobs) {
+    if (job.status === "queued" || job.status === "running") {
       try {
-        await server.close();
+        service.runtime.cancelJob(job.jobId);
       } catch {
-        // ignore close error during retirement
+        // Already terminal: nothing to stop.
       }
     }
-    service.socketServers.clear();
-    service.registeredSockets?.clear();
   }
-  // Every Job that has not reached a terminal state — queued, running or
-  // stopping. A queued one ends immediately; a running one keeps its slot until
-  // the adapter's native run settles.
-  const jobIds = service.runtime
-    .jobs()
-    .jobs.filter((job) => LIVE_JOB_STATUSES.has(job.status))
-    .map((job) => job.jobId);
-  for (const jobId of jobIds) {
-    try {
-      service.runtime.cancelJob(jobId);
-    } catch {
-      // Already terminal: nothing to stop.
+
+  const closeSocketsPromise = (async () => {
+    if (service.socketServers) {
+      for (const server of service.socketServers.values()) {
+        try {
+          await server.close();
+        } catch {
+          // ignore close error during retirement
+        }
+      }
+      service.socketServers.clear();
+      service.registeredSockets?.clear();
     }
-  }
+  })();
+
   const retirement = (async () => {
     try {
-      await Promise.all(jobIds.map((jobId) => service.runtime.jobDone(jobId)));
+      await Promise.all([
+        closeSocketsPromise,
+        ...liveJobs.map((job) => service.runtime.jobDone(job.jobId)),
+      ]);
     } catch {
       // Every Job still settles through its own handle; a failed wait here must
       // not leave a later session without its retirement record.
@@ -320,6 +327,26 @@ function createService(controller, ctx) {
   if (!allocatedAgentIds) {
     allocatedAgentIds = new Set();
     controller.allocatedAgentIdsBySession.set(sessionId, allocatedAgentIds);
+  }
+
+  // Rebuild allocated agent IDs from all entries in the root SessionManager across all branches
+  const sessionManager = ctx?.sessionManager;
+  if (sessionManager && typeof sessionManager.getEntries === "function") {
+    try {
+      const allEntries = sessionManager.getEntries();
+      for (const entry of allEntries) {
+        if (entry.type === "subagent-state" || entry.customType === "subagent-state") {
+          const stateData = entry.data || entry;
+          if (Array.isArray(stateData.actors)) {
+            for (const actor of stateData.actors) {
+              if (actor.agentId && actor.agentId !== "Main") {
+                allocatedAgentIds.add(actor.agentId);
+              }
+            }
+          }
+        }
+      }
+    } catch {}
   }
 
   const service = {
@@ -353,6 +380,9 @@ function createService(controller, ctx) {
     /** Live Unix Domain Socket servers mapped by actor id or broadcast key. */
     socketServers: new Map(),
     registeredSockets: new Map(),
+    jobAppendChains: new Map(),
+    jobMeta: new Map(),
+    jobSpecs: new Map(),
     runtime: null,
   };
   const isAgentIdTaken = (candidateId) => {
@@ -365,6 +395,7 @@ function createService(controller, ctx) {
     isAgentIdTaken,
     onAgentIdAllocated: (agentId) => service.allocatedAgentIds.add(agentId),
     startJob: (job) => startPiJob(service, job),
+    finalizeJob: (arg) => finalizePiJob(service, arg),
     deliverMessage: (request) => deliverMessage(service, request),
     deliverToMain: (message) => deliverToMain(service, message),
     // Checkpoints only exist on disk: a memory-only root runs without the hook
@@ -774,13 +805,12 @@ async function appendCompletion(service, agentId, jobId, message) {
   const entry = { customType: COMPLETION_CUSTOM_TYPE, content, display: true, details };
   try {
     const live = jobId === null ? null : (service.liveJobs.get(jobId) ?? null);
-    if (live?.session != null) {
-      // Pi queues this behind the current turn, or appends it durably between
-      // turns. A landed append moves the actor's leaf; checkpoint it right
-      // here so a reload before any later mutation keeps the notice that was
-      // written. A queued append lands at the end of the running turn and the
-      // Job's later boundaries read the same manager, so it is checkpointed
-      // there.
+    if (live != null && live.closed) {
+      try {
+        await service.runtime?.jobDone?.(jobId);
+      } catch {}
+      if (service.closed) return;
+    } else if (live?.session != null) {
       const manager = service.retained.get(agentId)?.sessionManager ?? null;
       const before = manager?.getLeafId() ?? null;
       await live.session.sendCustomMessage(entry, { triggerTurn: false });
@@ -1444,6 +1474,9 @@ function startPiJob(service, request) {
       ensureBroadcastSocketServer(service, request.agentId);
     }
 
+    service.jobSpecs.set(request.jobId, request.spec);
+    service.jobMeta.set(request.jobId, { roleId, model });
+
     let cleanAppendChain = Promise.resolve();
     const queueCleanAppend = (event) => {
       cleanAppendChain = cleanAppendChain.then(async () => {
@@ -1455,8 +1488,8 @@ function startPiJob(service, request) {
       });
       return cleanAppendChain;
     };
+    service.jobAppendChains.set(request.jobId, () => cleanAppendChain);
 
-    let outcome = null;
     let jobErr = null;
 
     if (!cancelled) {
@@ -1550,13 +1583,6 @@ function startPiJob(service, request) {
           await drainLiveMessages(live, sessionManager);
           throwIfBudgetFailed(request.budget);
         }
-        if (!cancelled) {
-          outcome = {
-            result: readFinalText(jobMessages()),
-            messages: readTranscript(entriesAfter(sessionManager, boundary)),
-            history: { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
-          };
-        }
       } catch (error) {
         jobErr = error;
       }
@@ -1566,77 +1592,22 @@ function startPiJob(service, request) {
       } catch {}
     }
 
-    // Await all JSONL streaming events to finish appending
-    try {
-      await cleanAppendChain;
-    } catch {}
-
-    // 1. Budget failure takes highest priority -> failed
-    try {
-      throwIfBudgetFailed(request.budget);
-    } catch (budgetErr) {
-      jobErr = budgetErr;
+    if (jobErr) throw jobErr;
+    if (cancelled) {
+      return {
+        status: "cancelled",
+        result: readFinalText(jobMessages()),
+        messages: readTranscript(entriesAfter(sessionManager, boundary)),
+        history: { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
+      };
     }
-
-    let finalStatus;
-    let finalErr;
-    if (jobErr) {
-      finalStatus = "failed";
-      finalErr = jobErr;
-    } else if (cancelled) {
-      finalStatus = "cancelled";
-      finalErr = null;
-    } else {
-      finalStatus = "completed";
-      finalErr = null;
-    }
-
-    // Write summary exactly once
-    try {
-      const msgs = jobMessages();
-      const partialText = readFinalText(msgs);
-      await writeCompactedSummary(
-        request.agentId,
-        {
-          name: request.spec?.name,
-          task: typeof request.spec?.task === "string" ? request.spec.task : "",
-          role: roleId,
-          model: modelRefOf(model)?.id ?? (typeof model === "string" ? model : null),
-          budget: request.budget.snapshot(),
-          result: partialText || (finalErr ? `Terminated with error: ${finalErr.message}` : "(No output recorded)"),
-          status: finalStatus,
-          error: finalErr ? finalErr.message : null,
-          round: isContinuation ? 2 : 1,
-        },
-        { append: isContinuation, baseDir: service.historyDir, cwd: service.cwd },
-      );
-
-      // If stop arrived while writing Markdown, update summary status to cancelled
-      if (finalStatus === "completed" && cancelled) {
-        finalStatus = "cancelled";
-        const { resolvedSummary } = getSubagentHistoryPaths(request.agentId, service.historyDir, { cwd: service.cwd });
-        if (fs.existsSync(resolvedSummary)) {
-          const summaryText = await fsp.readFile(resolvedSummary, "utf-8");
-          const target = "- **Status**: `completed`";
-          const lastIdx = summaryText.lastIndexOf(target);
-          if (lastIdx !== -1) {
-            const updated = summaryText.slice(0, lastIdx) + "- **Status**: `cancelled`" + summaryText.slice(lastIdx + target.length);
-            await fsp.writeFile(resolvedSummary, updated, "utf-8");
-          }
-        }
-      }
-    } catch (summaryErr) {
-      service.ui?.notify?.(`Failed to write summary for ${request.agentId}: ${summaryErr.message}`, "error");
-    }
-
-    if (finalStatus === "failed") {
-      throw finalErr;
-    }
-    if (finalStatus === "cancelled" || cancelled) {
-      return cancelledOutcome(sessionManager, boundary);
-    }
-    return outcome;
-  })().finally(() => {
+    return {
+      status: "completed",
+      result: readFinalText(jobMessages()),
+      messages: readTranscript(entriesAfter(sessionManager, boundary)),
+      history: { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
+    };
+  })().finally(async () => {
     live.closed = true;
     service.liveJobs.delete(request.jobId);
     // A revival reuses the loadout the run actually ended with — capability
@@ -1646,7 +1617,9 @@ function startPiJob(service, request) {
     unsubscribeClean?.();
     unsubscribeBudget?.();
     unsubscribe?.();
-    session?.dispose();
+    try {
+      await session?.dispose();
+    } catch {}
   });
 
   return {
@@ -1659,6 +1632,52 @@ function startPiJob(service, request) {
     },
     done,
   };
+}
+
+/**
+ * Finalize Job history in clean JSONL and Markdown summary.
+ * Invoked once per job by Runtime with frozen outcome.
+ */
+async function finalizePiJob(service, { job, outcome }) {
+  const getChain = service.jobAppendChains?.get(job.jobId);
+  if (getChain) {
+    try {
+      await getChain();
+    } catch {}
+  }
+
+  await appendCleanJsonl(
+    job.agentId,
+    {
+      type: "job_end",
+      jobId: outcome.jobId,
+      round: outcome.round,
+      status: outcome.status,
+      error: outcome.error,
+      budget: outcome.budget,
+      timestamp: Date.now(),
+    },
+    { baseDir: service.historyDir, cwd: service.cwd },
+  );
+
+  const isContinuation = outcome.round > 1;
+  const spec = service.jobSpecs?.get(job.jobId) ?? {};
+  const meta = service.jobMeta?.get(job.jobId) ?? {};
+  await writeCompactedSummary(
+    job.agentId,
+    {
+      name: spec.name ?? job.name,
+      task: typeof spec.task === "string" ? spec.task : "",
+      role: meta.roleId ?? null,
+      model: modelRefOf(meta.model)?.id ?? (typeof meta.model === "string" ? meta.model : null),
+      budget: outcome.budget,
+      result: outcome.result || (outcome.error ? `Terminated with error: ${outcome.error.message}` : "(No output recorded)"),
+      status: outcome.status,
+      error: outcome.error ? outcome.error.message : null,
+      round: outcome.round,
+    },
+    { append: isContinuation, baseDir: service.historyDir, cwd: service.cwd },
+  );
 }
 
 /** The model identity a revival resolves through the catalog. */
