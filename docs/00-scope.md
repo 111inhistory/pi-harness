@@ -52,7 +52,7 @@
 ## 已确定约束
 
 1. `work` 和 `subagent` 是独立模块。
-2. 消息通过 Unix Domain Socket (NDJSON) 单向投递，发起者通过 write socket 与子 Agent 交互；直接暴露双轨历史文件供普通文件读取与 grep/rg/jq 检索，彻底废弃虚拟协议。
+2. 消息通过 Unix Domain Socket (UTF-8 NDJSON) 单向投递，发起者通过 write socket 与子 Agent 交互；受管理端点的报文由该会话的 write backend 绑定真实 `from`（`main` 或子 Agent 短 ID），调用方只提供 `content`，不能伪造发送者；直接暴露双轨历史文件供普通文件读取与 grep/rg/jq 检索，彻底废弃虚拟协议。来源绑定是本次文档修订补上的设计约束，具体传输校验仍待定，不把 JSON 自报 ID 当作身份认证。
 3. Fresh 不继承父会话聊天历史；初始上下文由自动路由选定的角色指令、模型与 thinking，加明确任务和材料组成。
 4. `inheritContext: true` 在创建时继承父 Agent 的完整有效上下文（原始 SessionManager 条目）、系统提示词、工具和模型；创建后不再自动同步。
 5. 上下文继承不产生文件系统隔离；当前共享工作目录。
@@ -65,7 +65,7 @@
 12. Thinking 由角色期望档位限于模型策略区间，使用 low／medium／high，自动路径不超过 high；模型实际支持档位由 Pi 最终处理。困难度反馈存于最终文本和原生历史，不另做解析、校准或自动学习。
 13. 自动路由与 Inherited Subagent 的交互（继承子代理是否重选模型或身份）未定案；当前继承语义（父模型、系统提示词、完整有效上下文）继续作为已记录行为保留。
 14. Capability 内部检索继承调用方原生会话作为阻塞式 Inherited Subagent 并运行在同一物理模型（thinking 固定 low，不改变调用方设置），并发检索并直接返回结果；调用阻塞直到内部执行结束。
-15. 原生 `write` 工具通过更换 write backend 适配 Unix Domain Socket，使得向 `.sock` 写入能直接单向投递 NDJSON；每个 Agent 终身绑定唯一的 Socket 与唯一一对双轨历史文件，stop 后写 socket 自动 revive 续跑并追加历史，严格杜绝 socket 泄漏与多重历史文件碎片化。
+15. 原生 `write` 工具通过更换 write backend 适配 Unix Domain Socket，使得向受管理的 `.sock` 写入能直接单向投递带真实发送者的 NDJSON；广播还须校验发送者与端点所属父节点一致。非 Subagent Socket 仅按原内容单向写入（缺少末尾换行时补齐），不注入 Agent 字段、不按同名 Agent 状态拒绝、不触发 Agent 生命周期。端点归属依据宿主注册表及实际路径，而非文件后缀或 basename。每个 Agent 终身绑定唯一的 Socket 与唯一一对双轨历史文件，stop 后写 socket 自动 revive 续跑并追加历史，严格杜绝 socket 泄漏与多重历史文件碎片化。
 
 ## 暂未决定
 

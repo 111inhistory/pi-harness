@@ -2,222 +2,198 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createSubagentRuntime, SubagentError } from "../src/subagent-runtime.mjs";
-import { createSocketAwareWriteOperations } from "../src/subagent-socket.mjs";
+import { createSocketAwareWriteOperations, getAgentSocketPath } from "../src/subagent-socket.mjs";
+import { getSubagentHistoryPaths } from "../src/subagent-history.mjs";
 
-function createFakeAdapter() {
+function harness(t, options = {}) {
   const started = [];
-  const handles = [];
-  return {
-    started,
-    handles,
+  const runtime = createSubagentRuntime({
+    deliverMessage: async () => ({ accepted: true }),
+    ...options,
     startJob(request) {
-      started.push(request);
-      let resolveDone;
-      const done = new Promise((resolve) => {
-        resolveDone = resolve;
-      });
+      let resolve;
+      let reject;
+      const done = new Promise((yes, no) => { resolve = yes; reject = no; });
       const handle = {
-        cancel: () => {}, // do not immediately resolve done, to simulate in-flight stopping
-        done,
-        finish: (result = "ok") => resolveDone({ result, messages: [] }),
-        fail: (err = new Error("fault")) => {
-          throw err;
-        },
+        request, done, cancelCount: 0,
+        cancel() { this.cancelCount += 1; },
+        finish: (result = "ok") => resolve({ result, messages: [] }),
+        fail: (error = new Error("fault")) => reject(error),
       };
-      handles.push(handle);
+      started.push(handle);
       return handle;
     },
-  };
+  });
+  t.after(async () => {
+    // Stop queued jobs before resolving running ones, so teardown cannot start more work.
+    for (const actor of runtime.list().agents) runtime.stop(actor.agentId);
+    for (const handle of started) handle.finish();
+    await Promise.all(runtime.jobs().jobs.map((job) => runtime.jobDone(job.jobId)));
+  });
+  return { runtime, started };
 }
 
-test("contract-redesign: short unified ID naming format (sub_01..04 and parentId_01..04)", async () => {
-  const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob });
+const task = (name) => ({ name, task: `do ${name}` });
+const errorCode = (code) => (err) => err instanceof SubagentError && err.code === code;
 
-  // 1. Depth 1 allocations
-  const batch1 = {
-    tasks: [
-      { name: "Task1", task: "first" },
-      { name: "Task2", task: "second" },
-    ],
-  };
-  const resp1 = runtime.create(batch1);
-  assert.equal(resp1.items[0].id, "sub_01");
-  assert.equal(resp1.items[1].id, "sub_02");
-
-  // 2. Depth 2 allocations under sub_01
-  const batch2 = {
-    tasks: [
-      { name: "SubTask1", task: "child 1" },
-      { name: "SubTask2", task: "child 2" },
-    ],
-  };
-  const resp2 = runtime.create(batch2, { parentAgentId: "sub_01" });
-  assert.equal(resp2.items[0].id, "sub_01_01");
-  assert.equal(resp2.items[1].id, "sub_01_02");
+test("public create allocates distinct hierarchical IDs and couples the initial Job to the actor", (t) => {
+  const { runtime } = harness(t);
+  const roots = runtime.create({ tasks: [task("a"), task("b"), task("c"), task("d")] }).items;
+  assert.deepEqual(roots.map((item) => item.id), ["sub_01", "sub_02", "sub_03", "sub_04"]);
+  const aChildren = runtime.create({ tasks: [task("a1"), task("a2"), task("a3"), task("a4")] }, { parentAgentId: "sub_01" }).items;
+  const bChildren = runtime.create({ tasks: [task("b1"), task("b2")] }, { parentAgentId: "sub_02" }).items;
+  assert.deepEqual(aChildren.map((item) => item.id), ["sub_01_01", "sub_01_02", "sub_01_03", "sub_01_04"]);
+  assert.deepEqual(bChildren.map((item) => item.id), ["sub_02_01", "sub_02_02"]);
+  assert.deepEqual(runtime.jobs().jobs.map((job) => job.jobId), [...roots, ...aChildren, ...bChildren].map((item) => item.id));
+  const before = runtime.exportState();
+  assert.throws(() => runtime.create({ tasks: [task("too many")] }, { parentAgentId: "sub_01" }), errorCode("child_limit_exceeded"));
+  assert.throws(() => runtime.create({ tasks: [task("too deep")] }, { parentAgentId: "sub_01_01" }), errorCode("max_depth_exceeded"));
+  const after = runtime.exportState();
+  assert.deepEqual(after.actors, before.actors, "rejected topology must not register partial actors");
+  assert.deepEqual(after.jobs.map((job) => job.jobId), before.jobs.map((job) => job.jobId));
+  assert.deepEqual(after.sequences, before.sequences);
 });
 
-test("contract-redesign: runtime.create returns unified id, socket path and dual history paths", async () => {
-  const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob });
-
-  const batch = {
-    context: "audit run",
-    tasks: [
-      { name: "TaskA", task: "audit parser" },
-      { name: "TaskB", task: "review contracts" },
-    ],
-  };
-
-  const response = runtime.create(batch);
-  assert.equal(response.items.length, 2);
-
-  const [first, second] = response.items;
-  assert.equal(first.id, "sub_01");
-  assert.equal(first.name, "TaskA");
-  assert.equal(first.status, "running");
-  assert.equal(first.socket, "/tmp/pi-subagents/sub_01.sock");
-  assert.equal(first.history.summary, ".pi/subagents/sub_01/summary.md");
-  assert.equal(first.history.cleanJsonl, ".pi/subagents/sub_01/session.clean.jsonl");
-
-  assert.equal(second.id, "sub_02");
-  assert.equal(second.name, "TaskB");
-  assert.notEqual(first.socket, second.socket);
+test("public create returns only deferred metadata in input order, with stable socket and history paths", (t) => {
+  const { runtime } = harness(t);
+  const response = runtime.create({ context: "audit", tasks: [task("TaskA"), task("TaskB")] });
+  assert.deepEqual(response, { items: ["TaskA", "TaskB"].map((name, index) => {
+    const id = `sub_0${index + 1}`;
+    const history = getSubagentHistoryPaths(id);
+    return { id, name, status: "running", socket: getAgentSocketPath(id), history: { summary: history.summary, cleanJsonl: history.cleanJsonl } };
+  }) });
+  for (const item of response.items) {
+    for (const removed of ["agentId", "jobId", "delivery", "result", "resultRef", "historyRef"]) assert.equal(removed in item, false);
+  }
 });
 
-test("contract-redesign: runtime.create preserves warnings for inherited tasks", async () => {
-  const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob });
+test("public create rejects unknown routing and schema fields atomically", (t) => {
+  const { runtime, started } = harness(t);
+  for (const field of ["agent", "role", "model", "thinking", "effort", "provider", "preference", "tools", "outputSchema", "schemaMode"]) {
+    assert.throws(() => runtime.create({ tasks: [task("valid"), { ...task("invalid"), [field]: "override" }] }), errorCode("invalid_task"));
+  }
+  assert.deepEqual(runtime.listDetailed(), { items: [] });
+  assert.equal(started.length, 0);
+  assert.equal(runtime.create({ tasks: [task("first accepted")] }).items[0].id, "sub_01");
+});
 
-  const batch = {
-    tasks: [
-      {
-        name: "InheritedTask",
-        task: "do task",
-        inheritContext: true,
-      },
-    ],
+test("public create preserves inherited warnings and captures one independent snapshot per batch", (t) => {
+  const { runtime, started } = harness(t);
+  const warning = "Tool 'custom_secret' is not transplantable and was omitted.";
+  const snapshot = {
+    cwd: process.cwd(), sessionId: "test-session", systemPrompt: "prompt",
+    model: { provider: "test", id: "model" }, thinkingLevel: "high", entries: [], tools: ["bash"], warnings: [warning],
   };
-
-  const captureInheritedContext = () => ({
-    cwd: process.cwd(),
-    sessionId: "test-session",
-    systemPrompt: "prompt",
-    model: { provider: "test", id: "model" },
-    thinkingLevel: "high",
-    entries: [],
-    tools: ["bash"],
-    warnings: ["Tool 'custom_secret' is not transplantable and was omitted."],
+  let captures = 0;
+  const response = runtime.create({ tasks: [task("fresh"), { ...task("inherited 1"), inheritContext: true }, { ...task("inherited 2"), inheritContext: true }] }, {
+    captureInheritedContext: () => { captures += 1; return snapshot; },
   });
-
-  const response = runtime.create(batch, {
-    allowInherited: true,
-    captureInheritedContext,
-  });
-
-  assert.equal(response.items.length, 1);
-  assert.ok(response.items[0].warnings);
-  assert.equal(response.items[0].warnings.length, 1);
-  assert.ok(response.items[0].warnings[0].includes("not transplantable"));
+  assert.equal(captures, 1);
+  assert.equal("warnings" in response.items[0], false);
+  for (const item of response.items.slice(1)) assert.deepEqual(item.warnings, [warning]);
+  assert.notEqual(started[1].request.spec.inheritedContext.entries, started[2].request.spec.inheritedContext.entries);
+  snapshot.warnings.push("later mutation");
+  assert.deepEqual(response.items[1].warnings, [warning]);
 });
 
-test("contract-redesign: runtime.listDetailed returns structured items with budget, socket and history", async () => {
-  const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob });
-
-  const response = runtime.create({ tasks: [{ name: "One", task: "do one" }] });
-  const agentId = response.items[0].id;
-  assert.equal(agentId, "sub_01");
-
-  const list = runtime.listDetailed();
-  assert.equal(list.items.length, 1);
-
-  const item = list.items[0];
-  assert.equal(item.id, "sub_01");
-  assert.equal(item.name, "One");
+test("public list filters actors, exposes usage but not budget limits, and follows queued/stopping/terminal states", async (t) => {
+  const { runtime, started } = harness(t, { maxConcurrency: 1 });
+  const [first, second] = runtime.create({ tasks: [task("running"), task("queued")] }).items;
+  const before = runtime.listDetailed();
+  assert.deepEqual(before.items.map((item) => item.status), ["running", "queued"]);
+  const item = before.items[0];
   assert.equal(item.depth, 1);
   assert.equal(item.parentId, "Main");
-  assert.equal(item.status, "running");
-  assert.equal(item.socket, "/tmp/pi-subagents/sub_01.sock");
-  assert.equal(item.history.summary, ".pi/subagents/sub_01/summary.md");
-  assert.equal(item.history.cleanJsonl, ".pi/subagents/sub_01/session.clean.jsonl");
-  assert.ok(item.budget !== null);
-
-  // Filter by id
-  const filtered = runtime.listDetailed({ id: agentId });
-  assert.equal(filtered.items.length, 1);
-  assert.equal(filtered.items[0].id, agentId);
-
-  const missing = runtime.listDetailed({ id: "non-existent" });
-  assert.equal(missing.items.length, 0);
+  assert.equal(item.budget.modelCalls, 0);
+  assert.equal(item.budget.phase, "normal");
+  assert.equal("profile" in item.budget, false);
+  const filtered = runtime.listDetailed({ id: first.id }).items;
+  assert.equal(filtered.length, 1);
+  assert.equal(filtered[0].id, first.id);
+  assert.equal(filtered[0].socket, item.socket);
+  assert.deepEqual(filtered[0].history, item.history);
+  assert.ok(filtered[0].budget.activeTimeMs >= item.budget.activeTimeMs);
+  assert.deepEqual(runtime.listDetailed({ id: "missing" }), { items: [] });
+  assert.equal(runtime.stop(second.id).status, "cancelled");
+  assert.equal(runtime.stop(first.id).status, "stopping");
+  assert.equal(runtime.listDetailed({ id: first.id }).items[0].status, "stopping");
+  started[0].finish();
+  await runtime.jobDone(first.id);
+  const final = runtime.listDetailed({ id: first.id }).items[0];
+  assert.equal(final.status, "stopped");
+  assert.equal(final.socket, first.socket);
+  assert.deepEqual(final.history, first.history);
+  assert.equal(final.budget.terminal.status, "cancelled");
 });
 
-test("contract-redesign: runtime.stop gracefully cancels running agent and marks queued as cancelled", async () => {
-  const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob, maxConcurrency: 1 });
-
-  // Create two tasks: first runs, second queues
-  const response = runtime.create({
-    tasks: [
-      { name: "RunningTask", task: "run" },
-      { name: "QueuedTask", task: "queue" },
-    ],
-  });
-
-  const [running, queued] = response.items;
-  assert.equal(running.status, "running");
-  assert.equal(queued.status, "queued");
-
-  // Stop queued task: cancelled immediately
-  const stopQueued = runtime.stop(queued.id);
-  assert.equal(stopQueued.ok, true);
-  assert.equal(stopQueued.status, "cancelled");
-
-  // Stop running task: enters stopping
-  const stopRunning = runtime.stop(running.id);
-  assert.equal(stopRunning.ok, true);
-  assert.equal(stopRunning.status, "stopping");
-
-  // Unknown agent throws
-  assert.throws(() => runtime.stop("unknown_agent"), (err) => err instanceof SubagentError && err.code === "unknown_agent");
+test("public stop retains the slot until native exit, never starts a cancelled queued task, and is repeatable", async (t) => {
+  const { runtime, started } = harness(t, { maxConcurrency: 1 });
+  const [first, second] = runtime.create({ tasks: [task("running"), task("queued")] }).items;
+  assert.equal(runtime.stop(second.id).status, "cancelled");
+  assert.equal(runtime.stop(first.id).status, "stopping");
+  assert.equal(runtime.stop(first.id).ok, false);
+  assert.equal(started[0].cancelCount, 1);
+  await assert.rejects(runtime.sendMessage({ from: "Main", to: first.id, content: "too early" }), errorCode("agent_busy"));
+  assert.equal(started.length, 1);
+  started[0].finish("partial");
+  assert.equal((await runtime.jobDone(first.id)).status, "cancelled");
+  assert.equal(started.length, 1);
+  assert.equal(runtime.stop(first.id).ok, true);
+  assert.throws(() => runtime.stop("unknown_agent"), errorCode("unknown_agent"));
+  assert.throws(() => runtime.stop(), errorCode("invalid_request"));
 });
 
-test("contract-redesign: write operations synchronously reports agent_stopping when target is stopping", async () => {
-  const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob });
-
-  const resp = runtime.create({ tasks: [{ name: "StopTarget", task: "stopping test" }] });
-  const agentId = resp.items[0].id;
-
-  // Stop it to put it into stopping
-  runtime.stop(agentId);
-
-  const writeOps = createSocketAwareWriteOperations({
-    onCheckStatus: (id) => {
-      const detailed = runtime.listDetailed({ id });
-      return detailed.items?.[0]?.status ?? null;
-    },
-  });
-
-  await assert.rejects(
-    () => writeOps.writeFile(`/tmp/pi-subagents/${agentId}.sock`, JSON.stringify({ msg: "revive prematurely" })),
-    (err) => err.code === "agent_stopping" && err.message.includes("is currently stopping"),
-  );
+test("public actor metadata remains stable through revival while a new Job and Budget are allocated", async (t) => {
+  const { runtime, started } = harness(t);
+  const original = runtime.create({ tasks: [task("revive")] }).items[0];
+  started[0].request.budget.beginModelCall();
+  started[0].finish("first output");
+  await runtime.jobDone(original.id);
+  const response = await runtime.sendMessage({ from: "Main", to: original.id, content: "continue" });
+  assert.equal(response.to, original.id);
+  assert.notEqual(response.jobId, original.id);
+  assert.equal(started[1].request.continuedFromJobId, original.id);
+  assert.notEqual(started[0].request.budget, started[1].request.budget);
+  const revived = runtime.listDetailed({ id: original.id }).items[0];
+  assert.equal(revived.budget.modelCalls, 0);
+  assert.equal(revived.socket, original.socket);
+  assert.deepEqual(revived.history, original.history);
 });
 
-test("contract-redesign: terminal notifications are sent only on failure, silent on normal completion", async () => {
-  const adapter = createFakeAdapter();
+test("socket write preflight rejects stopping before attempting to connect", async (t) => {
+  const { runtime } = harness(t);
+  const { id } = runtime.create({ tasks: [task("stopping")] }).items[0];
+  runtime.stop(id);
+  const checked = [];
+  const operations = createSocketAwareWriteOperations({ onCheckStatus(target) {
+    checked.push(target);
+    return runtime.listDetailed({ id: target }).items[0].status;
+  } });
+  await assert.rejects(operations.writeFile(getAgentSocketPath(id, "/not-a-real-socket-dir"), '{"content":"too early"}'), (err) => err.code === "agent_stopping");
+  assert.deepEqual(checked, [id]);
+});
+
+test("terminal notifications are emitted once only for failure, not normal completion or explicit cancellation", async (t) => {
   const delivered = [];
-  const runtime = createSubagentRuntime({
-    startJob: adapter.startJob,
-    deliverToMain: (msg) => delivered.push(msg),
-  });
-
-  // 1. Normal completion
-  runtime.create({ tasks: [{ name: "NormalTask", task: "ok" }] });
-  const handle = adapter.handles[0];
-  handle.finish("success result");
-  await new Promise((r) => setTimeout(r, 20));
-  // Must NOT send notification for normal completion
-  assert.equal(delivered.length, 0);
+  const { runtime, started } = harness(t, { deliverToMain: (msg) => delivered.push(msg), maxConcurrency: 2 });
+  const [normal, stopped, queued] = runtime.create({ tasks: [task("normal"), task("stopped"), task("queued")] }).items;
+  runtime.stop(queued.id);
+  runtime.stop(stopped.id);
+  started[0].finish("success");
+  started[1].finish("cancelled");
+  await Promise.all([runtime.jobDone(normal.id), runtime.jobDone(stopped.id), runtime.jobDone(queued.id)]);
+  assert.deepEqual(delivered, []);
+  const failed = runtime.create({ tasks: [task("failure")] }).items[0];
+  started[2].fail(new Error("provider failed"));
+  assert.equal((await runtime.jobDone(failed.id)).status, "failed");
+  assert.equal(delivered.length, 1);
+  assert.equal(delivered[0].type, "notification");
+  assert.equal(delivered[0].subagentId, failed.id);
+  assert.equal(delivered[0].status, "failed");
+  assert.deepEqual(delivered[0].history, failed.history);
+  assert.match(delivered[0].content, /provider failed/);
+  runtime.stop(failed.id);
+  runtime.listDetailed();
+  await runtime.jobDone(failed.id);
+  assert.equal(delivered.length, 1, "polls and repeated stop must not resend an error notification");
 });

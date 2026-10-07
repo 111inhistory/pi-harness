@@ -1,144 +1,53 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
+import { execFile } from "node:child_process";
 import fsp from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 
-import {
-  createAgentSession,
-  DefaultResourceLoader,
-  SessionManager,
-  SettingsManager,
-  getAgentDir,
-} from "@earendil-works/pi-coding-agent";
+const execute = promisify(execFile);
+const fixture = fileURLToPath(new URL("../test-support/subagent-sdk-scenario.mjs", import.meta.url));
 
-import subagentExtension from "../extensions/subagent.mjs";
-import { writeSocketOneWay } from "../src/subagent-socket.mjs";
-
-test("integration: real SDK extension load, short IDs, instant socket existence, and clean lifecycle", async () => {
-  const tmpDir = path.join("/tmp", `test-e2e-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  const testAgentDir = path.join(tmpDir, "agent-dir");
-  await fsp.mkdir(tmpDir, { recursive: true });
-  await fsp.mkdir(testAgentDir, { recursive: true });
-
-  const sessionManager = SessionManager.inMemory(tmpDir);
-  const settingsManager = SettingsManager.inMemory({
-    defaultProvider: "mock",
-    defaultModel: "mock-model",
-  });
-
-  const mockModelRuntime = {
-    streamSimple: async () => {},
-    getAuth: () => ({}),
-    getRegisteredProviderIds: () => [],
-    getModel: () => null,
-    refresh: async () => {},
-    hasConfiguredAuth: () => false,
-  };
-
-  const resourceLoader = new DefaultResourceLoader({
-    cwd: tmpDir,
-    agentDir: testAgentDir,
-    settingsManager,
-    extensionFactories: [
-      {
-        name: "subagent",
-        factory: (pi) => subagentExtension(pi),
-      },
-    ],
-  });
-  await resourceLoader.reload();
-
-  const created = await createAgentSession({
-    cwd: tmpDir,
-    agentDir: testAgentDir,
-    sessionManager,
-    settingsManager,
-    resourceLoader,
-    modelRuntime: mockModelRuntime,
-    model: { id: "mock-model", provider: "mock", name: "Mock Model", api: "mock", reasoning: false, inputPrice: 0, outputPrice: 0, contextWindow: 8192, maxTokens: 4096 },
-  });
-
+// Child-process timeout also detects leaked handles AFTER assertions succeed;
+// node:test's per-test timeout alone does not enforce worker quiescence.
+async function scenario(t, name) {
+  const cwd = await fsp.mkdtemp(path.join(tmpdir(), "pi-sdk-"));
+  t.after(() => fsp.rm(cwd, { recursive: true, force: true }));
   try {
-    const session = created.session;
-    // 1. Verify registered tool surfaces in real active tool names
-    const activeToolNames = session.getActiveToolNames();
-    assert.ok(activeToolNames.includes("subagent_create"), "Must have 'subagent_create' tool");
-    assert.ok(activeToolNames.includes("subagent_list"), "Must have 'subagent_list' tool");
-    assert.ok(activeToolNames.includes("subagent_stop"), "Must have 'subagent_stop' tool");
-    assert.ok(activeToolNames.includes("write"), "Must have socket-aware 'write' tool");
-    assert.equal(activeToolNames.includes("task"), false, "Deprecated 'task' must NOT be registered");
-    assert.equal(activeToolNames.includes("hub"), false, "Deprecated 'hub' must NOT be registered");
-
-    // Retrieve tool definition from session
-    const createTool = session._toolDefinitions?.get("subagent_create")?.definition;
-    assert.ok(createTool, "subagent_create tool definition must be found");
-
-    const dummyContext = {
-      cwd: tmpDir,
-      isProjectTrusted: () => true,
-      sessionManager,
-      modelRegistry: {
-        runtime: {
-          streamSimple: async () => {},
-          getAuth: () => ({}),
-          getRegisteredProviderIds: () => [],
-        },
-        getAvailableSnapshot: () => [],
-        findModelByNameOrId: () => null,
+    const { stdout, stderr } = await execute(process.execPath, [fixture, name], {
+      cwd, timeout: 8000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024,
+      env: {
+        ...process.env,
+        PI_OFFLINE: "1",
+        PI_CODING_AGENT_DIR: path.join(cwd, "agent"),
+        PI_SUBAGENT_SOCKET_DIR: path.join(cwd, "uds"),
       },
-    };
-
-    // 2. Call create tool to spawn subagents
-    const result = await createTool.execute(
-      "call_1",
-      {
-        context: "E2E Integration Test",
-        tasks: [
-          { name: "TaskA", task: "run unit verification" },
-          { name: "TaskB", task: "run lint check" },
-        ],
-      },
-      undefined,
-      undefined,
-      dummyContext,
-    );
-
-    const items = result.details.items;
-    assert.equal(items.length, 2);
-    const [first, second] = items;
-
-    // 3. Verify Short Unified IDs
-    assert.equal(first.id, "sub_01");
-    assert.equal(second.id, "sub_02");
-
-    // 4. Verify Sockets exist IMMEDIATELY upon return
-    assert.equal(first.socket, "/tmp/pi-subagents/sub_01.sock");
-    assert.equal(second.socket, "/tmp/pi-subagents/sub_02.sock");
-    assert.equal(fs.existsSync(first.socket), true, "sub_01.sock must exist immediately");
-    assert.equal(fs.existsSync(second.socket), true, "sub_02.sock must exist immediately");
-    assert.equal(fs.existsSync("/tmp/pi-subagents/main/children.sock"), true, "Broadcast children.sock must exist");
-
-    // 5. Verify writing to socket delivers one-way message
-    await writeSocketOneWay(first.socket, { content: "Direct message to sub_01" });
-
-    // 6. Verify list tool
-    const listTool = session._toolDefinitions?.get("subagent_list")?.definition;
-    const listResult = await listTool.execute("call_2", {}, undefined, undefined, dummyContext);
-    assert.equal(listResult.details.items.length, 2);
-    assert.equal(listResult.details.items[0].id, "sub_01");
-    assert.equal(listResult.details.items[1].id, "sub_02");
-
-    // 7. Verify stop tool
-    const stopTool = session._toolDefinitions?.get("subagent_stop")?.definition;
-    const stopResult = await stopTool.execute("call_3", { id: "sub_02" }, undefined, undefined, dummyContext);
-    assert.equal(stopResult.details.ok, true);
-    assert.equal(stopResult.details.id, "sub_02");
-  } finally {
-    try {
-      await created.session._extensionRunner?.emit?.({ type: "session_shutdown" });
-    } catch {}
-    await created.session.dispose();
-    await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    });
+    assert.ok(stdout.includes(`SCENARIO_OK:${name}`), `scenario did not finish:\n${stdout}\n${stderr}`);
+  } catch (error) {
+    assert.fail(`SDK scenario ${name} failed${error.killed ? " (child process timed out / leaked handles)" : ""}:\n${error.stdout ?? ""}\n${error.stderr ?? error.message}`);
   }
-});
+}
+
+for (const [name, description] of [
+  ["surface", "real tool surface, atomic validation, native file/socket write and pre-session buffering"],
+  ["external-socket", "native write to a non-Subagent socket preserves payload and cannot affect a same-named stopping Agent"],
+  // These sender regressions exercise the newly revised contract, not a claimed implementation fix.
+  ["sender-wire", "native child write identifies its owner in the outbound NDJSON"],
+  ["sender-context", "the receiver preserves a native child sender rather than relabeling it as Main"],
+  ["sender-reserved", "managed socket write rejects caller-supplied sender identity"],
+  ["revive", "explicit revival retains the listener, appends both histories and does not reroute"],
+  ["history", "real native tool execution retains complete clean history and the final summary"],
+  ["steer", "a running actor consumes native steering exactly once in the same Job"],
+  ["queued", "queued depth-2 sockets buffer messages and stop removes a queued task without executing it"],
+  ["broadcast", "real hierarchical broadcast reaches only direct children, never ancestors or peers"],
+  ["inherited", "Inherited captures signed native context, tools warnings, identity and thinking without routing"],
+  ["stopping", "native socket write rejects stopping and only revives after actual model exit"],
+  ["stop-history", "cancellation flushes readable history before reporting the native run as stopped"],
+  ["failure", "native model failure writes a summary and notifies without waking the root"],
+  ["reload", "durable reload restores socket listeners and continues the checkpointed conversation"],
+]) {
+  test(`offline SDK: ${description}`, { timeout: 10000 }, (t) => scenario(t, name));
+}

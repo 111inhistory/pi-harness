@@ -89,7 +89,7 @@ import {
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 
-import { join } from "node:path";
+import path, { join } from "node:path";
 
 import { SubagentError, copyInheritedEntries, createSubagentRuntime, parseProtocolRef } from "../src/subagent-runtime.mjs";
 import { captureInheritedContext } from "../src/inherited-context.mjs";
@@ -205,7 +205,7 @@ export default function subagentExtension(pi) {
   pi.on("session_shutdown", async () => {
     await retireService(controller);
   });
-  installSessionSurface(pi, (ctx) => rootService(controller, ctx), { allowInherited: true, parentAgentId: null, depth: 0 });
+  installSessionSurface(pi, (ctx) => rootService(controller, ctx), { allowInherited: true, parentAgentId: null, depth: 0, senderId: "main" });
 }
 
 /**
@@ -680,7 +680,7 @@ function protocolSurface(resolveService, parentAgentId) {
  */
 async function deliverToMain(service, message) {
   if (!service.active) return;
-  if (message?.type === "completion") {
+  if (message?.type === "completion" || message?.type === "notification") {
     service.controller.pi.sendMessage(
       {
         customType: COMPLETION_CUSTOM_TYPE,
@@ -790,9 +790,12 @@ function ensureAgentSocketServer(service, agentId) {
       id: agentId,
       onMessage: (msg) => {
         const content = typeof msg === "string" ? msg : msg?.content || JSON.stringify(msg);
+        const from = (typeof msg === "object" && msg !== null && typeof msg.from === "string" && msg.from !== "")
+          ? msg.from
+          : "Main";
         service.runtime
           ?.sendMessage({
-            from: "Main",
+            from,
             to: agentId,
             content,
           })
@@ -858,7 +861,7 @@ const stopParameters = {
   },
 };
 
-function installSessionSurface(pi, resolveService, { allowInherited, parentAgentId, depth, cwd }) {
+function installSessionSurface(pi, resolveService, { allowInherited, parentAgentId, depth, cwd, senderId = "main" }) {
   const workCwd = typeof cwd === "string" ? cwd : process.cwd();
   if (depth < MAX_AGENT_DEPTH) {
     pi.registerTool(createTool(pi, resolveService, { allowInherited, parentAgentId, depth, cwd: workCwd }));
@@ -867,13 +870,40 @@ function installSessionSurface(pi, resolveService, { allowInherited, parentAgent
   pi.registerTool(stopTool(resolveService));
 
   const writeOps = createSocketAwareWriteOperations({
-    onCheckStatus: (agentId) => {
+    senderId,
+    onCheckStatus: async (agentId) => {
       try {
-        const service = resolveService();
+        const service = await resolveService();
         const item = service?.runtime?.listDetailed({ id: agentId })?.items?.[0];
         return item?.status ?? null;
       } catch {
         return null;
+      }
+    },
+    resolveEndpoint: async (socketPath) => {
+      try {
+        const service = await resolveService();
+        if (!service) return { isManaged: false };
+        const norm = path.resolve(socketPath);
+        const sockDir = service.socketDir || process.env.PI_SUBAGENT_SOCKET_DIR || "/tmp/pi-subagents";
+        const normSockDir = path.resolve(sockDir);
+        const rel = path.relative(normSockDir, norm);
+        if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
+          if (rel.endsWith("/children.sock") || rel === "main/children.sock") {
+            const parentId = path.dirname(rel);
+            return { isManaged: true, isBroadcast: true, parentId };
+          }
+          if (rel.endsWith(".sock") && !rel.includes(path.sep)) {
+            const id = path.basename(rel, ".sock");
+            const exists = service.runtime?.listDetailed({ id })?.items?.length > 0;
+            if (exists) {
+              return { isManaged: true, isBroadcast: false, targetId: id };
+            }
+          }
+        }
+        return { isManaged: false };
+      } catch {
+        return { isManaged: false };
       }
     },
   });
@@ -1300,6 +1330,7 @@ function startPiJob(service, request) {
           allowInherited,
           parentAgentId: request.agentId,
           depth: request.depth,
+          senderId: request.agentId,
         });
       },
     };
@@ -1350,6 +1381,7 @@ function startPiJob(service, request) {
     unsubscribeBudget = installModelCallBudget(session, request.budget);
 
     if (cancelled) {
+      await flushSummaryOnTerminal("cancelled");
       await session.abort();
       return { result: "", messages: [] };
     }
@@ -1404,6 +1436,7 @@ function startPiJob(service, request) {
           appendCleanJsonl(request.agentId, {
             type: "message_end",
             role: event.message?.role,
+            content: event.message?.content,
             stopReason: event.message?.stopReason,
             usage: event.message?.usage,
             timestamp: Date.now(),
@@ -1482,7 +1515,10 @@ function startPiJob(service, request) {
         markAssignmentDelivered();
       }
       throwIfBudgetFailed(request.budget);
-      if (cancelled) return cancelledOutcome(sessionManager, boundary);
+      if (cancelled) {
+        await flushSummaryOnTerminal("cancelled");
+        return cancelledOutcome(sessionManager, boundary);
+      }
       // A provider failure still resolves the native prompt, so success is
       // decided by this run's own output — never by an earlier Job's answer.
       const messages = jobMessages();
@@ -1713,6 +1749,9 @@ function readNativeHistory(service, { agentId, jobId, history }) {
 
 /** The typed completion notice text: refs, never the subagent's full answer. */
 function formatCompletion(message) {
+  if (message?.type === "notification") {
+    return `[Subagent ${message.subagentId || message.from} ${message.status}]: ${message.content || ""}`;
+  }
   const facts = [];
   if (typeof message.status === "string" && message.status !== "") facts.push(`status ${message.status}`);
   if (typeof message.jobId === "string" && message.jobId !== "") facts.push(`job ${message.jobId}`);
@@ -1724,6 +1763,15 @@ function formatCompletion(message) {
 }
 
 function completionDetails(message) {
+  if (message?.type === "notification") {
+    return {
+      type: "notification",
+      subagentId: message.subagentId || message.from,
+      status: message.status ?? "failed",
+      history: message.history ?? getSubagentHistoryPaths(message.subagentId || message.from),
+      content: message.content ?? null,
+    };
+  }
   return {
     type: "completion",
     from: message.from,

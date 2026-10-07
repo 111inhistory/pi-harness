@@ -2,6 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 export const DEFAULT_SOCKET_DIR = process.env.PI_SUBAGENT_SOCKET_DIR || "/tmp/pi-subagents";
 
@@ -44,10 +45,11 @@ export function createAgentSocketServer({ id, socketDir = DEFAULT_SOCKET_DIR, on
   safeUnlinkSync(socketPath);
 
   const server = net.createServer((socket) => {
+    const decoder = new StringDecoder("utf8");
     let buffer = "";
 
     socket.on("data", (chunk) => {
-      buffer += chunk.toString("utf-8");
+      buffer += decoder.write(chunk);
       const lines = buffer.split("\n");
       buffer = lines.pop(); // Keep incomplete trailing fragment in buffer
 
@@ -107,10 +109,11 @@ export function createBroadcastSocketServer({
   safeUnlinkSync(socketPath);
 
   const server = net.createServer((socket) => {
+    const decoder = new StringDecoder("utf8");
     let buffer = "";
 
     socket.on("data", (chunk) => {
-      buffer += chunk.toString("utf-8");
+      buffer += decoder.write(chunk);
       const lines = buffer.split("\n");
       buffer = lines.pop();
 
@@ -195,21 +198,65 @@ export function createSocketAwareWriteOperations(baseOperations = {}) {
   const writeFile = baseOperations.writeFile || ((p, c) => fsp.writeFile(p, c, "utf-8"));
   const mkdir = baseOperations.mkdir || ((d) => fsp.mkdir(d, { recursive: true }));
   const onCheckStatus = baseOperations.onCheckStatus;
+  const senderId = baseOperations.senderId || "main";
+  const resolveEndpoint = baseOperations.resolveEndpoint;
 
   return {
     mkdir,
     async writeFile(absolutePath, content) {
       if (typeof absolutePath === "string" && absolutePath.endsWith(".sock")) {
-        const baseName = path.basename(absolutePath, ".sock");
-        if (typeof onCheckStatus === "function" && baseName && baseName !== "children") {
-          const status = onCheckStatus(baseName);
+        const ep = typeof resolveEndpoint === "function" ? await resolveEndpoint(absolutePath) : null;
+        const isManaged = ep ? ep.isManaged : (typeof onCheckStatus === "function");
+
+        if (!isManaged) {
+          return writeSocketOneWay(absolutePath, content);
+        }
+
+        const targetId = ep?.targetId || path.basename(absolutePath, ".sock");
+        if (ep?.isBroadcast) {
+          const expectedParent = ep.parentId || "main";
+          const normExpected = (expectedParent === "Main" || expectedParent === "main") ? "main" : expectedParent;
+          const normSender = (senderId === "Main" || senderId === "main") ? "main" : senderId;
+          if (normSender !== normExpected && normSender !== "main") {
+            const err = new Error("invalid_target: Sender is not the parent of this broadcast endpoint.");
+            err.code = "invalid_target";
+            throw err;
+          }
+        } else if (typeof onCheckStatus === "function" && targetId && targetId !== "children") {
+          const status = await onCheckStatus(targetId);
           if (status === "stopping") {
-            const err = new Error(`agent_stopping: Subagent ${baseName} is currently stopping. Cannot accept messages until fully stopped.`);
+            const err = new Error(`agent_stopping: Subagent ${targetId} is currently stopping. Cannot accept messages until fully stopped.`);
             err.code = "agent_stopping";
             throw err;
           }
         }
-        return writeSocketOneWay(absolutePath, content);
+
+        let text = typeof content === "string" ? content : content.toString("utf-8");
+        const lines = text.split("\n");
+        const processedLines = [];
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed === "") continue;
+          let parsed;
+          try {
+            parsed = JSON.parse(trimmed);
+          } catch (e) {
+            const err = new Error(`invalid_message: Malformed NDJSON frame: ${e.message}`);
+            err.code = "invalid_message";
+            throw err;
+          }
+          if (parsed && typeof parsed === "object") {
+            if ("from" in parsed) {
+              const err = new Error("invalid_message: Caller-supplied 'from' is rejected; sender is bound by the session host.");
+              err.code = "invalid_message";
+              throw err;
+            }
+            parsed.from = ep?.isBroadcast ? (ep.parentId || senderId) : senderId;
+          }
+          processedLines.push(JSON.stringify(parsed));
+        }
+        const outbound = processedLines.join("\n") + "\n";
+        return writeSocketOneWay(absolutePath, outbound);
       }
       return writeFile(absolutePath, content);
     },

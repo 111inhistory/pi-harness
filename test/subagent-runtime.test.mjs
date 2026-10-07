@@ -147,7 +147,7 @@ test("rejects malformed batches and every unknown task field", () => {
   assert.equal(adapter.started.length, 0);
 });
 
-test("registers entries in input order with reload-unique ids", () => {
+test("registers entries in input order with distinct actor and Job IDs within a registry", () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({ startJob: adapter.startJob, maxConcurrency: 1 });
 
@@ -168,8 +168,8 @@ test("registers entries in input order with reload-unique ids", () => {
   assert.notEqual(second.agentId, a.agentId);
   assert.deepEqual(runtime.list().agents.map((agent) => agent.agentId), [a.agentId, b.agentId, second.agentId]);
 
-  // A later runtime instance never reuses this one's addresses, so a stale
-  // write or cancel from before a reload cannot reach a later actor.
+  // Reject an actor/Job absent from this registry. Short IDs are session-scoped;
+  // this assertion does not establish cross-session address isolation.
   const other = createSubagentRuntime({ startJob: createFakeAdapter().startJob });
   other.task({ tasks: [spec("a")] });
   assert.throws(() => other.readRef(resultRef(b.agentId)), (error) => error instanceof SubagentError && error.code === "unknown_agent");
@@ -997,7 +997,7 @@ test("rejects a write that would exceed four active children", async () => {
   assert.equal(fifth.status, "running");
 });
 
-test("rejects unknown, spoofed and cross-runtime message targets", async () => {
+test("rejects unknown senders and targets, invalid messages and sender spoofing", async () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({
     startJob: adapter.startJob,
@@ -1020,7 +1020,8 @@ test("rejects unknown, spoofed and cross-runtime message targets", async () => {
   // a reserved name is not the same thing as an addressable recipient.
   await rejects(runtime.sendMessage({ from: "all", to: item.agentId, content: "hello" }), "unknown_sender");
 
-  // Another runtime's ids are unknown here, so nothing crosses runtimes.
+  // An empty registry cannot resolve any actor; this does not test ID collisions
+  // between two populated root sessions.
   const other = createSubagentRuntime({ startJob: createFakeAdapter().startJob });
   await rejects(other.sendMessage({ from: "Main", to: item.agentId, content: "hello" }), "unknown_agent");
 

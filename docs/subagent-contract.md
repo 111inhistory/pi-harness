@@ -14,6 +14,7 @@
 - 废除原虚拟协议（Protocol IO 及 `agent://`、`history://`），Pi 原生工具回归纯粹文件系统；通信下沉到 Unix Domain Socket（NDJSON），原生 `write` 工具通过更换 write backend 适配 Socket 单向投递。
 - 双轨历史直接暴露物理路径给发起者：Compacted Markdown（参考 OMP，供 LLM 读）与 Clean JSONL（去流式碎片，供 grep/rg/jq 检索）。
 - 消息通过向 Socket 写入自动投递给对应 Agent，无需额外设计通知总线；仅在 subagent 异常时由宿主向上层抛出 Notification。
+- **发送者归属修订**：受管理的 Subagent Socket 报文必须携带真实调用者的 `from`，由该会话的 write backend 绑定；不能把所有单点消息当作 Main，也不能从广播端点反推实际发送者。来源绑定的实现仍待补齐，详见通信章节。
 - 广播必须分层次，不能只叫笼统的 `all`：严格按拓扑深度隔离，只发给发送者的直接子级（Main 发给 Depth 1，Depth 1 发给自己的 Depth 2），不跨层递归，不发给兄弟或祖先。
 - 持久化复用 Pi 的 SessionManager JSONL 与根会话 custom entry，不另写数据库或日志引擎。
 - worktree／文件系统隔离不在当前计划内。DeepSeek Search 是现成插件，由用户自行安装，本模块不增加安装或接入代码。
@@ -207,10 +208,29 @@ Job 状态为 `queued`、`running`、`stopping`、`completed`、`failed`、`canc
 ### 1. Write Socket 单向消息投递
 
 - **单向投递原则**：发起者通过向对应 Subagent 的 Unix Domain Socket（如 `/tmp/pi-subagents/<id>.sock`）单向写入 NDJSON 报文完成消息投递，不走双向连接应答；子 Agent 的产出与进展统一通过双轨历史文件读取。
-- **更换 Write Backend**：原生 `write` 工具通过更换其底层的 `WriteOperations`（Pi 原生支持的可拔插选项）适配 Unix Domain Socket。当向 `.sock` 文件写入时，底层使用 `net.connect()` 进行单向 NDJSON 写入；向普通文件写入时，原样使用文件系统写操作。
-- **报文格式**：统一采用 **NDJSON（Newline-Delimited JSON，换行分隔的 JSON）**。每条消息必须为完整单行 JSON 并以 `\n` 结尾。
+- **更换 Write Backend**：原生 `write` 工具通过更换其底层的 `WriteOperations`（Pi 原生支持的可拔插选项）适配 Unix Domain Socket。当向 `.sock` 文件写入时，底层使用 `net.connect()` 进行单向写入；向普通文件写入时，原样使用文件系统写操作。Subagent 消息语义只适用于当前宿主注册表中受管理的 Socket，不能仅凭 `.sock` 后缀或 `sub_01` 这样的 basename 判断端点归属。
+- **报文格式**：受管理端点统一采用 **UTF-8 NDJSON（Newline-Delimited JSON，换行分隔的 JSON）**。每条消息必须为完整单行 JSON 并以 `\n` 结尾；网络数据块边界不是字符或消息边界。
 - **自动投递（Notification 内置）**：
   - 发起者向 Socket 投递消息后，由底层的通信监听器自动转发并唤醒对应 Subagent 处理，**不需要额外设计通知总线机制**。
+
+#### 发送者归属（本次契约修订，尚待实现）
+
+先前文档只约定 NDJSON 编码，没有约定发送者字段，这是设计遗漏。本次补充区分 Agent 提交的内容与宿主在传输层绑定的身份：
+
+```text
+Agent 调用原生 write：     {"content":"请核对解析器边界条件。"}\n
+宿主写入受管理的 Socket：  {"from":"sub_01","content":"请核对解析器边界条件。"}\n
+```
+
+- `content` 是非空消息文本。Agent 不填写 `from`；`from` 是宿主保留字段，由该原生 `write` 工具所属的会话绑定：根会话为 `main`，子会话为自己的短 ID（例如 `sub_01`、`sub_01_02`）。复活后仍是同一发送者 ID，不使用某轮的内部 Job ID。
+- 原生 write backend 逐条解析受管理端点的输入帧，注入真实发送者。调用方自行提交 `from` 应在发送前以 `invalid_message` 拒绝，不接受伪装为 Main、父级或兄弟的覆盖。普通文件和外部 Socket 不受这一字段规则影响。
+- 目标由 Socket 路径确定，不接受报文中的 `to` 来改写路由。接收监听器必须保留经宿主绑定的 `from`，将它带入运行中的 steer、queued 缓冲、revive 初始消息及对应原生上下文／Clean JSONL；不能统一改写为 Main。
+- **身份边界**：`from` 是来源标记，本身不是认证凭据。所有 Agent 共用宿主进程与工作目录，不能声称只校验 JSON 中的 ID、或只校验 Unix peer PID／UID 就证明了 Actor 身份。受管理端点需要可信的宿主来源绑定；其具体传输校验机制仍待定。本轮只定义原生 write 路径，不新增外部客户端投递入口。不具备来源绑定的原始连接不得默认归为 Main 或某个已注册 Agent，也不得以自报的 `from` 获得权限。
+- 单点消息中的发送者与目标可以不同；广播必须校验实际发送者正是该 `children.sock` 的所属父节点，否则以 `invalid_target` 拒绝，不能借写入其它父节点的端点扩大广播范围。
+
+#### 非 Subagent Socket
+
+向不属于当前 Subagent 注册表的 `.sock` 写入时，它仍是普通外部 Unix Socket：按调用方内容单向发送 UTF-8 文本，仅在末尾缺少换行时补 `\n`，不解析或注入 Subagent `from`／`to` 字段，不按同名 Agent 的状态拒绝，不创建、唤醒或停止任何 Agent。目标可以使用自己的协议；对端若回包，write 不把它当作 Subagent 结果，也不等待回包。连接／写入失败或超时按 I/O 错误报告，成功仅表示传输写入完成，不保证外部服务已处理。
 
 | 目标 Agent 接收状态 | 写入行为 |
 | --- | --- |
@@ -233,7 +253,7 @@ Job 状态为 `queued`、`running`、`stopping`、`completed`、`failed`、`canc
   - **Depth 1 Agent（如 `sub_01`）**：广播端点为其专属子级端点 `/tmp/pi-subagents/sub_01/children.sock`（或 `sub_01:children`），仅广播给它自己派生的直接子级（Depth 2 全体活跃 Agent）。
   - **Depth 2 Agent**：禁止派生子 Agent，因此不存在下级广播端点。
 - **广播行为**：
-  - 向对应的 `children.sock` 单向写入 NDJSON 报文后，宿主原子获取发送者**当前直接子 Agent** 的列表快照，并逐一并发投递；
+  - 向对应的 `children.sock` 单向写入 NDJSON 报文后，先校验报文的宿主绑定发送者与端点所属父节点一致；宿主随后原子获取该发送者**当前直接子 Agent** 的列表快照，并逐一并发投递，每个接收者保留同一个真实 `from`；
   - 严格禁止跨层递归扩散（Main 绝不直接穿透广播到 Depth 2）；禁止向父级或平级兄弟广播；
   - 没有子节点时视为空成功返回；部分子节点处于 stopped 状态时，写入同样触发其以原 ID 进行 revive。
 
