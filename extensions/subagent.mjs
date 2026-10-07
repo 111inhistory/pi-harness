@@ -97,6 +97,7 @@ import { installModelCallBudget } from "../src/pi-job-budget.mjs";
 import { routeSubagent } from "../src/subagent-routing.mjs";
 import { SUBAGENT_SESSIONS_DIR, createSubagentStore, SubagentStoreError } from "../src/subagent-storage.mjs";
 import capabilityExtension from "./capability.mjs";
+import fs from "node:fs";
 import {
   createAgentSocketServer,
   createBroadcastSocketServer,
@@ -317,6 +318,7 @@ function createService(controller, ctx) {
     socketDir,
     historyDir,
     cwd,
+    allocatedAgentIds: new Set(),
     active: true,
     closed: false,
     /** False until the restored registry is adopted, so mid-restore state is never saved. */
@@ -341,10 +343,25 @@ function createService(controller, ctx) {
     registeredSockets: new Map(),
     runtime: null,
   };
+  const isAgentIdTaken = (candidateId) => {
+    if (service.allocatedAgentIds?.has(candidateId)) return true;
+    if (service.retained?.has(candidateId)) return true;
+    if (service.store?.durable) {
+      if (service.store?.hasSessionFile?.(candidateId)) return true;
+      try {
+        const sessionFile = service.store.childSessionFile(candidateId);
+        if (sessionFile && fs.existsSync(sessionFile)) return true;
+      } catch {}
+    }
+    const histDir = path.resolve(service.cwd, service.historyDir, candidateId);
+    if (fs.existsSync(histDir)) return true;
+    return false;
+  };
   service.runtime = createSubagentRuntime({
     maxConcurrency: MAX_CONCURRENCY,
     socketDir,
     historyDir,
+    isAgentIdTaken,
     startJob: (job) => startPiJob(service, job),
     deliverMessage: (request) => deliverMessage(service, request),
     deliverToMain: (message) => deliverToMain(service, message),
@@ -450,12 +467,20 @@ function restoreService(service, ctx) {
   // Re-establish sockets for all restored agents and hierarchical broadcast
   try {
     const list = service.runtime.list();
+    const parentsWithChildren = new Set();
     for (const agent of list.agents) {
       if (agent.agentId !== "Main") {
+        service.allocatedAgentIds?.add(agent.agentId);
         ensureAgentSocketServer(service, agent.agentId);
+      }
+      if (agent.parentAgentId && agent.parentAgentId !== "Main") {
+        parentsWithChildren.add(agent.parentAgentId);
       }
     }
     ensureBroadcastSocketServer(service, null);
+    for (const parentId of parentsWithChildren) {
+      ensureBroadcastSocketServer(service, parentId);
+    }
   } catch {
     // Non-fatal socket re-establishment
   }
@@ -956,6 +981,7 @@ function createTool(pi, resolveService, { allowInherited, parentAgentId, depth }
       });
       // Guarantee sockets exist immediately for all created agents (running or queued)
       for (const item of response.items) {
+        service.allocatedAgentIds?.add(item.id);
         ensureAgentSocketServer(service, item.id);
       }
       ensureBroadcastSocketServer(service, parentAgentId);
@@ -1411,6 +1437,10 @@ function startPiJob(service, request) {
 
     ensureAgentSocketServer(service, request.agentId);
     ensureBroadcastSocketServer(service, request.origin?.agentId ?? null);
+    const hasChildren = service.runtime?.list()?.agents?.some((a) => a.parentAgentId === request.agentId);
+    if (hasChildren) {
+      ensureBroadcastSocketServer(service, request.agentId);
+    }
 
     let cleanAppendChain = Promise.resolve();
     const queueCleanAppend = (event) => {
@@ -1427,6 +1457,23 @@ function startPiJob(service, request) {
     const flushSummaryOnTerminal = async (status, err = null) => {
       try {
         await cleanAppendChain;
+        let finalStatus = status;
+        let finalErr = err;
+
+        // 1. 预算熔断优先：实际终态必须为 failed
+        try {
+          throwIfBudgetFailed(request.budget);
+        } catch (budgetErr) {
+          finalStatus = "failed";
+          finalErr = budgetErr;
+        }
+
+        // 2. 若非预算熔断，但中途或刷盘期间到达了取消，则实际终态收敛为 cancelled
+        if (finalStatus !== "failed" && cancelled) {
+          finalStatus = "cancelled";
+          finalErr = null;
+        }
+
         const msgs = jobMessages();
         const partialText = readFinalText(msgs);
         await writeCompactedSummary(
@@ -1437,9 +1484,9 @@ function startPiJob(service, request) {
             role: roleId,
             model: modelRefOf(model)?.id ?? (typeof model === "string" ? model : null),
             budget: request.budget.snapshot(),
-            result: partialText || (err ? `Terminated with error: ${err.message}` : "(No output recorded)"),
-            status,
-            error: err ? err.message : null,
+            result: partialText || (finalErr ? `Terminated with error: ${finalErr.message}` : "(No output recorded)"),
+            status: finalStatus,
+            error: finalErr ? finalErr.message : null,
             round: isContinuation ? 2 : 1,
           },
           { append: isContinuation, baseDir: service.historyDir, cwd: service.cwd },
@@ -1552,18 +1599,27 @@ function startPiJob(service, request) {
       throwIfBudgetFailed(request.budget);
       const finalResultText = readFinalText(jobMessages());
       await flushSummaryOnTerminal("completed");
+      throwIfBudgetFailed(request.budget);
+      if (cancelled) {
+        return cancelledOutcome(sessionManager, boundary);
+      }
       return {
         result: finalResultText,
         messages: readTranscript(entriesAfter(sessionManager, boundary)),
         history: { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
       };
     } catch (error) {
+      try {
+        throwIfBudgetFailed(request.budget);
+      } catch (budgetErr) {
+        await flushSummaryOnTerminal("failed", budgetErr);
+        throw budgetErr;
+      }
       if (cancelled) {
         await flushSummaryOnTerminal("cancelled");
         return cancelledOutcome(sessionManager, boundary);
       }
       await flushSummaryOnTerminal("failed", error);
-      throwIfBudgetFailed(request.budget);
       throw error;
     }
   })().finally(() => {

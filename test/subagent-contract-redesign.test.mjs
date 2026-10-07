@@ -257,3 +257,13 @@ test("history paths and writes bind to session cwd", async () => {
     await fsp.rm(tmpCwd, { recursive: true, force: true });
   }
 });
+
+test("fresh agent does not reuse actor IDs taken by earlier branches", () => {
+  const taken = new Set(["sub_01", "sub_02"]);
+  const runtime = createSubagentRuntime({
+    isAgentIdTaken: (id) => taken.has(id),
+    startJob: () => ({ request: {}, done: Promise.resolve({ result: "ok", messages: [] }), cancel() {} }),
+  });
+  const res = runtime.create({ tasks: [{ name: "T1", task: "Do task" }] });
+  assert.equal(res.items[0].id, "sub_03", "Must allocate sub_03 skipping sub_01 and sub_02");
+});

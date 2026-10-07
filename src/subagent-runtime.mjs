@@ -661,6 +661,7 @@ export class SubagentRuntime {
   #allowInherited;
   #socketDir;
   #historyDir;
+  #isAgentIdTaken;
 
   #agents = new Map();
   #jobs = new Map();
@@ -691,6 +692,7 @@ export class SubagentRuntime {
       allowInherited = true,
       socketDir,
       historyDir,
+      isAgentIdTaken,
     } = options;
 
     if (typeof startJob !== "function") {
@@ -724,6 +726,7 @@ export class SubagentRuntime {
     this.#allowInherited = allowInherited;
     this.#socketDir = socketDir;
     this.#historyDir = historyDir;
+    this.#isAgentIdTaken = typeof isAgentIdTaken === "function" ? isAgentIdTaken : null;
     this.#idToken = randomUUID().replaceAll("-", "");
   }
 
@@ -1914,9 +1917,14 @@ export class SubagentRuntime {
       ? "Main"
       : parentAgentId;
     const prefix = parentKey === "Main" ? "sub" : parentKey;
-    const currentSeq = (this.#childSequences.get(parentKey) ?? 0) + 1;
+    let currentSeq = (this.#childSequences.get(parentKey) ?? 0) + 1;
+    let candidate = `${prefix}_${String(currentSeq).padStart(2, "0")}`;
+    while (this.#agents.has(candidate) || (this.#isAgentIdTaken && this.#isAgentIdTaken(candidate))) {
+      currentSeq += 1;
+      candidate = `${prefix}_${String(currentSeq).padStart(2, "0")}`;
+    }
     this.#childSequences.set(parentKey, currentSeq);
-    return `${prefix}_${String(currentSeq).padStart(2, "0")}`;
+    return candidate;
   }
 
   #syncSequencesFromActors(actors) {
