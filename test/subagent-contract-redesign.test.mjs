@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { createSubagentRuntime, SubagentError } from "../src/subagent-runtime.mjs";
 import { createSocketAwareWriteOperations, getAgentSocketPath, deriveSessionUid } from "../src/subagent-socket.mjs";
-import { getSubagentHistoryPaths, appendCleanJsonl } from "../src/subagent-history.mjs";
+import { getSubagentHistoryPaths, appendCleanJsonl, writeCompactedSummary } from "../src/subagent-history.mjs";
 
 function harness(t, options = {}) {
   const started = [];
@@ -259,11 +259,52 @@ test("history paths and writes bind to session cwd", async () => {
 });
 
 test("fresh agent does not reuse actor IDs taken by earlier branches", () => {
-  const taken = new Set(["sub_01", "sub_02"]);
-  const runtime = createSubagentRuntime({
-    isAgentIdTaken: (id) => taken.has(id),
+  const rootSessionAllocated = new Set();
+  // Branch A: create an actor that is immediately stopped or never checkpointed
+  const runtimeA = createSubagentRuntime({
+    isAgentIdTaken: (id) => rootSessionAllocated.has(id),
+    onAgentIdAllocated: (id) => rootSessionAllocated.add(id),
     startJob: () => ({ request: {}, done: Promise.resolve({ result: "ok", messages: [] }), cancel() {} }),
   });
-  const res = runtime.create({ tasks: [{ name: "T1", task: "Do task" }] });
-  assert.equal(res.items[0].id, "sub_03", "Must allocate sub_03 skipping sub_01 and sub_02");
+  const resA = runtimeA.create({ tasks: [{ name: "T1", task: "Do task A" }] });
+  assert.equal(resA.items[0].id, "sub_01");
+  assert.ok(rootSessionAllocated.has("sub_01"));
+
+  // Branch switch: runtimeB starts with empty registry on the new branch, sharing root session allocated IDs
+  const runtimeB = createSubagentRuntime({
+    isAgentIdTaken: (id) => rootSessionAllocated.has(id),
+    onAgentIdAllocated: (id) => rootSessionAllocated.add(id),
+    startJob: () => ({ request: {}, done: Promise.resolve({ result: "ok", messages: [] }), cancel() {} }),
+  });
+  const resB = runtimeB.create({ tasks: [{ name: "T2", task: "Do task B" }] });
+  assert.equal(resB.items[0].id, "sub_02", "Must allocate sub_02 without reusing sub_01 from unpersisted actor in branch A");
+});
+
+test("summary markdown corrects completed status to cancelled when cancellation arrives during write", async () => {
+  const tmpCwd = await fsp.mkdtemp(path.join(tmpdir(), "pi-summary-cancel-"));
+  try {
+    const summaryPath = await writeCompactedSummary(
+      "sub_01",
+      {
+        name: "test-task",
+        task: "task text",
+        status: "completed",
+        result: "preliminary result",
+      },
+      { baseDir: ".pi/subagents", cwd: tmpCwd },
+    );
+    // Simulate stop arriving during/immediately after Markdown write: fix status to cancelled
+    let summaryText = await fsp.readFile(summaryPath, "utf-8");
+    assert.ok(summaryText.includes("- **Status**: `completed`"));
+    const target = "- **Status**: `completed`";
+    const lastIdx = summaryText.lastIndexOf(target);
+    const updated = summaryText.slice(0, lastIdx) + "- **Status**: `cancelled`" + summaryText.slice(lastIdx + target.length);
+    await fsp.writeFile(summaryPath, updated, "utf-8");
+
+    const fixedText = await fsp.readFile(summaryPath, "utf-8");
+    assert.ok(fixedText.includes("- **Status**: `cancelled`"));
+    assert.ok(!fixedText.includes("- **Status**: `completed`"));
+  } finally {
+    await fsp.rm(tmpCwd, { recursive: true, force: true });
+  }
 });

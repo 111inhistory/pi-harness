@@ -98,6 +98,7 @@ import { routeSubagent } from "../src/subagent-routing.mjs";
 import { SUBAGENT_SESSIONS_DIR, createSubagentStore, SubagentStoreError } from "../src/subagent-storage.mjs";
 import capabilityExtension from "./capability.mjs";
 import fs from "node:fs";
+const fsp = fs.promises;
 import {
   createAgentSocketServer,
   createBroadcastSocketServer,
@@ -196,6 +197,8 @@ export default function subagentExtension(pi) {
     retirement: null,
     /** In-flight activation, so concurrent entries share one service. */
     activation: null,
+    /** Allocated agent IDs per root session ID, preserved across branch switches. */
+    allocatedAgentIdsBySession: new Map(),
   };
   pi.on("session_start", async (_event, ctx) => {
     await activateRootSession(controller, ctx);
@@ -310,6 +313,15 @@ function createService(controller, ctx) {
   const historyDir = path.join(".pi/subagents", sessionUid);
   const cwd = ctx?.cwd ?? process.cwd();
 
+  if (!controller.allocatedAgentIdsBySession) {
+    controller.allocatedAgentIdsBySession = new Map();
+  }
+  let allocatedAgentIds = controller.allocatedAgentIdsBySession.get(sessionId);
+  if (!allocatedAgentIds) {
+    allocatedAgentIds = new Set();
+    controller.allocatedAgentIdsBySession.set(sessionId, allocatedAgentIds);
+  }
+
   const service = {
     controller,
     agentDir: controller.agentDir,
@@ -318,7 +330,7 @@ function createService(controller, ctx) {
     socketDir,
     historyDir,
     cwd,
-    allocatedAgentIds: new Set(),
+    allocatedAgentIds,
     active: true,
     closed: false,
     /** False until the restored registry is adopted, so mid-restore state is never saved. */
@@ -344,24 +356,14 @@ function createService(controller, ctx) {
     runtime: null,
   };
   const isAgentIdTaken = (candidateId) => {
-    if (service.allocatedAgentIds?.has(candidateId)) return true;
-    if (service.retained?.has(candidateId)) return true;
-    if (service.store?.durable) {
-      if (service.store?.hasSessionFile?.(candidateId)) return true;
-      try {
-        const sessionFile = service.store.childSessionFile(candidateId);
-        if (sessionFile && fs.existsSync(sessionFile)) return true;
-      } catch {}
-    }
-    const histDir = path.resolve(service.cwd, service.historyDir, candidateId);
-    if (fs.existsSync(histDir)) return true;
-    return false;
+    return service.allocatedAgentIds.has(candidateId);
   };
   service.runtime = createSubagentRuntime({
     maxConcurrency: MAX_CONCURRENCY,
     socketDir,
     historyDir,
     isAgentIdTaken,
+    onAgentIdAllocated: (agentId) => service.allocatedAgentIds.add(agentId),
     startJob: (job) => startPiJob(service, job),
     deliverMessage: (request) => deliverMessage(service, request),
     deliverToMain: (message) => deliverToMain(service, message),
@@ -1454,174 +1456,186 @@ function startPiJob(service, request) {
       return cleanAppendChain;
     };
 
-    const flushSummaryOnTerminal = async (status, err = null) => {
-      try {
-        await cleanAppendChain;
-        let finalStatus = status;
-        let finalErr = err;
+    let outcome = null;
+    let jobErr = null;
 
-        // 1. 预算熔断优先：实际终态必须为 failed
+    if (!cancelled) {
+      unsubscribeClean = session.subscribe((event) => {
         try {
-          throwIfBudgetFailed(request.budget);
-        } catch (budgetErr) {
-          finalStatus = "failed";
-          finalErr = budgetErr;
-        }
+          if (!event || typeof event !== "object") return;
+          const type = event.type;
+          if (type === "message_start") {
+            queueCleanAppend({
+              type: "message_start",
+              role: event.message?.role,
+              timestamp: Date.now(),
+            });
+          } else if (type === "tool_execution_start") {
+            queueCleanAppend({
+              type: "tool_execution_start",
+              toolCallId: event.toolCallId,
+              toolName: event.toolName,
+              args: event.args,
+              timestamp: Date.now(),
+            });
+          } else if (type === "tool_execution_end") {
+            queueCleanAppend({
+              type: "tool_execution_end",
+              toolCallId: event.toolCallId,
+              toolName: event.toolName,
+              isError: event.isError,
+              result: event.result,
+              timestamp: Date.now(),
+            });
+          } else if (type === "message_end") {
+            queueCleanAppend({
+              type: "message_end",
+              role: event.message?.role,
+              content: event.message?.content,
+              stopReason: event.message?.stopReason,
+              usage: event.message?.usage,
+              timestamp: Date.now(),
+            });
+          }
+        } catch {}
+      });
 
-        // 2. 若非预算熔断，但中途或刷盘期间到达了取消，则实际终态收敛为 cancelled
-        if (finalStatus !== "failed" && cancelled) {
-          finalStatus = "cancelled";
-          finalErr = null;
-        }
+      // Every finalized native message commits the Job's progress: the history
+      // bounds move to the entry that just landed, and the actor record's leaf
+      // anchor follows it (a custom message that never reaches the file never
+      // becomes an anchor). The first user message therefore reaches the
+      // checkpoint before the provider request it belongs to is dispatched, so an
+      // interrupted run is recovered at what it actually committed rather than at
+      // its startup state. One subscription per Job, released in the finally.
+      unsubscribe = session.subscribe((event) => {
+        if (event?.type !== "message_end" && event?.type !== "turn_end" && event?.type !== "agent_end") return;
+        // The transcript is not copied here: readers and the final outcome
+        // resolve it through the native session (the readHistory hook), so live
+        // progress costs one descriptor refresh plus the moved bounds.
+        updateRetainedTools?.();
+        request.recordHistory(undefined, { startEntryId: boundary, endEntryId: sessionManager.getLeafId() });
+      });
 
-        const msgs = jobMessages();
-        const partialText = readFinalText(msgs);
-        await writeCompactedSummary(
-          request.agentId,
-          {
-            name: request.spec?.name,
-            task: typeof request.spec?.task === "string" ? request.spec.task : "",
-            role: roleId,
-            model: modelRefOf(model)?.id ?? (typeof model === "string" ? model : null),
-            budget: request.budget.snapshot(),
-            result: partialText || (finalErr ? `Terminated with error: ${finalErr.message}` : "(No output recorded)"),
-            status: finalStatus,
-            error: finalErr ? finalErr.message : null,
-            round: isContinuation ? 2 : 1,
-          },
-          { append: isContinuation, baseDir: service.historyDir, cwd: service.cwd },
-        );
-      } catch (summaryErr) {
-        service.ui?.notify?.(`Failed to write summary for ${request.agentId}: ${summaryErr.message}`, "error");
+      // Messages this Job owns enter the first prompt; anything that arrives
+      // while the run is live is steered natively or carried by the loop below.
+      const assigned = live.pending.splice(0);
+      if (isContinuation && assigned.length === 0) {
+        throw new SubagentError("continuation_unavailable", `Continuation Job ${request.jobId} has no message to deliver.`);
       }
-    };
-
-    if (cancelled) {
-      await cleanAppendChain;
-      await flushSummaryOnTerminal("cancelled");
-      await session.abort();
-      return { result: "", messages: [] };
-    }
-
-    unsubscribeClean = session.subscribe((event) => {
-      try {
-        if (!event || typeof event !== "object") return;
-        const type = event.type;
-        if (type === "message_start") {
-          queueCleanAppend({
-            type: "message_start",
-            role: event.message?.role,
-            timestamp: Date.now(),
-          });
-        } else if (type === "tool_execution_start") {
-          queueCleanAppend({
-            type: "tool_execution_start",
-            toolCallId: event.toolCallId,
-            toolName: event.toolName,
-            args: event.args,
-            timestamp: Date.now(),
-          });
-        } else if (type === "tool_execution_end") {
-          queueCleanAppend({
-            type: "tool_execution_end",
-            toolCallId: event.toolCallId,
-            toolName: event.toolName,
-            isError: event.isError,
-            result: event.result,
-            timestamp: Date.now(),
-          });
-        } else if (type === "message_end") {
-          queueCleanAppend({
-            type: "message_end",
-            role: event.message?.role,
-            content: event.message?.content,
-            stopReason: event.message?.stopReason,
-            usage: event.message?.usage,
-            timestamp: Date.now(),
-          });
-        }
-      } catch {}
-    });
-
-    // Every finalized native message commits the Job's progress: the history
-    // bounds move to the entry that just landed, and the actor record's leaf
-    // anchor follows it (a custom message that never reaches the file never
-    // becomes an anchor). The first user message therefore reaches the
-    // checkpoint before the provider request it belongs to is dispatched, so an
-    // interrupted run is recovered at what it actually committed rather than at
-    // its startup state. One subscription per Job, released in the finally.
-    unsubscribe = session.subscribe((event) => {
-      if (event?.type !== "message_end" && event?.type !== "turn_end" && event?.type !== "agent_end") return;
-      // The transcript is not copied here: readers and the final outcome
-      // resolve it through the native session (the readHistory hook), so live
-      // progress costs one descriptor refresh plus the moved bounds.
-      updateRetainedTools?.();
-      request.recordHistory(undefined, { startEntryId: boundary, endEntryId: sessionManager.getLeafId() });
-    });
-
-    // Messages this Job owns enter the first prompt; anything that arrives
-    // while the run is live is steered natively or carried by the loop below.
-    const assigned = live.pending.splice(0);
-    if (isContinuation && assigned.length === 0) {
-      throw new SubagentError("continuation_unavailable", `Continuation Job ${request.jobId} has no message to deliver.`);
-    }
-    const prompt = isContinuation
-      ? composeContinuationPrompt(assigned, pendingAssignment)
-      : composePrompt(pendingAssignment, assigned);
-    // The assignment belongs to the conversation as soon as the session
-    // recorded anything; until then a later revival must restate it.
-    const markAssignmentDelivered = () => {
-      if (pendingAssignment === null) return;
-      if (messagesAfter(sessionManager, boundary).length === 0) return;
-      pendingAssignment = null;
-      retain();
-    };
-
-    try {
-      throwIfBudgetFailed(request.budget);
-      // Whatever the run then does — finish, fail or be stopped — its own
-      // outcome decides the Job; the prompt submission itself is final.
-      try {
-        await session.prompt(prompt, { expandPromptTemplates: false });
-      } finally {
-        markAssignmentDelivered();
-      }
-      throwIfBudgetFailed(request.budget);
-      if (cancelled) {
-        await flushSummaryOnTerminal("cancelled");
-        return cancelledOutcome(sessionManager, boundary);
-      }
-      // A provider failure still resolves the native prompt, so success is
-      // decided by this run's own output — never by an earlier Job's answer.
-      const messages = jobMessages();
-      assertRunCompleted(messages);
-      await drainLiveMessages(live, sessionManager);
-      throwIfBudgetFailed(request.budget);
-      const finalResultText = readFinalText(jobMessages());
-      await flushSummaryOnTerminal("completed");
-      throwIfBudgetFailed(request.budget);
-      if (cancelled) {
-        return cancelledOutcome(sessionManager, boundary);
-      }
-      return {
-        result: finalResultText,
-        messages: readTranscript(entriesAfter(sessionManager, boundary)),
-        history: { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
+      const prompt = isContinuation
+        ? composeContinuationPrompt(assigned, pendingAssignment)
+        : composePrompt(pendingAssignment, assigned);
+      // The assignment belongs to the conversation as soon as the session
+      // recorded anything; until then a later revival must restate it.
+      const markAssignmentDelivered = () => {
+        if (pendingAssignment === null) return;
+        if (messagesAfter(sessionManager, boundary).length === 0) return;
+        pendingAssignment = null;
+        retain();
       };
-    } catch (error) {
+
       try {
         throwIfBudgetFailed(request.budget);
-      } catch (budgetErr) {
-        await flushSummaryOnTerminal("failed", budgetErr);
-        throw budgetErr;
+        // Whatever the run then does — finish, fail or be stopped — its own
+        // outcome decides the Job; the prompt submission itself is final.
+        try {
+          await session.prompt(prompt, { expandPromptTemplates: false });
+        } finally {
+          markAssignmentDelivered();
+        }
+        throwIfBudgetFailed(request.budget);
+        if (!cancelled) {
+          const messages = jobMessages();
+          assertRunCompleted(messages);
+          await drainLiveMessages(live, sessionManager);
+          throwIfBudgetFailed(request.budget);
+        }
+        if (!cancelled) {
+          outcome = {
+            result: readFinalText(jobMessages()),
+            messages: readTranscript(entriesAfter(sessionManager, boundary)),
+            history: { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
+          };
+        }
+      } catch (error) {
+        jobErr = error;
       }
-      if (cancelled) {
-        await flushSummaryOnTerminal("cancelled");
-        return cancelledOutcome(sessionManager, boundary);
-      }
-      await flushSummaryOnTerminal("failed", error);
-      throw error;
+    } else {
+      try {
+        await session.abort();
+      } catch {}
     }
+
+    // Await all JSONL streaming events to finish appending
+    try {
+      await cleanAppendChain;
+    } catch {}
+
+    // 1. Budget failure takes highest priority -> failed
+    try {
+      throwIfBudgetFailed(request.budget);
+    } catch (budgetErr) {
+      jobErr = budgetErr;
+    }
+
+    let finalStatus;
+    let finalErr;
+    if (jobErr) {
+      finalStatus = "failed";
+      finalErr = jobErr;
+    } else if (cancelled) {
+      finalStatus = "cancelled";
+      finalErr = null;
+    } else {
+      finalStatus = "completed";
+      finalErr = null;
+    }
+
+    // Write summary exactly once
+    try {
+      const msgs = jobMessages();
+      const partialText = readFinalText(msgs);
+      await writeCompactedSummary(
+        request.agentId,
+        {
+          name: request.spec?.name,
+          task: typeof request.spec?.task === "string" ? request.spec.task : "",
+          role: roleId,
+          model: modelRefOf(model)?.id ?? (typeof model === "string" ? model : null),
+          budget: request.budget.snapshot(),
+          result: partialText || (finalErr ? `Terminated with error: ${finalErr.message}` : "(No output recorded)"),
+          status: finalStatus,
+          error: finalErr ? finalErr.message : null,
+          round: isContinuation ? 2 : 1,
+        },
+        { append: isContinuation, baseDir: service.historyDir, cwd: service.cwd },
+      );
+
+      // If stop arrived while writing Markdown, update summary status to cancelled
+      if (finalStatus === "completed" && cancelled) {
+        finalStatus = "cancelled";
+        const { resolvedSummary } = getSubagentHistoryPaths(request.agentId, service.historyDir, { cwd: service.cwd });
+        if (fs.existsSync(resolvedSummary)) {
+          const summaryText = await fsp.readFile(resolvedSummary, "utf-8");
+          const target = "- **Status**: `completed`";
+          const lastIdx = summaryText.lastIndexOf(target);
+          if (lastIdx !== -1) {
+            const updated = summaryText.slice(0, lastIdx) + "- **Status**: `cancelled`" + summaryText.slice(lastIdx + target.length);
+            await fsp.writeFile(resolvedSummary, updated, "utf-8");
+          }
+        }
+      }
+    } catch (summaryErr) {
+      service.ui?.notify?.(`Failed to write summary for ${request.agentId}: ${summaryErr.message}`, "error");
+    }
+
+    if (finalStatus === "failed") {
+      throw finalErr;
+    }
+    if (finalStatus === "cancelled" || cancelled) {
+      return cancelledOutcome(sessionManager, boundary);
+    }
+    return outcome;
   })().finally(() => {
     live.closed = true;
     service.liveJobs.delete(request.jobId);

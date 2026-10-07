@@ -662,6 +662,7 @@ export class SubagentRuntime {
   #socketDir;
   #historyDir;
   #isAgentIdTaken;
+  #onAgentIdAllocated;
 
   #agents = new Map();
   #jobs = new Map();
@@ -693,6 +694,7 @@ export class SubagentRuntime {
       socketDir,
       historyDir,
       isAgentIdTaken,
+      onAgentIdAllocated,
     } = options;
 
     if (typeof startJob !== "function") {
@@ -716,6 +718,9 @@ export class SubagentRuntime {
     if (typeof allowInherited !== "boolean") {
       throw new SubagentError("invalid_options", "allowInherited must be a boolean.");
     }
+    if (onAgentIdAllocated !== undefined && typeof onAgentIdAllocated !== "function") {
+      throw new SubagentError("invalid_options", "onAgentIdAllocated must be a function when provided.");
+    }
 
     this.#startJob = startJob;
     this.#deliverMessage = deliverMessage ?? null;
@@ -727,6 +732,7 @@ export class SubagentRuntime {
     this.#socketDir = socketDir;
     this.#historyDir = historyDir;
     this.#isAgentIdTaken = typeof isAgentIdTaken === "function" ? isAgentIdTaken : null;
+    this.#onAgentIdAllocated = typeof onAgentIdAllocated === "function" ? onAgentIdAllocated : null;
     this.#idToken = randomUUID().replaceAll("-", "");
   }
 
@@ -1924,6 +1930,9 @@ export class SubagentRuntime {
       candidate = `${prefix}_${String(currentSeq).padStart(2, "0")}`;
     }
     this.#childSequences.set(parentKey, currentSeq);
+    if (this.#onAgentIdAllocated) {
+      this.#onAgentIdAllocated(candidate);
+    }
     return candidate;
   }
 
