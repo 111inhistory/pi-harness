@@ -351,7 +351,10 @@ function planRestore(state) {
     if (!Array.isArray(raw.jobIds) || raw.jobIds.some((jobId) => typeof jobId !== "string" || jobId === "")) {
       throw stateError(`${where}.jobIds must be an array of Job ids.`, { agentId });
     }
-    const actor = { agentId, name, parentAgentId, depth, jobIds: [...raw.jobIds], pending: [] };
+    if (raw.stoppedOrder !== undefined && (!Number.isSafeInteger(raw.stoppedOrder) || raw.stoppedOrder < 0)) {
+      throw stateError(`${where}.stoppedOrder must be a non-negative integer.`);
+    }
+    const actor = { agentId, name, parentAgentId, depth, jobIds: [...raw.jobIds], pending: [], stoppedOrder: raw.stoppedOrder ?? 0 };
     actors.push(actor);
     actorsById.set(agentId, actor);
   }
@@ -543,6 +546,7 @@ export class SubagentRuntime {
   #finalizeJob;
 
   #agents = new Map();
+  #stoppedSequence = 0;
   #jobs = new Map();
   #handles = new Map();
   #lifetimeTimers = new Map();
@@ -619,10 +623,8 @@ export class SubagentRuntime {
         const historyPaths = getSubagentHistoryPaths(item.agentId, this.#historyDir);
         const mapped = {
           id: item.agentId,
-          name: item.name,
           status: item.status,
           socket: getAgentSocketPath(item.agentId, this.#socketDir),
-          parentSocket: getAgentSocketPath(this.#agents.get(item.agentId).parentAgentId ?? MAIN_ACTOR_ID, this.#socketDir),
           history: {
             summary: historyPaths.summary,
             cleanJsonl: historyPaths.cleanJsonl,
@@ -658,6 +660,13 @@ export class SubagentRuntime {
     }
     return this.#withCheckpoint(() => {
       const entries = this.#planBatch(batch, options);
+      for (const { spec } of entries) {
+        const assignment = spec.context?.trim() ? `# Batch context\n\n${spec.context}\n\n# Task\n\n${spec.task}` : spec.task;
+        const chars = Array.from(assignment);
+        if (chars.filter((char) => char.codePointAt(0) > 127).length > chars.length * 0.2) {
+          throw new SubagentError("assignment_language", "Write subagent requirements in English.");
+        }
+      }
       const parentAgentId = options.parentAgentId ?? null;
       const parent = parentAgentId === null ? null : this.#agents.get(parentAgentId);
       if (parentAgentId !== null && !parent) {
@@ -757,26 +766,59 @@ export class SubagentRuntime {
   }
 
   /** Public contract view for list tool, including unified ID, socket and history paths. */
-  listDetailed(filter) {
+  listDetailed(filter, { callerId } = {}) {
     const targetId = filter?.id || filter?.agentId;
+    const agents = [...this.#agents.values()];
+    const visible = new Set();
+    const scoped = callerId !== undefined;
+    const main = { id: MAIN_ACTOR_ID, parentId: null, status: "running", socket: getAgentSocketPath(MAIN_ACTOR_ID, this.#socketDir) };
+    if (scoped) {
+      if (filter?.all === true) {
+        visible.add(MAIN_ACTOR_ID);
+        for (const agent of agents) visible.add(agent.agentId);
+      } else {
+        const group = (parentId, selfId) => {
+          const siblings = agents.filter((agent) => agent.parentAgentId === parentId);
+          const active = siblings.filter((agent) => agent.status === "running");
+          const stopped = siblings.filter((agent) => agent.status !== "running").reverse()
+            .sort((a, b) => (b.stoppedOrder ?? 0) - (a.stoppedOrder ?? 0));
+          const self = siblings.find((agent) => agent.agentId === selfId);
+          return [...(self ? [self] : []), ...active.filter((agent) => agent !== self), ...stopped.filter((agent) => agent !== self)]
+            .slice(0, MAX_ACTIVE_CHILDREN);
+        };
+        const addChildren = (agent) => {
+          if (agent.status !== "running") return;
+          for (const child of group(agent.agentId)) visible.add(child.agentId);
+        };
+        if (callerId === MAIN_ACTOR_ID) {
+          visible.add(MAIN_ACTOR_ID);
+          for (const child of group(null)) {
+            visible.add(child.agentId);
+            addChildren(child);
+          }
+        } else {
+          const caller = this.#agents.get(callerId);
+          if (!caller) throw new SubagentError("unknown_agent", `No subagent registered as ${callerId}.`);
+          visible.add(caller.parentAgentId ?? MAIN_ACTOR_ID);
+          for (const peer of group(caller.parentAgentId, callerId)) visible.add(peer.agentId);
+          addChildren(caller);
+        }
+      }
+    }
     const items = [];
-    for (const agent of this.#agents.values()) {
+    if (visible.has(MAIN_ACTOR_ID) && (!targetId || targetId === MAIN_ACTOR_ID) && (!filter?.status || filter.status === main.status)) items.push(main);
+    const listed = scoped ? [...visible].filter((id) => id !== MAIN_ACTOR_ID).map((id) => this.#agents.get(id)) : agents;
+    for (const agent of listed) {
       if (targetId && agent.agentId !== targetId) continue;
       const liveJob = this.#liveJobOf(agent);
-      const latestJob = agent.jobIds.length > 0 ? this.#jobs.get(agent.jobIds[agent.jobIds.length - 1]) : null;
-      const budgetJob = liveJob || latestJob;
       const currentStatus = liveJob ? liveJob.status : (agent.status === "idle" ? "stopped" : agent.status);
       if (filter?.status !== undefined && filter.status !== currentStatus && filter.status !== agent.status) continue;
       const historyPaths = getSubagentHistoryPaths(agent.agentId, this.#historyDir);
       items.push({
         id: agent.agentId,
-        name: agent.name,
-        depth: agent.depth,
         parentId: agent.parentAgentId ?? "Main",
         status: currentStatus,
-        budget: budgetJob?.budget ? budgetJob.budget.snapshot() : null,
         socket: getAgentSocketPath(agent.agentId, this.#socketDir),
-        parentSocket: getAgentSocketPath(agent.parentAgentId ?? MAIN_ACTOR_ID, this.#socketDir),
         history: {
           summary: historyPaths.summary,
           cleanJsonl: historyPaths.cleanJsonl,
@@ -1019,6 +1061,7 @@ export class SubagentRuntime {
         parentAgentId: agent.parentAgentId,
         depth: agent.depth,
         jobIds: [...agent.jobIds],
+        stoppedOrder: agent.stoppedOrder ?? 0,
       });
     }
     const jobs = [];
@@ -1083,15 +1126,21 @@ export class SubagentRuntime {
           depth: actor.depth,
           status: "idle",
           jobIds: actor.jobIds,
+          stoppedOrder: actor.stoppedOrder,
           pending: actor.pending,
         });
       }
+      this.#stoppedSequence = Math.max(0, ...restored.actors.map((actor) => actor.stoppedOrder));
       const interrupted = [];
       for (const job of restored.jobs) {
         this.#jobs.set(job.jobId, job);
         if (job.error?.code === INTERRUPTED.code) interrupted.push(job.jobId);
       }
-      for (const agent of this.#agents.values()) this.#refreshAgent(agent.agentId);
+      const interruptedActors = new Set(interrupted.map((jobId) => this.#jobs.get(jobId).agentId));
+      for (const agent of this.#agents.values()) {
+        if (interruptedActors.has(agent.agentId)) agent.status = "running";
+        this.#refreshAgent(agent.agentId);
+      }
       this.#markDirty();
       return { actors: this.#agents.size, jobs: this.#jobs.size, interrupted };
     });
@@ -1574,6 +1623,7 @@ export class SubagentRuntime {
     const agent = this.#agents.get(agentId);
     if (!agent) return;
     const active = agent.jobIds.some((jobId) => LIVE_STATUSES.has(this.#jobs.get(jobId)?.status));
+    if (!active && agent.status === "running") agent.stoppedOrder = ++this.#stoppedSequence;
     agent.status = active ? "running" : "idle";
   }
 

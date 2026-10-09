@@ -573,7 +573,7 @@ Budget 不进入 `task` Schema，模型不能：
 
 Soft 阶段允许 Harness 向子模型注入一次不含具体数字的收尾指令，这是控制执行所必需的运行时反馈，不是公开配置面。
 
-`hub jobs` 可以提供只读用量：
+Budget 用量只保留在 Harness 内部诊断和 checkpoint，不向 Main／Subagent 的模型工具响应暴露。以下为内部快照示例：
 
 ```json
 {

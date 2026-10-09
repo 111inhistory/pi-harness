@@ -60,7 +60,7 @@ const WITHDRAWN = {
 };
 
 const TOOLS = [BASH, LIST_PAGES, RESTART_FIREFOX, WITHDRAWN];
-const ACTIVE_TOOLS = [BASH.name, LIST_PAGES.name];
+const ACTIVE_TOOLS = [LIST_PAGES.name];
 
 const FIREFOX_SKILL = {
   name: "firefox-existing-profile",
@@ -80,6 +80,15 @@ const FIREFOX_SKILL_BODY = [
   "- 应先外部启动目标 Profile，再由 mcp:firefox-devtools 使用 --connect-existing 接管。",
   "- 使用 list_pages 验证连接状态。",
 ].join("\n");
+
+test("already-active builtin and SDK additional tools are omitted from search, not schema reads", async () => {
+  const additional = { ...BASH, name: "sdk_tool", sourceInfo: { source: "sdk" } };
+  const broker = createCapabilityBroker(plainProviders({ listTools: () => [BASH, additional], listActiveTools: () => ["bash", "sdk_tool"] }));
+  for (const query of ["bash", "tool://bash", "sdk_tool"]) {
+    assert.deepEqual((await broker.search({ query, src: "local" })).tools, []);
+  }
+  assert.equal(JSON.parse(await broker.read("tool://bash")).name, "bash");
+});
 
 const ENGLISH_QUERY = "list pages in the connected Firefox and run shell commands";
 const CHINESE_QUERY = "使用已有登录态和扩展的 Firefox 完成网页操作";

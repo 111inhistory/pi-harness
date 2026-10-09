@@ -4,14 +4,14 @@
 
 本文件是当前公开行为基线。实现可以替换，但外部语义需要显式修订，不能由实现悄悄改变。
 
-实现位于 `src/subagent-runtime.mjs`、`src/subagent-routing.mjs`、`src/subagent-storage.mjs` 和 `extensions/subagent.mjs`。子任务使用 Pi `createAgentSession()`：支持 Fresh／Inherited 原子批次、短统一 ID（Job 与 Agent 概念耦合）、deferred Job、并发与派生限制、取消／`stopping`、Job Budget、通过 write Unix Socket 实现单向消息投递与自动通知、双轨历史（Compacted Markdown + Clean JSONL），以及原生会话持久化与恢复。
+实现位于 `src/subagent-runtime.mjs`、`src/subagent-routing.mjs`、`src/subagent-storage.mjs` 和 `extensions/subagent.mjs`。子任务使用 Pi `createAgentSession()`：支持 Fresh／Inherited 原子批次、短统一 ID（Job 与 Agent 概念耦合）、deferred Job、并发与派生限制、取消／`stopping`、Job Budget、通过 msg_write Unix Socket 实现单向消息投递与自动通知、双轨历史（Compacted Markdown + Clean JSONL），以及原生会话持久化与恢复。
 
 本轮决策：
 
 - Fresh 自动路由直接使用 Pi 内置 TypeSafe／OpenRouter 的 Jev，不另造请求、鉴权或通用分类器框架。
 - 结构化结果返回不做，不保留 `outputSchema`／`schemaMode` 目标。
 - blocking、`waiting` 与同步等待暂缓；所有任务仍为 deferred，不提供 `wait` 接口，直接 `stop` 后读取历史。
-- 废除原虚拟协议（Protocol IO 及 `agent://`、`history://`），Pi 原生工具回归纯粹文件系统；通信下沉到 Unix Domain Socket（NDJSON），原生 `write` 工具通过更换 write backend 适配 Socket 单向投递。
+- 废除原虚拟协议（Protocol IO 及 `agent://`、`history://`），`write` 只写文件；独立 `msg_write` 复用 Socket-aware backend，负责 Unix Domain Socket（NDJSON）单向投递。只读角色仍保留消息工具。
 - 双轨历史直接暴露物理路径给发起者：Compacted Markdown（参考 OMP，供 LLM 读）与 Clean JSONL（去流式碎片，供 grep/rg/jq 检索）。
 - 消息通过向 Socket 写入自动投递给对应 Agent，无需额外设计通知总线；仅在 subagent 异常时由宿主向上层抛出 Notification。
 - **发送者归属修订**：受管理的 Subagent Socket 报文必须携带真实调用者的 `from`，由该会话的 write backend 绑定；不能把所有单点消息当作 Main，也不能从广播端点反推实际发送者。来源绑定的实现仍待补齐，详见通信章节。
@@ -21,9 +21,9 @@
 
 ## 默认发现与启用
 
-- 三个控制工具归入原生 `subagent` namespace，注册时默认不 active（Fresh 子 Agent 的显式工具装载计划不变）；Depth 2 只注册 list／stop，不注册 create。
+- 三个控制工具归入原生 `subagent` namespace，Main 注册时默认不 active；Depth 1 的 Fresh／Inherited 均显式装载 create／list／stop 与 Capability。Depth 2 只有 list 和 msg_write，不注册 Capability／create／stop。
 - Capability 依赖 Subagent 扩展已加载，但不要求其工具 active。按一个 namespace 候选返回共同说明与全部可达成员，选中后将可直接声明的成员一起激活。
-- Socket 通信与生命周期规则归 namespace 的共同说明；普通 `write` 的模型说明与 schema 保持原生，仅替换 Socket-aware backend。
+- Socket 通信与生命周期规则归 namespace 的共同说明；普通 `write` 的模型说明与 schema 保持原生；`msg_write` 单独说明 Socket 消息格式。
 
 ## 核心边界
 
@@ -41,10 +41,10 @@
 
 ```json
 {
-  "context": "这一批任务共享的显式背景。",
+  "context": "Shared background for these tasks.",
   "tasks": [
-    { "name": "InspectParser", "task": "检查解析器的错误恢复行为并返回问题清单。" },
-    { "name": "ContinueDesign", "task": "基于当前讨论继续检查契约。", "inheritContext": true }
+    { "name": "InspectParser", "task": "Inspect parser error recovery and report findings." },
+    { "name": "ContinueDesign", "task": "Continue checking the contract discussed here.", "inheritContext": true }
   ]
 }
 ```
@@ -60,7 +60,8 @@ type TaskBatch = {
 };
 ```
 
-- `tasks` 不得为空，`task` 是独立任务指令，`context` 是该批次的共同背景。
+- `tasks` 不得为空，`task` 是独立任务指令，`context` 是该批次的共同背景。输入 `name` 仅作为内部任务标签，不是另一套 Actor 标识；工具返回统一使用 `id`。
+- 按实际组装的完整 assignment 统计非 ASCII Unicode codepoints，超过 20% 整批拒绝并提示使用英文；不分配 ID、不启动部分任务。模型指导不公布阈值。
 - 不设置 `inheritContext: true` 就是 Fresh；同一批次可以混合 Fresh 与 Inherited。
 - 不接受 `agent`、`role`、`model`、`thinking`、`effort`、`provider`、`preference`、`tools` 或结果 Schema；未知字段使整个批次校验失败，没有兼容别名。
 - 先校验整个批次和拓扑准入，再原子注册；失败不留下半创建任务。注册后一个 Job 的失败或取消不影响兄弟 Job。
@@ -72,10 +73,8 @@ type TaskBatch = {
   "items": [
     {
       "id": "sub_01",
-      "name": "InspectParser",
       "status": "running",
       "socket": "/tmp/pi-subagents/sub_01.sock",
-      "parentSocket": "/tmp/pi-subagents/Main.sock",
       "history": {
         "summary": ".pi/subagents/sub_01/summary.md",
         "cleanJsonl": ".pi/subagents/sub_01/session.clean.jsonl"
@@ -85,7 +84,7 @@ type TaskBatch = {
 }
 ```
 
-条目没有 `delivery` 字段，也不内联完整结果。发起者可通过 write socket 单向投递消息，通过文件系统直接读取 `summary.md` 或对 `session.clean.jsonl` 进行 grep/rg/jq 检索。Inherited 中不能移植的外部扩展工具仍通过 `warnings` 明示，不因移除工具选择参数而静默消失。
+条目没有 `delivery` 字段，也不内联完整结果。发起者可通过 msg_write socket 单向投递消息，通过文件系统直接读取 `summary.md` 或对 `session.clean.jsonl` 进行 grep/rg/jq 检索。Inherited 中不能移植的外部扩展工具仍通过 `warnings` 明示，不因移除工具选择参数而静默消失。
 
 ## Fresh 自动路由
 
@@ -183,7 +182,7 @@ flowchart TD
 
 ### 向直接父级投递
 
-create／list 返回 parentSocket，子 Agent 的上下文也明确告知父级身份和端点。Depth 1 写 `/tmp/pi-subagents/<uid>/Main.sock`，Depth 2 写对应 Depth 1 的 `<parentId>.sock`；报文仍为一行 `{ "content": "..." }` 加换行，from 由当前 Agent 的 write backend 绑定。Main 收件入口不是 `main/children.sock`，后者只向下广播。
+create／list 不再返回 parentSocket，子 Agent 的启动上下文明确告知父级身份和端点。Depth 1 写 `/tmp/pi-subagents/<uid>/Main.sock`，Depth 2 写对应 Depth 1 的 `<parentId>.sock`；报文仍为一行 `{ "content": "..." }` 加换行，from 由当前 Agent 的 msg_write backend 绑定。Main 收件入口不是 `main/children.sock`，后者只向下广播。
 
 Main 空闲时显式消息触发下一轮；Main 正在运行时通过 Pi 原生 steer 注入，不并发启动另一轮。停止的子级父 Agent 收到显式消息仍沿既有 revive 逻辑续跑。正常完成不会自动发消息或唤醒 Main。Main 的端点在新会话与恢复时建立，reload 后重建，根会话关闭时随其它 Socket 一起清理；不新增握手、ACK、重试或收件箱。
 
@@ -219,7 +218,7 @@ Job 状态为 `running`、`stopping`、`finalizing`、`completed`、`failed`、`
 - 第 hard 次可以执行，预计 hard+1 在请求前拒绝。达到 Soft 只提示一次，不暴露具体阈值。
 - Active Time 从 adapter 启动开始累计，stopping 等实际退出期间仍计。finalizing 只刷盘、不继续计执行预算；不设置全局执行槽位。
 - Model Calls／Active Time 超限使用 `budget_exceeded`，lifetime 到期使用 `job_expired`；最终为 failed，不追加收尾模型调用，保留部分结果与历史。
-- Budget 不由模型配置，不跨父子聚合；`subagent_list` 只给只读用量、phase 与终态，不暴露 Profile 上限。
+- Budget 不由模型配置，不跨父子聚合；Main 和子 Agent 的工具响应均不暴露 Budget 用量、phase 或 Profile。内部裁决、checkpoint 与诊断保留。
 - 恢复只保留历史预算快照，不继续跨进程的 monotonic clock；显式续跑是新 Job、新 Budget。
 
 ## 通信架构：Write Socket 与 异常 Notification
@@ -229,7 +228,7 @@ Job 状态为 `running`、`stopping`、`finalizing`、`completed`、`failed`、`
 ### 1. Write Socket 单向消息投递
 
 - **单向投递原则**：发起者通过向对应 Subagent 的 Unix Domain Socket（如 `/tmp/pi-subagents/<id>.sock`）单向写入 NDJSON 报文完成消息投递，不走双向连接应答；子 Agent 的产出与进展统一通过双轨历史文件读取。
-- **更换 Write Backend**：原生 `write` 工具通过更换其底层的 `WriteOperations`（Pi 原生支持的可拔插选项）适配 Unix Domain Socket。当向 `.sock` 文件写入时，底层使用 `net.connect()` 进行单向写入；向普通文件写入时，原样使用文件系统写操作。Subagent 消息语义只适用于当前宿主注册表中受管理的 Socket，不能仅凭 `.sock` 后缀或 `sub_01` 这样的 basename 判断端点归属。
+- **独立消息工具**：`msg_write` 使用既有 Socket-aware `WriteOperations`，只接受 `.sock` 路径并通过 `net.connect()` 单向写入；`write` 保留文件操作，遇到 `.sock` 提示使用 msg_write。Subagent 消息语义只适用于当前宿主注册表中受管理的 Socket，不能仅凭 `.sock` 后缀或 `sub_01` 这样的 basename 判断端点归属。
 - **报文格式**：受管理端点统一采用 **UTF-8 NDJSON（Newline-Delimited JSON，换行分隔的 JSON）**。每条消息必须为完整单行 JSON 并以 `\n` 结尾；网络数据块边界不是字符或消息边界。
 - **自动投递（Notification 内置）**：
   - 发起者向 Socket 投递消息后，由底层的通信监听器自动转发并唤醒对应 Subagent 处理，**不需要额外设计通知总线机制**。
@@ -244,7 +243,7 @@ Agent 调用原生 write：     {"content":"请核对解析器边界条件。"}\
 ```
 
 - `content` 是非空消息文本。Agent 不填写 `from`；`from` 是宿主保留字段，由该原生 `write` 工具所属的会话绑定：根会话为 `main`，子会话为自己的短 ID（例如 `sub_01`、`sub_01_02`）。复活后仍是同一发送者 ID，不使用某轮的内部 Job ID。
-- 原生 write backend 逐条解析受管理端点的输入帧，注入真实发送者。调用方自行提交 `from` 应在发送前以 `invalid_message` 拒绝，不接受伪装为 Main、父级或兄弟的覆盖。普通文件和外部 Socket 不受这一字段规则影响。
+- msg_write backend 逐条解析受管理端点的输入帧，注入真实发送者。调用方自行提交 `from` 应在发送前以 `invalid_message` 拒绝，不接受伪装为 Main、父级或兄弟的覆盖。普通文件和外部 Socket 不受这一字段规则影响。
 - 目标由 Socket 路径确定，不接受报文中的 `to` 来改写路由。接收监听器必须保留经宿主绑定的 `from`，将它带入运行中的 steer、SDK 初始化消息缓冲、revive 初始消息及对应原生上下文／Clean JSONL；不能统一改写为 Main。
 - **身份边界**：`from` 是来源标记，本身不是认证凭据。所有 Agent 共用宿主进程与工作目录，不能声称只校验 JSON 中的 ID、或只校验 Unix peer PID／UID 就证明了 Actor 身份。受管理端点需要可信的宿主来源绑定；其具体传输校验机制仍待定。本轮只定义原生 write 路径，不新增外部客户端投递入口。不具备来源绑定的原始连接不得默认归为 Main 或某个已注册 Agent，也不得以自报的 `from` 获得权限。
 - 单点消息中的发送者与目标可以不同；广播必须校验实际发送者正是该 `children.sock` 的所属父节点，否则以 `invalid_target` 拒绝，不能借写入其它父节点的端点扩大广播范围。
@@ -311,11 +310,20 @@ Main/Subagent
 
 ### 1. `subagent_list`
 
-查询当前活跃及历史的 Subagent 状态与花名册：
+查询按调用者拓扑筛选的 Agent 状态与花名册。默认每个同父组最多展示并发上限数量（当前 4）：活跃节点优先，最近停止的补齐；调用者自己包含在 peers 中。
+
+- Main 先展示自己，再展示筛选后的 depth 1；只展开其中活跃节点的 children，每组按同样规则筛选。
+- 子 Agent 展示直接父级、peers（含自己）以及自己的 children，不展开 peer 的 children。
+- 停止节点不展开 children，即使仍有活跃后代。
+- 停止顺序在内部 checkpoint 持久化。旧 checkpoint 未记录顺序的节点按注册倒序补位；恢复时被判为 interrupted 的节点记为新停止。
+- `all: true` 取消范围和数量筛选，包含 Main 与所有历史节点。
+- `id` 在上述可见列表内筛选；查询范围外的 ID 需同时设置 `all: true`。
+- Main 没有子 Agent 双轨历史，条目仅含 id、parentId（null）、status、socket。
 
 ```json
 {
-  "id": "sub_01" // 可选，省略则列出当前根会话下的全部 Agent
+  "all": false,
+  "id": "sub_01" // 可选，在所选可见范围中筛选
 }
 ```
 
@@ -326,17 +334,9 @@ Main/Subagent
   "items": [
     {
       "id": "sub_01",
-      "name": "InspectParser",
-      "depth": 1,
       "parentId": "Main",
       "status": "running",
-      "budget": {
-        "modelCalls": 12,
-        "activeTimeMs": 45000,
-        "phase": "normal"
-      },
       "socket": "/tmp/pi-subagents/sub_01.sock",
-      "parentSocket": "/tmp/pi-subagents/Main.sock",
       "history": {
         "summary": ".pi/subagents/sub_01/summary.md",
         "cleanJsonl": ".pi/subagents/sub_01/session.clean.jsonl"

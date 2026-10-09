@@ -23,6 +23,7 @@ import { installModelCallBudget } from "../src/pi-job-budget.mjs";
 import { routeSubagent } from "../src/subagent-routing.mjs";
 import { SUBAGENT_SESSIONS_DIR, createSubagentStore, SubagentStoreError } from "../src/subagent-storage.mjs";
 import capabilityExtension from "./capability.mjs";
+import { setCapabilityParent, capabilityAvailableTools, capabilityAllowsTool } from "../src/capability-scope.mjs";
 import {
   createAgentSocketServer,
   createBroadcastSocketServer,
@@ -38,8 +39,9 @@ import {
 } from "../src/subagent-history.mjs";
 
 const MAX_AGENT_DEPTH = 2;
-const HARNESS_TOOLS = ["subagent_create", "subagent_list", "subagent_stop", "capability"];
-const ROOT_HARNESS_TOOLS = ["subagent_list", "subagent_stop", "capability"];
+const NATIVE_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+const HARNESS_TOOLS = ["subagent_create", "subagent_list", "subagent_stop", "capability", "msg_write"];
+const LEAF_HARNESS_TOOLS = ["subagent_list", "msg_write"];
 const MESSAGE_CUSTOM_TYPE = "agent-message";
 const COMPLETION_CUSTOM_TYPE = "agent-completion";
 /** Job statuses that never reached a terminal state in their own process. */
@@ -52,9 +54,9 @@ const SUBAGENT_NAMESPACE = Object.freeze({
     "Where available, use subagent_create to delegate independent tasks. Fresh agents need self-contained task/context; inheritContext copies this session's snapshot. Agents share the working directory; avoid simultaneous edits to the same files.",
     "Each parent can have four active children, with two child levels. Normal completion does not wake you; use subagent_list and read history.summary for the outcome or history.cleanJsonl for full messages.",
     "running includes initialization; stopping waits for execution exit; finalizing writes history; stopped means ended, not necessarily succeeded. Use subagent_stop only to cancel unwanted work.",
-    'To send a message, use write with the returned socket path and one JSON object per line: {"content":"Please check the tests"}, ending with a newline. This is an exception to write\'s file-only guidance. The host binds the sender; omit from and to.',
-    "To contact your direct parent, write the same NDJSON to your parentSocket (also stated in your agent context). Main's receiving socket is distinct from main/children.sock; the latter only broadcasts downward.",
-    "A successful write is not a task result. Writing to a stopped agent starts a new run; wait for stopped before messaging an agent that is stopping or finalizing.",
+    'To send a message, use msg_write with the returned socket path and one JSON object per line: {"content":"Please check the tests"}, ending with a newline. The host binds the sender; omit from and to.',
+    "To contact your direct parent, use msg_write with the parent socket stated in your agent context. Main's receiving socket is distinct from main/children.sock; the latter only broadcasts downward.",
+    "A successful msg_write is not a task result. Writing to a stopped agent starts a new run; wait for stopped before messaging an agent that is stopping or finalizing.",
     "Your children.sock endpoint broadcasts only to your direct children, never recursively. Query progress when needed, not in a tight loop.",
   ].join("\n"),
 });
@@ -473,6 +475,7 @@ function restoreActor(service, agentId, record) {
     // actor carries its parent's level verbatim.
     thinkingLevel: nullableActorText(agentId, record, "thinkingLevel"),
     tools: restoreActorTools(agentId, record),
+    excludedTools: Array.isArray(record.excludedTools) ? [...record.excludedTools] : null,
     assignment: nullableActorText(agentId, record, "assignment"),
     routed,
   };
@@ -792,9 +795,10 @@ function ensureBroadcastSocketServer(service, parentId) {
 const listParameters = {
   type: "object",
   properties: {
+    all: { type: "boolean", description: "Show every agent, including Main and stopped agents, without group limits. Default false." },
     id: {
       type: "string",
-      description: "Optional subagent id to query a specific agent. Omit to list all agents.",
+      description: "Optional agent id to filter the visible list. Use all: true to query outside the default view.",
     },
   },
 };
@@ -815,8 +819,8 @@ function installSessionSurface(pi, resolveService, { allowInherited, parentAgent
   if (depth < MAX_AGENT_DEPTH) {
     pi.registerTool(createTool(pi, resolveService, { allowInherited, parentAgentId, depth, cwd: workCwd }));
   }
-  pi.registerTool(listTool(resolveService));
-  pi.registerTool(stopTool(resolveService));
+  pi.registerTool(listTool(resolveService, senderId === "main" ? "Main" : senderId));
+  if (depth < MAX_AGENT_DEPTH) pi.registerTool(stopTool(resolveService));
 
   const writeOps = createSocketAwareWriteOperations({
     senderId,
@@ -844,7 +848,35 @@ function installSessionSurface(pi, resolveService, { allowInherited, parentAgent
       }
     },
   });
-  pi.registerTool(createWriteToolDefinition(workCwd, { operations: writeOps }));
+  const messageTool = createWriteToolDefinition(workCwd, { operations: writeOps });
+  pi.registerTool({
+    ...messageTool,
+    name: "msg_write",
+    label: "Send Agent Message",
+    description: 'Send messages to a Unix Socket path ending in .sock. For agent messages supply NDJSON content and omit from and to. Cannot write files.',
+    promptSnippet: "Send messages to agents through their Socket paths",
+    promptGuidelines: ["For agent messages, provide NDJSON content with a trailing newline; omit from and to."],
+    parameters: {
+      ...messageTool.parameters,
+      properties: {
+        ...messageTool.parameters.properties,
+        path: { type: "string", description: "Unix Socket path ending in .sock." },
+        content: { type: "string", description: "Message content; managed agent endpoints require NDJSON." },
+      },
+    },
+    async execute(...args) {
+      if (!args[1].path.endsWith(".sock")) throw new Error("msg_write requires a Socket path ending in .sock.");
+      return messageTool.execute(...args);
+    },
+  });
+  const fileTool = createWriteToolDefinition(workCwd);
+  pi.registerTool({
+    ...fileTool,
+    async execute(...args) {
+      if (args[1].path.endsWith(".sock")) throw new Error("Use msg_write for Socket messages.");
+      return fileTool.execute(...args);
+    },
+  });
 }
 
 function createTool(pi, resolveService, { allowInherited, parentAgentId, depth }) {
@@ -854,7 +886,7 @@ function createTool(pi, resolveService, { allowInherited, parentAgentId, depth }
     defaultActive: false,
     label: "Create Subagent",
     description:
-      "Create independent background agents. Returns each agent's id, status, socket, parentSocket, and history paths; does not wait for results.",
+      "Create independent background agents. Returns each agent's id, status, socket, and history paths; does not wait for results.",
     promptSnippet: "Delegate independent tasks to background agents",
     promptGuidelines: [
       ...SUBAGENT_NAMESPACE.instructions.split("\n"),
@@ -888,21 +920,21 @@ function createTool(pi, resolveService, { allowInherited, parentAgentId, depth }
   };
 }
 
-function listTool(resolveService) {
+function listTool(resolveService, callerId) {
   return {
     name: "subagent_list",
     namespace: SUBAGENT_NAMESPACE,
     defaultActive: false,
     label: "List Subagents",
     description:
-      "List agent status, budget usage, socket, parentSocket, and history paths. Optionally filter by id. Does not wait for completion.",
+      "List the parent, peers (including self), and own children. Each group is capped at the per-parent concurrency limit: active first, then most recently stopped. Main also expands visible active children; stopped nodes and peers are not expanded. Set all: true for every agent. Main has no subagent history paths. Does not wait for completion.",
     promptSnippet: "Check background agent progress and history paths",
     promptGuidelines: SUBAGENT_NAMESPACE.instructions.split("\n"),
     parameters: listParameters,
     async execute(_toolCallId, params) {
       const service = await resolveService();
       assertOperational(service);
-      const result = service.runtime.listDetailed(params);
+      const result = service.runtime.listDetailed(params, { callerId });
       return respond(result);
     },
   };
@@ -940,11 +972,11 @@ function respond(payload) {
 // `capability` is part of the child harness surface (the child factory
 // registers the capability extension in every child session).
 function harnessToolsForDepth(depth) {
-  return depth < MAX_AGENT_DEPTH ? HARNESS_TOOLS : ROOT_HARNESS_TOOLS;
+  return depth < MAX_AGENT_DEPTH ? HARNESS_TOOLS : LEAF_HARNESS_TOOLS;
 }
 
 function transplantableToolNames(pi, childDepth) {
-  const names = new Set(harnessToolsForDepth(childDepth));
+  const names = new Set([...harnessToolsForDepth(childDepth), "read", "write"]);
   for (const tool of pi.getAllTools()) {
     if (tool?.sourceInfo?.source === "builtin") names.add(tool.name);
   }
@@ -1014,6 +1046,23 @@ function routedToolNames(roleTools, childDepth) {
     if (!tools.includes(name)) tools.push(name);
   }
   return tools;
+}
+
+// A stopped/restored parent still owns its last loadout. This view is only
+// permission metadata, never transplanted execution handles.
+function parentCapabilityApi(service, agentId) {
+  if (!agentId) return service.controller.pi;
+  const live = [...service.liveJobs.values()].find((job) => job.agentId === agentId && job.pi);
+  const record = service.retained.get(agentId);
+  if (live?.pi && !live.closed) return live.pi;
+  if (!record) throw new Error(`Missing parent capability scope for ${agentId}`);
+  const names = new Set(record.tools ?? []);
+  const api = {
+    getActiveTools: () => [...names],
+    getAllTools: () => service.controller.pi.getAllTools().filter((tool) => names.has(tool.name)),
+  };
+  setCapabilityParent(api, service.controller.pi, record.excludedTools ?? []);
+  return api;
 }
 
 function settingsFor(service, cwd, trusted) {
@@ -1185,6 +1234,7 @@ function startPiJob(service, request) {
     let model = retained?.model ?? null;
     let thinkingLevel = retained?.thinkingLevel ?? null;
     let plannedTools = retained?.tools ?? null;
+    let excludedTools = retained?.excludedTools ?? (retained?.roleId ? NATIVE_TOOL_NAMES.filter((name) => !plannedTools?.includes(name)) : []);
     if (retained !== null && retained.routed && retained.modelRef !== null && model === null) {
       throw new SubagentError(
         "model_unavailable",
@@ -1225,6 +1275,7 @@ function startPiJob(service, request) {
       model = routed.model;
       thinkingLevel = routed.thinkingLevel;
       plannedTools = routedToolNames(routed.tools, request.depth);
+      excludedTools = [...new Set([...(routed.excludeTools ?? []), ...NATIVE_TOOL_NAMES.filter((name) => !routed.tools.includes(name))])];
       identitySettled = true;
     }
 
@@ -1257,6 +1308,7 @@ function startPiJob(service, request) {
         model: effective.model ?? model,
         thinkingLevel: effective.thinkingLevel ?? thinkingLevel ?? null,
         tools: effective.tools ?? plannedTools,
+        excludedTools,
         assignment: pendingAssignment,
         routed: identitySettled,
       });
@@ -1272,7 +1324,9 @@ function startPiJob(service, request) {
       // One controlled surface per child: capability discovery and the
       // protocol wrappers first, then the task/hub tools for this depth.
       factory: (childPi) => {
-        capabilityExtension(childPi);
+        setCapabilityParent(childPi, () => parentCapabilityApi(service, request.origin?.agentId), [...excludedTools, ...(request.depth >= MAX_AGENT_DEPTH ? ["capability", "subagent_create", "subagent_stop"] : [])]);
+        capabilityExtension(childPi, { discovery: request.depth < MAX_AGENT_DEPTH });
+        live.pi = childPi;
         // A child surface always speaks for the service that created it, never
         // for a later root session.
         installSessionSurface(childPi, () => service, {
@@ -1280,6 +1334,7 @@ function startPiJob(service, request) {
           allowInherited,
           parentAgentId: request.agentId,
           depth: request.depth,
+          cwd,
           senderId: request.agentId,
         });
       },
@@ -1295,7 +1350,7 @@ function startPiJob(service, request) {
       ...(systemPrompt !== null ? { systemPrompt } : {}),
       appendSystemPrompt: [
         ...(roleInstructions !== null ? [roleInstructions] : []),
-        `You are Subagent ${request.agentId}. Your direct parent is ${request.origin?.agentId ?? "Main"}. To message that parent, use write with parentSocket ${getAgentSocketPath(request.origin?.agentId ?? "Main", service.socketDir)} and NDJSON {"content":"your message"} followed by a newline; omit from and to. This explicitly delivers a message, not an automatic completion notification.`,
+        `You are Subagent ${request.agentId}. Your direct parent is ${request.origin?.agentId ?? "Main"}. To message that parent, use msg_write with parentSocket ${getAgentSocketPath(request.origin?.agentId ?? "Main", service.socketDir)} and NDJSON {"content":"your message"} followed by a newline; omit from and to. This explicitly delivers a message, not an automatic completion notification.`,
       ],
     });
     await resourceLoader.reload();
@@ -1308,13 +1363,16 @@ function startPiJob(service, request) {
       modelRuntime,
       ...(model ? { model } : {}),
       ...(thinkingLevel ? { thinkingLevel } : {}),
-      ...(plannedTools !== null && plannedTools.length > 0 ? { tools: plannedTools } : {}),
+      excludeTools: [...excludedTools, ...(request.depth >= MAX_AGENT_DEPTH ? ["capability", "subagent_create", "subagent_stop"] : [])],
       sessionManager,
       resourceLoader,
     });
     throwIfBudgetFailed(request.budget);
     session = created.session;
     live.session = session;
+    plannedTools = [...new Set([...(plannedTools ?? []), ...harnessToolsForDepth(request.depth)])];
+    session.setActiveToolsByName(plannedTools.filter((name) => capabilityAllowsTool(live.pi, name)));
+    capabilityAvailableTools(live.pi);
     // The session's own loadout and model are what a revival must reuse:
     // capability activation opens tools during the run that the pre-run seed
     // never mentioned, and a run that was stopped still keeps them.
@@ -1614,6 +1672,7 @@ function exportActors(service) {
       model: descriptor.modelRef ?? null,
       thinkingLevel: descriptor.thinkingLevel ?? null,
       tools: Array.isArray(descriptor.tools) ? [...descriptor.tools] : null,
+      excludedTools: [...(descriptor.excludedTools ?? [])],
       assignment: descriptor.assignment ?? null,
       routed: descriptor.routed === true,
     };

@@ -47,6 +47,7 @@ import { installModelCallBudget } from "../src/pi-job-budget.mjs";
 import { captureInheritedContext } from "../src/inherited-context.mjs";
 import { discoverSessionSkills } from "../src/capability-skills.mjs";
 import { capabilityPublicResult } from "../src/capability-result.mjs";
+import { capabilityAllowsTool, capabilityAvailableTools } from "../src/capability-scope.mjs";
 import {
   additiveToolTranscript, capabilityModelResult, capabilityToolDelta, retrievalToolLoadout, supportsAdditiveResponses,
 } from "../src/responses-tool-prefix.mjs";
@@ -54,7 +55,7 @@ import {
 /** `Model<Api>.api` of Pi virtual catalog entries (routed before a provider). */
 const VIRTUAL_MODEL_API = "pi-virtual";
 
-export default function capabilityExtension(pi) {
+export default function capabilityExtension(pi, { discovery = true } = {}) {
   const service = {
     agentDir: getAgentDir(),
     marketplace: null,
@@ -75,7 +76,7 @@ export default function capabilityExtension(pi) {
   });
   pi.on?.("tool_call", (event) => {
     const tool = pi.getAllTools().find((entry) => entry.name === event.toolName);
-    if (!tool || tool.exposure === "hidden" ||
+    if (!capabilityAllowsTool(pi, event.toolName) || !tool || tool.exposure === "hidden" ||
         (!pi.getActiveTools().includes(event.toolName) && !["codemode", "deferred"].includes(tool.exposure))) {
       return { block: true, reason: `Tool ${event.toolName} is unavailable in this session; retained declarations do not enable execution.` };
     }
@@ -84,6 +85,7 @@ export default function capabilityExtension(pi) {
   // Subagent owns the Socket-aware native write backend; Capability only adds readers.
   installProtocolIO(pi, { readers: capabilityReaders(broker), readOnly: true });
 
+  if (!discovery) return;
   pi.registerTool({
     name: CAPABILITY_TOOL_NAME,
     label: "Capability",
@@ -119,6 +121,7 @@ export default function capabilityExtension(pi) {
           try {
             previouslyActive = new Set(pi.getActiveTools());
             const activation = activateSelectedTools(pi, result);
+            capabilityAvailableTools(pi);
             if (supportsAdditiveResponses(physicalModel) && safeSettings(pi)?.codemode?.mode !== "only") {
               compactNames = new Set(pi.getActiveTools());
             }
@@ -147,7 +150,7 @@ export default function capabilityExtension(pi) {
 
 function createProviders(pi, service) {
   return {
-    listTools: () => pi.getAllTools(),
+    listTools: () => pi.getAllTools().filter((tool) => capabilityAllowsTool(pi, tool.name)),
     listActiveTools: () => pi.getActiveTools(),
     discoverSkills: (cwd) => discoverSessionSkills(pi, { cwd, agentDir: service.agentDir, projectTrusted: service.projectTrusted }),
     readSkillFile: (filePath) => readFile(filePath, "utf8"),

@@ -78,6 +78,9 @@ function validateConfig(value) {
     if (!Array.isArray(role.tools) || role.tools.length === 0 || !role.tools.every(filled)) {
       throw invalidConfigError(`roles[${index}].tools must be non-empty tool names`);
     }
+    if (role.excludeTools !== undefined && (!Array.isArray(role.excludeTools) || !role.excludeTools.every((name) => filled(name) && !/[?*]/.test(name)))) {
+      throw invalidConfigError(`roles[${index}].excludeTools must be exact tool names`);
+    }
     if (!Array.isArray(role.candidates) || role.candidates.length === 0) throw invalidConfigError(`roles[${index}].candidates must be non-empty`);
     const poolIds = new Set();
     for (const candidate of role.candidates) {
@@ -303,5 +306,6 @@ export async function routeSubagent({ registry, task, context = "", signal, budg
     model: resolveChatModel(registry, model),
     thinkingLevel: clampThinking(role.thinking, candidate.thinking),
     tools: [...role.tools],
+    excludeTools: [...(role.excludeTools ?? [])],
   };
 }

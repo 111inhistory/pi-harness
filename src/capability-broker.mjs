@@ -823,7 +823,10 @@ function groupToolHits(hits, registry, limits) {
 }
 
 async function searchToolHits(registryPromise, context, limits) {
-  const registry = await registryPromise;
+  const snapshot = await registryPromise;
+  // Already-active individual tools are not missing capabilities. Keep namespace
+  // groups: their shared instructions can still supply useful guidance.
+  const registry = { ...snapshot, tools: snapshot.tools.filter((tool) => !tool.active || tool.namespaceName) };
   const covered = new Set();
   const hits = [];
 

@@ -65,11 +65,21 @@ test("public create returns only deferred metadata in input order, with stable s
   assert.deepEqual(response, { items: ["TaskA", "TaskB"].map((name, index) => {
     const id = `sub_0${index + 1}`;
     const history = getSubagentHistoryPaths(id);
-    return { id, name, status: "running", socket: getAgentSocketPath(id), parentSocket: getAgentSocketPath("Main"), history: { summary: history.summary, cleanJsonl: history.cleanJsonl } };
+    return { id, status: "running", socket: getAgentSocketPath(id), history: { summary: history.summary, cleanJsonl: history.cleanJsonl } };
   }) });
   for (const item of response.items) {
     for (const removed of ["agentId", "jobId", "delivery", "result", "resultRef", "historyRef"]) assert.equal(removed in item, false);
   }
+});
+
+test("non-ASCII assignments reject the whole batch before allocation", (t) => {
+  const { runtime, started } = harness(t);
+  assert.throws(() => runtime.create({ tasks: [{ task: "valid" }, { task: "中文任务" }] }), errorCode("assignment_language"));
+  assert.deepEqual(runtime.listDetailed(), { items: [] });
+  assert.equal(started.length, 0);
+  assert.equal(runtime.create({ tasks: [{ task: "abcd你" }] }).items[0].id, "sub_01", "exactly 20% is allowed");
+  assert.throws(() => runtime.create({ tasks: [{ task: "abc🙂" }] }), errorCode("assignment_language"));
+  assert.throws(() => runtime.create({ context: "中文背景".repeat(40), tasks: [{ task: "English task" }] }), errorCode("assignment_language"));
 });
 
 test("public create rejects unknown routing and schema fields atomically", (t) => {
@@ -101,23 +111,24 @@ test("public create preserves inherited warnings and captures one independent sn
   assert.deepEqual(response.items[1].warnings, [warning]);
 });
 
-test("public list filters actors, exposes usage but not budget limits, and follows running/stopping/terminal states", async (t) => {
+test("public list filters actors without exposing Budget or redundant identity fields", async (t) => {
   const { runtime, started } = harness(t);
   const [first, second] = runtime.create({ tasks: [task("running"), task("sibling")] }).items;
   const before = runtime.listDetailed();
   assert.deepEqual(before.items.map((item) => item.status), ["running", "running"]);
   const item = before.items[0];
-  assert.equal(item.depth, 1);
+  assert.equal("depth" in item, false);
+  assert.equal("name" in item, false);
+  assert.equal("parentSocket" in item, false);
+  assert.equal("budget" in item, false);
   assert.equal(item.parentId, "Main");
-  assert.equal(item.budget.modelCalls, 0);
-  assert.equal(item.budget.phase, "normal");
-  assert.equal("profile" in item.budget, false);
+  assert.equal(started[0].request.budget.snapshot().modelCalls, 0);
   const filtered = runtime.listDetailed({ id: first.id }).items;
   assert.equal(filtered.length, 1);
   assert.equal(filtered[0].id, first.id);
   assert.equal(filtered[0].socket, item.socket);
   assert.deepEqual(filtered[0].history, item.history);
-  assert.ok(filtered[0].budget.activeTimeMs >= item.budget.activeTimeMs);
+  assert.equal("budget" in filtered[0], false);
   assert.deepEqual(runtime.listDetailed({ id: "missing" }), { items: [] });
   assert.equal(runtime.stop(second.id).status, "stopping");
   started[1].finish();
@@ -130,7 +141,64 @@ test("public list filters actors, exposes usage but not budget limits, and follo
   assert.equal(final.status, "stopped");
   assert.equal(final.socket, first.socket);
   assert.deepEqual(final.history, first.history);
-  assert.equal(final.budget.terminal.status, "cancelled");
+  assert.equal(started[0].request.budget.snapshot().terminal.status, "cancelled");
+});
+
+test("scoped list fills each group with recent stops and expands only active permitted branches", async (t) => {
+  const { runtime, started } = harness(t);
+  const create = (count, parentAgentId = null) => runtime.create({ tasks: Array.from({ length: count }, () => ({ task: "Inspect scoped list" })) }, { parentAgentId }).items;
+  const finish = async (items) => {
+    for (const item of items) started.find((handle) => handle.request.agentId === item.id).finish();
+    await Promise.all(items.map((item) => runtime.jobDone(item.id)));
+  };
+  const oldRoots = create(3);
+  const hiddenChild = create(1, oldRoots[0].id)[0];
+  for (const root of [...oldRoots].reverse()) await finish([root]);
+  const roots = create(3);
+  const children = new Map();
+  for (const root of roots) {
+    await finish(create(4, root.id));
+    await finish(create(2, root.id));
+    children.set(root.id, create(4, root.id));
+  }
+  const main = runtime.listDetailed({}, { callerId: "Main" }).items;
+  assert.equal(main.length, 17, "Main, four roots, twelve active leaves");
+  assert.deepEqual(main.filter((item) => item.parentId === "Main").map((item) => item.id), [...roots.map((item) => item.id), oldRoots[0].id]);
+  assert.equal(main.some((item) => item.id === hiddenChild.id), false, "stopped root is not expanded even with an active child");
+  assert.equal(main.filter((item) => item.parentId !== null && item.parentId !== "Main").every((item) => item.status === "running"), true);
+  const local = runtime.listDetailed({}, { callerId: roots[0].id }).items;
+  assert.equal(local.length, 9);
+  assert.deepEqual(local.filter((item) => item.parentId === roots[0].id).map((item) => item.id), children.get(roots[0].id).map((item) => item.id));
+  assert.equal(local.some((item) => item.parentId === roots[1].id), false, "peer children are not expanded");
+  assert.deepEqual(runtime.listDetailed({ id: hiddenChild.id }, { callerId: "Main" }).items, []);
+  const all = runtime.listDetailed({ all: true }, { callerId: roots[0].id }).items;
+  assert.equal(all.length, 38);
+  assert.equal(all.some((item) => item.id === hiddenChild.id), true);
+  const leaf = children.get(roots[0].id)[0];
+  assert.deepEqual(runtime.listDetailed({}, { callerId: leaf.id }).items.map((item) => item.id), [roots[0].id, ...children.get(roots[0].id).map((item) => item.id)]);
+  await finish(children.get(roots[0].id).slice(0, 2));
+  const filled = runtime.listDetailed({}, { callerId: roots[0].id }).items.filter((item) => item.parentId === roots[0].id);
+  assert.deepEqual(filled.map((item) => item.status), ["running", "running", "stopped", "stopped"]);
+  assert.equal(filled[2].id, children.get(roots[0].id)[1].id, "last actual completion wins, not creation order");
+});
+
+test("scoped stopped ordering survives registry restoration", async (t) => {
+  const { runtime, started } = harness(t);
+  const first = runtime.create({ tasks: [task("first"), task("second"), task("third"), task("fourth")] }).items;
+  for (const item of [...first].reverse()) {
+    started.find((handle) => handle.request.agentId === item.id).finish();
+    await runtime.jobDone(item.id);
+  }
+  const fifth = runtime.create({ tasks: [task("fifth")] }).items[0];
+  started.find((handle) => handle.request.agentId === fifth.id).finish();
+  await runtime.jobDone(fifth.id);
+  const { runtime: restored } = harness(t);
+  restored.restoreState(runtime.exportState());
+  assert.deepEqual(restored.listDetailed({}, { callerId: "Main" }).items.map((item) => item.id), ["Main", fifth.id, first[0].id, first[1].id, first[2].id]);
+  await runtime.sendMessage({ from: "Main", to: first[3].id, content: "Resume before interruption" });
+  const { runtime: interrupted } = harness(t);
+  interrupted.restoreState(runtime.exportState());
+  assert.deepEqual(interrupted.listDetailed({}, { callerId: "Main" }).items.map((item) => item.id), ["Main", first[3].id, fifth.id, first[0].id, first[1].id]);
 });
 
 test("public stop waits for its native exit without blocking a running sibling and is repeatable", async (t) => {
@@ -162,7 +230,7 @@ test("public actor metadata remains stable through revival while a new Job and B
   assert.equal(started[1].request.continuedFromJobId, original.id);
   assert.notEqual(started[0].request.budget, started[1].request.budget);
   const revived = runtime.listDetailed({ id: original.id }).items[0];
-  assert.equal(revived.budget.modelCalls, 0);
+  assert.equal(started[1].request.budget.snapshot().modelCalls, 0);
   assert.equal(revived.socket, original.socket);
   assert.deepEqual(revived.history, original.history);
 });

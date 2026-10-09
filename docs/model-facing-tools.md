@@ -13,14 +13,14 @@
 
 ## Subagent 的操作顺序
 
-`subagent_create`／`subagent_list`／`subagent_stop` 属于原生 `subagent` namespace，主会话默认注册但不激活；Fresh 子 Agent 的显式工具装载计划沿用原有行为。Capability 将整组作为一个候选发现并返回，选中后一起激活可直接声明的成员。Depth 2 没有 create，只包含 list／stop。
+`subagent_create`／`subagent_list`／`subagent_stop` 属于原生 `subagent` namespace，主会话默认注册但不激活；Depth 1 的 Fresh／Inherited 显式启用这些控制工具与 Capability。Capability 将整组作为一个候选发现并返回，选中后一起激活可直接声明的成员。Depth 2 只有 list 和 msg_write，没有 Capability／create／stop。
 
-共同说明保存在 namespace.instructions；激活成员后，原生提示词会去重展示同一份操作规则。`write` 只替换执行 backend，description／schema／snippet／guidelines 保持原生内容，不常驻 Subagent 通信说明。
+共同说明保存在 namespace.instructions；激活成员后，原生提示词会去重展示同一份操作规则。`write` 保留原生文件语义；独立 `msg_write` 负责 Socket 消息，所有角色均可使用。
 
 1. 用 `subagent_create` 提交独立任务；每个任务说明交付物、范围和验证要求。
 2. Fresh 不继承聊天历史，必要信息放在 `task` 或共享的 `context` 中。需要父会话快照时才用 `inheritContext: true`。
-3. 保存返回的 `id`、`socket`、`parentSocket` 和 `history` 路径。创建不会等待结果，也不会在正常完成时唤醒父 Agent。
-4. 需要进度或结果时调用 `subagent_list`，不要在紧密循环中反复查询。
+3. 保存返回的统一 `id`、`socket` 和 `history` 路径。create／list 不返回 name、depth、parentSocket 或 Budget；list 额外保留 parentId。创建不会等待结果，也不会在正常完成时唤醒父 Agent。
+4. 需要进度或结果时调用 `subagent_list`，不要在紧密循环中反复查询。默认展示直接父级、peers（含自己）及自己的 children，每组当前最多 4 个，活跃优先、最近停止的补齐。Main 还展开已展示的活跃子节点；不展开停止节点或 peer 的 children。`all: true` 展示 Main 和全部历史节点，无范围或数量筛选；`id` 只在所选范围内过滤。
 5. `stopped` 表示这一轮已结束，不表示成功；读取 `history.summary` 看结果，读取 `history.cleanJsonl` 检索完整消息。
 6. `subagent_stop` 用于取消不再需要的工作，不是收集结果的前置操作。返回 `stopping`／`finalizing` 时仍未结束。
 
@@ -39,7 +39,7 @@
 
 向直接父级发送时，path 使用子 Agent 上下文给出的 parentSocket；Depth 1 的父级是 Main，收件地址为 `/tmp/pi-subagents/<uid>/Main.sock`，不是向下广播的 main/children.sock。显式消息可唤醒空闲 Main，忙碌时原生 steer；Depth 2 向其 Depth 1 父级的 socket 投递。
 
-这是 `write` 的参数，不是普通文件内容约定：
+这是 `msg_write` 的参数，不是普通文件内容约定：
 
 - 一行一个 JSON 对象，消息文字放在 `content`。
 - 不提供 `from` 或 `to`：宿主绑定发送者，Socket 路径决定接收者。
@@ -71,7 +71,11 @@ Skill 发现默认只走 Capability；除非用户明确要求文件系统或网
 
 独立存放的 rule／preference／background 并未因此自动接入索引；返回的指导是已有资源的引用，不是新增的偏好提取结果字段。
 
-Capability 在执行前检测 Subagent namespace 的 list／stop 已注册且非 hidden，不要求成员已经 active，也不要求 Depth 2 存在 create。缺少依赖时直接返回失败，不启动内部检索、不消耗模型调用。Capability 只安装只读资源入口，write 由 Subagent 提供；不依赖扩展加载顺序。
+Capability 在执行前检测 Subagent namespace 的 list／stop 已注册且非 hidden，不要求成员已经 active，也不要求 Depth 2 存在 create。缺少依赖时直接返回失败，不启动内部检索、不消耗模型调用。Capability 只安装只读资源入口，文件 write 和 msg_write 由 Subagent 提供；不依赖扩展加载顺序。Depth 2 保留权限守卫和资源读取入口，但不注册 Capability 发现工具。
+
+子 Agent 的 tool／MCP 资格白名单受直接父级约束。父级新增可用能力向下扩展资格，不自动复制执行句柄或启用工具；只在子会话已注册时可发现与激活。角色 tools 决定原生工具范围，roles[].excludeTools 可按完整工具名额外拒绝工具（不接受 glob）；黑名单优先。白名单只增不减，Skill 不受父级工具范围限制。停止父级采用保留的工具元数据，复活后采用新会话 API，不调用旧 stale Pi ctx。
+
+搜索时移除已 active 的独立工具（包括原生和 SDK additionalTools）；namespace 仍可返回共同指导。资源 schema 读取不受“已启用”过滤影响。
 
 选中 namespace 会将可直接声明的成员一起激活；codemode／deferred 成员本来可间接调用，不额外激活。模型可见结果的 tools／mcp 只保留本次激活前尚未 active 的接口，不重复列出 read、write、codemode 等现有工具。部分成员已 active 时只列剩余成员；整组已 active 时工具列表为空，但共同 instructions 放入 guidance。Skill 和任务指导不受这项过滤影响，完整检索选择仍留在 details。Main 的工具正文不返回 match、score、reason 或 warnings；这些是宿主排序／诊断字段，不由内部 Agent 填写。内部 Agent 只提交所需资源 refs。空 bindsTo／caveats 省略，非空关联／约束指导保留。`needs_approval` 候选仍会随选中结果返回，不代表安装或执行授权，尚未实现仅通知用户的分流。
 
