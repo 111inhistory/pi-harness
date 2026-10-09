@@ -15,7 +15,7 @@
 | `work` | 保存递归工作树、当前位置和局部状态 | 执行任务、启动 Subagent、决定是否继续 |
 | `subagent` | 创建 Fresh／Inherited 子 Session；Jev 自动路由；短统一 ID；仅暴露 `subagent_create`、`subagent_list`、`subagent_stop` 原语；通过 write Unix Socket 实现单向消息投递与分层次直接子级广播（不使用笼统全局 all，严格限定为直接子级）；双轨历史（Compacted Markdown + Clean JSONL）；stop 后写 socket 自动 revive | 不与 `work` 硬绑定；不做结构化结果；blocking 与同步等待暂缓（不提供 wait 接口，直接 stop 后读历史） |
 | `protocol-io` | （已废弃干掉）原虚拟协议 URI 分发方案已移除，由 Unix Domain Socket 单向投递与双轨历史文件替代 | 不定义具体能力的语义；执行、安装、启用仍由各模块与审批决定 |
-| `capability` | 无参调用：阻塞式内部检索 Agent 继承调用方原生会话与同一物理模型（thinking low，仅 `capability_search`／`submit_result`），并行检索 Tool／MCP／Skill，并仅以 npm 元数据检索远端包；执行前要求 Subagent 扩展已加载（无需 active）；namespace 作为一个候选整组返回，选中后仅激活组内可直接声明的已注册成员 | 不执行能力，不安装、启用、下载、连接或批准第三方代码 |
+| `capability` | 无参调用：阻塞式内部检索 Agent 继承调用方原生会话与同一物理模型（兼容 Responses 保留父 thinking，其它用 low；仅两个检索工具可执行），并行检索 Tool／MCP／Skill，并仅以 npm 元数据检索远端包；执行前要求 Subagent 扩展已加载（无需 active）；namespace 作为一个候选整组返回，选中后仅激活组内可直接声明的已注册成员 | 不执行能力，不安装、启用、下载、连接或批准第三方代码 |
 | `deepseek-search` | 用户自行安装的现成互联网搜索插件 | 本项目不另写接入或安装逻辑；不负责工作状态与 Agent 调度 |
 | `shell-preflight` | 在 Shell 执行前做语法检查 | 后台进程管理、权限决策 |
 | tmux Skill | 按约定启动和观察后台进程 | 模型上下文继承、工作树更新 |
@@ -31,7 +31,7 @@
 - `shell-preflight`：识别 Pi 实际使用的 Shell，并在 `bash`、`powershell` 和用户 `!` 命令执行前调用对应解析器做语法检查。
 - `subagent` 执行切片：原子批量注册（`subagent_create`）、Fresh／Inherited 上下文、短统一 ID（Agent 与 Job 概念耦合）、两层 4×4 派生限制（不另设全局 Job 并发上限）、按深度 Job Budget、`subagent_list` 查询状态与预算、`subagent_stop` 优雅停止并落盘历史。
 - `subagent` 消息通信与双轨历史：通过适配了 Unix Socket 的 write backend 实现向子 Agent 的单向消息投递（NDJSON 报文）；支持分层次直接子级广播（不叫笼统的 `all`，严格绑定发送者的直接子级：Main 广播 Depth 1，Depth 1 广播自身的 Depth 2，不递归扩散）；向 Socket 写入自动投递给对应 Agent，仅在异常时由宿主抛出 Notification；`stop` 后向 Socket 写入自动 revive 续跑，每个 Agent 终身绑定单一固定 Socket 和单一固定的双轨历史文件（追加写入）；双轨历史直接暴露给发起者：Compacted Markdown（参考 OMP，供 LLM 消费）与 Clean JSONL（去流式碎片，供 grep/rg/jq 检索）。
-- `capability`：无参数调用，阻塞等待内部检索 Agent 的 `capability_search`／`submit_result` 三路并行检索 Tool／MCP／Skill；内部会话继承调用方原生会话条目、系统提示词与同一物理模型（thinking low），远端组仅以 npm 元数据列出未安装包；分支错误隔离，命中只带 `available`／`needs_approval`，namespace 按一个候选整组返回，选中后仅激活可直接声明的成员；执行前检测 Subagent 依赖，不要求其工具已 active。
+- `capability`：无参数调用，阻塞等待内部检索 Agent 的 `capability_search`／`submit_result` 三路并行检索 Tool／MCP／Skill；内部会话继承调用方原生会话条目、系统提示词与同一物理模型（兼容 Responses 保留父 thinking，其它用 low），远端组仅以 npm 元数据列出未安装包；分支错误隔离，命中只带 `available`／`needs_approval`，namespace 按一个候选整组返回，选中后仅激活可直接声明的成员；执行前检测 Subagent 依赖，不要求其工具已 active。
 - Pi Extension：`extensions/work.mjs`、`extensions/subagent.mjs`、`extensions/capability.mjs` 和 `extensions/shell-preflight.mjs` 分别实现；Capability 显式依赖已加载的 Subagent 扩展，但不要求 Subagent 工具默认激活。
 - `subagent` 自动路由：直接调用 Pi 内置 TypeSafe／OpenRouter 的 Jev，串行选择角色和模型，本地合成 thinking；不抽象未来分类器，也不增加 fallback 或重试。
 - `subagent` 持久化：注册表元数据写入根会话 custom entry，子对话使用 Pi 原生 JSONL 配合双轨历史落地。
@@ -64,7 +64,7 @@
 11. 自动路由是 Harness 内部的两阶段串行决策；角色与模型相互独立选择，不存在 `(model, role)` 组合预设或组合枚举。
 12. Thinking 由角色期望档位限于模型策略区间，使用 low／medium／high，自动路径不超过 high；模型实际支持档位由 Pi 最终处理。困难度反馈存于最终文本和原生历史，不另做解析、校准或自动学习。
 13. 自动路由与 Inherited Subagent 的交互（继承子代理是否重选模型或身份）未定案；当前继承语义（父模型、系统提示词、完整有效上下文）继续作为已记录行为保留。
-14. Capability 内部检索继承调用方原生会话作为阻塞式 Inherited Subagent 并运行在同一物理模型（thinking 固定 low，不改变调用方设置），并发检索并直接返回结果；调用阻塞直到内部执行结束。
+14. Capability 内部检索继承调用方原生会话作为阻塞式 Inherited Subagent 并运行在同一物理模型（兼容 Responses 保留父 thinking，其它用 low，不改变调用方设置），并发检索并直接返回结果；调用阻塞直到内部执行结束。
 15. 原生 `write` 工具通过更换 write backend 适配 Unix Domain Socket，使得向受管理的 `.sock` 写入能直接单向投递带真实发送者的 NDJSON；广播还须校验发送者与端点所属父节点一致。非 Subagent Socket 仅按原内容单向写入（缺少末尾换行时补齐），不注入 Agent 字段、不按同名 Agent 状态拒绝、不触发 Agent 生命周期。端点归属依据宿主注册表及实际路径，而非文件后缀或 basename。每个 Agent 终身绑定唯一的 Socket 与唯一一对双轨历史文件，stop 后写 socket 自动 revive 续跑并追加历史，严格杜绝 socket 泄漏与多重历史文件碎片化。
 
 ## 暂未决定

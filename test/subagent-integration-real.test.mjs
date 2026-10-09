@@ -32,6 +32,11 @@ async function scenario(t, name) {
 }
 
 for (const [name, description] of [
+  ["reviewer-sol", "role-local singleton reviewer pool selects native Sol with high effort and only one Jev classification"],
+  ["package-skills", "Capability searches and reads native package and CLI Skills while respecting filters and invocation flags"],
+  ["package-skills-cold", "Capability finds installed package Skills without symlinks, loaded Skills or command entries"],
+  ["responses-prefix", "Responses Capability retains its declaration prefix, blocks inherited execution and returns compact interfaces"],
+  ["responses-only", "Codemode-only Responses retain Capability interfaces when direct declarations are hidden"],
   ["surface", "inactive Subagent surface, explicit activation, atomic validation and native file/socket write"],
   ["namespace", "Capability discovers one Subagent namespace and activates all members while preserving native write prompts and Socket backend"],
   ["namespace-reverse", "Subagent and Capability compose in the reverse extension load order"],
@@ -39,6 +44,10 @@ for (const [name, description] of [
   ["capability-missing", "missing Subagent dependency fails before any internal model request"],
   ["external-socket", "native write to a non-Subagent socket preserves payload and cannot affect a same-named stopping Agent"],
   // These sender regressions exercise the newly revised contract, not a claimed implementation fix.
+  ["upstream-main", "native child write reaches Main's receiving socket and wakes Main with the real sender"],
+  ["upstream-main-steer", "child-to-Main delivery steers a busy root without starting a concurrent turn"],
+  ["upstream-main-reload", "Main receiving endpoint is rebuilt after reload and a revived child can deliver upstream"],
+  ["upstream-parent", "Depth 2 write reaches and revives only its direct parent, preserving the leaf sender"],
   ["sender-wire", "native child write identifies its owner in the outbound NDJSON"],
   ["sender-context", "the receiver preserves a native child sender rather than relabeling it as Main"],
   ["sender-reserved", "managed socket write rejects caller-supplied sender identity"],

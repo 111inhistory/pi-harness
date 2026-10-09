@@ -76,7 +76,8 @@ export const CAPABILITY_TOOL_DESCRIPTION =
   "Find reusable skills and task guidance alongside tools and MCP capabilities for the current task. " +
   "Uses this conversation; no arguments. Returns relevant refs and availability, including uninstalled package candidates. " +
   "A namespace is one candidate with its tools and shared instructions. " +
-  "May activate selected tools already registered in this session, but never installs packages or executes capabilities.";
+  "May activate selected tools already registered in this session, but never installs packages or executes capabilities. " +
+  "For Skill discovery, use capability rather than manual filesystem or web searches unless the user explicitly requests those search methods.";
 
 /**
  * Model-visible schema of the public tool. Empty on purpose: the request is the

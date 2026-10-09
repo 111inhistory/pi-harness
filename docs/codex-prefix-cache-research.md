@@ -94,7 +94,9 @@
 
 因此之前“加入 active 一定导致全量 cache miss”的说法不成立。不过 Codemode 已可间接调用的工具，没有必要为了执行而额外直接激活。
 
-Capability 内部会话还会改变工具集合并固定 thinking low；它是否能复用主会话长前缀，必须比较实际 provider payload，不能只依据“继承历史、使用同一物理模型”推断。当前 SDK 会给其独立会话分配 Session ID，缓存核算／路由也应一并检查。
+调查时 Capability 内部会话会缩减工具集合并固定 thinking low。后续已实现兼容 Responses 的请求投影：保留父工具声明但阻止执行、追加两个检索接口、沿用父 thinking；Main 的停用／重新启用及 Codemode 描述变化也不再触发非增量 tools 回退，并精简 Capability 重复接口描述。详见 [模型工具说明](model-facing-tools.md#responses-增量声明与返回精简)。
+
+这些改动只验证了离线请求结构，不证明实际缓存命中。内部会话仍使用独立 Session ID；缓存核算／路由与真实 usage 需要继续检查，不能仅凭同一模型和历史继承推断共享缓存。
 
 ## 建议的最小策略
 

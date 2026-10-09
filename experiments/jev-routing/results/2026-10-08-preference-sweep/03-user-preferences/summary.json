@@ -1,0 +1,55 @@
+{
+  "rawCases": 472,
+  "excludedCases": 199,
+  "totalCases": 273,
+  "baselineModels": {
+    "gemini": 5,
+    "deepseek": 183,
+    "sol": 85
+  },
+  "changedModels": 6,
+  "attempted": 273,
+  "completed": 273,
+  "errors": 0,
+  "roleMatches": 38,
+  "labeledCases": 43,
+  "roleMismatches": [
+    {
+      "id": "benchmark_12_emitterprotocol",
+      "expected": "executor",
+      "actual": "researcher"
+    },
+    {
+      "id": "benchmark_15_irlightreview",
+      "expected": "executor",
+      "actual": "reviewer"
+    },
+    {
+      "id": "benchmark_16_coredaemonaudit",
+      "expected": "executor",
+      "actual": "reviewer"
+    },
+    {
+      "id": "en_17_verifynonestedagentapi",
+      "expected": "researcher",
+      "actual": "reviewer"
+    },
+    {
+      "id": "en_18_verifyextraexamples",
+      "expected": "researcher",
+      "actual": "reviewer"
+    }
+  ],
+  "selectedModels": {
+    "gemini": 3,
+    "deepseek": 185,
+    "sol": 85
+  },
+  "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+  "sampleSize": 20,
+  "newApiRequests": 188,
+  "reusedRoleResponses": 273,
+  "apiRequests": 461,
+  "additionalCostUsd": 0.010337880000000006,
+  "output": "/tmp/pi-jev-user-preference-check"
+}

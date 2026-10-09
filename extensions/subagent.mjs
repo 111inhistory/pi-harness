@@ -53,6 +53,7 @@ const SUBAGENT_NAMESPACE = Object.freeze({
     "Each parent can have four active children, with two child levels. Normal completion does not wake you; use subagent_list and read history.summary for the outcome or history.cleanJsonl for full messages.",
     "running includes initialization; stopping waits for execution exit; finalizing writes history; stopped means ended, not necessarily succeeded. Use subagent_stop only to cancel unwanted work.",
     'To send a message, use write with the returned socket path and one JSON object per line: {"content":"Please check the tests"}, ending with a newline. This is an exception to write\'s file-only guidance. The host binds the sender; omit from and to.',
+    "To contact your direct parent, write the same NDJSON to your parentSocket (also stated in your agent context). Main's receiving socket is distinct from main/children.sock; the latter only broadcasts downward.",
     "A successful write is not a task result. Writing to a stopped agent starts a new run; wait for stopped before messaging an agent that is stopping or finalizing.",
     "Your children.sock endpoint broadcasts only to your direct children, never recursively. Query progress when needed, not in a tight loop.",
   ].join("\n"),
@@ -348,6 +349,7 @@ function restoreService(service, ctx) {
   }
   if (checkpoint === null) {
     service.ready = true;
+    ensureAgentSocketServer(service, "Main");
     return;
   }
   let hydrated;
@@ -401,6 +403,7 @@ function restoreService(service, ctx) {
   service.ready = true;
   // Re-establish sockets for all restored agents and hierarchical broadcast
   try {
+    ensureAgentSocketServer(service, "Main");
     const list = service.runtime.list();
     const parentsWithChildren = new Set();
     for (const agent of list.agents) {
@@ -851,9 +854,12 @@ function createTool(pi, resolveService, { allowInherited, parentAgentId, depth }
     defaultActive: false,
     label: "Create Subagent",
     description:
-      "Create independent background agents. Returns each agent's id, status, socket, and history paths; does not wait for results.",
+      "Create independent background agents. Returns each agent's id, status, socket, parentSocket, and history paths; does not wait for results.",
     promptSnippet: "Delegate independent tasks to background agents",
-    promptGuidelines: SUBAGENT_NAMESPACE.instructions.split("\n"),
+    promptGuidelines: [
+      ...SUBAGENT_NAMESPACE.instructions.split("\n"),
+      "Write requirements for subagents primarily in English.",
+    ],
     parameters: taskParameters,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const service = await resolveService(ctx);
@@ -889,7 +895,7 @@ function listTool(resolveService) {
     defaultActive: false,
     label: "List Subagents",
     description:
-      "List agent status, budget usage, socket, and history paths. Optionally filter by id. Does not wait for completion.",
+      "List agent status, budget usage, socket, parentSocket, and history paths. Optionally filter by id. Does not wait for completion.",
     promptSnippet: "Check background agent progress and history paths",
     promptGuidelines: SUBAGENT_NAMESPACE.instructions.split("\n"),
     parameters: listParameters,
@@ -1207,6 +1213,7 @@ function startPiJob(service, request) {
       }
       const routed = await routeSubagent({
         registry: service.modelRegistry,
+        configPath: join(service.controller.agentDir, "subagent-routing.json"),
         task: typeof routingSpec?.task === "string" ? routingSpec.task : "",
         context: typeof routingSpec?.context === "string" ? routingSpec.context : "",
         signal: abort.signal,
@@ -1286,7 +1293,10 @@ function startPiJob(service, request) {
       // An Inherited child keeps the parent's system prompt; a Fresh child keeps
       // Pi's own prompt and appends the routed role's full instructions.
       ...(systemPrompt !== null ? { systemPrompt } : {}),
-      ...(roleInstructions !== null ? { appendSystemPrompt: [roleInstructions] } : {}),
+      appendSystemPrompt: [
+        ...(roleInstructions !== null ? [roleInstructions] : []),
+        `You are Subagent ${request.agentId}. Your direct parent is ${request.origin?.agentId ?? "Main"}. To message that parent, use write with parentSocket ${getAgentSocketPath(request.origin?.agentId ?? "Main", service.socketDir)} and NDJSON {"content":"your message"} followed by a newline; omit from and to. This explicitly delivers a message, not an automatic completion notification.`,
+      ],
     });
     await resourceLoader.reload();
     throwIfBudgetFailed(request.budget);

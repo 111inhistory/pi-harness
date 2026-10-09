@@ -65,7 +65,7 @@ test("public create returns only deferred metadata in input order, with stable s
   assert.deepEqual(response, { items: ["TaskA", "TaskB"].map((name, index) => {
     const id = `sub_0${index + 1}`;
     const history = getSubagentHistoryPaths(id);
-    return { id, name, status: "running", socket: getAgentSocketPath(id), history: { summary: history.summary, cleanJsonl: history.cleanJsonl } };
+    return { id, name, status: "running", socket: getAgentSocketPath(id), parentSocket: getAgentSocketPath("Main"), history: { summary: history.summary, cleanJsonl: history.cleanJsonl } };
   }) });
   for (const item of response.items) {
     for (const removed of ["agentId", "jobId", "delivery", "result", "resultRef", "historyRef"]) assert.equal(removed in item, false);

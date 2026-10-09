@@ -1,0 +1,1002 @@
+{
+  "formula": "Han characters U+4E00..U+9FFF / all Unicode codepoints of the full delegated_assignment; exclude >= 0.2",
+  "raw": 472,
+  "valid": 273,
+  "excluded": [
+    {
+      "dataset": "omp_subagent_benchmark_cases.json",
+      "id": "benchmark_01_persistkrkrzfix",
+      "chineseRatio": 0.26976744186046514
+    },
+    {
+      "dataset": "omp_subagent_benchmark_cases.json",
+      "id": "benchmark_02_dailyntfsinventory",
+      "chineseRatio": 0.2685810810810811
+    },
+    {
+      "dataset": "omp_subagent_benchmark_cases.json",
+      "id": "benchmark_03_dailykrkrscan",
+      "chineseRatio": 0.3110773899848255
+    },
+    {
+      "dataset": "omp_subagent_benchmark_cases.json",
+      "id": "benchmark_04_steamkrkrmemory",
+      "chineseRatio": 0.20906113537117904
+    },
+    {
+      "dataset": "omp_subagent_benchmark_cases.json",
+      "id": "benchmark_05_manosabamediascan",
+      "chineseRatio": 0.3062605752961083
+    },
+    {
+      "dataset": "omp_subagent_benchmark_cases.json",
+      "id": "benchmark_06_locallutris",
+      "chineseRatio": 0.4040590405904059
+    },
+    {
+      "dataset": "omp_subagent_benchmark_cases.json",
+      "id": "benchmark_07_localshadertrace",
+      "chineseRatio": 0.4717607973421927
+    },
+    {
+      "dataset": "omp_subagent_benchmark_cases.json",
+      "id": "benchmark_08_libmpvrenderrepro",
+      "chineseRatio": 0.246309963099631
+    },
+    {
+      "dataset": "omp_subagent_benchmark_cases.json",
+      "id": "benchmark_09_promptmechanismscout",
+      "chineseRatio": 0.45454545454545453
+    },
+    {
+      "dataset": "omp_subagent_benchmark_cases.json",
+      "id": "benchmark_10_persistompconfig",
+      "chineseRatio": 0.3832258064516129
+    },
+    {
+      "dataset": "omp_subagent_benchmark_cases.json",
+      "id": "benchmark_11_updatedefaultpromemo",
+      "chineseRatio": 0.3052434456928839
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0001",
+      "chineseRatio": 0.26976744186046514
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0002",
+      "chineseRatio": 0.2685810810810811
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0003",
+      "chineseRatio": 0.27319587628865977
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0004",
+      "chineseRatio": 0.22594142259414227
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0005",
+      "chineseRatio": 0.3110773899848255
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0006",
+      "chineseRatio": 0.3241935483870968
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0007",
+      "chineseRatio": 0.2958152958152958
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0008",
+      "chineseRatio": 0.20906113537117904
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0009",
+      "chineseRatio": 0.3062605752961083
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0010",
+      "chineseRatio": 0.25287356321839083
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0011",
+      "chineseRatio": 0.4040590405904059
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0012",
+      "chineseRatio": 0.3867735470941884
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0013",
+      "chineseRatio": 0.3584905660377358
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0014",
+      "chineseRatio": 0.4717607973421927
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0015",
+      "chineseRatio": 0.43521594684385384
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0016",
+      "chineseRatio": 0.246309963099631
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0017",
+      "chineseRatio": 0.24300867888138863
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0019",
+      "chineseRatio": 0.45454545454545453
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0020",
+      "chineseRatio": 0.3832258064516129
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0021",
+      "chineseRatio": 0.3052434456928839
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0032",
+      "chineseRatio": 0.2696774193548387
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0033",
+      "chineseRatio": 0.373134328358209
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0034",
+      "chineseRatio": 0.35628227194492257
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0035",
+      "chineseRatio": 0.24724919093851133
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0037",
+      "chineseRatio": 0.36489151873767256
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0038",
+      "chineseRatio": 0.35714285714285715
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0039",
+      "chineseRatio": 0.35655737704918034
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0040",
+      "chineseRatio": 0.23269012485811577
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0041",
+      "chineseRatio": 0.26380368098159507
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0042",
+      "chineseRatio": 0.24033816425120774
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0043",
+      "chineseRatio": 0.2839248434237996
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0044",
+      "chineseRatio": 0.2967741935483871
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0045",
+      "chineseRatio": 0.32954545454545453
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0046",
+      "chineseRatio": 0.2028811524609844
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0047",
+      "chineseRatio": 0.20336943441636582
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0048",
+      "chineseRatio": 0.203125
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0049",
+      "chineseRatio": 0.20738974970202623
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0050",
+      "chineseRatio": 0.2028811524609844
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0051",
+      "chineseRatio": 0.33586626139817627
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0066",
+      "chineseRatio": 0.40198511166253104
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0067",
+      "chineseRatio": 0.45925925925925926
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0068",
+      "chineseRatio": 0.3540587219343696
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0069",
+      "chineseRatio": 0.40080160320641284
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0070",
+      "chineseRatio": 0.2976190476190476
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0071",
+      "chineseRatio": 0.3151515151515151
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0072",
+      "chineseRatio": 0.3225225225225225
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0073",
+      "chineseRatio": 0.3375
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0081",
+      "chineseRatio": 0.5493197278911565
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0082",
+      "chineseRatio": 0.56
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0083",
+      "chineseRatio": 0.5610200364298725
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0084",
+      "chineseRatio": 0.5533807829181495
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0085",
+      "chineseRatio": 0.5242070116861436
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0086",
+      "chineseRatio": 0.4379746835443038
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0087",
+      "chineseRatio": 0.49382716049382713
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0088",
+      "chineseRatio": 0.48548812664907653
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0089",
+      "chineseRatio": 0.4661016949152542
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0090",
+      "chineseRatio": 0.41089108910891087
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0091",
+      "chineseRatio": 0.45027624309392267
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0092",
+      "chineseRatio": 0.38767395626242546
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0093",
+      "chineseRatio": 0.4436781609195402
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0094",
+      "chineseRatio": 0.3967611336032389
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0095",
+      "chineseRatio": 0.4673469387755102
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0096",
+      "chineseRatio": 0.324577861163227
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0097",
+      "chineseRatio": 0.41119221411192214
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0098",
+      "chineseRatio": 0.4689922480620155
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0099",
+      "chineseRatio": 0.40217391304347827
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0100",
+      "chineseRatio": 0.3304042179261863
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0101",
+      "chineseRatio": 0.28851963746223563
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0102",
+      "chineseRatio": 0.31362007168458783
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0103",
+      "chineseRatio": 0.28264462809917357
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0104",
+      "chineseRatio": 0.3170731707317073
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0105",
+      "chineseRatio": 0.31844660194174756
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0106",
+      "chineseRatio": 0.23909774436090225
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0107",
+      "chineseRatio": 0.23055162659123055
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0108",
+      "chineseRatio": 0.2341678939617084
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0109",
+      "chineseRatio": 0.23636363636363636
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0110",
+      "chineseRatio": 0.24329501915708812
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0111",
+      "chineseRatio": 0.22115384615384615
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0112",
+      "chineseRatio": 0.22676579925650558
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0114",
+      "chineseRatio": 0.20132450331125828
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0115",
+      "chineseRatio": 0.2837301587301587
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0116",
+      "chineseRatio": 0.312621359223301
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0117",
+      "chineseRatio": 0.34080717488789236
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0118",
+      "chineseRatio": 0.3717948717948718
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0119",
+      "chineseRatio": 0.3721461187214612
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0120",
+      "chineseRatio": 0.3187855787476281
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0121",
+      "chineseRatio": 0.2619047619047619
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0122",
+      "chineseRatio": 0.30619469026548674
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0123",
+      "chineseRatio": 0.4196242171189979
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0124",
+      "chineseRatio": 0.2896440129449838
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0125",
+      "chineseRatio": 0.43621399176954734
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0126",
+      "chineseRatio": 0.34813084112149534
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0127",
+      "chineseRatio": 0.3453389830508475
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0128",
+      "chineseRatio": 0.2807017543859649
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0129",
+      "chineseRatio": 0.32323232323232326
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0130",
+      "chineseRatio": 0.30267558528428096
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0131",
+      "chineseRatio": 0.342443729903537
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0132",
+      "chineseRatio": 0.22816166883963493
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0133",
+      "chineseRatio": 0.2332155477031802
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0134",
+      "chineseRatio": 0.22652582159624413
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0135",
+      "chineseRatio": 0.2725806451612903
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0136",
+      "chineseRatio": 0.246875
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0137",
+      "chineseRatio": 0.238204833141542
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0138",
+      "chineseRatio": 0.23473365093113902
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0139",
+      "chineseRatio": 0.23926116838487974
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0157",
+      "chineseRatio": 0.43902439024390244
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0158",
+      "chineseRatio": 0.3780687397708674
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0159",
+      "chineseRatio": 0.3980952380952381
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0160",
+      "chineseRatio": 0.425414364640884
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0161",
+      "chineseRatio": 0.41648106904231624
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0162",
+      "chineseRatio": 0.518595041322314
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0163",
+      "chineseRatio": 0.49404761904761907
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0164",
+      "chineseRatio": 0.5322997416020672
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0165",
+      "chineseRatio": 0.519280205655527
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0166",
+      "chineseRatio": 0.26308345120226306
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0167",
+      "chineseRatio": 0.21252796420581654
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0168",
+      "chineseRatio": 0.37596302003081666
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0169",
+      "chineseRatio": 0.3515509601181684
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0170",
+      "chineseRatio": 0.36801242236024845
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0171",
+      "chineseRatio": 0.38353765323992994
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0172",
+      "chineseRatio": 0.33182503770739064
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0173",
+      "chineseRatio": 0.3394648829431438
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0174",
+      "chineseRatio": 0.3510791366906475
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0175",
+      "chineseRatio": 0.2349056603773585
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0176",
+      "chineseRatio": 0.2463768115942029
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0182",
+      "chineseRatio": 0.4927536231884058
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0183",
+      "chineseRatio": 0.27114093959731544
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0184",
+      "chineseRatio": 0.4510135135135135
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0185",
+      "chineseRatio": 0.38461538461538464
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0186",
+      "chineseRatio": 0.30599755201958384
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0187",
+      "chineseRatio": 0.4790174002047083
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0188",
+      "chineseRatio": 0.5030084235860409
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0189",
+      "chineseRatio": 0.4532293986636971
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0190",
+      "chineseRatio": 0.5005834305717619
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0191",
+      "chineseRatio": 0.4081145584725537
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0192",
+      "chineseRatio": 0.291196388261851
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0193",
+      "chineseRatio": 0.2952586206896552
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0194",
+      "chineseRatio": 0.4533582089552239
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0195",
+      "chineseRatio": 0.4099264705882353
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0196",
+      "chineseRatio": 0.4224299065420561
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0197",
+      "chineseRatio": 0.3442622950819672
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0198",
+      "chineseRatio": 0.46567164179104475
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0199",
+      "chineseRatio": 0.42394822006472493
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0200",
+      "chineseRatio": 0.4184873949579832
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0201",
+      "chineseRatio": 0.4973913043478261
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0240",
+      "chineseRatio": 0.46511627906976744
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0241",
+      "chineseRatio": 0.5122549019607843
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0273",
+      "chineseRatio": 0.25437743190661477
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0274",
+      "chineseRatio": 0.2776255707762557
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0275",
+      "chineseRatio": 0.3198090692124105
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0276",
+      "chineseRatio": 0.42113564668769715
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0277",
+      "chineseRatio": 0.4554294975688817
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0278",
+      "chineseRatio": 0.26344676180021953
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0279",
+      "chineseRatio": 0.24074074074074073
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0294",
+      "chineseRatio": 0.25142606406318563
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0295",
+      "chineseRatio": 0.2412280701754386
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0303",
+      "chineseRatio": 0.2318969346956908
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0304",
+      "chineseRatio": 0.23349514563106796
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0305",
+      "chineseRatio": 0.2400354295837024
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0306",
+      "chineseRatio": 0.29248366013071897
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0307",
+      "chineseRatio": 0.30698234349919745
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0308",
+      "chineseRatio": 0.2876794258373206
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0321",
+      "chineseRatio": 0.417607223476298
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0322",
+      "chineseRatio": 0.5973154362416108
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0323",
+      "chineseRatio": 0.5560747663551402
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0324",
+      "chineseRatio": 0.573394495412844
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0335",
+      "chineseRatio": 0.27882599580712786
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0338",
+      "chineseRatio": 0.23764906303236796
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0339",
+      "chineseRatio": 0.2484545186929644
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0340",
+      "chineseRatio": 0.33346955455659993
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0341",
+      "chineseRatio": 0.22535885167464115
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0342",
+      "chineseRatio": 0.2150359314538419
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0343",
+      "chineseRatio": 0.22634920634920636
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0344",
+      "chineseRatio": 0.2597864768683274
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0373",
+      "chineseRatio": 0.26820546163849157
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0374",
+      "chineseRatio": 0.389937106918239
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0375",
+      "chineseRatio": 0.389937106918239
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0377",
+      "chineseRatio": 0.2222222222222222
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0378",
+      "chineseRatio": 0.32297447280799113
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0379",
+      "chineseRatio": 0.3155893536121673
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0380",
+      "chineseRatio": 0.27419354838709675
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0381",
+      "chineseRatio": 0.24585477415666096
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0405",
+      "chineseRatio": 0.2301051051051051
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0406",
+      "chineseRatio": 0.32193877551020406
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0407",
+      "chineseRatio": 0.29918864097363085
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0412",
+      "chineseRatio": 0.41632088520055327
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0413",
+      "chineseRatio": 0.3710691823899371
+    },
+    {
+      "dataset": "omp_subagent_prompts_all.json",
+      "id": "omp_subtask_0414",
+      "chineseRatio": 0.3798076923076923
+    }
+  ]
+}

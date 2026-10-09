@@ -1,0 +1,2052 @@
+{
+  "formatVersion": 1,
+  "date": "2026-10-08",
+  "runs": [
+    {
+      "directory": "00-all-cases",
+      "label": "Initial unfiltered baseline",
+      "summary": {
+        "totalCases": 472,
+        "attempted": 472,
+        "completed": 472,
+        "errors": 0,
+        "roleMatches": 44,
+        "labeledCases": 54,
+        "roleMismatches": [
+          {
+            "id": "benchmark_02_dailyntfsinventory",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_06_locallutris",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_08_libmpvrenderrepro",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_10_persistompconfig",
+            "expected": "researcher",
+            "actual": "executor"
+          },
+          {
+            "id": "benchmark_11_updatedefaultpromemo",
+            "expected": "researcher",
+            "actual": "executor"
+          },
+          {
+            "id": "benchmark_12_emitterprotocol",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_15_irlightreview",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "benchmark_16_coredaemonaudit",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_17_verifynonestedagentapi",
+            "expected": "researcher",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_18_verifyextraexamples",
+            "expected": "researcher",
+            "actual": "reviewer"
+          }
+        ],
+        "selectedModels": {
+          "gemini": 9,
+          "deepseek": 358,
+          "sol": 105
+        },
+        "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+        "sampleSize": 20,
+        "newApiRequests": 367,
+        "reusedRoleResponses": 472,
+        "apiRequests": 839,
+        "costUsd": 0.056637125999999996,
+        "output": "/tmp/pi-current-jev-results"
+      },
+      "successfulRoleModels": {
+        "researcher": {
+          "gemini": 5,
+          "deepseek": 239,
+          "sol": 0
+        },
+        "executor": {
+          "gemini": 4,
+          "deepseek": 119,
+          "sol": 0
+        },
+        "reviewer": {
+          "gemini": 0,
+          "deepseek": 0,
+          "sol": 105
+        }
+      }
+    },
+    {
+      "directory": "01-language-filtered",
+      "label": "Language-filtered preference correction",
+      "summary": {
+        "rawCases": 472,
+        "excludedCases": 199,
+        "totalCases": 273,
+        "baselineModels": {
+          "gemini": 2,
+          "deepseek": 186,
+          "sol": 85
+        },
+        "changedModels": 54,
+        "attempted": 273,
+        "completed": 273,
+        "errors": 0,
+        "roleMatches": 38,
+        "labeledCases": 43,
+        "roleMismatches": [
+          {
+            "id": "benchmark_12_emitterprotocol",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_15_irlightreview",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "benchmark_16_coredaemonaudit",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_17_verifynonestedagentapi",
+            "expected": "researcher",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_18_verifyextraexamples",
+            "expected": "researcher",
+            "actual": "reviewer"
+          }
+        ],
+        "selectedModels": {
+          "gemini": 56,
+          "deepseek": 132,
+          "sol": 85
+        },
+        "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+        "sampleSize": 20,
+        "newApiRequests": 188,
+        "reusedRoleResponses": 273,
+        "apiRequests": 461,
+        "additionalCostUsd": 0.010756367999999995,
+        "output": "/tmp/pi-jev-english-tuned"
+      },
+      "successfulRoleModels": {
+        "researcher": {
+          "gemini": 52,
+          "deepseek": 64,
+          "sol": 0
+        },
+        "executor": {
+          "gemini": 4,
+          "deepseek": 68,
+          "sol": 0
+        },
+        "reviewer": {
+          "gemini": 0,
+          "deepseek": 0,
+          "sol": 85
+        }
+      }
+    },
+    {
+      "directory": "02-scope",
+      "label": "Broad reasoning scope",
+      "summary": {
+        "rawCases": 472,
+        "excludedCases": 199,
+        "totalCases": 273,
+        "baselineModels": {
+          "gemini": 56,
+          "deepseek": 132,
+          "sol": 85
+        },
+        "changedModels": 51,
+        "attempted": 273,
+        "completed": 273,
+        "errors": 0,
+        "roleMatches": 38,
+        "labeledCases": 43,
+        "roleMismatches": [
+          {
+            "id": "benchmark_12_emitterprotocol",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_15_irlightreview",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "benchmark_16_coredaemonaudit",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_17_verifynonestedagentapi",
+            "expected": "researcher",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_18_verifyextraexamples",
+            "expected": "researcher",
+            "actual": "reviewer"
+          }
+        ],
+        "selectedModels": {
+          "gemini": 5,
+          "deepseek": 183,
+          "sol": 85
+        },
+        "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+        "sampleSize": 20,
+        "newApiRequests": 188,
+        "reusedRoleResponses": 273,
+        "apiRequests": 461,
+        "additionalCostUsd": 0.010835328,
+        "output": "/tmp/pi-jev-scope-check"
+      },
+      "successfulRoleModels": {
+        "researcher": {
+          "gemini": 4,
+          "deepseek": 112,
+          "sol": 0
+        },
+        "executor": {
+          "gemini": 1,
+          "deepseek": 71,
+          "sol": 0
+        },
+        "reviewer": {
+          "gemini": 0,
+          "deepseek": 0,
+          "sol": 85
+        }
+      }
+    },
+    {
+      "directory": "03-user-preferences",
+      "label": "User preference revision",
+      "summary": {
+        "rawCases": 472,
+        "excludedCases": 199,
+        "totalCases": 273,
+        "baselineModels": {
+          "gemini": 5,
+          "deepseek": 183,
+          "sol": 85
+        },
+        "changedModels": 6,
+        "attempted": 273,
+        "completed": 273,
+        "errors": 0,
+        "roleMatches": 38,
+        "labeledCases": 43,
+        "roleMismatches": [
+          {
+            "id": "benchmark_12_emitterprotocol",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_15_irlightreview",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "benchmark_16_coredaemonaudit",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_17_verifynonestedagentapi",
+            "expected": "researcher",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_18_verifyextraexamples",
+            "expected": "researcher",
+            "actual": "reviewer"
+          }
+        ],
+        "selectedModels": {
+          "gemini": 3,
+          "deepseek": 185,
+          "sol": 85
+        },
+        "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+        "sampleSize": 20,
+        "newApiRequests": 188,
+        "reusedRoleResponses": 273,
+        "apiRequests": 461,
+        "additionalCostUsd": 0.010337880000000006,
+        "output": "/tmp/pi-jev-user-preference-check"
+      },
+      "successfulRoleModels": {
+        "researcher": {
+          "gemini": 0,
+          "deepseek": 116,
+          "sol": 0
+        },
+        "executor": {
+          "gemini": 3,
+          "deepseek": 69,
+          "sol": 0
+        },
+        "reviewer": {
+          "gemini": 0,
+          "deepseek": 0,
+          "sol": 85
+        }
+      }
+    },
+    {
+      "directory": "04-text-preference",
+      "label": "Text preference revision",
+      "summary": {
+        "rawCases": 472,
+        "excludedCases": 199,
+        "totalCases": 273,
+        "baselineModels": {
+          "gemini": 3,
+          "deepseek": 185,
+          "sol": 85
+        },
+        "changedModels": 2,
+        "attempted": 273,
+        "completed": 273,
+        "errors": 0,
+        "roleMatches": 38,
+        "labeledCases": 43,
+        "roleMismatches": [
+          {
+            "id": "benchmark_12_emitterprotocol",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_15_irlightreview",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "benchmark_16_coredaemonaudit",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_17_verifynonestedagentapi",
+            "expected": "researcher",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_18_verifyextraexamples",
+            "expected": "researcher",
+            "actual": "reviewer"
+          }
+        ],
+        "selectedModels": {
+          "gemini": 3,
+          "deepseek": 185,
+          "sol": 85
+        },
+        "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+        "sampleSize": 20,
+        "newApiRequests": 188,
+        "reusedRoleResponses": 273,
+        "apiRequests": 461,
+        "additionalCostUsd": 0.010440527999999996,
+        "output": "/tmp/pi-jev-user-preference-check-2"
+      },
+      "successfulRoleModels": {
+        "researcher": {
+          "gemini": 0,
+          "deepseek": 116,
+          "sol": 0
+        },
+        "executor": {
+          "gemini": 3,
+          "deepseek": 69,
+          "sol": 0
+        },
+        "reviewer": {
+          "gemini": 0,
+          "deepseek": 0,
+          "sol": 85
+        }
+      }
+    },
+    {
+      "directory": "05-no-hallucination-comparison",
+      "label": "Removed hallucination comparisons",
+      "summary": {
+        "rawCases": 472,
+        "excludedCases": 199,
+        "totalCases": 273,
+        "baselineModels": {
+          "gemini": 3,
+          "deepseek": 185,
+          "sol": 85
+        },
+        "changedModels": 34,
+        "attempted": 273,
+        "completed": 273,
+        "errors": 0,
+        "roleMatches": 38,
+        "labeledCases": 43,
+        "roleMismatches": [
+          {
+            "id": "benchmark_12_emitterprotocol",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_15_irlightreview",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "benchmark_16_coredaemonaudit",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_17_verifynonestedagentapi",
+            "expected": "researcher",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_18_verifyextraexamples",
+            "expected": "researcher",
+            "actual": "reviewer"
+          }
+        ],
+        "selectedModels": {
+          "gemini": 37,
+          "deepseek": 151,
+          "sol": 85
+        },
+        "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+        "sampleSize": 20,
+        "newApiRequests": 188,
+        "reusedRoleResponses": 273,
+        "apiRequests": 461,
+        "additionalCostUsd": 0.009982560000000001,
+        "output": "/tmp/pi-jev-user-preference-check-3"
+      },
+      "successfulRoleModels": {
+        "researcher": {
+          "gemini": 15,
+          "deepseek": 101,
+          "sol": 0
+        },
+        "executor": {
+          "gemini": 22,
+          "deepseek": 50,
+          "sol": 0
+        },
+        "reviewer": {
+          "gemini": 0,
+          "deepseek": 0,
+          "sol": 85
+        }
+      }
+    },
+    {
+      "directory": "06-common-vs-deep",
+      "label": "Common versus deep investigation",
+      "summary": {
+        "rawCases": 472,
+        "excludedCases": 199,
+        "totalCases": 273,
+        "baselineModels": {
+          "gemini": 37,
+          "deepseek": 151,
+          "sol": 85
+        },
+        "changedModels": 14,
+        "attempted": 273,
+        "completed": 273,
+        "errors": 0,
+        "roleMatches": 38,
+        "labeledCases": 43,
+        "roleMismatches": [
+          {
+            "id": "benchmark_12_emitterprotocol",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_15_irlightreview",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "benchmark_16_coredaemonaudit",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_17_verifynonestedagentapi",
+            "expected": "researcher",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_18_verifyextraexamples",
+            "expected": "researcher",
+            "actual": "reviewer"
+          }
+        ],
+        "selectedModels": {
+          "gemini": 23,
+          "deepseek": 165,
+          "sol": 85
+        },
+        "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+        "sampleSize": 20,
+        "newApiRequests": 188,
+        "reusedRoleResponses": 273,
+        "apiRequests": 461,
+        "additionalCostUsd": 0.009879912000000001,
+        "output": "/tmp/pi-jev-user-preference-check-4"
+      },
+      "successfulRoleModels": {
+        "researcher": {
+          "gemini": 6,
+          "deepseek": 110,
+          "sol": 0
+        },
+        "executor": {
+          "gemini": 17,
+          "deepseek": 55,
+          "sol": 0
+        },
+        "reviewer": {
+          "gemini": 0,
+          "deepseek": 0,
+          "sol": 85
+        }
+      }
+    },
+    {
+      "directory": "07-no-ds-investigation",
+      "label": "Removed DS investigation advantage",
+      "summary": {
+        "rawCases": 472,
+        "excludedCases": 199,
+        "totalCases": 273,
+        "baselineModels": {
+          "gemini": 23,
+          "deepseek": 165,
+          "sol": 85
+        },
+        "changedModels": 115,
+        "attempted": 273,
+        "completed": 273,
+        "errors": 0,
+        "roleMatches": 38,
+        "labeledCases": 43,
+        "roleMismatches": [
+          {
+            "id": "benchmark_12_emitterprotocol",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_15_irlightreview",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "benchmark_16_coredaemonaudit",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_17_verifynonestedagentapi",
+            "expected": "researcher",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_18_verifyextraexamples",
+            "expected": "researcher",
+            "actual": "reviewer"
+          }
+        ],
+        "selectedModels": {
+          "gemini": 136,
+          "deepseek": 52,
+          "sol": 85
+        },
+        "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+        "sampleSize": 20,
+        "newApiRequests": 188,
+        "reusedRoleResponses": 273,
+        "apiRequests": 461,
+        "additionalCostUsd": 0.009800951999999996,
+        "output": "/tmp/pi-jev-user-preference-check-5"
+      },
+      "successfulRoleModels": {
+        "researcher": {
+          "gemini": 116,
+          "deepseek": 0,
+          "sol": 0
+        },
+        "executor": {
+          "gemini": 20,
+          "deepseek": 52,
+          "sol": 0
+        },
+        "reviewer": {
+          "gemini": 0,
+          "deepseek": 0,
+          "sol": 85
+        }
+      }
+    },
+    {
+      "directory": "08-misleading-direction-limit",
+      "label": "Added Gemini investigation limit",
+      "summary": {
+        "rawCases": 472,
+        "excludedCases": 199,
+        "totalCases": 273,
+        "baselineModels": {
+          "gemini": 136,
+          "deepseek": 52,
+          "sol": 85
+        },
+        "changedModels": 0,
+        "attempted": 273,
+        "completed": 273,
+        "errors": 0,
+        "roleMatches": 38,
+        "labeledCases": 43,
+        "roleMismatches": [
+          {
+            "id": "benchmark_12_emitterprotocol",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_15_irlightreview",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "benchmark_16_coredaemonaudit",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_17_verifynonestedagentapi",
+            "expected": "researcher",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_18_verifyextraexamples",
+            "expected": "researcher",
+            "actual": "reviewer"
+          }
+        ],
+        "selectedModels": {
+          "gemini": 136,
+          "deepseek": 52,
+          "sol": 85
+        },
+        "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+        "sampleSize": 20,
+        "newApiRequests": 188,
+        "reusedRoleResponses": 273,
+        "apiRequests": 461,
+        "additionalCostUsd": 0.009895704,
+        "output": "/tmp/pi-jev-user-preference-check-6"
+      },
+      "successfulRoleModels": {
+        "researcher": {
+          "gemini": 116,
+          "deepseek": 0,
+          "sol": 0
+        },
+        "executor": {
+          "gemini": 20,
+          "deepseek": 52,
+          "sol": 0
+        },
+        "reviewer": {
+          "gemini": 0,
+          "deepseek": 0,
+          "sol": 85
+        }
+      }
+    },
+    {
+      "directory": "09-may-not-suitable",
+      "label": "May not be suitable variant",
+      "summary": {
+        "rawCases": 472,
+        "excludedCases": 199,
+        "totalCases": 273,
+        "baselineModels": {
+          "gemini": 136,
+          "deepseek": 52,
+          "sol": 85
+        },
+        "changedModels": 1,
+        "attempted": 273,
+        "completed": 273,
+        "errors": 0,
+        "roleMatches": 38,
+        "labeledCases": 43,
+        "roleMismatches": [
+          {
+            "id": "benchmark_12_emitterprotocol",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_15_irlightreview",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "benchmark_16_coredaemonaudit",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_17_verifynonestedagentapi",
+            "expected": "researcher",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_18_verifyextraexamples",
+            "expected": "researcher",
+            "actual": "reviewer"
+          }
+        ],
+        "selectedModels": {
+          "gemini": 135,
+          "deepseek": 53,
+          "sol": 85
+        },
+        "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+        "sampleSize": 20,
+        "newApiRequests": 188,
+        "reusedRoleResponses": 273,
+        "apiRequests": 461,
+        "additionalCostUsd": 0.00986412,
+        "output": "/tmp/pi-jev-suitability-may-not"
+      },
+      "successfulRoleModels": {
+        "researcher": {
+          "gemini": 116,
+          "deepseek": 0,
+          "sol": 0
+        },
+        "executor": {
+          "gemini": 19,
+          "deepseek": 53,
+          "sol": 0
+        },
+        "reviewer": {
+          "gemini": 0,
+          "deepseek": 0,
+          "sol": 85
+        }
+      }
+    },
+    {
+      "directory": "10-not-suitable",
+      "label": "Not suitable variant",
+      "summary": {
+        "rawCases": 472,
+        "excludedCases": 199,
+        "totalCases": 273,
+        "baselineModels": {
+          "gemini": 136,
+          "deepseek": 52,
+          "sol": 85
+        },
+        "changedModels": 3,
+        "attempted": 273,
+        "completed": 273,
+        "errors": 0,
+        "roleMatches": 38,
+        "labeledCases": 43,
+        "roleMismatches": [
+          {
+            "id": "benchmark_12_emitterprotocol",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_15_irlightreview",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "benchmark_16_coredaemonaudit",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_17_verifynonestedagentapi",
+            "expected": "researcher",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_18_verifyextraexamples",
+            "expected": "researcher",
+            "actual": "reviewer"
+          }
+        ],
+        "selectedModels": {
+          "gemini": 133,
+          "deepseek": 55,
+          "sol": 85
+        },
+        "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+        "sampleSize": 20,
+        "newApiRequests": 188,
+        "reusedRoleResponses": 273,
+        "apiRequests": 461,
+        "additionalCostUsd": 0.009848328,
+        "output": "/tmp/pi-jev-suitability-not"
+      },
+      "successfulRoleModels": {
+        "researcher": {
+          "gemini": 116,
+          "deepseek": 0,
+          "sol": 0
+        },
+        "executor": {
+          "gemini": 17,
+          "deepseek": 55,
+          "sol": 0
+        },
+        "reviewer": {
+          "gemini": 0,
+          "deepseek": 0,
+          "sol": 85
+        }
+      }
+    },
+    {
+      "directory": "11-universal",
+      "label": "DS universal",
+      "summary": {
+        "rawCases": 472,
+        "excludedCases": 199,
+        "totalCases": 273,
+        "baselineModels": {
+          "gemini": 133,
+          "deepseek": 55,
+          "sol": 85
+        },
+        "changedModels": 5,
+        "attempted": 273,
+        "completed": 273,
+        "errors": 0,
+        "roleMatches": 38,
+        "labeledCases": 43,
+        "roleMismatches": [
+          {
+            "id": "benchmark_12_emitterprotocol",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_15_irlightreview",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "benchmark_16_coredaemonaudit",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_17_verifynonestedagentapi",
+            "expected": "researcher",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_18_verifyextraexamples",
+            "expected": "researcher",
+            "actual": "reviewer"
+          }
+        ],
+        "selectedModels": {
+          "gemini": 128,
+          "deepseek": 60,
+          "sol": 85
+        },
+        "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+        "sampleSize": 20,
+        "newApiRequests": 188,
+        "reusedRoleResponses": 273,
+        "apiRequests": 461,
+        "additionalCostUsd": 0.009879912000000001,
+        "output": "/tmp/pi-jev-universal-check"
+      },
+      "successfulRoleModels": {
+        "researcher": {
+          "gemini": 115,
+          "deepseek": 1,
+          "sol": 0
+        },
+        "executor": {
+          "gemini": 13,
+          "deepseek": 59,
+          "sol": 0
+        },
+        "reviewer": {
+          "gemini": 0,
+          "deepseek": 0,
+          "sol": 85
+        }
+      }
+    },
+    {
+      "directory": "12-broadly-applicable",
+      "label": "DS broadly applicable across task types",
+      "summary": {
+        "rawCases": 472,
+        "excludedCases": 199,
+        "totalCases": 273,
+        "baselineModels": {
+          "gemini": 128,
+          "deepseek": 60,
+          "sol": 85
+        },
+        "changedModels": 12,
+        "attempted": 273,
+        "completed": 273,
+        "errors": 0,
+        "roleMatches": 38,
+        "labeledCases": 43,
+        "roleMismatches": [
+          {
+            "id": "benchmark_12_emitterprotocol",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_15_irlightreview",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "benchmark_16_coredaemonaudit",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_17_verifynonestedagentapi",
+            "expected": "researcher",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_18_verifyextraexamples",
+            "expected": "researcher",
+            "actual": "reviewer"
+          }
+        ],
+        "selectedModels": {
+          "gemini": 118,
+          "deepseek": 70,
+          "sol": 85
+        },
+        "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+        "sampleSize": 20,
+        "newApiRequests": 188,
+        "reusedRoleResponses": 273,
+        "apiRequests": 461,
+        "additionalCostUsd": 0.009919391999999999,
+        "output": "/tmp/pi-jev-broad-check"
+      },
+      "successfulRoleModels": {
+        "researcher": {
+          "gemini": 104,
+          "deepseek": 12,
+          "sol": 0
+        },
+        "executor": {
+          "gemini": 14,
+          "deepseek": 58,
+          "sol": 0
+        },
+        "reviewer": {
+          "gemini": 0,
+          "deepseek": 0,
+          "sol": 85
+        }
+      }
+    },
+    {
+      "directory": "13-guidance-and-prose",
+      "label": "Explicit guidance and stronger DS prose limit",
+      "summary": {
+        "rawCases": 472,
+        "excludedCases": 199,
+        "totalCases": 273,
+        "baselineModels": {
+          "gemini": 118,
+          "deepseek": 70,
+          "sol": 85
+        },
+        "changedModels": 10,
+        "attempted": 273,
+        "completed": 273,
+        "errors": 0,
+        "roleMatches": 38,
+        "labeledCases": 43,
+        "roleMismatches": [
+          {
+            "id": "benchmark_12_emitterprotocol",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_15_irlightreview",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "benchmark_16_coredaemonaudit",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_17_verifynonestedagentapi",
+            "expected": "researcher",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_18_verifyextraexamples",
+            "expected": "researcher",
+            "actual": "reviewer"
+          }
+        ],
+        "selectedModels": {
+          "gemini": 128,
+          "deepseek": 60,
+          "sol": 85
+        },
+        "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+        "sampleSize": 20,
+        "newApiRequests": 188,
+        "reusedRoleResponses": 273,
+        "apiRequests": 461,
+        "additionalCostUsd": 0.009966768,
+        "output": "/tmp/pi-jev-guidance-check"
+      },
+      "successfulRoleModels": {
+        "researcher": {
+          "gemini": 114,
+          "deepseek": 2,
+          "sol": 0
+        },
+        "executor": {
+          "gemini": 14,
+          "deepseek": 58,
+          "sol": 0
+        },
+        "reviewer": {
+          "gemini": 0,
+          "deepseek": 0,
+          "sol": 85
+        }
+      }
+    },
+    {
+      "directory": "14-final-partial",
+      "label": "Straightforward-to-moderate investigation; seven HTTP 529 failures",
+      "summary": {
+        "rawCases": 472,
+        "excludedCases": 199,
+        "totalCases": 273,
+        "baselineModels": {
+          "gemini": 128,
+          "deepseek": 60,
+          "sol": 85
+        },
+        "changedModels": 3,
+        "attempted": 273,
+        "completed": 266,
+        "errors": 7,
+        "roleMatches": 38,
+        "labeledCases": 43,
+        "roleMismatches": [
+          {
+            "id": "benchmark_12_emitterprotocol",
+            "expected": "executor",
+            "actual": "researcher"
+          },
+          {
+            "id": "benchmark_15_irlightreview",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "benchmark_16_coredaemonaudit",
+            "expected": "executor",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_17_verifynonestedagentapi",
+            "expected": "researcher",
+            "actual": "reviewer"
+          },
+          {
+            "id": "en_18_verifyextraexamples",
+            "expected": "researcher",
+            "actual": "reviewer"
+          }
+        ],
+        "selectedModels": {
+          "gemini": 127,
+          "deepseek": 54,
+          "sol": 85
+        },
+        "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+        "sampleSize": 20,
+        "newApiRequests": 188,
+        "reusedRoleResponses": 273,
+        "apiRequests": 461,
+        "additionalCostUsd": 0.009590826,
+        "output": "/tmp/pi-jev-current-check-next"
+      },
+      "successfulRoleModels": {
+        "researcher": {
+          "gemini": 112,
+          "deepseek": 0,
+          "sol": 0
+        },
+        "executor": {
+          "gemini": 15,
+          "deepseek": 54,
+          "sol": 0
+        },
+        "reviewer": {
+          "gemini": 0,
+          "deepseek": 0,
+          "sol": 85
+        }
+      }
+    }
+  ],
+  "files": [
+    {
+      "source": "/tmp/pi-current-jev-results/config.json",
+      "archivedPath": "00-all-cases/config.json",
+      "sha256Uncompressed": "be10a34e65c5128a47dea83451d32e3a03cddeb515a6886e521f0a15f69d5f83",
+      "bytesUncompressed": 8863,
+      "bytesArchived": 8863
+    },
+    {
+      "source": "/tmp/pi-current-jev-results/random-sample.json",
+      "archivedPath": "00-all-cases/random-sample.json.gz",
+      "sha256Uncompressed": "20ed53e303e1a83ff912f9c585223a4be2b7fb235ff84aee949e1117cc9ef038",
+      "bytesUncompressed": 275468,
+      "bytesArchived": 22699
+    },
+    {
+      "source": "/tmp/pi-current-jev-results/report.md",
+      "archivedPath": "00-all-cases/report.md",
+      "sha256Uncompressed": "43718a31564103e915a294814274034ed1f1f02ed9384ee763b872e15ea7eef5",
+      "bytesUncompressed": 4442,
+      "bytesArchived": 4442
+    },
+    {
+      "source": "/tmp/pi-current-jev-results/results.json",
+      "archivedPath": "00-all-cases/results.json.gz",
+      "sha256Uncompressed": "331a2ea7cab57f2fa4aca33ddf009b52fa233c38a7eedcc96b7c168c2958b72f",
+      "bytesUncompressed": 6207378,
+      "bytesArchived": 374062
+    },
+    {
+      "source": "/tmp/pi-current-jev-results/results.jsonl",
+      "archivedPath": "00-all-cases/results.jsonl.gz",
+      "sha256Uncompressed": "5661de14e1670725a733a9f72cb2a4ebbdb790ac277554479091e7185a268007",
+      "bytesUncompressed": 5675191,
+      "bytesArchived": 400461
+    },
+    {
+      "source": "/tmp/pi-current-jev-results/role-pass.json",
+      "archivedPath": "00-all-cases/role-pass.json.gz",
+      "sha256Uncompressed": "77d97e785f9b01d4ec88e3cb77fe1c5f3c7fbe827b7bf559fa10451d9bedd172",
+      "bytesUncompressed": 4030277,
+      "bytesArchived": 317022
+    },
+    {
+      "source": "/tmp/pi-current-jev-results/summary.json",
+      "archivedPath": "00-all-cases/summary.json",
+      "sha256Uncompressed": "024bd1c525490820acfc8ced9927e9ad0db1354d862264c9aaa76a92ee975341",
+      "bytesUncompressed": 1612,
+      "bytesArchived": 1612
+    },
+    {
+      "source": "/tmp/pi-current-jev-run.mjs",
+      "archivedPath": "00-all-cases/run.mjs",
+      "sha256Uncompressed": "220130c8ec436654e3883a40b469259eb4887505c695d0ea57fd0d4905569d0a",
+      "bytesUncompressed": 5645,
+      "bytesArchived": 5645
+    },
+    {
+      "source": "/tmp/pi-current-jev-live.log",
+      "archivedPath": "00-all-cases/initial-role-envelope.log.gz",
+      "sha256Uncompressed": "64cf246772961ee402a353d98cb1892ff0c007dd9cf15b70f2786efc2fbec4a5",
+      "bytesUncompressed": 262196,
+      "bytesArchived": 15181
+    },
+    {
+      "source": "/tmp/pi-current-jev-live-final.log",
+      "archivedPath": "00-all-cases/live-final.log.gz",
+      "sha256Uncompressed": "398836303ee4d06d99e06398f56c975af160cc081a0824d7c57bb0587029e10e",
+      "bytesUncompressed": 327197,
+      "bytesArchived": 22208
+    },
+    {
+      "source": "/tmp/pi-jev-english-tuned/analyze-features.py",
+      "archivedPath": "01-language-filtered/analyze-features.py",
+      "sha256Uncompressed": "cfaceacc0bd448c3de0a5033a9f13dd2b7a991898ed179d05cb91dc7f05c2193",
+      "bytesUncompressed": 3773,
+      "bytesArchived": 3773
+    },
+    {
+      "source": "/tmp/pi-jev-english-tuned/config.json",
+      "archivedPath": "01-language-filtered/config.json",
+      "sha256Uncompressed": "2d32c217b104f7beaeea9045a312448d50d10636b824d2f5e25e7c11420890ca",
+      "bytesUncompressed": 8989,
+      "bytesArchived": 8989
+    },
+    {
+      "source": "/tmp/pi-jev-english-tuned/language-filter.json",
+      "archivedPath": "01-language-filtered/language-filter.json",
+      "sha256Uncompressed": "2847498a17ee93e9663b5fa62e0ac652c1ac97a5df2470d9c43d0584532e4e49",
+      "bytesUncompressed": 27453,
+      "bytesArchived": 27453
+    },
+    {
+      "source": "/tmp/pi-jev-english-tuned/live.log",
+      "archivedPath": "01-language-filtered/live.log.gz",
+      "sha256Uncompressed": "c1e5803c23a64ece61d7452f8bbc4a56e7313b6c6f2bb81925f854be31dfd919",
+      "bytesUncompressed": 194972,
+      "bytesArchived": 13023
+    },
+    {
+      "source": "/tmp/pi-jev-english-tuned/prompt-features.json",
+      "archivedPath": "01-language-filtered/prompt-features.json",
+      "sha256Uncompressed": "1fefefceecca074181d5f784251e8feb6d2200bfc57a7afa919984cbe8cf0106",
+      "bytesUncompressed": 70004,
+      "bytesArchived": 70004
+    },
+    {
+      "source": "/tmp/pi-jev-english-tuned/prompt-features.md",
+      "archivedPath": "01-language-filtered/prompt-features.md",
+      "sha256Uncompressed": "105450b08adb6a26aeeab4bafc62e59063ec5bd610998a5db41ac1fea5cca6d7",
+      "bytesUncompressed": 4463,
+      "bytesArchived": 4463
+    },
+    {
+      "source": "/tmp/pi-jev-english-tuned/random-sample.json",
+      "archivedPath": "01-language-filtered/random-sample.json.gz",
+      "sha256Uncompressed": "080812eb4506af82a9a1742e21081cdd813854a78b3655563e2ff4ece0d05e8b",
+      "bytesUncompressed": 281454,
+      "bytesArchived": 22789
+    },
+    {
+      "source": "/tmp/pi-jev-english-tuned/report.md",
+      "archivedPath": "01-language-filtered/report.md",
+      "sha256Uncompressed": "fb29d4ff6be97fb5f5fc029e125f11515fe4736b7497105c12e19103611027b9",
+      "bytesUncompressed": 4315,
+      "bytesArchived": 4315
+    },
+    {
+      "source": "/tmp/pi-jev-english-tuned/results.json",
+      "archivedPath": "01-language-filtered/results.json.gz",
+      "sha256Uncompressed": "4e41afd21dc46a9b68534a637ac24e8a8188d49975db253bf788e1549a4aa4de",
+      "bytesUncompressed": 3533449,
+      "bytesArchived": 208246
+    },
+    {
+      "source": "/tmp/pi-jev-english-tuned/results.jsonl",
+      "archivedPath": "01-language-filtered/results.jsonl.gz",
+      "sha256Uncompressed": "7dd36db4b3eb4725a85c7ccd5bd9cc9c18697a71f5f5edb8e2cb5e64d4dc8145",
+      "bytesUncompressed": 3236826,
+      "bytesArchived": 212867
+    },
+    {
+      "source": "/tmp/pi-jev-english-tuned/run.mjs",
+      "archivedPath": "01-language-filtered/run.mjs",
+      "sha256Uncompressed": "400769f9d07fb43156b541f7cfe754636a60108adcfaf782401fab18e5cb3d94",
+      "bytesUncompressed": 6652,
+      "bytesArchived": 6652
+    },
+    {
+      "source": "/tmp/pi-jev-english-tuned/summary.json",
+      "archivedPath": "01-language-filtered/summary.json",
+      "sha256Uncompressed": "bb968acd6a2bec0c4365ea86b3d274f29a8277b8091d246b0689ce9cdca131a3",
+      "bytesUncompressed": 1178,
+      "bytesArchived": 1178
+    },
+    {
+      "source": "/tmp/pi-jev-scope-check/config.json",
+      "archivedPath": "02-scope/config.json",
+      "sha256Uncompressed": "0f37989e062d798040dd5ddb0769f4ab826477b3d6f411b3189cc2c076f952d6",
+      "bytesUncompressed": 9112,
+      "bytesArchived": 9112
+    },
+    {
+      "source": "/tmp/pi-jev-scope-check/language-filter.json",
+      "archivedPath": "02-scope/language-filter.json",
+      "sha256Uncompressed": "2847498a17ee93e9663b5fa62e0ac652c1ac97a5df2470d9c43d0584532e4e49",
+      "bytesUncompressed": 27453,
+      "bytesArchived": 27453
+    },
+    {
+      "source": "/tmp/pi-jev-scope-check/live.log",
+      "archivedPath": "02-scope/live.log.gz",
+      "sha256Uncompressed": "9c6f844b84dc266fd4dddc4e615b254d862f3fab591a1bfd8579a57a6076ee59",
+      "bytesUncompressed": 194792,
+      "bytesArchived": 12807
+    },
+    {
+      "source": "/tmp/pi-jev-scope-check/random-sample.json",
+      "archivedPath": "02-scope/random-sample.json.gz",
+      "sha256Uncompressed": "8e9c33f6c2e82c34fb623350daf6f64a94d1e9996025d3f375e7b15d8623f245",
+      "bytesUncompressed": 282801,
+      "bytesArchived": 22863
+    },
+    {
+      "source": "/tmp/pi-jev-scope-check/results.json",
+      "archivedPath": "02-scope/results.json.gz",
+      "sha256Uncompressed": "bbd1a2f56762976bac758f289ea6bc21edc6faddcab06367d3560b0508f0047f",
+      "bytesUncompressed": 3556404,
+      "bytesArchived": 208273
+    },
+    {
+      "source": "/tmp/pi-jev-scope-check/results.jsonl",
+      "archivedPath": "02-scope/results.jsonl.gz",
+      "sha256Uncompressed": "b08a05c8771125fdccf741fcf9af3a85f1d1dc6f7100ca1f954734efe81b47c3",
+      "bytesUncompressed": 3259781,
+      "bytesArchived": 215610
+    },
+    {
+      "source": "/tmp/pi-jev-scope-check/run.mjs",
+      "archivedPath": "02-scope/run.mjs",
+      "sha256Uncompressed": "f8833711602acc0a978fbce92a0893d22dd7083c4a85266200ce125aa018f7e7",
+      "bytesUncompressed": 6816,
+      "bytesArchived": 6816
+    },
+    {
+      "source": "/tmp/pi-jev-scope-check/summary.json",
+      "archivedPath": "02-scope/summary.json",
+      "sha256Uncompressed": "dca01af5f9a44c79a70b0799eac30ad52072c9cb5db3b6e5770089ca30dae9ff",
+      "bytesUncompressed": 1167,
+      "bytesArchived": 1167
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check/config.json",
+      "archivedPath": "03-user-preferences/config.json",
+      "sha256Uncompressed": "2548c1acbd49523bc5ac78651b55fa16e7cda0caf5654e9380de8d331ade8ab1",
+      "bytesUncompressed": 8694,
+      "bytesArchived": 8694
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check/language-filter.json",
+      "archivedPath": "03-user-preferences/language-filter.json",
+      "sha256Uncompressed": "2847498a17ee93e9663b5fa62e0ac652c1ac97a5df2470d9c43d0584532e4e49",
+      "bytesUncompressed": 27453,
+      "bytesArchived": 27453
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check/live.log",
+      "archivedPath": "03-user-preferences/live.log.gz",
+      "sha256Uncompressed": "975c26b7ad05b05f80379f61a1b7f6c98c8eab51bc9c2fdd85d84b5cc36109bc",
+      "bytesUncompressed": 195372,
+      "bytesArchived": 12895
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check/random-sample.json",
+      "archivedPath": "03-user-preferences/random-sample.json.gz",
+      "sha256Uncompressed": "d284c8d6244bac0b5f9fb02b283686ce87c1cb7bdf280b2a0a5f9c8680476e00",
+      "bytesUncompressed": 278264,
+      "bytesArchived": 22617
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check/results.json",
+      "archivedPath": "03-user-preferences/results.json.gz",
+      "sha256Uncompressed": "643c785c302b5cdc41cbd3d5777ffdad3c804df46d0af24489deb0a3ca4d4bbe",
+      "bytesUncompressed": 3478383,
+      "bytesArchived": 205435
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check/results.jsonl",
+      "archivedPath": "03-user-preferences/results.jsonl.gz",
+      "sha256Uncompressed": "dbfc73a4208fae2e8ee290f009aba1a335eb900ac76b59deb8af51060db72cc7",
+      "bytesUncompressed": 3181760,
+      "bytesArchived": 209171
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check/run.mjs",
+      "archivedPath": "03-user-preferences/run.mjs",
+      "sha256Uncompressed": "4b0666e808e8eabb261182de18c9bc632dfc05b4c240a17be930f7f1f288cd4b",
+      "bytesUncompressed": 6834,
+      "bytesArchived": 6834
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check/summary.json",
+      "archivedPath": "03-user-preferences/summary.json",
+      "sha256Uncompressed": "a164ea0d4ad29b20b14a7716f451ca64b7f694e419969b764471ff06bd72b43d",
+      "bytesUncompressed": 1184,
+      "bytesArchived": 1184
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-2/config.json",
+      "archivedPath": "04-text-preference/config.json",
+      "sha256Uncompressed": "e42778df97c963a0690e98301c190918040a699764abac6eefec8ba1db197a7a",
+      "bytesUncompressed": 8755,
+      "bytesArchived": 8755
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-2/language-filter.json",
+      "archivedPath": "04-text-preference/language-filter.json",
+      "sha256Uncompressed": "2847498a17ee93e9663b5fa62e0ac652c1ac97a5df2470d9c43d0584532e4e49",
+      "bytesUncompressed": 27453,
+      "bytesArchived": 27453
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-2/live.log",
+      "archivedPath": "04-text-preference/live.log.gz",
+      "sha256Uncompressed": "1c53ebd308c02eb05aeccf7280bf7a4ed10da766646534473027a8ec5cc32695",
+      "bytesUncompressed": 195395,
+      "bytesArchived": 12952
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-2/random-sample.json",
+      "archivedPath": "04-text-preference/random-sample.json.gz",
+      "sha256Uncompressed": "81db87c18e3290a16593dccfa902da6637d18499ed70bbcb34c714a95df8b2c6",
+      "bytesUncompressed": 278930,
+      "bytesArchived": 22658
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-2/results.json",
+      "archivedPath": "04-text-preference/results.json.gz",
+      "sha256Uncompressed": "983a35542fd23be03eaa5cb7f334cbcc53c16ab973e5d425b0edb88dc3d59357",
+      "bytesUncompressed": 3489872,
+      "bytesArchived": 205629
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-2/results.jsonl",
+      "archivedPath": "04-text-preference/results.jsonl.gz",
+      "sha256Uncompressed": "d7e3d57d0a19b8e56146a908d2889580baecf424badb10b26a8ea6bb3a88eda8",
+      "bytesUncompressed": 3193249,
+      "bytesArchived": 213295
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-2/run.mjs",
+      "archivedPath": "04-text-preference/run.mjs",
+      "sha256Uncompressed": "a38932a5460769d052a6183ddea59e3c2be100d3ee4159e24870b3920d54e620",
+      "bytesUncompressed": 6848,
+      "bytesArchived": 6848
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-2/summary.json",
+      "archivedPath": "04-text-preference/summary.json",
+      "sha256Uncompressed": "f5ebb9a90d89b37ab50f4a30e1b3661eaeea5ad9312382e20ce16e92f6c81a2f",
+      "bytesUncompressed": 1186,
+      "bytesArchived": 1186
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-3/config.json",
+      "archivedPath": "05-no-hallucination-comparison/config.json",
+      "sha256Uncompressed": "3c486cf05c8032fe206dc62f2cb15964e8a6fd72fa71159e5f3f6f865714c01e",
+      "bytesUncompressed": 8452,
+      "bytesArchived": 8452
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-3/language-filter.json",
+      "archivedPath": "05-no-hallucination-comparison/language-filter.json",
+      "sha256Uncompressed": "2847498a17ee93e9663b5fa62e0ac652c1ac97a5df2470d9c43d0584532e4e49",
+      "bytesUncompressed": 27453,
+      "bytesArchived": 27453
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-3/live.log",
+      "archivedPath": "05-no-hallucination-comparison/live.log.gz",
+      "sha256Uncompressed": "5fa8c15bcd5c809c345bc25c9fde09702c1c5e761185178c1f116c9fe543e8f7",
+      "bytesUncompressed": 195403,
+      "bytesArchived": 13298
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-3/random-sample.json",
+      "archivedPath": "05-no-hallucination-comparison/random-sample.json.gz",
+      "sha256Uncompressed": "f4a17ea25f2a111ec6c8b88d72dadf754157d054751bed276559ed82d8898dfd",
+      "bytesUncompressed": 275600,
+      "bytesArchived": 22407
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-3/results.json",
+      "archivedPath": "05-no-hallucination-comparison/results.json.gz",
+      "sha256Uncompressed": "49c8a5fda1b083462e9d6d1c7ae6ed1881807e879a65724b0eae3198d9a9255c",
+      "bytesUncompressed": 3432914,
+      "bytesArchived": 204666
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-3/results.jsonl",
+      "archivedPath": "05-no-hallucination-comparison/results.jsonl.gz",
+      "sha256Uncompressed": "4c64fe4e2d9311f3833536114751a2cc6dc8317c5109508f9775c32a892fb1f4",
+      "bytesUncompressed": 3136291,
+      "bytesArchived": 209274
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-3/run.mjs",
+      "archivedPath": "05-no-hallucination-comparison/run.mjs",
+      "sha256Uncompressed": "5f3e49a9a7fd5344ddcfcdef281aa3db0f206bdc155ef346403ff993f8a3dffb",
+      "bytesUncompressed": 6850,
+      "bytesArchived": 6850
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-3/summary.json",
+      "archivedPath": "05-no-hallucination-comparison/summary.json",
+      "sha256Uncompressed": "87c21ed523d6891a78eee7d23205fbba9065113c08f25bbf7d4a1e77efc19519",
+      "bytesUncompressed": 1188,
+      "bytesArchived": 1188
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-4/config.json",
+      "archivedPath": "06-common-vs-deep/config.json",
+      "sha256Uncompressed": "77b1332603cc736b6ff8dd47823e0f1952f4277d1a12e950da54064f24395a7f",
+      "bytesUncompressed": 8348,
+      "bytesArchived": 8348
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-4/language-filter.json",
+      "archivedPath": "06-common-vs-deep/language-filter.json",
+      "sha256Uncompressed": "2847498a17ee93e9663b5fa62e0ac652c1ac97a5df2470d9c43d0584532e4e49",
+      "bytesUncompressed": 27453,
+      "bytesArchived": 27453
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-4/live.log",
+      "archivedPath": "06-common-vs-deep/live.log.gz",
+      "sha256Uncompressed": "e712ed7cce3178c8d48d14fb650951d9da5be649185a126588fa5814a80bea38",
+      "bytesUncompressed": 195301,
+      "bytesArchived": 13077
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-4/random-sample.json",
+      "archivedPath": "06-common-vs-deep/random-sample.json.gz",
+      "sha256Uncompressed": "47f54ecc7ad0e145187bd0298e4d063aa3c387dcd02915a7d251a98b1704af0c",
+      "bytesUncompressed": 274439,
+      "bytesArchived": 22249
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-4/results.json",
+      "archivedPath": "06-common-vs-deep/results.json.gz",
+      "sha256Uncompressed": "0c868fb82a8bfd9a8d69086202be8568b9be20363b78b6f14905665405761eea",
+      "bytesUncompressed": 3413259,
+      "bytesArchived": 203755
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-4/results.jsonl",
+      "archivedPath": "06-common-vs-deep/results.jsonl.gz",
+      "sha256Uncompressed": "36e76176299e15d91d21f63ca1c0a1f628e48be9cd966042f771327003f04caf",
+      "bytesUncompressed": 3116636,
+      "bytesArchived": 203449
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-4/run.mjs",
+      "archivedPath": "06-common-vs-deep/run.mjs",
+      "sha256Uncompressed": "f601541769618fb250ac3fd9c1696bd7fa217a5b1d97620f79559e2ffe1f42c0",
+      "bytesUncompressed": 6850,
+      "bytesArchived": 6850
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-4/summary.json",
+      "archivedPath": "06-common-vs-deep/summary.json",
+      "sha256Uncompressed": "10bcec2ab761e5eccf97bcd141952ea04370c49f533fffabc712e2b7eb6e191b",
+      "bytesUncompressed": 1189,
+      "bytesArchived": 1189
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-5/config.json",
+      "archivedPath": "07-no-ds-investigation/config.json",
+      "sha256Uncompressed": "3438fc6ef32f7371f21177bc8f4329235d7a0d464994eddabbba2614dc8ff483",
+      "bytesUncompressed": 8295,
+      "bytesArchived": 8295
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-5/language-filter.json",
+      "archivedPath": "07-no-ds-investigation/language-filter.json",
+      "sha256Uncompressed": "2847498a17ee93e9663b5fa62e0ac652c1ac97a5df2470d9c43d0584532e4e49",
+      "bytesUncompressed": 27453,
+      "bytesArchived": 27453
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-5/live.log",
+      "archivedPath": "07-no-ds-investigation/live.log.gz",
+      "sha256Uncompressed": "23554229db3b610ebdc58800a8cea29fd3aefabeb37b1b5784ae473f8aeff715",
+      "bytesUncompressed": 195470,
+      "bytesArchived": 13141
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-5/random-sample.json",
+      "archivedPath": "07-no-ds-investigation/random-sample.json.gz",
+      "sha256Uncompressed": "86ed1b559df2fbf8da99e1ade594912115075ddca23c731735c8e08fc637d9a5",
+      "bytesUncompressed": 273878,
+      "bytesArchived": 22462
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-5/results.json",
+      "archivedPath": "07-no-ds-investigation/results.json.gz",
+      "sha256Uncompressed": "90b2b55252f7c7889e25d1e5978977c642240f0a83cc85300c2d2e2e92201312",
+      "bytesUncompressed": 3403463,
+      "bytesArchived": 203184
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-5/results.jsonl",
+      "archivedPath": "07-no-ds-investigation/results.jsonl.gz",
+      "sha256Uncompressed": "5a84e026d34030c9fdc4ef081a899698a72aedbe636e3890a99171ffa3b9320f",
+      "bytesUncompressed": 3106840,
+      "bytesArchived": 208276
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-5/run.mjs",
+      "archivedPath": "07-no-ds-investigation/run.mjs",
+      "sha256Uncompressed": "4d29ac60b94b4bc686732b2faee85052136b1342892b18b3869e8d0c86cc1ca2",
+      "bytesUncompressed": 6850,
+      "bytesArchived": 6850
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-5/summary.json",
+      "archivedPath": "07-no-ds-investigation/summary.json",
+      "sha256Uncompressed": "d6456d18a696b338164ad68043c29db3696da5b6e1cd57bf4bdaa64b4f0fed5f",
+      "bytesUncompressed": 1190,
+      "bytesArchived": 1190
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-6/config.json",
+      "archivedPath": "08-misleading-direction-limit/config.json",
+      "sha256Uncompressed": "db7f0b4832adb7c5d2e307708298be01bc6e32f6f4e33f748f97beab9f3c53be",
+      "bytesUncompressed": 8350,
+      "bytesArchived": 8350
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-6/language-filter.json",
+      "archivedPath": "08-misleading-direction-limit/language-filter.json",
+      "sha256Uncompressed": "2847498a17ee93e9663b5fa62e0ac652c1ac97a5df2470d9c43d0584532e4e49",
+      "bytesUncompressed": 27453,
+      "bytesArchived": 27453
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-6/live.log",
+      "archivedPath": "08-misleading-direction-limit/live.log.gz",
+      "sha256Uncompressed": "2df6b0dca3e08d17771e06da7eb4f4984983fbb38a166de6aa37cfbd08ea1622",
+      "bytesUncompressed": 195211,
+      "bytesArchived": 13098
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-6/random-sample.json",
+      "archivedPath": "08-misleading-direction-limit/random-sample.json.gz",
+      "sha256Uncompressed": "35ad911bf2d1208aac7c58aa9639a490275b9afd3f60677f64b34399731f2bfe",
+      "bytesUncompressed": 274602,
+      "bytesArchived": 22551
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-6/results.json",
+      "archivedPath": "08-misleading-direction-limit/results.json.gz",
+      "sha256Uncompressed": "d72198312e3fb36cc8075b5b2a7ad38490d73d91afdf7b02a56412762283b8bd",
+      "bytesUncompressed": 3415811,
+      "bytesArchived": 203640
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-6/results.jsonl",
+      "archivedPath": "08-misleading-direction-limit/results.jsonl.gz",
+      "sha256Uncompressed": "789bba7642f41aaa5f544403c607944038f5420601f3cc6b7cf7cab4d8a762b5",
+      "bytesUncompressed": 3119188,
+      "bytesArchived": 209236
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-6/run.mjs",
+      "archivedPath": "08-misleading-direction-limit/run.mjs",
+      "sha256Uncompressed": "3a3cf8b35f9b2aa53360f2da09452896ff8d76cb987feebc83193b1fae16f13c",
+      "bytesUncompressed": 6850,
+      "bytesArchived": 6850
+    },
+    {
+      "source": "/tmp/pi-jev-user-preference-check-6/summary.json",
+      "archivedPath": "08-misleading-direction-limit/summary.json",
+      "sha256Uncompressed": "b379930301755a351e47802eb55ab18def9d07b0b90908b554f3386e89866c1e",
+      "bytesUncompressed": 1179,
+      "bytesArchived": 1179
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-may-not/config.json",
+      "archivedPath": "09-may-not-suitable/config.json",
+      "sha256Uncompressed": "ac8f1e5c133bab65485da08deb88991ec2fe8f406c11e6c57d0f53230453f2ad",
+      "bytesUncompressed": 8334,
+      "bytesArchived": 8334
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-may-not/language-filter.json",
+      "archivedPath": "09-may-not-suitable/language-filter.json",
+      "sha256Uncompressed": "2847498a17ee93e9663b5fa62e0ac652c1ac97a5df2470d9c43d0584532e4e49",
+      "bytesUncompressed": 27453,
+      "bytesArchived": 27453
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-may-not/live.log",
+      "archivedPath": "09-may-not-suitable/live.log.gz",
+      "sha256Uncompressed": "077b34c14806d4efe683b7bffb4c742f1f3b46ac5b3858ef33357227c591cabe",
+      "bytesUncompressed": 195231,
+      "bytesArchived": 13070
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-may-not/random-sample.json",
+      "archivedPath": "09-may-not-suitable/random-sample.json.gz",
+      "sha256Uncompressed": "07583f956e96b0d73493f82536e544e8f6425e818b3992ec96f80240476e5bc6",
+      "bytesUncompressed": 274424,
+      "bytesArchived": 22536
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-may-not/results.json",
+      "archivedPath": "09-may-not-suitable/results.json.gz",
+      "sha256Uncompressed": "2f59464562f50a4faefc8432a3dd82ca37a0a02605c017a576e945a68e114372",
+      "bytesUncompressed": 3412828,
+      "bytesArchived": 203599
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-may-not/results.jsonl",
+      "archivedPath": "09-may-not-suitable/results.jsonl.gz",
+      "sha256Uncompressed": "e36822104defbbf551ccef3ad79cdc011831c44bf5cbb481fc9674e17c8633ce",
+      "bytesUncompressed": 3116205,
+      "bytesArchived": 205288
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-may-not/run.mjs",
+      "archivedPath": "09-may-not-suitable/run.mjs",
+      "sha256Uncompressed": "886119741c27a53a455390fcf5301ce3fd6d93308a899857179ba04e10df43f0",
+      "bytesUncompressed": 6842,
+      "bytesArchived": 6842
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-may-not/summary.json",
+      "archivedPath": "09-may-not-suitable/summary.json",
+      "sha256Uncompressed": "2c2924178ff67a16043bcede0acfdb78e884d52485313f83b3e8b49032c4b57a",
+      "bytesUncompressed": 1174,
+      "bytesArchived": 1174
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-not/config.json",
+      "archivedPath": "10-not-suitable/config.json",
+      "sha256Uncompressed": "05291256c5cb23be02f4f26ca99abb8d9cbdb08237df8beac31c7ab9949c5f0e",
+      "bytesUncompressed": 8327,
+      "bytesArchived": 8327
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-not/language-filter.json",
+      "archivedPath": "10-not-suitable/language-filter.json",
+      "sha256Uncompressed": "2847498a17ee93e9663b5fa62e0ac652c1ac97a5df2470d9c43d0584532e4e49",
+      "bytesUncompressed": 27453,
+      "bytesArchived": 27453
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-not/live.log",
+      "archivedPath": "10-not-suitable/live.log.gz",
+      "sha256Uncompressed": "61f7595f3bd58de9fa2b9107c58ad4eeca9db9ad09bf6dff7e2b376cdaf6b404",
+      "bytesUncompressed": 195227,
+      "bytesArchived": 13171
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-not/random-sample.json",
+      "archivedPath": "10-not-suitable/random-sample.json.gz",
+      "sha256Uncompressed": "f8bb283a386befa9b7157b5e0a89ad0a7f1b812333dd46bcd1b7ca3e86b2b5f5",
+      "bytesUncompressed": 274346,
+      "bytesArchived": 22465
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-not/results.json",
+      "archivedPath": "10-not-suitable/results.json.gz",
+      "sha256Uncompressed": "265d5b73ff5b9163b62388167f309a9e890898c6ad6caee12099502d2ea51aeb",
+      "bytesUncompressed": 3411511,
+      "bytesArchived": 203649
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-not/results.jsonl",
+      "archivedPath": "10-not-suitable/results.jsonl.gz",
+      "sha256Uncompressed": "f34332c1695a1c5572e2d68b411d0917face76b58f0be9baf35716e69a5f4def",
+      "bytesUncompressed": 3114888,
+      "bytesArchived": 207504
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-not/run.mjs",
+      "archivedPath": "10-not-suitable/run.mjs",
+      "sha256Uncompressed": "ef864f8c25341356bab007ee6ce30046401d8b7ac3ac04771f93cb0137c3a042",
+      "bytesUncompressed": 6834,
+      "bytesArchived": 6834
+    },
+    {
+      "source": "/tmp/pi-jev-suitability-not/summary.json",
+      "archivedPath": "10-not-suitable/summary.json",
+      "sha256Uncompressed": "0cd13e97f89244d75da5fc2952cb988972573bc9f2669d94bedc02234bf9aa35",
+      "bytesUncompressed": 1171,
+      "bytesArchived": 1171
+    },
+    {
+      "source": "/tmp/pi-jev-universal-check/config.json",
+      "archivedPath": "11-universal/config.json",
+      "sha256Uncompressed": "668b27cef08b0dee2f91ae6ed411d32d3b6d4969373a9008cbc7b97944182964",
+      "bytesUncompressed": 8335,
+      "bytesArchived": 8335
+    },
+    {
+      "source": "/tmp/pi-jev-universal-check/language-filter.json",
+      "archivedPath": "11-universal/language-filter.json",
+      "sha256Uncompressed": "2847498a17ee93e9663b5fa62e0ac652c1ac97a5df2470d9c43d0584532e4e49",
+      "bytesUncompressed": 27453,
+      "bytesArchived": 27453
+    },
+    {
+      "source": "/tmp/pi-jev-universal-check/live.log",
+      "archivedPath": "11-universal/live.log.gz",
+      "sha256Uncompressed": "64ce97e1d56844c541893149b5d2a012313c84f6566539be47d7ec7eb20adf28",
+      "bytesUncompressed": 195228,
+      "bytesArchived": 13166
+    },
+    {
+      "source": "/tmp/pi-jev-universal-check/random-sample.json",
+      "archivedPath": "11-universal/random-sample.json.gz",
+      "sha256Uncompressed": "8e3ea5b1d255cabec3eb2f0b7f8202296f21f9ccc1addd13b858eceb819c42ea",
+      "bytesUncompressed": 274436,
+      "bytesArchived": 22469
+    },
+    {
+      "source": "/tmp/pi-jev-universal-check/results.json",
+      "archivedPath": "11-universal/results.json.gz",
+      "sha256Uncompressed": "2824807a465ec6f10a1637ac596b035e68555785cf15ad39943229c7b8bd7ada",
+      "bytesUncompressed": 3413007,
+      "bytesArchived": 203778
+    },
+    {
+      "source": "/tmp/pi-jev-universal-check/results.jsonl",
+      "archivedPath": "11-universal/results.jsonl.gz",
+      "sha256Uncompressed": "a5d03e7492d6ed903f686b41eaa5d1eb66e538c16258d60d7d9289820d810418",
+      "bytesUncompressed": 3116384,
+      "bytesArchived": 206319
+    },
+    {
+      "source": "/tmp/pi-jev-universal-check/run.mjs",
+      "archivedPath": "11-universal/run.mjs",
+      "sha256Uncompressed": "99b7a965160876c433fd3c8fe73f26ce57f4b313f857a790c85a864bcf1b41dc",
+      "bytesUncompressed": 6826,
+      "bytesArchived": 6826
+    },
+    {
+      "source": "/tmp/pi-jev-universal-check/summary.json",
+      "archivedPath": "11-universal/summary.json",
+      "sha256Uncompressed": "6532430e2f025848c386468bee545b38d8bf0f81d09ae54007b78a11b6a340cd",
+      "bytesUncompressed": 1180,
+      "bytesArchived": 1180
+    },
+    {
+      "source": "/tmp/pi-jev-broad-check/config.json",
+      "archivedPath": "12-broadly-applicable/config.json",
+      "sha256Uncompressed": "c820787da8f8529673421f47765e6cf5c487b48e0c97514ddb23aacf1e31ca0b",
+      "bytesUncompressed": 8365,
+      "bytesArchived": 8365
+    },
+    {
+      "source": "/tmp/pi-jev-broad-check/language-filter.json",
+      "archivedPath": "12-broadly-applicable/language-filter.json",
+      "sha256Uncompressed": "2847498a17ee93e9663b5fa62e0ac652c1ac97a5df2470d9c43d0584532e4e49",
+      "bytesUncompressed": 27453,
+      "bytesArchived": 27453
+    },
+    {
+      "source": "/tmp/pi-jev-broad-check/live.log",
+      "archivedPath": "12-broadly-applicable/live.log.gz",
+      "sha256Uncompressed": "3add9164502897b1e52101414f364a21ec6cbe8b4cdb0189f71836ed76c8a501",
+      "bytesUncompressed": 195211,
+      "bytesArchived": 13281
+    },
+    {
+      "source": "/tmp/pi-jev-broad-check/random-sample.json",
+      "archivedPath": "12-broadly-applicable/random-sample.json.gz",
+      "sha256Uncompressed": "ba06a308f1896ec47956c4a98819a73607b451b6ea7ab4977380ec20e56fa9f3",
+      "bytesUncompressed": 274764,
+      "bytesArchived": 22474
+    },
+    {
+      "source": "/tmp/pi-jev-broad-check/results.json",
+      "archivedPath": "12-broadly-applicable/results.json.gz",
+      "sha256Uncompressed": "5a307f5148724f4a3795dbc9ad0148212267221276552c5ad9ac3e836c769367",
+      "bytesUncompressed": 3418633,
+      "bytesArchived": 204247
+    },
+    {
+      "source": "/tmp/pi-jev-broad-check/results.jsonl",
+      "archivedPath": "12-broadly-applicable/results.jsonl.gz",
+      "sha256Uncompressed": "4d39317076456dd09b93dcb238131a8266a25e450887e5797eb77ac149215c6e",
+      "bytesUncompressed": 3122010,
+      "bytesArchived": 206344
+    },
+    {
+      "source": "/tmp/pi-jev-broad-check/run.mjs",
+      "archivedPath": "12-broadly-applicable/run.mjs",
+      "sha256Uncompressed": "38c76f5742081f45094f61f0d85d2a9dd358671ff0df38509b9fca43540c4e4c",
+      "bytesUncompressed": 6818,
+      "bytesArchived": 6818
+    },
+    {
+      "source": "/tmp/pi-jev-broad-check/summary.json",
+      "archivedPath": "12-broadly-applicable/summary.json",
+      "sha256Uncompressed": "ed29433bf205b44cc8667eb8efa41df50c8ac0c6856ea949e518b2d46479041d",
+      "bytesUncompressed": 1177,
+      "bytesArchived": 1177
+    },
+    {
+      "source": "/tmp/pi-jev-guidance-check/config.json",
+      "archivedPath": "13-guidance-and-prose/config.json",
+      "sha256Uncompressed": "5e57d85a0eb6d83c7afdf1ea210eecd5d66b19d0526e6b40715b3dbc996270c1",
+      "bytesUncompressed": 8388,
+      "bytesArchived": 8388
+    },
+    {
+      "source": "/tmp/pi-jev-guidance-check/language-filter.json",
+      "archivedPath": "13-guidance-and-prose/language-filter.json",
+      "sha256Uncompressed": "2847498a17ee93e9663b5fa62e0ac652c1ac97a5df2470d9c43d0584532e4e49",
+      "bytesUncompressed": 27453,
+      "bytesArchived": 27453
+    },
+    {
+      "source": "/tmp/pi-jev-guidance-check/live.log",
+      "archivedPath": "13-guidance-and-prose/live.log.gz",
+      "sha256Uncompressed": "b59b4d2104f9c2262f74bbff6c6de7dcd231d7d82685e242175e55b344e7d1b7",
+      "bytesUncompressed": 195256,
+      "bytesArchived": 13284
+    },
+    {
+      "source": "/tmp/pi-jev-guidance-check/random-sample.json",
+      "archivedPath": "13-guidance-and-prose/random-sample.json.gz",
+      "sha256Uncompressed": "a6e41a65c47deb996dcf075c2d1382b255d9b5342ec53a3d9ec5cc7865de4122",
+      "bytesUncompressed": 275018,
+      "bytesArchived": 22542
+    },
+    {
+      "source": "/tmp/pi-jev-guidance-check/results.json",
+      "archivedPath": "13-guidance-and-prose/results.json.gz",
+      "sha256Uncompressed": "caa56e5055cff778e408f418e4638f4816acc9e38a9dcc44df125f1111bf1743",
+      "bytesUncompressed": 3423008,
+      "bytesArchived": 204182
+    },
+    {
+      "source": "/tmp/pi-jev-guidance-check/results.jsonl",
+      "archivedPath": "13-guidance-and-prose/results.jsonl.gz",
+      "sha256Uncompressed": "7b4249f85265b72416727830bf782c2259afa409d14900152bb5b0f793eb98c2",
+      "bytesUncompressed": 3126385,
+      "bytesArchived": 207232
+    },
+    {
+      "source": "/tmp/pi-jev-guidance-check/run.mjs",
+      "archivedPath": "13-guidance-and-prose/run.mjs",
+      "sha256Uncompressed": "f1f3310a8f5083f0c222c39d032b01033a24ad4c6415754374f2c5d74384938b",
+      "bytesUncompressed": 6820,
+      "bytesArchived": 6820
+    },
+    {
+      "source": "/tmp/pi-jev-guidance-check/summary.json",
+      "archivedPath": "13-guidance-and-prose/summary.json",
+      "sha256Uncompressed": "63a63e29fa930582321775192af4d8894a1627caadfd7f65bdbbb7bb25d08b3d",
+      "bytesUncompressed": 1171,
+      "bytesArchived": 1171
+    },
+    {
+      "source": "/tmp/pi-jev-current-check-next/config.json",
+      "archivedPath": "14-final-partial/config.json",
+      "sha256Uncompressed": "336aa03b9119f88569f78a1a1180cff47146d5c2e96710202651809f672872ba",
+      "bytesUncompressed": 8425,
+      "bytesArchived": 8425
+    },
+    {
+      "source": "/tmp/pi-jev-current-check-next/language-filter.json",
+      "archivedPath": "14-final-partial/language-filter.json",
+      "sha256Uncompressed": "2847498a17ee93e9663b5fa62e0ac652c1ac97a5df2470d9c43d0584532e4e49",
+      "bytesUncompressed": 27453,
+      "bytesArchived": 27453
+    },
+    {
+      "source": "/tmp/pi-jev-current-check-next/live.log",
+      "archivedPath": "14-final-partial/live.log.gz",
+      "sha256Uncompressed": "8b2f68534c0cd34bc1ba937705b85171c9a44eb923125892be245d6c161fb328",
+      "bytesUncompressed": 195636,
+      "bytesArchived": 13685
+    },
+    {
+      "source": "/tmp/pi-jev-current-check-next/random-sample.json",
+      "archivedPath": "14-final-partial/random-sample.json.gz",
+      "sha256Uncompressed": "d2ab78b3c7133ee601f841a22e1ff4a1aa84eb1e70472d940924f16bb8295ab4",
+      "bytesUncompressed": 275336,
+      "bytesArchived": 22762
+    },
+    {
+      "source": "/tmp/pi-jev-current-check-next/results.json",
+      "archivedPath": "14-final-partial/results.json.gz",
+      "sha256Uncompressed": "8eb5818e5b5b7a88e895693a886b7e272be0fb5c34b431250ff774f8b4a67781",
+      "bytesUncompressed": 3429508,
+      "bytesArchived": 205618
+    },
+    {
+      "source": "/tmp/pi-jev-current-check-next/results.jsonl",
+      "archivedPath": "14-final-partial/results.jsonl.gz",
+      "sha256Uncompressed": "f292de2cdabbdb3a98701beb09ddeb9d501c3023b00aa9800c99463ba36227df",
+      "bytesUncompressed": 3134453,
+      "bytesArchived": 209693
+    },
+    {
+      "source": "/tmp/pi-jev-current-check-next/run.mjs",
+      "archivedPath": "14-final-partial/run.mjs",
+      "sha256Uncompressed": "0def92223910d8787b3bec63e325d879e9fee6160652838bd52cab140ee6d299",
+      "bytesUncompressed": 6831,
+      "bytesArchived": 6831
+    },
+    {
+      "source": "/tmp/pi-jev-current-check-next/summary.json",
+      "archivedPath": "14-final-partial/summary.json",
+      "sha256Uncompressed": "1b0a913c1c87a120c1a0ad0856841157889cbb370d62fce2135117850420a183",
+      "bytesUncompressed": 1174,
+      "bytesArchived": 1174
+    }
+  ],
+  "totalRecordedCostUsd": 0.197635704,
+  "finalFailuresRechecked": false,
+  "credentialScanPassed": true,
+  "archivedBytes": 8161541,
+  "uncompressedBytes": 116411307
+}

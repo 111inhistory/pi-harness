@@ -6,12 +6,14 @@ import { once } from "node:events";
 import net from "node:net";
 import path from "node:path";
 import {
-  createAgentSession, createWriteToolDefinition, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
+  createAgentSession, createCodemodeExtension, createWriteToolDefinition, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { AssistantMessageEventStream, getSystemMessageText, getCurrentTools } from "@earendil-works/pi-ai";
 import subagentExtension from "../extensions/subagent.mjs";
 import capabilityExtension from "../extensions/capability.mjs";
 import { deriveSessionUid } from "../src/subagent-socket.mjs";
+import { resolveTranscriptTools } from "../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js";
+import { convertResponsesMessages } from "../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 import { deferred, waitFor } from "./async.mjs";
 
 const scenario = process.argv[2];
@@ -38,12 +40,18 @@ net.Socket.prototype.connect = function (...args) {
 };
 
 const runtime = await ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: null, refreshOnCreate: false });
-const model = runtime.getModel("openrouter", "~google/gemini-pro-latest");
-assert.ok(model, "the installed Pi catalog must contain the configured candidate");
+const model = (scenario.startsWith("responses-") || scenario === "reviewer-sol") ? runtime.getModel("openai-codex", "gpt-6.1-sol") : runtime.getModel("google", "gemini-3.8-flash");
+assert.ok(model, "the installed Pi catalog must contain the offline fixture candidate");
+// Isolated Pi user config: no dependency on the real user's routing file or
+// third-party Antigravity extension. All calls use the scripted runtime below.
+const routing = JSON.parse(await fsp.readFile(new URL("../config/subagent-routing.json", import.meta.url), "utf8"));
+Object.assign(routing.models.find((candidate) => candidate.id === "gemini"), { provider: model.provider, model: model.id });
+await fsp.writeFile(path.join(agentDir, "subagent-routing.json"), JSON.stringify(routing));
 const classifications = [];
 const chats = [];
 let streamedFragments = 0;
 const controls = { classify: null, chat: null };
+let externalToolExecutions = 0;
 const gates = [];
 const externalServers = [];
 const externalConnections = [];
@@ -58,7 +66,7 @@ runtime.classify = async (classifier, context, options) => {
   classifications.push({ context, options });
   if (controls.classify) await controls.classify(context, options);
   const key = Object.keys(context.questions)[0];
-  const selected = key === "role" ? "executor" : "gemini";
+  const selected = key === "role" ? (scenario === "reviewer-sol" ? "reviewer" : "executor") : "gemini";
   const probabilities = Object.fromEntries(Object.keys(context.questions[key].criteria).map((name) => [name, name === selected ? 1 : 0]));
   return { api: classifier.api, provider: classifier.provider, model: classifier.id, answers: {
     [key]: { type: "choice", choice: selected, probabilities, confidence: 1 },
@@ -117,25 +125,47 @@ function abortable(gate, signal) {
   });
 }
 
-const durable = scenario === "reload";
+const durable = scenario === "reload" || scenario === "upstream-main-reload";
 const sessionManager = durable ? SessionManager.create(cwd, path.join(cwd, "root-sessions")) : SessionManager.inMemory(cwd);
 if (durable) {
   sessionManager.appendMessage({ role: "user", content: "Root seed", timestamp: Date.now() });
   sessionManager.appendMessage(textAnswer("Root seed acknowledged"));
 }
-const settings = { retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: { mode: "off" } };
+const settings = { retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: { mode: "off" },
+  ...(scenario === "responses-only" ? { codemode: { mode: "only" } } : {}),
+};
+let packageSkillPath;
+let cliSkillPath;
+if (scenario.startsWith("package-skills")) {
+  const packageRoot = path.join(cwd, "ppt-package");
+  packageSkillPath = path.join(packageRoot, "guidance", "ppt.md");
+  cliSkillPath = path.join(cwd, "cli-ppt.md");
+  await fsp.mkdir(path.join(packageRoot, "guidance"), { recursive: true });
+  await fsp.mkdir(path.join(packageRoot, "extensions"), { recursive: true });
+  await fsp.writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ name: "local-ppt-package", pi: { skills: ["guidance/*.md"], extensions: ["extensions/*.mjs"] } }));
+  await fsp.writeFile(path.join(packageRoot, "extensions", "forbidden.mjs"), 'throw new Error("Package extensions must not execute in discovery")');
+  const body = (name, extra = "") => `---\nname: ${name}\ndescription: PPT presentation workflow\n${extra}---\n# Native package PPT guidance\n`;
+  await fsp.writeFile(packageSkillPath, body("ppt-master"));
+  await fsp.writeFile(path.join(packageRoot, "guidance", "filtered.md"), body("filtered-ppt"));
+  await fsp.writeFile(path.join(packageRoot, "guidance", "private.md"), body("private-ppt", "disable-model-invocation: true\n"));
+  await fsp.writeFile(cliSkillPath, body("cli-ppt"));
+  settings.packages = [{ source: packageRoot, skills: ["!guidance/filtered.md"] }, "git:https://example.invalid/missing-package"];
+  settings.enableSkillCommands = false;
+}
 await fsp.writeFile(path.join(agentDir, "settings.json"), JSON.stringify(settings));
 const settingsManager = SettingsManager.inMemory(settings);
 const resourceLoader = new DefaultResourceLoader({
-  cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
+  cwd, agentDir, settingsManager, noExtensions: true, noSkills: scenario !== "package-skills", noThemes: true, noPromptTemplates: true, noContextFiles: true,
+  ...(scenario === "package-skills" ? { additionalSkillPaths: [cliSkillPath] } : {}),
   ...(scenario === "inherited" ? { systemPrompt: "Custom inherited system identity" } : {}),
   extensionFactories: [
-    ...(["namespace", "namespace-leaf", "capability-missing"].includes(scenario) ? [{ name: "capability", factory: capabilityExtension }] : []),
+    ...(["namespace", "namespace-leaf", "capability-missing", "responses-prefix", "responses-only", "package-skills", "package-skills-cold"].includes(scenario) ? [{ name: "capability", factory: capabilityExtension }] : []),
     ...(scenario === "capability-missing" ? [] : [{ name: "subagent", factory: subagentExtension }]),
     ...(scenario === "namespace-reverse" ? [{ name: "capability", factory: capabilityExtension }] : []),
+    ...(scenario.startsWith("responses-") ? [{ name: "codemode", factory: createCodemodeExtension() }] : []),
     { name: "external-test-tool", factory(pi) {
       pi.registerTool({ name: "external_test_tool", label: "External Test Tool", description: "A non-transplantable test extension tool.",
-        parameters: { type: "object", properties: {} }, execute: async () => ({ content: [{ type: "text", text: "unused" }] }),
+        parameters: { type: "object", properties: {} }, execute: async () => { externalToolExecutions++; return { content: [{ type: "text", text: "unused" }] }; },
       });
     } },
   ],
@@ -180,7 +210,152 @@ async function events(file) {
 }
 
 try {
-  if (scenario === "capability-missing") {
+  if (scenario === "reviewer-sol") {
+    controls.classify = (context) => {
+      assert.deepEqual(Object.keys(context.questions), ["role"], "singleton reviewer pool must not ask for model selection");
+    };
+    controls.chat = (request) => {
+      assert.equal(model.provider, "openai-codex");
+      assert.equal(model.id, "gpt-6.1-sol");
+      assert.equal(request.options.reasoning, "high", "high..high reaches the native SDK as high");
+      return textAnswer("Independent review complete");
+    };
+    const reviewer = await create("Independently assess this artifact; do not modify files");
+    await stopped(reviewer.id);
+    assert.equal(classifications.length, 1);
+    assert.equal(chats.length, 1);
+    assert.equal((await item(reviewer.id)).budget.terminal.status, "completed");
+  } else if (scenario.startsWith("package-skills")) {
+    const cold = scenario === "package-skills-cold";
+    const expected = cold ? ["ppt-master"] : ["cli-ppt", "ppt-master"];
+    const inventory = session.extensionRunner.createContext();
+    const loaded = resourceLoader.getSkills().skills;
+    if (cold) assert.deepEqual(loaded, [], "cold Session has no loaded Skills or command entries");
+    else {
+      assert.ok(loaded.some((skill) => skill.name === "ppt-master"));
+      assert.ok(loaded.some((skill) => skill.name === "private-ppt"));
+    }
+    assert.ok(!loaded.some((skill) => skill.name === "filtered-ppt"));
+    await session.prompt("Visibility check: do not use tools.");
+    assert.doesNotMatch(chats.at(-1).text, /<available_skills>|<name>ppt-master<\/name>|Native package PPT guidance/,
+      "loaded Skills must not be advertised in the base prompt before Capability discovery");
+    if (!cold) assert.ok(resourceLoader.getSkills().skills.some((skill) => skill.name === "ppt-master"),
+      "hiding prompt summaries must retain Pi's resource inventory");
+    controls.chat = (request) => {
+      const searched = request.context.messages.findLast((message) => message.role === "toolResult" && message.toolName === "capability_search");
+      if (!searched) return toolAnswer("capability_search", { query: "ppt", src: "local" });
+      const matches = JSON.parse(searched.content[0].text);
+      assert.deepEqual(matches.skills.map((skill) => skill.name).sort(), expected);
+      assert.deepEqual(matches.warnings, []);
+      return toolAnswer("submit_result", { refs: expected.map((name) => `skill://${name}`) });
+    };
+    const discovery = await call("capability", {});
+    assert.equal(discovery.isError, false, JSON.stringify(discovery.details));
+    assert.deepEqual(discovery.details.skills.map((skill) => skill.name).sort(), expected);
+    const visible = JSON.parse(discovery.content[0].text);
+    assert.equal(visible.warnings, undefined);
+    for (const hit of visible.skills) {
+      for (const field of ["match", "score", "reason"]) assert.equal(hit[field], undefined, `Main must not see ${field}`);
+    }
+    assert.ok(discovery.details.skills.every((hit) => typeof hit.score === "number" && typeof hit.reason === "string"), "ranking remains host-owned diagnostics");
+    const nativeRead = session.getToolDefinition("read");
+    const resource = await nativeRead.execute("read-package-skill", { path: "skill://ppt-master" }, undefined, undefined, inventory);
+    assert.match(resource.content[0].text, /Native package PPT guidance/);
+    assert.deepEqual(networkAttempts, [], "installed/CLI skills must not resolve or install missing packages");
+  } else if (scenario === "responses-only") {
+    session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
+    await session.prompt("Seed Codemode-only context.");
+    controls.chat = (request) => {
+      const result = request.context.messages.findLast((message) => message.role === "toolResult" && message.toolName === "capability_search");
+      if (!result) return toolAnswer("capability_search", { query: "namespace://subagent", src: "local" });
+      return toolAnswer("submit_result", { refs: ["namespace://subagent"] });
+    };
+    const discovery = await call("capability", {});
+    assert.equal(discovery.isError, false, JSON.stringify(discovery.details));
+    assert.equal(JSON.parse(discovery.content[0].text).tools[0].tools.length, 3, "hidden direct declarations must not imply supplied interfaces");
+    controls.chat = () => textAnswer("Only mode continued");
+    await session.prompt("Continue without directly declared Subagent interfaces.");
+    assert.deepEqual(getCurrentTools(chats.at(-1).context.messages).map((tool) => tool.name), ["codemode"]);
+  } else if (scenario === "responses-prefix") {
+    const members = ["subagent_create", "subagent_list", "subagent_stop"];
+    session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
+    await session.prompt("Seed a stable Responses transcript without calling tools.");
+    const initial = structuredClone(chats[0].context.messages[0]);
+    session.setThinkingLevel("high");
+    let internalCalls = 0;
+    controls.chat = (request) => {
+      const declared = getCurrentTools(request.context.messages).map((tool) => tool.name);
+      const resultOf = (name) => request.context.messages.findLast((message) => message.role === "toolResult" && message.toolName === name);
+      if (declared.includes("capability_search")) {
+        internalCalls++;
+        assert.equal(request.options.reasoning, "high", "retrieval keeps the parent's effort for compatible Responses");
+        assert.deepEqual(request.context.messages[0], initial, "retrieval retains the initial prompt and tool prefix");
+        assert.equal(resolveTranscriptTools(request.context.messages, true).anchorsAdditions, true);
+        assert.match(getSystemMessageText(request.context.messages.at(-1)), /only capability_search and submit_result/);
+        const deniedWrite = resultOf("write");
+        if (!deniedWrite) return toolAnswer("write", { path: "forbidden.txt", content: "must not execute" }, "forbidden-write");
+        assert.equal(deniedWrite.isError, true);
+        assert.match(deniedWrite.content[0].text, /unavailable in capability discovery/);
+        const deniedCodemode = resultOf("codemode");
+        if (!deniedCodemode) return toolAnswer("codemode", { code: 'await tools.write({path:"forbidden-nested.txt",content:"no"})' }, "forbidden-codemode");
+        assert.equal(deniedCodemode.isError, true);
+        assert.match(deniedCodemode.content[0].text, /unavailable in capability discovery/);
+        if (!resultOf("capability_search")) return toolAnswer("capability_search", { query: "namespace://subagent", src: "local" }, "search-group");
+        return toolAnswer("submit_result", { refs: ["namespace://subagent"] }, "submit-group");
+      }
+      return textAnswer("Parent completed");
+    };
+    const discovery = await call("capability", {});
+    assert.equal(discovery.isError, false, JSON.stringify(discovery.details));
+    assert.equal(internalCalls, 4);
+    const compact = JSON.parse(discovery.content[0].text);
+    assert.equal(compact.tools[0].tools, undefined);
+    assert.equal(compact.tools[0].description, undefined);
+    assert.match(compact.tools[0].instructions, /one JSON object per line/);
+    assert.deepEqual(discovery.details.tools[0].tools.map((tool) => tool.name), members);
+    assert.ok(members.every((name) => session.getActiveToolNames().includes(name)));
+    const repeated = await call("capability", {});
+    assert.equal(repeated.isError, false, JSON.stringify(repeated.details));
+    const repeatedText = JSON.parse(repeated.content[0].text);
+    assert.deepEqual(repeatedText.tools, [], "already active tools must not be reported as new interfaces");
+    assert.deepEqual(repeatedText.mcp, []);
+    assert.equal(repeatedText.guidance[0].ref, "namespace://subagent");
+    assert.equal(repeated.details.tools[0].tools.length, 3, "full selection remains in details, not model text");
+    assert.equal(internalCalls, 8);
+    await assert.rejects(fsp.stat(path.join(cwd, "forbidden.txt")), { code: "ENOENT" });
+    await assert.rejects(fsp.stat(path.join(cwd, "forbidden-nested.txt")), { code: "ENOENT" });
+    await session.prompt("Continue after capability activation.");
+    const addedContext = chats.at(-1).context;
+    const resolved = resolveTranscriptTools(addedContext.messages, true);
+    assert.equal(resolved.anchorsAdditions, true, "Codemode description updates must not collapse the tools prefix");
+    assert.deepEqual(resolved.requestTools, initial.toolsAdded);
+    const wire = convertResponsesMessages(model, addedContext, new Set([model.provider]), { includeSystemPrompt: false, ...model.compat });
+    assert.deepEqual(wire.filter((item) => item.type === "additional_tools").flatMap((item) => item.tools.map((tool) => tool.name)), members);
+    session.setActiveToolsByName(session.getActiveToolNames().filter((name) => name !== "external_test_tool"));
+    controls.chat = (request) => {
+      const results = request.context.messages.filter((message) => message.role === "toolResult");
+      if (!results.some((result) => result.toolCallId === "disabled-direct")) return toolAnswer("external_test_tool", {}, "disabled-direct");
+      if (!results.some((result) => result.toolCallId === "disabled-nested")) return toolAnswer("codemode", { code: 'try { await tools.external_test_tool({}); text("UNEXPECTED_EXECUTION"); } catch (error) { text("DISABLED_EXTERNAL_TOOL: " + error.message); }' }, "disabled-nested");
+      return textAnswer("Disabled calls refused");
+    };
+    await session.prompt("Exercise disabled direct and nested calls.");
+    assert.equal(externalToolExecutions, 0);
+    const refused = session.messages.filter((message) => message.role === "toolResult" && ["disabled-direct", "disabled-nested"].includes(message.toolCallId));
+    assert.equal(refused.length, 2);
+    assert.equal(refused[0].isError, true);
+    assert.match(refused[0].content[0].text, /external_test_tool.*(not found|unavailable)/);
+    assert.match(refused[1].content.map((part) => part.text ?? "").join("\n"), /DISABLED_EXTERNAL_TOOL:/, "nested call must reach the script and be refused before execution");
+    assert.doesNotMatch(refused[1].content.map((part) => part.text ?? "").join("\n"), /UNEXPECTED_EXECUTION/);
+    assert.equal(resolveTranscriptTools(chats.at(-1).context.messages, true).anchorsAdditions, true);
+    assert.match(textOf(chats.at(-1).context), /external_test_tool is unavailable/);
+    session.setActiveToolsByName([...session.getActiveToolNames(), "external_test_tool"]);
+    controls.chat = () => textAnswer("Re-enabled");
+    await session.prompt("Re-enable without a second declaration.");
+    const last = chats.at(-1).context;
+    assert.deepEqual(resolveTranscriptTools(last.messages, true).requestTools, initial.toolsAdded);
+    assert.equal(last.messages.flatMap((message) => message.toolsAdded ?? []).filter((tool) => tool.name === "external_test_tool").length, 1);
+    assert.match(textOf(last), /external_test_tool is available again/);
+  } else if (scenario === "capability-missing") {
     const result = await call("capability", {});
     assert.equal(result.isError, true);
     assert.equal(result.details.status, "failed");
@@ -206,6 +381,7 @@ try {
         const result = resultOf("capability");
         if (!result) return toolAnswer("capability", {});
         leafResult = JSON.parse(result.content.find((part) => part.type === "text").text);
+        assert.deepEqual(result.details.tools[0].tools.map((tool) => tool.name), ["subagent_list", "subagent_stop"]);
         assert.notEqual(leafResult.status, "failed", JSON.stringify(leafResult));
         return textAnswer("Leaf namespace discovery done");
       }
@@ -216,7 +392,8 @@ try {
     await waitFor(() => leafResult, { label: "Depth 2 capability discovery" });
     await stopped(parent.id);
     await stopped(parent.id + "_01");
-    assert.deepEqual(leafResult.tools[0].tools.map((tool) => tool.name), ["subagent_list", "subagent_stop"]);
+    assert.deepEqual(leafResult.tools, [], "Depth 2 already-active control tools are not new interfaces");
+    assert.equal(leafResult.guidance[0].ref, "namespace://subagent");
   } else if (scenario === "namespace" || scenario === "namespace-reverse") {
     const members = ["subagent_create", "subagent_list", "subagent_stop"];
     const initial = session.getActiveToolNames();
@@ -281,7 +458,7 @@ try {
     for (const name of ["create", "list", "stop", "task", "hub", "wait"]) assert.equal(names.includes(name), false);
     await assert.rejects(call("subagent_create", { tasks: [{ task: "valid" }, { task: "invalid", model: "override" }] }));
     assert.deepEqual((await call("subagent_list", {})).details.items, []);
-    await assert.rejects(fsp.stat(sessionSocketDir), { code: "ENOENT" });
+    assert.deepEqual(await fsp.readdir(sessionSocketDir), ["Main.sock"], "invalid batches must not publish any child endpoint; Main's receiving endpoint exists independently");
     const gate = controlledGate();
     controls.classify = (_, options) => abortable(gate, options.signal);
     const result = await call("subagent_create", { context: "Explicit batch context", tasks: [{ task: "Initial assignment" }, { task: "Stopped during routing" }] });
@@ -349,6 +526,102 @@ try {
     assert.equal(sessionManager.getBranch().filter((entry) => entry.type === "custom_message").length, 0, "external responses must not become Agent messages");
     exit.resolve();
     await stopped(actor.id);
+  } else if (["upstream-main", "upstream-main-steer", "upstream-main-reload"].includes(scenario)) {
+    const mainSocket = path.join(sessionSocketDir, "Main.sock");
+    assert.ok((await fsp.stat(mainSocket)).isSocket(), "Main must have its own receiving endpoint");
+    assert.notEqual(mainSocket, path.join(sessionSocketDir, "main", "children.sock"));
+    const mainStarted = controlledGate();
+    const mainExit = controlledGate();
+    const delivered = controlledGate();
+    const steering = scenario === "upstream-main-steer";
+    let armed = scenario !== "upstream-main-reload";
+    let mainRequests = 0;
+    controls.chat = async (request) => {
+      if (request.text.includes("UPSTREAM_CHILD")) {
+        assert.match(request.text, /Your direct parent is Main/);
+        assert.ok(request.text.includes(mainSocket), "child context exposes the real parent receiving endpoint");
+        const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "write");
+        if (armed && !wrote) return toolAnswer("write", { path: mainSocket, content: '{"content":"UPSTREAM_MAIN_MARKER"}\n' }, "upstream-write");
+        return textAnswer("Child done");
+      }
+      mainRequests++;
+      if (request.text.includes("UPSTREAM_MAIN_MARKER")) {
+        assert.match(request.text, /\[Message from sub_01\]/);
+        delivered.resolve();
+      } else if (steering) {
+        mainStarted.resolve();
+        await mainExit.promise;
+      }
+      return textAnswer("Main accepted message");
+    };
+    let mainPrompt;
+    if (steering) {
+      mainPrompt = session.prompt("ROOT_BUSY");
+      await mainStarted.promise;
+    }
+    const sender = await create("UPSTREAM_CHILD: contact your direct parent");
+    assert.equal(sender.parentSocket, mainSocket);
+    if (!armed) {
+      await stopped(sender.id);
+      assert.equal(mainRequests, 0, "normal completion must not wake Main");
+      await session.reload();
+      const restored = await item(sender.id);
+      assert.equal(restored.parentSocket, mainSocket);
+      assert.ok((await fsp.stat(mainSocket)).isSocket(), "reload rebuilds Main's receiving endpoint");
+      armed = true;
+      await call("write", { path: restored.socket, content: '{"content":"Send the explicit upstream message after reload"}\n' });
+    }
+    if (steering) {
+      await waitFor(() => session.agent.hasQueuedMessages(), { label: "child message queued as native Main steering" });
+      mainExit.resolve();
+      await mainPrompt;
+    }
+    await delivered.promise;
+    await stopped(sender.id);
+    await session.waitForIdle();
+    const received = session.messages.filter((message) => message.role === "custom" && message.customType === "agent-message");
+    assert.equal(received.length, 1, "one write produces exactly one Main message");
+    assert.deepEqual(received[0].details, { from: sender.id, to: "Main" });
+    assert.equal(mainRequests, steering ? 2 : 1);
+    await assert.rejects(call("write", { path: mainSocket, content: '{"from":"sub_99","content":"forged"}\n' }), (error) => error.code === "invalid_message");
+  } else if (scenario === "upstream-parent") {
+    const send = controlledGate();
+    const received = controlledGate();
+    let parent;
+    let parentRuns = 0;
+    controls.chat = async (request) => {
+      if (request.text.includes("UPSTREAM_LEAF")) {
+        await send.promise;
+        assert.match(request.text, /Your direct parent is sub_01/);
+        assert.ok(request.text.includes(parent.socket));
+        const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "write");
+        if (!wrote) return toolAnswer("write", { path: parent.socket, content: '{"content":"UPSTREAM_PARENT_MARKER"}\n' }, "leaf-upstream-write");
+        return textAnswer("Leaf done");
+      }
+      if (request.text.includes("UPSTREAM_PARENT")) {
+        parentRuns++;
+        const created = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent_create");
+        if (!created) return toolAnswer("subagent_create", { tasks: [{ task: "UPSTREAM_LEAF: send to your direct parent" }] });
+        if (request.text.includes("UPSTREAM_PARENT_MARKER")) {
+          assert.match(request.text, /\[Message from sub_01_01\]/);
+          assert.ok(request.context.messages.some((entry) => entry.role === "user" &&
+            (typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content)).includes("[Message from sub_01_01]")),
+          "revival preserves the host-attributed leaf message in the parent's native User input");
+          received.resolve();
+        }
+        return textAnswer("Parent done");
+      }
+      assert.fail("Depth 2 delivery to its direct parent must not wake Main");
+    };
+    parent = await create("UPSTREAM_PARENT: create a leaf, then finish");
+    await stopped(parent.id);
+    const leaf = await item(parent.id + "_01");
+    assert.equal(leaf.parentSocket, parent.socket);
+    send.resolve();
+    await received.promise;
+    await Promise.all([stopped(parent.id), stopped(leaf.id)]);
+    assert.equal(parentRuns, 3, "leaf write revives its stopped parent exactly once");
+    assert.equal(session.messages.some((message) => message.role === "custom" && message.customType === "agent-message"), false);
   } else if (scenario === "sender-wire" || scenario === "sender-context") {
     // The model of sub_01 executes native write to sub_02, rather than the root
     // impersonating a child with a dummy execution context.

@@ -127,7 +127,7 @@ const capabilitySearchParameters = {
 2. 召回层：拉丁词与中文 bigram 的 token 重叠，按字段权重打分；token 相等之外允许前缀命中（`devtool` → `devtools`）。
 3. 兜底层：完全无命中时才允许单字符编辑距离的近似命中，且必须标注为模糊。
 
-每个命中带 `match`（`ref` / `name` / `token` / `fuzzy`）标注精度。排序为：本地优先 → 名称／标题命中优先 → 分数 → ref 稳定序；模糊命中不得排在精确命中之前。
+宿主内部命中带 `match`（`ref` / `name` / `token` / `fuzzy`）标注精度；这些排序诊断不属于 Main 的工具正文，也不由检索 Agent 填写。排序为：本地优先 → 名称／标题命中优先 → 分数 → ref 稳定序；模糊命中不得排在精确命中之前。
 
 远程结果上限 5 条（`CAPABILITY_LIMITS.remote`），与本地三路的 `tools`／`mcp`／`skills` 上限同属 Harness 固定值。
 
@@ -186,8 +186,6 @@ type MCPHit = {
   tool?: string;
   active: boolean;
   connectionState: "connected" | "connecting" | "disconnected" | "unknown";
-  score: number;
-  reason: string;
 };
 ```
 
@@ -207,8 +205,6 @@ type SkillHit = {
   ref: `skill:${string}`;
   name: string;
   description: string;
-  score: number;
-  reason: string;
   bindsTo: Array<ToolRef | MCPRef>;
   caveats: Caveat[];
 };

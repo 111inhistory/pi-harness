@@ -622,6 +622,7 @@ export class SubagentRuntime {
           name: item.name,
           status: item.status,
           socket: getAgentSocketPath(item.agentId, this.#socketDir),
+          parentSocket: getAgentSocketPath(this.#agents.get(item.agentId).parentAgentId ?? MAIN_ACTOR_ID, this.#socketDir),
           history: {
             summary: historyPaths.summary,
             cleanJsonl: historyPaths.cleanJsonl,
@@ -775,6 +776,7 @@ export class SubagentRuntime {
         status: currentStatus,
         budget: budgetJob?.budget ? budgetJob.budget.snapshot() : null,
         socket: getAgentSocketPath(agent.agentId, this.#socketDir),
+        parentSocket: getAgentSocketPath(agent.parentAgentId ?? MAIN_ACTOR_ID, this.#socketDir),
         history: {
           summary: historyPaths.summary,
           cleanJsonl: historyPaths.cleanJsonl,

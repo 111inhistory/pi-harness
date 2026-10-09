@@ -10,8 +10,9 @@
 
 - 主 Agent 只调用 `capability({})`，不传需求、查询、角色、模型、thinking、来源或 Budget；调用阻塞，返回前内部检索已经结束。
 - 内部检索 Agent 继承调用方的原生会话：原始 SessionManager 条目、系统提示词与当前模型，而不是压平后的文本投影。继承的对话是资料，不是发给内部 Agent 的系统指令。
-- 内部 Agent 运行在调用方解析出的同一物理模型上，thinking 固定 low；调用方选择虚拟模型时复用产生该 `capability` 调用的物理模型身份，无法证明身份就显式失败，不重路由。
-- 内部 Agent 只持有 `capability_search` 与 `submit_result` 两个工具，不能调用 `task`、Shell、文件写入或任意其它 Tool／MCP。
+- 内部 Agent 运行在调用方解析出的同一物理模型上，兼容增量工具和中途 system 消息的 Responses 模型沿用父 thinking，其它模型用 low；调用方选择虚拟模型时复用产生该 `capability` 调用的物理模型身份，无法证明身份就显式失败，不重路由。
+- Skill 发现通过 Pi 原生包管理器只读解析已配置、已安装资源（缺失包 skip），再读取原生前言；不依赖当前会话加载或提示词曝光，getCommands() 仅补充 CLI／扩展路径。遵守 manifest、过滤及项目信任，不安装、更新或执行扩展。
+- 内部 Agent 只有 `capability_search` 与 `submit_result` 可执行。兼容 Responses 保留父工具声明为阻断占位工具（无父执行句柄），其它模型只声明两个工具；均不能执行 Shell、文件写入或其它 Tool／MCP。
 - Capability 只检索并返回校验过的真实候选，不执行、下载、安装、启用或连接任何能力；宿主仅把选中的、已经注册且可见的工具用原生 active-tool API 声明为 active，这不是安装、注册或连接代码。Tool／MCP 调用继续走原有入口。
 - 内部会话使用内存 SettingsManager，并清空 packages／extensions／skills／prompts／themes 的来源列表：运行中不触发任何包安装，也不可能把偏好写回调用方或用户的设置文件。
 - `write` 的协议写入本轮只用于 Agent 通信，不是通用工具调用入口。
@@ -35,14 +36,14 @@ const capabilityParameters = {
 
 ```text
 capability({})
-  → 调用方原生会话条目 + 系统提示词 + 当前模型（同一物理模型，thinking low）
-  → 隔离的内部 Pi AgentSession（仅两个固定工具）
+  → 调用方原生会话条目 + 系统提示词 + 当前模型（同一物理模型，兼容 Responses 保留父 thinking，其它用 low）
+  → 隔离的内部 Pi AgentSession（仅两个固定工具可执行）
   → capability_search(query, src)，按结果继续检索
   → submit_result(refs)
   → 宿主校验、激活选中工具并返回真实候选元数据
 ```
 
-内部会话只声明两个工具，不将它们注册到父会话，也不通过公开 `task` 递归创建自身：
+内部会话只允许两个工具执行；兼容 Responses 可保留父声明，但其执行器一律拒绝调用，不携带父工具句柄。不将两个内部工具注册到父会话，也不通过公开 `task` 递归创建自身：
 
 ```js
 capability_search({ query: "Firefox 已有登录态", src: "local" })
@@ -75,7 +76,7 @@ submit_result({ refs: ["skill://firefox-existing-profile"] })
 2. 拉丁词与中文 bigram 的字段加权重叠、token 前缀匹配。
 3. 所有本地组均无主要命中时，才做单字符编辑距离 fuzzy 兜底；远程只在自身无主要命中时兜底。
 
-`match` 标记精度；主要匹配优先，再按分数与 Ref 稳定排序。固定上限为 Tool 8、MCP 8、Skill 6、远程包 5；Skill 候选正文读取数最多 6。正文、Caveat 与 warning 另有固定长度／数量上限，调用方不可覆盖。
+内部检索以 `match` 标记精度；主要匹配优先，再按分数与 Ref 稳定排序。`match`／`score`／`reason` 和诊断 `warnings` 由宿主生成，只保留在内部检索与 details，不交给 Main 的 capability 工具正文；检索 Agent 仅提交 refs，不填写这些字段。固定上限为 Tool 8、MCP 8、Skill 6、远程包 5；Skill 候选正文读取数最多 6。正文、Caveat 与 warning 另有固定长度／数量上限，调用方不可覆盖。
 
 ## 本地资源与返回值
 
@@ -92,8 +93,6 @@ type CapabilityHit = {
   description: string;
   kind: "tool" | "mcp" | "skill" | "package";
   status: "available" | "needs_approval";
-  match: "ref" | "name" | "token" | "fuzzy";
-  score: number;
   // 各类真实元数据，如参数、来源、版本、Skill 约束。
 };
 type CapabilityResult = {
@@ -103,11 +102,12 @@ type CapabilityResult = {
   skills: CapabilityHit[];
   remote: CapabilityHit[];
   missingCapabilities: string[];
-  warnings: string[];
 };
 ```
 
-命中只有本地 `available` 和未安装包 `needs_approval` 两种状态。`available` 表示本地已注册、可发现；必要的真实注册信息可通过 `read` 查询。返回成功后，宿主把选中的、已注册且非 hidden 的工具（含 MCP 工具）用 Pi 原生 active-tool API 声明为 active，并保留原有 active 集合；hidden 工具与失去注册的工具带 warning 跳过，服务器级 `mcp://` Ref 不对应单个工具，不做激活。这是工具激活，不是安装、启用或连接：不下载、不注册、不启动任何代码，也不代表 MCP 服务器在线。最终返回内部 Agent 选择且宿主确认存在的候选，并保留搜索降级与错误。
+上面是 Main 可见结果；宿主的 broker 结果与 details 另保留匹配诊断和 warnings。空 bindsTo／caveats 省略，非空关联和约束作为指导保留，不代表权限。
+
+命中只有本地 `available` 和未安装包 `needs_approval` 两种状态。`available` 表示本地已注册、可发现；必要的真实注册信息可通过 `read` 查询。返回成功后，宿主把选中的、已注册且非 hidden 的工具（含 MCP 工具）用 Pi 原生 active-tool API 声明为 active，并保留原有 active 集合；hidden 工具与失去注册的工具带 warning 跳过，服务器级 `mcp://` Ref 不对应单个工具，不做激活。这是工具激活，不是安装、启用或连接：不下载、不注册、不启动任何代码，也不代表 MCP 服务器在线。最终返回内部 Agent 选择且宿主确认存在的候选；status／missingCapabilities 保留可见状态，搜索降级与错误诊断留在 details。
 
 # 协议读写
 
@@ -479,7 +479,7 @@ Capability 搜索与安装分为三道门：
 ## Capability
 
 - 公开调用只接受 `{}`；内部两个工具不泄漏到父会话。
-- 内部会话继承调用方原生条目、系统提示词与物理模型；虚拟模型选择按产生调用的物理身份复用，thinking 固定 low，不重路由。
+- 内部会话继承调用方原生条目、系统提示词与物理模型；虚拟模型选择按产生调用的物理身份复用，兼容 Responses 保留父 thinking，其它用 low，不重路由。
 - 原生 thinking／签名块原样保留，不经文本压平。
 - 调用阻塞到内部执行结束；模型／预算不由调用方选择。
 - 本地三路并发；远程失败不取消本地，不把错误伪装成无命中。

@@ -1,6 +1,6 @@
 /**
- * Fresh-subagent routing: the two sequential Jev classifications that select a
- * role and then a model, plus the local thinking synthesis.
+ * Fresh-subagent routing: Jev selects a role, then a model from that role's
+ * pool (singleton pools select directly), plus local thinking synthesis.
  *
  * `routeSubagent` composes the batch assignment (the same rule as the child
  * prompt), asks the classifier once for the role over the full assignment,
@@ -10,18 +10,13 @@
  * Tool registration, depth harness tools and the child prompt stay with the
  * adapter.
  *
- * There are exactly two calls per route and no fallback: a missing catalog
+ * There is one role call and, for multi-model pools, one model call; no fallback: a missing catalog
  * entry, a classifier error (including missing provider credentials), an abort
  * or a budget refusal throws SubagentRoutingError instead of degrading into a
  * silent selection.
  */
 
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-
-/** The single production routing config. */
-const CONFIG_URL = new URL("../config/subagent-routing.json", import.meta.url);
-
 /** The automatic path never exceeds high; `max` stays a main-session choice. */
 const THINKING_LEVELS = ["low", "medium", "high"];
 const THINKING_RANK = { low: 0, medium: 1, high: 2 };
@@ -55,10 +50,10 @@ function invalidConfigError(message) {
  * routing dimension.
  */
 function validateConfig(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== 1) {
-    throw invalidConfigError("must be a version 1 JSON object");
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== 2) {
+    throw invalidConfigError("must be a version 2 JSON object");
   }
-  const { classifier, instructions, roles, candidates } = value;
+  const { classifier, instructions, roles, models } = value;
   if (!classifier || !filled(classifier.provider) || !filled(classifier.id)) {
     throw invalidConfigError("classifier needs a provider and an id");
   }
@@ -66,7 +61,13 @@ function validateConfig(value) {
     throw invalidConfigError("instructions need the role and model text");
   }
   if (!Array.isArray(roles) || roles.length === 0) throw invalidConfigError("roles must be a non-empty array");
-  if (!Array.isArray(candidates) || candidates.length === 0) throw invalidConfigError("candidates must be a non-empty array");
+  if (!Array.isArray(models) || models.length === 0) throw invalidConfigError("models must be a non-empty array");
+  const modelIds = new Set();
+  for (const [index, model] of models.entries()) {
+    if (!model || !filled(model.id) || modelIds.has(model.id)) throw invalidConfigError(`models[${index}] needs a unique id`);
+    if (!filled(model.provider) || !filled(model.model) || !filled(model.preference)) throw invalidConfigError(`models[${index}] needs provider, model and preference`);
+    modelIds.add(model.id);
+  }
 
   const roleIds = [];
   for (const [index, role] of roles.entries()) {
@@ -77,40 +78,31 @@ function validateConfig(value) {
     if (!Array.isArray(role.tools) || role.tools.length === 0 || !role.tools.every(filled)) {
       throw invalidConfigError(`roles[${index}].tools must be non-empty tool names`);
     }
+    if (!Array.isArray(role.candidates) || role.candidates.length === 0) throw invalidConfigError(`roles[${index}].candidates must be non-empty`);
+    const poolIds = new Set();
+    for (const candidate of role.candidates) {
+      if (!candidate || !modelIds.has(candidate.model) || poolIds.has(candidate.model)) throw invalidConfigError(`roles[${index}].candidates needs unique refs to global models`);
+      const band = candidate.thinking;
+      if (!band || !THINKING_LEVELS.includes(band.min) || !THINKING_LEVELS.includes(band.max) || THINKING_RANK[band.min] > THINKING_RANK[band.max]) {
+        throw invalidConfigError(`roles[${index}].candidates thinking must have min <= max within low..high`);
+      }
+      poolIds.add(candidate.model);
+    }
     roleIds.push(role.id);
-  }
-
-  const candidateIds = [];
-  for (const [index, candidate] of candidates.entries()) {
-    if (!candidate || !filled(candidate.id) || candidateIds.includes(candidate.id)) {
-      throw invalidConfigError(`candidates[${index}] needs a unique id`);
-    }
-    if (!filled(candidate.provider) || !filled(candidate.model) || !filled(candidate.preference)) {
-      throw invalidConfigError(`candidates[${index}] needs provider, model and preference`);
-    }
-    const band = candidate.thinking;
-    if (!band || !THINKING_LEVELS.includes(band.min) || !THINKING_LEVELS.includes(band.max) || THINKING_RANK[band.min] > THINKING_RANK[band.max]) {
-      throw invalidConfigError(`candidates[${index}].thinking must be a low..high band with min <= max`);
-    }
-    candidateIds.push(candidate.id);
   }
   return value;
 }
 
-let cachedConfig = null;
-
-/** The production config, read and validated once per process. */
-function routingConfig() {
-  if (cachedConfig !== null) return cachedConfig;
-  const path = fileURLToPath(CONFIG_URL);
+/** Read the explicit Pi user config for each new Fresh route; no bundled fallback. */
+export function loadSubagentRoutingConfig(path) {
+  if (!filled(path)) throw invalidConfigError("configPath must name the Pi user's subagent-routing.json");
   let parsed;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
     throw invalidConfigError(`cannot read ${path}: ${messageOf(error)}`);
   }
-  cachedConfig = validateConfig(parsed);
-  return cachedConfig;
+  return validateConfig(parsed);
 }
 
 /**
@@ -236,8 +228,9 @@ async function classifyChoice({ stage, key, registry, classifier, signal, budget
 }
 
 /**
- * Route one Job: one classifier call for the role over `delegated_assignment`,
- * one for the model over the same state plus the actual selected role text.
+ * Route one Job: classify the role over `delegated_assignment`; a multi-model
+ * role pool adds one model call over the assignment plus selected role text.
+ * Global models own Preferences; role pool entries own thinking bands.
  *
  * @param {object} input
  * @param {object} input.registry Model registry with findOfType/classify/find.
@@ -245,11 +238,12 @@ async function classifyChoice({ stage, key, registry, classifier, signal, budget
  * @param {string} [input.context] Batch context shared by the batch.
  * @param {AbortSignal} [input.signal] Cancellation of the calling run.
  * @param {{beginModelCall: () => object}} input.budget The Job budget.
- * @param {object} [input.config] Parsed config replacing the production JSON; tests/internal only.
+ * @param {string} [input.configPath] Pi user routing config path, supplied by the adapter.
+ * @param {object} [input.config] Parsed config for tests/internal callers.
  * @returns {Promise<{roleId: string, instructions: string, model: object, thinkingLevel: string, tools: string[]}>}
  */
-export async function routeSubagent({ registry, task, context = "", signal, budget, config } = {}) {
-  const routing = config === undefined ? routingConfig() : validateConfig(config);
+export async function routeSubagent({ registry, task, context = "", signal, budget, config, configPath } = {}) {
+  const routing = config === undefined ? loadSubagentRoutingConfig(configPath) : validateConfig(config);
   const batchContext = context ?? "";
   if (typeof task !== "string" || task.trim() === "" || typeof batchContext !== "string") {
     throw new SubagentRoutingError("routing_invalid_input", "routeSubagent requires a non-empty task and a string context.", {});
@@ -264,7 +258,7 @@ export async function routeSubagent({ registry, task, context = "", signal, budg
   const delegatedAssignment = composeAssignment(task, batchContext);
   const classifier = resolveClassifier(registry, routing.classifier);
   const roleById = new Map(routing.roles.map((role) => [role.id, role]));
-  const candidateById = new Map(routing.candidates.map((candidate) => [candidate.id, candidate]));
+  const modelById = new Map(routing.models.map((model) => [model.id, model]));
 
   const roleId = await classifyChoice({
     stage: 1,
@@ -282,7 +276,8 @@ export async function routeSubagent({ registry, task, context = "", signal, budg
   });
   const role = roleById.get(roleId);
 
-  const modelId = await classifyChoice({
+  const pool = role.candidates;
+  const modelId = pool.length === 1 ? pool[0].model : await classifyChoice({
     stage: 2,
     key: "model",
     registry,
@@ -296,15 +291,16 @@ export async function routeSubagent({ registry, task, context = "", signal, budg
     question: {
       type: "choice",
       instructions: routing.instructions.model,
-      criteria: Object.fromEntries(routing.candidates.map((candidate) => [candidate.id, candidate.preference])),
+      criteria: Object.fromEntries(pool.map((candidate) => [candidate.model, modelById.get(candidate.model).preference])),
     },
   });
-  const candidate = candidateById.get(modelId);
+  const candidate = pool.find((entry) => entry.model === modelId);
+  const model = modelById.get(modelId);
 
   return {
     roleId,
     instructions: role.instructions,
-    model: resolveChatModel(registry, candidate),
+    model: resolveChatModel(registry, model),
     thinkingLevel: clampThinking(role.thinking, candidate.thinking),
     tools: [...role.tools],
   };

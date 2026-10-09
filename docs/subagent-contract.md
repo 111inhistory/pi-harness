@@ -75,6 +75,7 @@ type TaskBatch = {
       "name": "InspectParser",
       "status": "running",
       "socket": "/tmp/pi-subagents/sub_01.sock",
+      "parentSocket": "/tmp/pi-subagents/Main.sock",
       "history": {
         "summary": ".pi/subagents/sub_01/summary.md",
         "cleanJsonl": ".pi/subagents/sub_01/session.clean.jsonl"
@@ -88,13 +89,15 @@ type TaskBatch = {
 
 ## Fresh 自动路由
 
-配置集中在 [`config/subagent-routing.json`](../config/subagent-routing.json)。两次 Jev 请求有串行依赖，不能合并成两个独立问题：第二次必须读到第一次实际选中的完整角色定义。
+运行配置放在 Pi 用户目录 `<agentDir>/subagent-routing.json`（本机为 `/home/skwj111/pi-harness/.pi-agent/subagent-routing.json`，随 Pi agentDir／PI_CODING_AGENT_DIR 生效）。仓库 [`config/subagent-routing.json`](../config/subagent-routing.json) 仅是模板，不参与运行时回退。每次新建 Fresh Agent 都重新读取该用户文件；改文件无需重载扩展，缺失／非法配置显式失败。Inherited 与已完成路由的 Actor 复活仍沿用既有模型，不重新选择。v2 配置将全局 models（模型绑定和通用 Preference）与 roles[].candidates（该角色允许的模型引用及 thinking 区间）分开。先选角色，再仅在其池内选模型；单候选池直接采用该模型，多候选池的第二次 Jev 请求必须读到第一次实际选中的完整角色定义。
 
 ```mermaid
 flowchart TD
   A[原始 context 与 task] --> B[Jev：选择角色]
-  B --> C[Jev：原任务加已选角色全文，选择模型]
-  C --> D[本地合成 thinking]
+  B --> P{角色候选池大小}
+  P -->|多个| C[Jev：仅在该角色池内，按通用 Preference 选模型]
+  P -->|一个| D[按角色候选区间合成 thinking]
+  C --> D
   D --> E[原生 Pi 子 Session 执行]
   E --> F[最终文本包含实际困难度与事实理由]
 ```
@@ -105,16 +108,17 @@ flowchart TD
 | --- | --- |
 | 分类器 | provider `openrouter`，id `~typesafe/jev-latest` |
 | TypeSafe 替代配置 | provider `typesafe`，id `jev-latest` |
-| Gemini 候选 | provider `openrouter`，model `~google/gemini-pro-latest` |
-| DeepSeek 候选 | provider `openrouter`，model `~deepseek/deepseek-pro-latest` |
+| Gemini 候选（当前用户配置／模板） | provider `antigravity`，model `gemini-3.8-flash` |
+| DeepSeek 候选（当前用户配置／模板） | provider `deepseek`，model `deepseek-flash` |
 | 角色期望 thinking | researcher：medium；executor、reviewer：high |
-| 两个候选的策略区间 | low 至 high |
+| researcher／executor 候选池 | Gemini、DeepSeek；各自 low 至 high |
+| reviewer 候选池 | 仅 `openai-codex/gpt-6.1-sol`；min = max = high |
 
-这些 ID 来自本机 Pi 0.99.2 的内置目录；`latest` 别名的实际服务版本由提供商解析，不把别名写成固定模型版本。
+这些 ID 来自本机 Pi 模型目录与已加载的提供商扩展；`latest` 别名的实际服务版本由提供商解析，不把别名写成固定模型版本。
 
-调用使用 `ctx.modelRegistry.findOfType("classifier", provider, id)` 与 `ctx.modelRegistry.classify(model, { state, questions }, { signal })`。模型执行使用原生 registry 里的 chat model。凭据由 Pi 管理，本模块不实现 HTTP、密钥存储或提供商切换：默认需要配置 OpenRouter；分类器改成 TypeSafe 后，默认执行候选仍需要 OpenRouter 凭据，除非也修改候选绑定。
+调用使用 `ctx.modelRegistry.findOfType("classifier", provider, id)` 与 `ctx.modelRegistry.classify(model, { state, questions }, { signal })`。模型执行使用原生 registry 里的 chat model。凭据由 Pi 管理，本模块不实现 HTTP、密钥存储或提供商切换：当前 OpenRouter 只用于 JEV 分类，执行使用各候选自己的提供商认证：Antigravity、DeepSeek 或 Codex。
 
-配置在模块中读取并缓存；修改配置后重启 Pi 可确保新 Fresh Agent 使用新配置。已有会话继续使用已经选定的角色、实际模型、thinking 与工具，不因配置变化或续跑重新分类。
+用户文件不缓存；每次新 Fresh 路由重新读取，配置修改不需要重启。已有会话继续使用已经选定的角色、实际模型、thinking 与工具，不因配置变化或续跑重新分类。
 
 ### 两阶段输入
 
@@ -133,7 +137,7 @@ flowchart TD
 无背景时使用 `task` 原文。不摘要、不翻译、不裁剪，也不设 CJK 拒绝门槛。
 
 1. **选择角色**：state 为 `{ delegated_assignment }`，单选问题 `role` 的 criteria 是每个角色的完整指令。按实际交付物、范围与授权选择，不预测模型或 thinking。
-2. **选择模型**：沿用同一作业文本，追加 `selected_role: { id, instructions }`；`instructions` 是所选角色全文，不是角色标签。问题 `model` 的 criteria 是候选模型 Preference，不再重选角色。
+2. **选择模型**：沿用同一作业文本，追加 `selected_role: { id, instructions }`；`instructions` 是所选角色全文，不是角色标签。问题 `model` 的 criteria 仅包含该角色池的模型，内容引用全局通用 Preference，不在角色内复制；不再重选角色。单候选池不发第二次分类请求。
 
 使用原生 choice answer 的有效概率分布取确定性的最大项；并列保持配置顺序。无效回答、分类器错误、取消、预算不足或所选模型不在目录中，都显式失败，不补默认选择、不自动重试或换提供商。
 
@@ -141,12 +145,12 @@ flowchart TD
 
 - 当前配置包含 researcher／executor／reviewer。角色说明涵盖责任、工作方式、权限边界与完成要求；工具装载另由配置给出，Jev 不生成工具配置。
 - 研究以理解、诊断、解释和方案为交付物；执行以授权改动为交付物，包括改动内部的调查和验证；审查独立报告问题，不默默代为修复。
-- 模型与角色是独立维度，没有固定 `(model, role)` 组合。Preference 记录本地经验中的优势、局限与取舍，不是通用 benchmark 或价格排名。
-- 角色期望 thinking 先限制在候选的 `[min, max]` 区间，配置只允许 low／medium／high，自动路径不超过 high；Pi 根据实际模型能力做最终 clamp，不在 Harness 再写一套模型能力规则。
+- 模型元数据／Preference 与角色分开配置，可复用同一个全局模型；允许的模型组合由每个角色的候选池明确限制。Preference 记录本地经验中的优势、局限与取舍，不是通用 benchmark 或价格排名。
+- 角色期望 thinking 先限制在该角色候选项的 `[min, max]` 区间；min = max 合法，固定为该等级（reviewer 的 Sol 为 high..high）。同一个全局模型在不同角色池可有不同区间。配置只允许 low／medium／high，自动路径不超过 high；Pi 根据实际模型能力做最终 clamp，不在 Harness 再写一套模型能力规则。
 - 完成要求包含实际困难度 low／medium／high 加一句事实理由。它是最终文本的一部分，随结果与历史保存；没有结构化提交、强制解析、第三次分类、presetFit 或自动学习。
 - 角色指令与工具装载不是文件系统沙箱；所有 Agent 当前共享工作目录。
 
-实验依据保留在 [路由实验记录](subagent-routing-experiment.md) 和 [后续评测结论](../experiments/jev-routing/CONCLUSIONS.md)：前者 10 案例／40 请求，后者 28 历史案例／112 请求。生产配置复制了后续实验的角色、指令与 Preference，不在运行时依赖实验目录。旧实验与离线集成验证都不能证明候选模型的实时执行质量、中文表现或困难度反馈校准效果。
+实验依据保留在 [路由实验记录](subagent-routing-experiment.md) 和 [后续评测结论](../experiments/jev-routing/CONCLUSIONS.md)：前者 10 案例／40 请求，后者 28 历史案例／112 请求。用户配置／仓库模板沿用后续实验的角色、指令与 Preference；执行模型绑定由用户文件指定，目前 OpenRouter 仅用于 JEV、DeepSeek 仅用 Flash，不在运行时依赖实验目录，也不自动安装模型或加载模板。旧实验与离线集成验证都不能证明候选模型的实时执行质量、中文表现或困难度反馈校准效果。
 
 ## 上下文与续跑
 
@@ -177,6 +181,12 @@ flowchart TD
 1. **单一稳定 Socket 治理**：每个短 ID（如 `sub_01`）在当前根会话命名空间内（物理路径基于根 Session ID 派生的 6 位短 hash UID：`/tmp/pi-subagents/<uid>/<id>.sock`）终身只拥有一个唯一的 Socket 文件。Agent 处于 stopped 状态时，Socket 由宿主监听器维持接管，收到新写入自动 revive 该会话，严禁每次 revive 创建新 socket 导致 socket 泄漏过量。
 2. **单一稳定双轨历史治理**：每个短 ID 在会话工作区物理路径下（`.pi/subagents/<uid>/<id>/`，基目录绑定根会话 cwd）终身只对应一对固定的历史文件（`summary.md` 与 `session.clean.jsonl`）。revive 续跑产生的记录以 Append-Only 方式在原有文件末尾追加（Markdown 追加续写小节，JSONL 追加新行），严禁产生多份分裂碎片化的历史文件。所有终态转换（completed、cancelled、failed）发布前，必须等待 Clean JSONL 串行追加链完全落盘。
 
+### 向直接父级投递
+
+create／list 返回 parentSocket，子 Agent 的上下文也明确告知父级身份和端点。Depth 1 写 `/tmp/pi-subagents/<uid>/Main.sock`，Depth 2 写对应 Depth 1 的 `<parentId>.sock`；报文仍为一行 `{ "content": "..." }` 加换行，from 由当前 Agent 的 write backend 绑定。Main 收件入口不是 `main/children.sock`，后者只向下广播。
+
+Main 空闲时显式消息触发下一轮；Main 正在运行时通过 Pi 原生 steer 注入，不并发启动另一轮。停止的子级父 Agent 收到显式消息仍沿既有 revive 逻辑续跑。正常完成不会自动发消息或唤醒 Main。Main 的端点在新会话与恢复时建立，reload 后重建，根会话关闭时随其它 Socket 一起清理；不新增握手、ACK、重试或收件箱。
+
 ## 调度、状态与 Budget
 
 当前所有 Job 都是 deferred。blocking、混合等待批次、`waiting` 和同步等待暂缓，不提供 `wait` 接口（随时可 `subagent_stop` 并拉取历史）。状态通过 `subagent_list` 查询，历史直接通过双轨文件读取。
@@ -205,7 +215,7 @@ Job 状态为 `running`、`stopping`、`finalizing`、`completed`、`failed`、`
 | 1 | 160 / 200 | 90 / 120 分钟 | 24 小时 |
 | 2 | 48 / 64 | 45 / 60 分钟 | 12 小时 |
 
-- 聊天、Compact 摘要及摘要重试在共享 stream 边界预扣；Fresh 的两次 Jev classify 也各预扣一次同 Job 的 Model Call。Tool Call 不单独计数。
+- 聊天、Compact 摘要及摘要重试在共享 stream 边界预扣；Fresh 的每次 Jev classify 也预扣一次同 Job 的 Model Call（单候选池共一次，多候选池共两次）。Tool Call 不单独计数。
 - 第 hard 次可以执行，预计 hard+1 在请求前拒绝。达到 Soft 只提示一次，不暴露具体阈值。
 - Active Time 从 adapter 启动开始累计，stopping 等实际退出期间仍计。finalizing 只刷盘、不继续计执行预算；不设置全局执行槽位。
 - Model Calls／Active Time 超限使用 `budget_exceeded`，lifetime 到期使用 `job_expired`；最终为 failed，不追加收尾模型调用，保留部分结果与历史。
@@ -318,7 +328,7 @@ Main/Subagent
       "id": "sub_01",
       "name": "InspectParser",
       "depth": 1,
-      "parentId": "main",
+      "parentId": "Main",
       "status": "running",
       "budget": {
         "modelCalls": 12,
@@ -326,6 +336,7 @@ Main/Subagent
         "phase": "normal"
       },
       "socket": "/tmp/pi-subagents/sub_01.sock",
+      "parentSocket": "/tmp/pi-subagents/Main.sock",
       "history": {
         "summary": ".pi/subagents/sub_01/summary.md",
         "cleanJsonl": ".pi/subagents/sub_01/session.clean.jsonl"

@@ -1,0 +1,72 @@
+{
+  "totalCases": 472,
+  "attempted": 472,
+  "completed": 472,
+  "errors": 0,
+  "roleMatches": 44,
+  "labeledCases": 54,
+  "roleMismatches": [
+    {
+      "id": "benchmark_02_dailyntfsinventory",
+      "expected": "executor",
+      "actual": "researcher"
+    },
+    {
+      "id": "benchmark_06_locallutris",
+      "expected": "executor",
+      "actual": "researcher"
+    },
+    {
+      "id": "benchmark_08_libmpvrenderrepro",
+      "expected": "executor",
+      "actual": "researcher"
+    },
+    {
+      "id": "benchmark_10_persistompconfig",
+      "expected": "researcher",
+      "actual": "executor"
+    },
+    {
+      "id": "benchmark_11_updatedefaultpromemo",
+      "expected": "researcher",
+      "actual": "executor"
+    },
+    {
+      "id": "benchmark_12_emitterprotocol",
+      "expected": "executor",
+      "actual": "researcher"
+    },
+    {
+      "id": "benchmark_15_irlightreview",
+      "expected": "executor",
+      "actual": "reviewer"
+    },
+    {
+      "id": "benchmark_16_coredaemonaudit",
+      "expected": "executor",
+      "actual": "reviewer"
+    },
+    {
+      "id": "en_17_verifynonestedagentapi",
+      "expected": "researcher",
+      "actual": "reviewer"
+    },
+    {
+      "id": "en_18_verifyextraexamples",
+      "expected": "researcher",
+      "actual": "reviewer"
+    }
+  ],
+  "selectedModels": {
+    "gemini": 9,
+    "deepseek": 358,
+    "sol": 105
+  },
+  "sampleSeed": "d0b7b878b45c919039dca6a1889717b2",
+  "sampleSize": 20,
+  "newApiRequests": 367,
+  "reusedRoleResponses": 472,
+  "apiRequests": 839,
+  "costUsd": 0.056637125999999996,
+  "output": "/tmp/pi-current-jev-results"
+}
