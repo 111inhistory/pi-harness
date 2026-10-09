@@ -19,9 +19,9 @@ const CONFIG = {
     model: "Select the model for delegated_assignment under selected_role.",
   },
   roles: [
-    { id: "researcher", instructions: "RESEARCH INSTRUCTIONS", thinking: "medium", tools: ["read", "bash"] },
-    { id: "executor", instructions: "EXECUTOR INSTRUCTIONS", thinking: "high", tools: ["read", "bash", "edit", "write"] },
-    { id: "reviewer", instructions: "REVIEWER INSTRUCTIONS", thinking: "high", tools: ["read"] },
+    { id: "researcher", instructions: "RESEARCH INSTRUCTIONS", thinking: "medium", excludeTools: ["edit", "write", "grep", "find", "ls"], enableTools: ["msg_write"] },
+    { id: "executor", instructions: "EXECUTOR INSTRUCTIONS", thinking: "high", excludeTools: ["grep", "find", "ls"], enableTools: [] },
+    { id: "reviewer", instructions: "REVIEWER INSTRUCTIONS", thinking: "high", excludeTools: ["bash", "edit", "write", "grep", "find", "ls"], enableTools: ["msg_write"] },
   ].map((role) => ({ ...role, candidates: [
     { model: "gemini", thinking: { min: "low", max: "medium" } },
     { model: "deepseek", thinking: { min: "low", max: "high" } },
@@ -118,7 +118,9 @@ test("routes with exactly two classifier calls over the full assignment", async 
   assert.equal(result.instructions, "EXECUTOR INSTRUCTIONS");
   assert.equal(result.model, DEEPSEEK);
   assert.equal(result.thinkingLevel, "high");
-  assert.deepEqual(result.tools, ["read", "bash", "edit", "write"]);
+  assert.deepEqual(result.excludeTools, ["grep", "find", "ls"]);
+  assert.deepEqual(result.enableTools, []);
+  assert.equal("tools" in result, false);
 });
 
 test("keeps batch context bytes; a blank context falls back to the task alone", async () => {
@@ -310,7 +312,7 @@ test("a malformed config fails before any classifier call", async () => {
   const registry = createRegistry();
   const budget = createBudget();
 
-  const badThinking = { ...CONFIG, roles: [{ id: "researcher", instructions: "TEXT", thinking: "max", tools: ["read"] }] };
+  const badThinking = { ...CONFIG, roles: [{ id: "researcher", instructions: "TEXT", thinking: "max", excludeTools: [] }] };
   await assert.rejects(
     routeSubagent({ registry, budget, task: "TASK", config: badThinking }),
     routingError("routing_invalid_config"),
@@ -322,6 +324,11 @@ test("a malformed config fails before any classifier call", async () => {
     routingError("routing_invalid_config"),
   );
 
+  for (const patch of [{ tools: ["read"] }, { excludeTools: undefined }, { enableTools: "msg_write" }, { enableTools: ["*"] }]) {
+    const config = structuredClone(CONFIG);
+    Object.assign(config.roles[0], patch);
+    await assert.rejects(routeSubagent({ registry, budget, task: "TASK", config }), routingError("routing_invalid_config"));
+  }
   assert.equal(registry.calls.length, 0);
   assert.deepEqual(budget.debits, []);
 });

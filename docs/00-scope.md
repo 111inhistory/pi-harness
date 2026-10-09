@@ -65,7 +65,7 @@
 12. Thinking 由角色期望档位限于模型策略区间，使用 low／medium／high，自动路径不超过 high；模型实际支持档位由 Pi 最终处理。困难度反馈存于最终文本和原生历史，不另做解析、校准或自动学习。
 13. 自动路由与 Inherited Subagent 的交互（继承子代理是否重选模型或身份）未定案；当前继承语义（父模型、系统提示词、完整有效上下文）继续作为已记录行为保留。
 14. Capability 内部检索继承调用方原生会话作为阻塞式 Inherited Subagent 并运行在同一物理模型（兼容 Responses 保留父 thinking，其它用 low，不改变调用方设置），并发检索并直接返回结果；调用阻塞直到内部执行结束。
-15. `msg_write` 复用 Socket-aware backend，只向 `.sock` 单向投递消息；原生 `write` 只写文件。受管理端点注入真实发送者；广播还须校验发送者与端点所属父节点一致。非 Subagent Socket 仅按原内容单向写入（缺少末尾换行时补齐），不注入 Agent 字段、不按同名 Agent 状态拒绝、不触发 Agent 生命周期。端点归属依据宿主注册表及实际路径，而非文件后缀或 basename。每个 Agent 终身绑定唯一的 Socket 与唯一一对双轨历史文件，stop 后写 socket 自动 revive 续跑并追加历史，严格杜绝 socket 泄漏与多重历史文件碎片化。
+15. `msg_write` 复用 Socket-aware backend，只向 `.sock` 单向投递消息；覆盖原生工具的 `write` 同时支持文件和 Socket。msg_write 默认不启用，由只读角色的 enableTools 显式启用，作为 write 的 Socket-only 替代形态。受管理端点注入真实发送者；广播还须校验发送者与端点所属父节点一致。非 Subagent Socket 仅按原内容单向写入（缺少末尾换行时补齐），不注入 Agent 字段、不按同名 Agent 状态拒绝、不触发 Agent 生命周期。端点归属依据宿主注册表及实际路径，而非文件后缀或 basename。每个 Agent 终身绑定唯一的 Socket 与唯一一对双轨历史文件，stop 后写 socket 自动 revive 续跑并追加历史，严格杜绝 socket 泄漏与多重历史文件碎片化。
 
 ## 暂未决定
 

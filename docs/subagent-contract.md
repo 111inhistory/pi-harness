@@ -11,7 +11,7 @@
 - Fresh 自动路由直接使用 Pi 内置 TypeSafe／OpenRouter 的 Jev，不另造请求、鉴权或通用分类器框架。
 - 结构化结果返回不做，不保留 `outputSchema`／`schemaMode` 目标。
 - blocking、`waiting` 与同步等待暂缓；所有任务仍为 deferred，不提供 `wait` 接口，直接 `stop` 后读取历史。
-- 废除原虚拟协议（Protocol IO 及 `agent://`、`history://`），`write` 只写文件；独立 `msg_write` 复用 Socket-aware backend，负责 Unix Domain Socket（NDJSON）单向投递。只读角色仍保留消息工具。
+- 废除原虚拟协议（Protocol IO 及 `agent://`、`history://`），覆盖原生工具的 `write` 同时支持文件与 Socket；`msg_write` 复用同一 backend，但只提供 Unix Domain Socket（NDJSON）单向投递。两者静态注册；只读角色通过路由配置额外启用 msg_write，而不是由宿主根据 write 是否启用动态路由。
 - 双轨历史直接暴露物理路径给发起者：Compacted Markdown（参考 OMP，供 LLM 读）与 Clean JSONL（去流式碎片，供 grep/rg/jq 检索）。
 - 消息通过向 Socket 写入自动投递给对应 Agent，无需额外设计通知总线；仅在 subagent 异常时由宿主向上层抛出 Notification。
 - **发送者归属修订**：受管理的 Subagent Socket 报文必须携带真实调用者的 `from`，由该会话的 write backend 绑定；不能把所有单点消息当作 Main，也不能从广播端点反推实际发送者。来源绑定的实现仍待补齐，详见通信章节。
@@ -21,7 +21,7 @@
 
 ## 默认发现与启用
 
-- 三个控制工具归入原生 `subagent` namespace，Main 注册时默认不 active；Depth 1 的 Fresh／Inherited 均显式装载 create／list／stop 与 Capability。Depth 2 只有 list 和 msg_write，不注册 Capability／create／stop。
+- 三个控制工具归入原生 `subagent` namespace，Main 注册时默认不 active；Depth 1 的 Fresh／Inherited 均显式装载 create／list／stop 与 Capability。Depth 2 只装载 list 控制工具，不注册 Capability／create／stop；write／msg_write 按角色配置启用。
 - Capability 依赖 Subagent 扩展已加载，但不要求其工具 active。按一个 namespace 候选返回共同说明与全部可达成员，选中后将可直接声明的成员一起激活。
 - Socket 通信与生命周期规则归 namespace 的共同说明；普通 `write` 的模型说明与 schema 保持原生；`msg_write` 单独说明 Socket 消息格式。
 
@@ -87,6 +87,8 @@ type TaskBatch = {
 条目没有 `delivery` 字段，也不内联完整结果。发起者可通过 msg_write socket 单向投递消息，通过文件系统直接读取 `summary.md` 或对 `session.clean.jsonl` 进行 grep/rg/jq 检索。Inherited 中不能移植的外部扩展工具仍通过 `warnings` 明示，不因移除工具选择参数而静默消失。
 
 ## Fresh 自动路由
+
+角色配置必填 `excludeTools` 黑名单（可为空），可选 `enableTools` 额外启用列表。两者使用完整工具名，不支持 glob；旧角色 `tools` 白名单不再接受。迁移后的实际用户配置与模板保留原有原生权限：researcher／reviewer 禁止 edit、write、grep、find、ls，并启用 msg_write；executor 禁止 grep、find、ls，不额外启用 msg_write。启用不越过直接父级资格或角色黑名单。Inherited／复活保留实际工具 loadout；旧 checkpoint 的工具快照兼容与配置白名单是不同职责。
 
 运行配置放在 Pi 用户目录 `<agentDir>/subagent-routing.json`（本机为 `/home/skwj111/pi-harness/.pi-agent/subagent-routing.json`，随 Pi agentDir／PI_CODING_AGENT_DIR 生效）。仓库 [`config/subagent-routing.json`](../config/subagent-routing.json) 仅是模板，不参与运行时回退。每次新建 Fresh Agent 都重新读取该用户文件；改文件无需重载扩展，缺失／非法配置显式失败。Inherited 与已完成路由的 Actor 复活仍沿用既有模型，不重新选择。v2 配置将全局 models（模型绑定和通用 Preference）与 roles[].candidates（该角色允许的模型引用及 thinking 区间）分开。先选角色，再仅在其池内选模型；单候选池直接采用该模型，多候选池的第二次 Jev 请求必须读到第一次实际选中的完整角色定义。
 
@@ -228,7 +230,7 @@ Job 状态为 `running`、`stopping`、`finalizing`、`completed`、`failed`、`
 ### 1. Write Socket 单向消息投递
 
 - **单向投递原则**：发起者通过向对应 Subagent 的 Unix Domain Socket（如 `/tmp/pi-subagents/<id>.sock`）单向写入 NDJSON 报文完成消息投递，不走双向连接应答；子 Agent 的产出与进展统一通过双轨历史文件读取。
-- **独立消息工具**：`msg_write` 使用既有 Socket-aware `WriteOperations`，只接受 `.sock` 路径并通过 `net.connect()` 单向写入；`write` 保留文件操作，遇到 `.sock` 提示使用 msg_write。Subagent 消息语义只适用于当前宿主注册表中受管理的 Socket，不能仅凭 `.sock` 后缀或 `sub_01` 这样的 basename 判断端点归属。
+- **两种写入形态**：`write` 覆盖 Pi 原生工具，使用既有 Socket-aware `WriteOperations` 静态支持文件与 Socket；`msg_write` 默认不启用，使用同一 backend，但只接受 `.sock` 路径。researcher／reviewer 配置 `excludeTools` 禁止通用 write，并通过 `enableTools: ["msg_write"]` 显式启用替代形态；executor 使用通用 write。Subagent 消息语义只适用于当前宿主注册表中受管理的 Socket，不能仅凭 `.sock` 后缀或 `sub_01` 这样的 basename 判断端点归属。
 - **报文格式**：受管理端点统一采用 **UTF-8 NDJSON（Newline-Delimited JSON，换行分隔的 JSON）**。每条消息必须为完整单行 JSON 并以 `\n` 结尾；网络数据块边界不是字符或消息边界。
 - **自动投递（Notification 内置）**：
   - 发起者向 Socket 投递消息后，由底层的通信监听器自动转发并唤醒对应 Subagent 处理，**不需要额外设计通知总线机制**。

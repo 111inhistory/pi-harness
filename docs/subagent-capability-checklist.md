@@ -4,9 +4,9 @@
 
 ## 1. 基础 I/O
 
-- [x] 将文件写入与 Socket 消息写入拆为两个工具：`write`（可覆盖 Pi 原生同名工具）和 `msg_write`。
+- [x] 静态注册两种写入形态：`write` 覆盖 Pi 原生同名工具，保留文件＋Socket；`msg_write` 是同一 backend 的 Socket-only 替代形态，默认不启用。
 - [x] `msg_write` 继续接收 Socket 路径及 NDJSON 内容，由现有 host backend 绑定发送者，不允许普通文件写入。
-- [x] 所有 Subagent 保留 `msg_write`，与角色文件修改权限分离。
+- [x] 路由配置删除旧 roles[].tools 白名单，使用 excludeTools 黑名单和 enableTools 额外启用列表；researcher／reviewer 启用 msg_write，executor 使用通用 write。不按启用列表动态改变 write backend。
 - [x] 修复已确认的上行失败：只读角色缺 write → Python 原生 Socket 绕过绑定 → 缺失 from 被当成 Main → Main 向自己发消息被拒绝。不要靠猜测发送者或取消 self-send 检查修复。
 
 ## 2. Capability 运行时范围
@@ -21,7 +21,7 @@
 ## 3. 层级工具曝光
 
 - [x] depth 1 的 Fresh / Inherited 均实际暴露 Capability 和 Subagent create / list / stop；不只验证注册状态。
-- [x] depth 2 不暴露 Capability、Subagent create 或 stop；保留 list 和 `msg_write`。
+- [x] depth 2 不暴露 Capability、Subagent create 或 stop；保留 list；write／msg_write 按角色配置启用。
 - [x] 继承方式只影响上下文继承，不决定 depth 1 是否可创建 depth 2。
 - [x] list 的初始范围保持要求已被后续授权替换：默认按调用者拓扑筛选，`all: true` 展示全部。
 
@@ -58,7 +58,7 @@
 
 | 概念 | 判定 | 证据与理由 |
 |---|---|---|
-| 独立 `msg_write` | Replace | 已有子会话用 Python 绕过 host 绑定、Main 收到 self-send 错误；将通信入口从文件写权限中分离，复用既有 Socket backend。 |
+| Socket-only `msg_write` 替代形态 | Replace | 已有子会话用 Python 绕过 host 绑定、Main 收到 self-send 错误；将通信入口从文件写权限中分离，复用既有 Socket backend。 |
 | 父级可用集合与角色限制 | Keep | 用户明确要求子级不扩权，且父级新增能力可向下添加；这些是现有真实权限差异。 |
 | 新的独立权限管理框架 | Merge | 范围检查并入已有 Capability / 激活路径，另建一层没有独立责任。 |
 | 权限撤销与反向传播 | Defer | 当前只增不减，没有撤销调用方；本轮不实现。 |

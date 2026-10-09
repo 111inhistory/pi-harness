@@ -40,8 +40,8 @@ import {
 
 const MAX_AGENT_DEPTH = 2;
 const NATIVE_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"];
-const HARNESS_TOOLS = ["subagent_create", "subagent_list", "subagent_stop", "capability", "msg_write"];
-const LEAF_HARNESS_TOOLS = ["subagent_list", "msg_write"];
+const HARNESS_TOOLS = ["subagent_create", "subagent_list", "subagent_stop", "capability"];
+const LEAF_HARNESS_TOOLS = ["subagent_list"];
 const MESSAGE_CUSTOM_TYPE = "agent-message";
 const COMPLETION_CUSTOM_TYPE = "agent-completion";
 /** Job statuses that never reached a terminal state in their own process. */
@@ -54,9 +54,9 @@ const SUBAGENT_NAMESPACE = Object.freeze({
     "Where available, use subagent_create to delegate independent tasks. Fresh agents need self-contained task/context; inheritContext copies this session's snapshot. Agents share the working directory; avoid simultaneous edits to the same files.",
     "Each parent can have four active children, with two child levels. Normal completion does not wake you; use subagent_list and read history.summary for the outcome or history.cleanJsonl for full messages.",
     "running includes initialization; stopping waits for execution exit; finalizing writes history; stopped means ended, not necessarily succeeded. Use subagent_stop only to cancel unwanted work.",
-    'To send a message, use msg_write with the returned socket path and one JSON object per line: {"content":"Please check the tests"}, ending with a newline. The host binds the sender; omit from and to.',
-    "To contact your direct parent, use msg_write with the parent socket stated in your agent context. Main's receiving socket is distinct from main/children.sock; the latter only broadcasts downward.",
-    "A successful msg_write is not a task result. Writing to a stopped agent starts a new run; wait for stopped before messaging an agent that is stopping or finalizing.",
+    'To send a message, use write if enabled, otherwise msg_write, with the returned socket path and one JSON object per line: {"content":"Please check the tests"}, ending with a newline. The host binds the sender; omit from and to.',
+    "To contact your direct parent, use your enabled write or msg_write with the parent socket stated in your agent context. Main's receiving socket is distinct from main/children.sock; the latter only broadcasts downward.",
+    "A successful Socket write is not a task result. Writing to a stopped agent starts a new run; wait for stopped before messaging an agent that is stopping or finalizing.",
     "Your children.sock endpoint broadcasts only to your direct children, never recursively. Query progress when needed, not in a tight loop.",
   ].join("\n"),
 });
@@ -852,6 +852,7 @@ function installSessionSurface(pi, resolveService, { allowInherited, parentAgent
   pi.registerTool({
     ...messageTool,
     name: "msg_write",
+    defaultActive: false,
     label: "Send Agent Message",
     description: 'Send messages to a Unix Socket path ending in .sock. For agent messages supply NDJSON content and omit from and to. Cannot write files.',
     promptSnippet: "Send messages to agents through their Socket paths",
@@ -869,14 +870,7 @@ function installSessionSurface(pi, resolveService, { allowInherited, parentAgent
       return messageTool.execute(...args);
     },
   });
-  const fileTool = createWriteToolDefinition(workCwd);
-  pi.registerTool({
-    ...fileTool,
-    async execute(...args) {
-      if (args[1].path.endsWith(".sock")) throw new Error("Use msg_write for Socket messages.");
-      return fileTool.execute(...args);
-    },
-  });
+  pi.registerTool(messageTool);
 }
 
 function createTool(pi, resolveService, { allowInherited, parentAgentId, depth }) {
@@ -976,7 +970,7 @@ function harnessToolsForDepth(depth) {
 }
 
 function transplantableToolNames(pi, childDepth) {
-  const names = new Set([...harnessToolsForDepth(childDepth), "read", "write"]);
+  const names = new Set([...harnessToolsForDepth(childDepth), "read", "write", "msg_write"]);
   for (const tool of pi.getAllTools()) {
     if (tool?.sourceInfo?.source === "builtin") names.add(tool.name);
   }
@@ -1021,26 +1015,14 @@ function captureContextForChild(pi, ctx, childDepth) {
 /**
  * The tool allowlist an Inherited Job starts with: the captured parent loadout
  * filtered to what Pi's public API can transplant, plus this depth's harness
- * tools. A Fresh Job's allowlist comes from the routed role (see
- * `routedToolNames`) and is resolved inside the Job, after routing.
+ * tools. A Fresh Job uses the SDK's initial loadout, filtered by its parent's
+ * eligibility and the routed role's explicit blacklist.
  */
 function inheritedToolNames(pi, snapshot, childDepth) {
   const dropped = new Set(droppedInheritedTools(pi, snapshot?.tools, childDepth));
   const tools = [];
   for (const name of Array.isArray(snapshot?.tools) ? snapshot.tools : []) {
     if (typeof name === "string" && name !== "" && !dropped.has(name) && !tools.includes(name)) tools.push(name);
-  }
-  for (const name of harnessToolsForDepth(childDepth)) {
-    if (!tools.includes(name)) tools.push(name);
-  }
-  return tools;
-}
-
-/** The routed role's configured tools plus this depth's harness tools. */
-function routedToolNames(roleTools, childDepth) {
-  const tools = [];
-  for (const name of Array.isArray(roleTools) ? roleTools : []) {
-    if (typeof name === "string" && name !== "" && !tools.includes(name)) tools.push(name);
   }
   for (const name of harnessToolsForDepth(childDepth)) {
     if (!tools.includes(name)) tools.push(name);
@@ -1234,6 +1216,7 @@ function startPiJob(service, request) {
     let model = retained?.model ?? null;
     let thinkingLevel = retained?.thinkingLevel ?? null;
     let plannedTools = retained?.tools ?? null;
+    let enabledTools = [];
     let excludedTools = retained?.excludedTools ?? (retained?.roleId ? NATIVE_TOOL_NAMES.filter((name) => !plannedTools?.includes(name)) : []);
     if (retained !== null && retained.routed && retained.modelRef !== null && model === null) {
       throw new SubagentError(
@@ -1274,8 +1257,8 @@ function startPiJob(service, request) {
       roleInstructions = routed.instructions;
       model = routed.model;
       thinkingLevel = routed.thinkingLevel;
-      plannedTools = routedToolNames(routed.tools, request.depth);
-      excludedTools = [...new Set([...(routed.excludeTools ?? []), ...NATIVE_TOOL_NAMES.filter((name) => !routed.tools.includes(name))])];
+      excludedTools = [...routed.excludeTools];
+      enabledTools = [...routed.enableTools];
       identitySettled = true;
     }
 
@@ -1350,7 +1333,7 @@ function startPiJob(service, request) {
       ...(systemPrompt !== null ? { systemPrompt } : {}),
       appendSystemPrompt: [
         ...(roleInstructions !== null ? [roleInstructions] : []),
-        `You are Subagent ${request.agentId}. Your direct parent is ${request.origin?.agentId ?? "Main"}. To message that parent, use msg_write with parentSocket ${getAgentSocketPath(request.origin?.agentId ?? "Main", service.socketDir)} and NDJSON {"content":"your message"} followed by a newline; omit from and to. This explicitly delivers a message, not an automatic completion notification.`,
+        `You are Subagent ${request.agentId}. Your direct parent is ${request.origin?.agentId ?? "Main"}. To message that parent, use your enabled write or msg_write with parentSocket ${getAgentSocketPath(request.origin?.agentId ?? "Main", service.socketDir)} and NDJSON {"content":"your message"} followed by a newline; omit from and to. This explicitly delivers a message, not an automatic completion notification.`,
       ],
     });
     await resourceLoader.reload();
@@ -1370,7 +1353,7 @@ function startPiJob(service, request) {
     throwIfBudgetFailed(request.budget);
     session = created.session;
     live.session = session;
-    plannedTools = [...new Set([...(plannedTools ?? []), ...harnessToolsForDepth(request.depth)])];
+    plannedTools = [...new Set([...(plannedTools ?? session.getActiveToolNames()), ...enabledTools, ...harnessToolsForDepth(request.depth)])];
     session.setActiveToolsByName(plannedTools.filter((name) => capabilityAllowsTool(live.pi, name)));
     capabilityAvailableTools(live.pi);
     // The session's own loadout and model are what a revival must reuse:

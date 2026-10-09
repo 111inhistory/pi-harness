@@ -75,11 +75,14 @@ function validateConfig(value) {
     if (!filled(role.instructions) || !THINKING_LEVELS.includes(role.thinking)) {
       throw invalidConfigError(`roles[${index}] needs instructions and a low, medium or high thinking level`);
     }
-    if (!Array.isArray(role.tools) || role.tools.length === 0 || !role.tools.every(filled)) {
-      throw invalidConfigError(`roles[${index}].tools must be non-empty tool names`);
+    if (Object.hasOwn(role, "tools")) {
+      throw invalidConfigError(`roles[${index}].tools is no longer supported; use excludeTools`);
     }
-    if (role.excludeTools !== undefined && (!Array.isArray(role.excludeTools) || !role.excludeTools.every((name) => filled(name) && !/[?*]/.test(name)))) {
+    if (!Array.isArray(role.excludeTools) || !role.excludeTools.every((name) => filled(name) && !/[?*]/.test(name))) {
       throw invalidConfigError(`roles[${index}].excludeTools must be exact tool names`);
+    }
+    if (role.enableTools !== undefined && (!Array.isArray(role.enableTools) || !role.enableTools.every((name) => filled(name) && !/[?*]/.test(name)))) {
+      throw invalidConfigError(`roles[${index}].enableTools must be exact tool names`);
     }
     if (!Array.isArray(role.candidates) || role.candidates.length === 0) throw invalidConfigError(`roles[${index}].candidates must be non-empty`);
     const poolIds = new Set();
@@ -243,7 +246,7 @@ async function classifyChoice({ stage, key, registry, classifier, signal, budget
  * @param {{beginModelCall: () => object}} input.budget The Job budget.
  * @param {string} [input.configPath] Pi user routing config path, supplied by the adapter.
  * @param {object} [input.config] Parsed config for tests/internal callers.
- * @returns {Promise<{roleId: string, instructions: string, model: object, thinkingLevel: string, tools: string[]}>}
+ * @returns {Promise<{roleId: string, instructions: string, model: object, thinkingLevel: string, excludeTools: string[], enableTools: string[]}>}
  */
 export async function routeSubagent({ registry, task, context = "", signal, budget, config, configPath } = {}) {
   const routing = config === undefined ? loadSubagentRoutingConfig(configPath) : validateConfig(config);
@@ -305,7 +308,7 @@ export async function routeSubagent({ registry, task, context = "", signal, budg
     instructions: role.instructions,
     model: resolveChatModel(registry, model),
     thinkingLevel: clampThinking(role.thinking, candidate.thinking),
-    tools: [...role.tools],
-    excludeTools: [...(role.excludeTools ?? [])],
+    excludeTools: [...role.excludeTools],
+    enableTools: [...(role.enableTools ?? [])],
   };
 }

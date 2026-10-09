@@ -189,7 +189,7 @@ async function writeForDelivery(socketPath, content) {
   assert.ok(server, "the host must be listening on the returned endpoint");
   const received = deferred();
   server.once("connection", (socket) => socket.once("data", received.resolve));
-  await call("msg_write", { path: socketPath, content });
+  await call("write", { path: socketPath, content });
   await received.promise;
 }
 async function create(task, extra = {}) {
@@ -223,6 +223,9 @@ try {
       assert.equal(model.provider, "openai-codex");
       assert.equal(model.id, "gpt-6.1-sol");
       assert.equal(request.options.reasoning, "high", "high..high reaches the native SDK as high");
+      const tools = getCurrentTools(request.context.messages).map((tool) => tool.name);
+      assert.ok(tools.includes("msg_write"));
+      assert.equal(tools.includes("write"), false);
       return textAnswer("Independent review complete");
     };
     const reviewer = await create("Independently assess this artifact; do not modify files");
@@ -375,7 +378,8 @@ try {
       if (request.text.includes("NAMESPACE_LEAF")) {
         for (const name of ["subagent_create", "subagent_stop", "capability"]) assert.equal(tools.includes(name), false);
         assert.ok(tools.includes("subagent_list"));
-        assert.ok(tools.includes("msg_write"));
+        assert.ok(tools.includes("write"));
+        assert.equal(tools.includes("msg_write"), false);
         leafResult = true;
         return textAnswer("Leaf tools checked");
       }
@@ -531,6 +535,9 @@ try {
     let mainRequests = 0;
     controls.chat = async (request) => {
       if (request.text.includes("UPSTREAM_CHILD")) {
+        const tools = getCurrentTools(request.context.messages).map((tool) => tool.name);
+        assert.ok(tools.includes("msg_write"));
+        assert.equal(tools.includes("write"), false);
         assert.match(request.text, /Your direct parent is Main/);
         assert.ok(request.text.includes(mainSocket), "child context exposes the real parent receiving endpoint");
         const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
@@ -628,7 +635,7 @@ try {
     controls.chat = async (request) => {
       const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
       if (request.text.includes("SOCKET_SENDER_ACTOR") && !wrote) {
-        return toolAnswer("msg_write", { path: path.join(sessionSocketDir, "sub_02.sock"), content: '{"content":"PEER_SOURCE_MARKER"}\n' }, "peer-write");
+        return toolAnswer("write", { path: path.join(sessionSocketDir, "sub_02.sock"), content: '{"content":"PEER_SOURCE_MARKER"}\n' }, "peer-write");
       }
       if (request.text.includes("SOCKET_RECEIVER_ACTOR")) await receiverExit.promise;
       return textAnswer("actor done");
@@ -778,9 +785,9 @@ try {
         return toolAnswer("subagent_create", { tasks: [{ name: "ChildOne", task: "Child assignment one" }, { name: "ChildTwo", task: "Child assignment two" }] }, "create-children");
       }
       if (request.text.includes("SPAWN_MARKER")) {
-        const broadcastSent = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
+        const broadcastSent = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "write");
         if (spawned && !broadcastSent) {
-          return toolAnswer("msg_write", { path: path.join(sessionSocketDir, "sub_01", "children.sock"), content: '{"content":"CHILD_BROADCAST_ONLY"}\n' }, "child-broadcast");
+          return toolAnswer("write", { path: path.join(sessionSocketDir, "sub_01", "children.sock"), content: '{"content":"CHILD_BROADCAST_ONLY"}\n' }, "child-broadcast");
         }
       }
       await exit.promise;
