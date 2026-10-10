@@ -41,13 +41,13 @@ test(
   { skip: powershellPath === null },
   async () => {
     const valid = await checkShellSyntax({
-      command: "Get-ChildItem",
+      command: '$变量 = "中文"; Get-ChildItem',
       executable: powershellPath,
     });
     assert.equal(valid.ok, true);
 
     const invalid = await checkShellSyntax({
-      command: "if ($true) {",
+      command: '$变量 = "中文"; if ($true) {',
       executable: powershellPath,
     });
     assert.equal(invalid.ok, false);

@@ -16,6 +16,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import path, { join } from "node:path";
+import { once } from "node:events";
 
 import { SubagentError, copyInheritedEntries, createSubagentRuntime } from "../src/subagent-runtime.mjs";
 import { captureInheritedContext } from "../src/inherited-context.mjs";
@@ -30,6 +31,11 @@ import {
   createSocketAwareWriteOperations,
   getAgentSocketPath,
   getBroadcastSocketPath,
+  DEFAULT_SOCKET_DIR,
+  endpointKey,
+  isIpcPath,
+  isInSocketDirectory,
+  writeSocketOneWay,
   deriveSessionUid,
 } from "../src/subagent-socket.mjs";
 import {
@@ -39,7 +45,7 @@ import {
 } from "../src/subagent-history.mjs";
 
 const MAX_AGENT_DEPTH = 2;
-const NATIVE_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+const NATIVE_TOOL_NAMES = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"];
 const HARNESS_TOOLS = ["subagent_create", "subagent_list", "subagent_stop", "capability"];
 const LEAF_HARNESS_TOOLS = ["subagent_list"];
 const MESSAGE_CUSTOM_TYPE = "agent-message";
@@ -153,7 +159,7 @@ async function activateRootSession(controller, ctx) {
     await retireService(controller);
     const service = createService(controller, ctx);
     controller.service = service;
-    restoreService(service, ctx);
+    await restoreService(service, ctx);
     return service;
   })();
   controller.activation = run.finally(() => {
@@ -193,6 +199,7 @@ async function retireService(controller) {
   }
 
   const closeSocketsPromise = (async () => {
+    await service.socketChanges;
     if (service.socketServers) {
       for (const server of service.socketServers.values()) {
         try {
@@ -228,7 +235,7 @@ async function retireService(controller) {
 function createService(controller, ctx) {
   const sessionId = ctx?.sessionManager?.getSessionId?.() || ctx?.sessionId || "default";
   const sessionUid = deriveSessionUid(sessionId);
-  const baseSocketDir = process.env.PI_SUBAGENT_SOCKET_DIR || "/tmp/pi-subagents";
+  const baseSocketDir = path.resolve(ctx?.cwd ?? process.cwd(), DEFAULT_SOCKET_DIR);
   const socketDir = path.join(baseSocketDir, sessionUid);
   const historyDir = path.join(".pi/subagents", sessionUid);
   const cwd = ctx?.cwd ?? process.cwd();
@@ -264,6 +271,7 @@ function createService(controller, ctx) {
     agentDir: controller.agentDir,
     settings: controller.settings,
     sessionUid,
+    baseSocketDir,
     socketDir,
     historyDir,
     cwd,
@@ -290,6 +298,7 @@ function createService(controller, ctx) {
     /** Live Unix Domain Socket servers mapped by actor id or broadcast key. */
     socketServers: new Map(),
     registeredSockets: new Map(),
+    socketChanges: Promise.resolve(),
     /** Per-run history writer and metadata, released after finalization. */
     jobHistory: new Map(),
     runtime: null,
@@ -342,7 +351,7 @@ function createStore(controller, ctx) {
 }
 
 /** Adopt the persisted registry of this root session, or start empty. */
-function restoreService(service, ctx) {
+async function restoreService(service, ctx) {
   let checkpoint;
   try {
     checkpoint = service.store.load();
@@ -351,7 +360,7 @@ function restoreService(service, ctx) {
   }
   if (checkpoint === null) {
     service.ready = true;
-    ensureAgentSocketServer(service, "Main");
+    await withSocketChanges(service, async () => { await listenAgent(service, "Main"); });
     return;
   }
   let hydrated;
@@ -403,27 +412,11 @@ function restoreService(service, ctx) {
     );
   }
   service.ready = true;
-  // Re-establish sockets for all restored agents and hierarchical broadcast
-  try {
-    ensureAgentSocketServer(service, "Main");
-    const list = service.runtime.list();
-    const parentsWithChildren = new Set();
-    for (const agent of list.agents) {
-      if (agent.agentId !== "Main") {
-        service.allocatedAgentIds.add(agent.agentId);
-        ensureAgentSocketServer(service, agent.agentId);
-      }
-      if (agent.parentAgentId && agent.parentAgentId !== "Main") {
-        parentsWithChildren.add(agent.parentAgentId);
-      }
-    }
-    ensureBroadcastSocketServer(service, null);
-    for (const parentId of parentsWithChildren) {
-      ensureBroadcastSocketServer(service, parentId);
-    }
-  } catch {
-    // Non-fatal socket re-establishment
-  }
+  for (const agent of service.runtime.list().agents) service.allocatedAgentIds.add(agent.agentId);
+  await withSocketChanges(service, async () => {
+    await listenAgent(service, "Main");
+    await restoreListenerGroup(service, null);
+  });
   // The restored snapshot may already differ from disk (interrupted Jobs became
   // terminal failures), so write the post-restore state once.
   checkpointNow(service);
@@ -721,8 +714,98 @@ function checkpointAppendedAnchor(service, agentId, anchor) {
   persistActors(service);
 }
 
+// Serialize listener ownership changes, not Jobs or message processing.
+function withSocketChanges(service, operation) {
+  const run = service.socketChanges.then(() => {
+    assertOperational(service);
+    return operation();
+  });
+  service.socketChanges = run.catch(() => {});
+  return run;
+}
+
+async function listenAgent(service, id) {
+  const wrapper = ensureAgentSocketServer(service, id);
+  if (!wrapper) throw new Error(`Cannot establish IPC listener for ${id}.`);
+  if (!wrapper.server.listening) await once(wrapper.server, "listening");
+}
+
+async function listenBroadcast(service, parentId) {
+  const wrapper = ensureBroadcastSocketServer(service, parentId);
+  if (!wrapper) throw new Error(`Cannot establish broadcast listener for ${parentId ?? "Main"}.`);
+  if (!wrapper.server.listening) await once(wrapper.server, "listening");
+}
+
+async function closeListener(service, key) {
+  const wrapper = service.socketServers.get(key);
+  if (!wrapper) return;
+  await wrapper.close();
+  service.socketServers.delete(key);
+  service.registeredSockets.delete(endpointKey(wrapper.socketPath));
+}
+
+async function closeStoppedBranch(service, id, agents) {
+  const actor = agents.find((agent) => agent.agentId === id);
+  if (!actor || service.runtime.list().agents.find((entry) => entry.agentId === id)?.status === "running") return;
+  await closeListener(service, id);
+  // A buffered connection may have revived this actor while close drained it.
+  if (service.runtime.list().agents.find((entry) => entry.agentId === id)?.status === "running") {
+    if (!service.closed) await listenAgent(service, id);
+    return;
+  }
+  await closeListener(service, `broadcast:${id}`);
+  for (const child of agents.filter((agent) => agent.parentAgentId === id)) await closeStoppedBranch(service, child.agentId, agents);
+}
+
+async function restoreListenerGroup(service, parentId, includeId) {
+  const selected = new Set(service.runtime.listenerGroup(parentId, includeId));
+  const agents = service.runtime.list().agents;
+  for (const key of [...service.socketServers.keys()]) {
+    const actor = agents.find((agent) => agent.agentId === key);
+    if (actor?.parentAgentId === parentId && !selected.has(key)) await closeStoppedBranch(service, key, agents);
+  }
+  if (includeId) service.runtime.assertMessageAdmission(includeId);
+  for (const id of service.runtime.listenerGroup(parentId, includeId)) await listenAgent(service, id);
+  await listenBroadcast(service, parentId);
+}
+
+async function findSocketEndpoint(service, address) {
+  assertOperational(service);
+  const key = endpointKey(address);
+  const resident = service.registeredSockets.get(key);
+  if (resident) return resident;
+  // Search only this session's registry. Never infer Actor ownership from basename.
+  const actors = service.runtime.list().agents;
+  for (const actor of [{ agentId: "Main", depth: 0 }, ...actors]) {
+    const id = actor.agentId;
+    if (endpointKey(getAgentSocketPath(id, service.socketDir)) === key) return { isManaged: true, isBroadcast: false, targetId: id };
+    if ((id === "Main" || actor.depth < MAX_AGENT_DEPTH) && endpointKey(getBroadcastSocketPath(id, service.socketDir)) === key) {
+      return { isManaged: true, isBroadcast: true, parentId: id === "Main" ? "main" : id };
+    }
+  }
+  if (await isInSocketDirectory(address, service.baseSocketDir)) {
+    throw new SubagentError("unknown_endpoint", "No registered Agent owns this IPC address.");
+  }
+  return { isManaged: false };
+}
+
+async function sendManagedSocket(service, endpoint, address, content) {
+  return withSocketChanges(service, async () => {
+    if (endpoint.isBroadcast) {
+      await listenBroadcast(service, endpoint.parentId);
+    } else if (endpoint.targetId === "Main") {
+      await listenAgent(service, "Main");
+    } else {
+      service.runtime.assertMessageAdmission(endpoint.targetId);
+      const actor = service.runtime.list().agents.find((entry) => entry.agentId === endpoint.targetId);
+      await restoreListenerGroup(service, actor.parentAgentId, actor.agentId);
+    }
+    return writeSocketOneWay(address, content);
+  });
+}
+
 function ensureAgentSocketServer(service, agentId) {
-  if (service.socketServers.has(agentId)) return;
+  if (service.socketServers.has(agentId)) return service.socketServers.get(agentId);
   try {
     const socketPath = getAgentSocketPath(agentId, service.socketDir);
     const server = createAgentSocketServer({
@@ -748,11 +831,12 @@ function ensureAgentSocketServer(service, agentId) {
       },
     });
     service.socketServers.set(agentId, server);
-    service.registeredSockets?.set(path.resolve(socketPath), {
+    service.registeredSockets?.set(endpointKey(socketPath), {
       isManaged: true,
       isBroadcast: false,
       targetId: agentId,
     });
+    return server;
   } catch {
     // Socket initialization error is non-fatal for session startup
   }
@@ -761,16 +845,15 @@ function ensureAgentSocketServer(service, agentId) {
 function ensureBroadcastSocketServer(service, parentId) {
   const normId = parentId || "main";
   const key = `broadcast:${normId}`;
-  if (service.socketServers.has(key)) return;
+  if (service.socketServers.has(key)) return service.socketServers.get(key);
   try {
     const broadcastSocketPath = getBroadcastSocketPath(normId, service.socketDir);
     const server = createBroadcastSocketServer({
       parentId: normId,
       socketDir: service.socketDir,
       getDirectChildren: () => {
-        const list = service.runtime?.list();
         const pId = normId === "main" || normId === "Main" ? null : normId;
-        return (list?.agents ?? []).filter((a) => a.parentAgentId === pId).map((a) => a.agentId);
+        return service.runtime.listenerGroup(pId);
       },
       deliverMessage: (childId, msg) => {
         const content = typeof msg === "string" ? msg : msg?.content || JSON.stringify(msg);
@@ -782,11 +865,12 @@ function ensureBroadcastSocketServer(service, parentId) {
       },
     });
     service.socketServers.set(key, server);
-    service.registeredSockets?.set(path.resolve(broadcastSocketPath), {
+    service.registeredSockets?.set(endpointKey(broadcastSocketPath), {
       isManaged: true,
       isBroadcast: true,
       parentId: normId,
     });
+    return server;
   } catch {
     // Broadcast socket initialization error is non-fatal
   }
@@ -833,20 +917,9 @@ function installSessionSurface(pi, resolveService, { allowInherited, parentAgent
         return null;
       }
     },
-    resolveEndpoint: async (socketPath) => {
-      try {
-        const service = await resolveService();
-        if (!service) return { isManaged: false };
-        const norm = path.resolve(socketPath);
-        const registered = service.registeredSockets?.get(norm);
-        if (registered) {
-          return registered;
-        }
-        return { isManaged: false };
-      } catch {
-        return { isManaged: false };
-      }
-    },
+    isReservedPath: (address) => isInSocketDirectory(address, path.resolve(workCwd, DEFAULT_SOCKET_DIR)),
+    resolveEndpoint: async (address) => findSocketEndpoint(await resolveService(), address),
+    sendManaged: async (endpoint, address, content) => sendManagedSocket(await resolveService(), endpoint, address, content),
   });
   const messageTool = createWriteToolDefinition(workCwd, { operations: writeOps });
   pi.registerTool({
@@ -854,19 +927,19 @@ function installSessionSurface(pi, resolveService, { allowInherited, parentAgent
     name: "msg_write",
     defaultActive: false,
     label: "Send Agent Message",
-    description: 'Send messages to a Unix Socket path ending in .sock. For agent messages supply NDJSON content and omit from and to. Cannot write files.',
+    description: 'Send messages to a local IPC endpoint: Unix Socket or Windows Named Pipe. For agent messages supply NDJSON content and omit from and to. Cannot write files.',
     promptSnippet: "Send messages to agents through their Socket paths",
     promptGuidelines: ["For agent messages, provide NDJSON content with a trailing newline; omit from and to."],
     parameters: {
       ...messageTool.parameters,
       properties: {
         ...messageTool.parameters.properties,
-        path: { type: "string", description: "Unix Socket path ending in .sock." },
+        path: { type: "string", description: "Returned Unix Socket or Windows Named Pipe address." },
         content: { type: "string", description: "Message content; managed agent endpoints require NDJSON." },
       },
     },
     async execute(...args) {
-      if (!args[1].path.endsWith(".sock")) throw new Error("msg_write requires a Socket path ending in .sock.");
+      if (!isIpcPath(args[1].path)) throw new Error("msg_write requires an IPC endpoint address.");
       return messageTool.execute(...args);
     },
   });
@@ -904,11 +977,7 @@ function createTool(pi, resolveService, { allowInherited, parentAgentId, depth }
         },
         captureInheritedContext: () => captureContextForChild(pi, ctx, depth + 1),
       });
-      // Publish stable endpoints for every registered actor.
-      for (const item of response.items) {
-        ensureAgentSocketServer(service, item.id);
-      }
-      ensureBroadcastSocketServer(service, parentAgentId);
+      await withSocketChanges(service, () => restoreListenerGroup(service, parentAgentId));
       return respond(response);
     },
   };
@@ -1384,12 +1453,11 @@ function startPiJob(service, request) {
     // until its final outcome, so every live read resolves the native entries.
     request.recordHistory(undefined, { startEntryId: boundary, endEntryId: boundary });
 
-    ensureAgentSocketServer(service, request.agentId);
-    ensureBroadcastSocketServer(service, request.origin?.agentId ?? null);
-    const hasChildren = service.runtime?.list()?.agents?.some((a) => a.parentAgentId === request.agentId);
-    if (hasChildren) {
-      ensureBroadcastSocketServer(service, request.agentId);
-    }
+    await withSocketChanges(service, async () => {
+      const actor = service.runtime.list().agents.find((entry) => entry.agentId === request.agentId);
+      await restoreListenerGroup(service, actor.parentAgentId, actor.agentId);
+      if (request.depth < MAX_AGENT_DEPTH && request.continuedFromJobId) await restoreListenerGroup(service, request.agentId);
+    });
 
     const history = { spec: request.spec, roleId, model, appendChain: Promise.resolve() };
     service.jobHistory.set(request.jobId, history);

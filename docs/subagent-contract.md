@@ -179,7 +179,10 @@ flowchart TD
 已进入历史的原任务不重复注入。若旧运行在排队或初始化时结束、原任务尚未记录，保留初始 seed，并在新的显式消息触发时带入原任务。路由从未成功完成的 Fresh seed 可以在这次新运行中完成首次路由；这不是自动重试。
 
 **防止资源泄漏的硬性治理规则**：
-1. **单一稳定 Socket 治理**：每个短 ID（如 `sub_01`）在当前根会话命名空间内（物理路径基于根 Session ID 派生的 6 位短 hash UID：`/tmp/pi-subagents/<uid>/<id>.sock`）终身只拥有一个唯一的 Socket 文件。Agent 处于 stopped 状态时，Socket 由宿主监听器维持接管，收到新写入自动 revive 该会话，严禁每次 revive 创建新 socket 导致 socket 泄漏过量。
+1. **稳定地址、可回收监听器**：每个短 ID 在当前根会话中拥有稳定 IPC 地址；Unix 使用 `/tmp/pi-subagents/<uid>/<id>.sock`，Windows 使用 Named Pipe。地址稳定不代表 listener 终身常驻。进入会话时只恢复最近至多 4 个 depth 1 listener；depth 1 复活后再恢复其最近至多 4 个 depth 2 listener。窗口优先保留活跃节点，用最近 stopped 补齐。新增或复活时回收窗口外 stopped listener、广播入口和已停止后代，不关闭仍活跃的后代。
+   - 历史 Actor 的注册表、seed、上下文和历史文件不删除。宿主 write／msg_write 对已回收端点，只搜索当前会话注册表，先检查 revive 准入，再恢复监听并写入；不扫描目录猜测归属。原始外部客户端直连已回收端点不触发这一 fallback。
+   - listener 建立不启动 Job，也不占 Job 并发名额；真正 revive 仍受每父 4 个活跃直接子节点限制。资源操作等待旧 listener 关闭后再复用地址，不增加消息 ACK、握手或自动重试。
+   - children 广播针对当前同父窗口（活跃优先、最近 stopped 补齐），不遍历全部历史孩子启动 Job。
 2. **单一稳定双轨历史治理**：每个短 ID 在会话工作区物理路径下（`.pi/subagents/<uid>/<id>/`，基目录绑定根会话 cwd）终身只对应一对固定的历史文件（`summary.md` 与 `session.clean.jsonl`）。revive 续跑产生的记录以 Append-Only 方式在原有文件末尾追加（Markdown 追加续写小节，JSONL 追加新行），严禁产生多份分裂碎片化的历史文件。所有终态转换（completed、cancelled、failed）发布前，必须等待 Clean JSONL 串行追加链完全落盘。
 
 ### 向直接父级投递
@@ -230,7 +233,7 @@ Job 状态为 `running`、`stopping`、`finalizing`、`completed`、`failed`、`
 ### 1. Write Socket 单向消息投递
 
 - **单向投递原则**：发起者通过向对应 Subagent 的 Unix Domain Socket（如 `/tmp/pi-subagents/<id>.sock`）单向写入 NDJSON 报文完成消息投递，不走双向连接应答；子 Agent 的产出与进展统一通过双轨历史文件读取。
-- **两种写入形态**：`write` 覆盖 Pi 原生工具，使用既有 Socket-aware `WriteOperations` 静态支持文件与 Socket；`msg_write` 默认不启用，使用同一 backend，但只接受 `.sock` 路径。researcher／reviewer 配置 `excludeTools` 禁止通用 write，并通过 `enableTools: ["msg_write"]` 显式启用替代形态；executor 使用通用 write。Subagent 消息语义只适用于当前宿主注册表中受管理的 Socket，不能仅凭 `.sock` 后缀或 `sub_01` 这样的 basename 判断端点归属。
+- **两种写入形态**：`write` 覆盖 Pi 原生工具，使用既有 Socket-aware `WriteOperations` 静态支持文件与 Socket；`msg_write` 默认不启用，使用同一 backend，但只接受当前平台 IPC 地址（Unix `.sock`／Windows Named Pipe）。researcher／reviewer 配置 `excludeTools` 禁止通用 write，并通过 `enableTools: ["msg_write"]` 显式启用替代形态；executor 使用通用 write。Subagent 消息语义只适用于当前宿主注册表中受管理的 Socket，不能仅凭 `.sock` 后缀或 `sub_01` 这样的 basename 判断端点归属。
 - **报文格式**：受管理端点统一采用 **UTF-8 NDJSON（Newline-Delimited JSON，换行分隔的 JSON）**。每条消息必须为完整单行 JSON 并以 `\n` 结尾；网络数据块边界不是字符或消息边界。
 - **自动投递（Notification 内置）**：
   - 发起者向 Socket 投递消息后，由底层的通信监听器自动转发并唤醒对应 Subagent 处理，**不需要额外设计通知总线机制**。
@@ -249,6 +252,10 @@ Agent 调用原生 write：     {"content":"请核对解析器边界条件。"}\
 - 目标由 Socket 路径确定，不接受报文中的 `to` 来改写路由。接收监听器必须保留经宿主绑定的 `from`，将它带入运行中的 steer、SDK 初始化消息缓冲、revive 初始消息及对应原生上下文／Clean JSONL；不能统一改写为 Main。
 - **身份边界**：`from` 是来源标记，本身不是认证凭据。所有 Agent 共用宿主进程与工作目录，不能声称只校验 JSON 中的 ID、或只校验 Unix peer PID／UID 就证明了 Actor 身份。受管理端点需要可信的宿主来源绑定；其具体传输校验机制仍待定。本轮只定义原生 write 路径，不新增外部客户端投递入口。不具备来源绑定的原始连接不得默认归为 Main 或某个已注册 Agent，也不得以自报的 `from` 获得权限。
 - 单点消息中的发送者与目标可以不同；广播必须校验实际发送者正是该 `children.sock` 的所属父节点，否则以 `invalid_target` 拒绝，不能借写入其它父节点的端点扩大广播范围。
+
+#### IPC 目录保留
+
+write 不得在配置的 IPC 根目录及其子目录创建普通文件。目录判断包含路径边界和符号链接／junction 的实际落点，前置 mkdir 对保留目录不产生副作用。目录内未知 `.sock` 地址报 `unknown_endpoint`，不视作外部服务、不落成文件；普通文件写入报 `ipc_directory_reserved`。目录外的普通文件继续委托原生工具。
 
 #### 非 Subagent Socket
 

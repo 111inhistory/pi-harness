@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { createSubagentRuntime, SubagentError } from "../src/subagent-runtime.mjs";
-import { createSocketAwareWriteOperations, getAgentSocketPath, deriveSessionUid } from "../src/subagent-socket.mjs";
+import { createSocketAwareWriteOperations, getAgentSocketPath, getBroadcastSocketPath, deriveSessionUid } from "../src/subagent-socket.mjs";
 import { getSubagentHistoryPaths, appendCleanJsonl } from "../src/subagent-history.mjs";
 import { deferred } from "../test-support/async.mjs";
 
@@ -182,6 +182,30 @@ test("scoped list fills each group with recent stops and expands only active per
   assert.equal(filled[2].id, children.get(roots[0].id)[1].id, "last actual completion wins, not creation order");
 });
 
+test("listener window stays bounded across one thousand stopped actors and revival admission", async (t) => {
+  const { runtime, started } = harness(t);
+  let first;
+  for (let index = 0; index < 1000; index++) {
+    const actor = runtime.create({ tasks: [{ task: "Complete history entry" }] }).items[0];
+    first ??= actor.id;
+    started.at(-1).finish();
+    await runtime.jobDone(actor.id);
+  }
+  assert.equal(runtime.list().agents.length, 1000);
+  assert.equal(runtime.listenerGroup().length, 4);
+  assert.equal(runtime.listenerGroup()[0], "sub_1000");
+  assert.equal(runtime.listenerGroup(null, first)[0], first);
+  runtime.assertMessageAdmission(first);
+  const active = runtime.create({ tasks: Array.from({ length: 4 }, () => ({ task: "Remain active" })) }).items;
+  assert.deepEqual(runtime.listenerGroup(), active.map((actor) => actor.id));
+  assert.throws(() => runtime.assertMessageAdmission(first), errorCode("child_limit_exceeded"));
+  runtime.stop(active[0].id);
+  assert.throws(() => runtime.assertMessageAdmission(first), errorCode("child_limit_exceeded"));
+  started.find((handle) => handle.request.agentId === active[0].id).finish();
+  await runtime.jobDone(active[0].id);
+  runtime.assertMessageAdmission(first);
+});
+
 test("scoped stopped ordering survives registry restoration", async (t) => {
   const { runtime, started } = harness(t);
   const first = runtime.create({ tasks: [task("first"), task("second"), task("third"), task("fourth")] }).items;
@@ -240,7 +264,7 @@ test("socket write preflight rejects stopping before attempting to connect", asy
   const { id } = runtime.create({ tasks: [task("stopping")] }).items[0];
   runtime.stop(id);
   const checked = [];
-  const operations = createSocketAwareWriteOperations({ onCheckStatus(target) {
+  const operations = createSocketAwareWriteOperations({ resolveEndpoint: async () => ({ isManaged: true, targetId: id }), onCheckStatus(target) {
     checked.push(target);
     return runtime.listDetailed({ id: target }).items[0].status;
   } });
@@ -291,15 +315,16 @@ test("depth-2 failure notification is delivered to depth-1 parent via deliverMes
 });
 
 test("broadcast write rejects cross-hierarchy senders without mutating from", async () => {
+  const endpoint = getBroadcastSocketPath("sub_01", path.join(tmpdir(), "pi-cross-hierarchy"));
   const ops = createSocketAwareWriteOperations({
     senderId: "main",
     resolveEndpoint: async (p) => {
-      if (p.includes("sub_01/children.sock")) return { isManaged: true, isBroadcast: true, parentId: "sub_01" };
+      if (p === endpoint) return { isManaged: true, isBroadcast: true, parentId: "sub_01" };
       return { isManaged: false };
     },
   });
   await assert.rejects(
-    ops.writeFile("/tmp/sub_01/children.sock", '{"content":"test"}\n'),
+    ops.writeFile(endpoint, '{"content":"test"}\n'),
     (err) => err.code === "invalid_target",
   );
 });

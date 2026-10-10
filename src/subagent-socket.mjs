@@ -1,11 +1,11 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
 import fsp from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
-export const DEFAULT_SOCKET_DIR = process.env.PI_SUBAGENT_SOCKET_DIR || "/tmp/pi-subagents";
+import { ipc, DEFAULT_SOCKET_DIR, endpointKey, isIpcPath, isWindowsPipe } from "./subagent-ipc.mjs";
+export { DEFAULT_SOCKET_DIR, endpointKey, isIpcPath, isWindowsPipe };
 
 export function deriveSessionUid(sessionId) {
   if (!sessionId || typeof sessionId !== "string") {
@@ -15,42 +15,21 @@ export function deriveSessionUid(sessionId) {
 }
 
 export function getAgentSocketPath(id, socketDir = DEFAULT_SOCKET_DIR) {
-  return path.join(socketDir, `${id}.sock`);
+  return ipc.agentPath(id, socketDir);
 }
 
 export function getBroadcastSocketPath(parentId, socketDir = DEFAULT_SOCKET_DIR) {
   const normalized = (parentId === "Main" || parentId === "main" || !parentId) ? "main" : parentId;
-  return path.join(socketDir, normalized, "children.sock");
-}
-
-export function ensureDirSync(dir) {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-}
-
-export async function ensureDir(dir) {
-  await fsp.mkdir(dir, { recursive: true });
-}
-
-function safeUnlinkSync(socketPath) {
-  try {
-    if (fs.existsSync(socketPath)) {
-      fs.unlinkSync(socketPath);
-    }
-  } catch {
-    // Ignore unlink error if already removed
-  }
+  return ipc.broadcastPath(normalized, socketDir);
 }
 
 /**
- * Start a Unix Domain Socket server for an individual Subagent.
+ * Start a local IPC server for an individual Subagent (Unix Socket / Named Pipe).
  * Uses connection isolation and newline-delimited JSON buffering.
  */
 export function createAgentSocketServer({ id, socketDir = DEFAULT_SOCKET_DIR, onMessage, onError }) {
   const socketPath = getAgentSocketPath(id, socketDir);
-  ensureDirSync(path.dirname(socketPath));
-  safeUnlinkSync(socketPath);
+  ipc.prepare(socketPath);
 
   const server = net.createServer((socket) => {
     const decoder = new StringDecoder("utf8");
@@ -94,7 +73,7 @@ export function createAgentSocketServer({ id, socketDir = DEFAULT_SOCKET_DIR, on
     close: () =>
       new Promise((resolve) => {
         server.close(() => {
-          safeUnlinkSync(socketPath);
+          ipc.remove(socketPath);
           resolve();
         });
       }),
@@ -102,7 +81,7 @@ export function createAgentSocketServer({ id, socketDir = DEFAULT_SOCKET_DIR, on
 }
 
 /**
- * Start a hierarchical direct-child broadcast Unix Domain Socket server.
+ * Start a hierarchical direct-child broadcast IPC server.
  * When written to, fans out the message to all current direct children.
  */
 export function createBroadcastSocketServer({
@@ -113,8 +92,7 @@ export function createBroadcastSocketServer({
   onError,
 }) {
   const socketPath = getBroadcastSocketPath(parentId, socketDir);
-  ensureDirSync(path.dirname(socketPath));
-  safeUnlinkSync(socketPath);
+  ipc.prepare(socketPath);
 
   const server = net.createServer((socket) => {
     const decoder = new StringDecoder("utf8");
@@ -164,7 +142,7 @@ export function createBroadcastSocketServer({
     close: () =>
       new Promise((resolve) => {
         server.close(() => {
-          safeUnlinkSync(socketPath);
+          ipc.remove(socketPath);
           resolve();
         });
       }),
@@ -172,7 +150,7 @@ export function createBroadcastSocketServer({
 }
 
 /**
- * Client helper to send one-way NDJSON message to a Unix Domain Socket.
+ * Client helper to send one-way NDJSON through Node's platform IPC transport.
  */
 export function writeSocketOneWay(socketPath, payload, { timeoutMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -199,20 +177,51 @@ export function writeSocketOneWay(socketPath, payload, { timeoutMs = 5000 } = {}
 }
 
 /**
- * Factory for a WriteOperations adapter that intercepts .sock paths
- * and routes them to Unix Domain Socket one-way delivery.
+ * Factory for a WriteOperations adapter that intercepts platform IPC addresses
+ * and routes them to one-way delivery without filesystem operations on pipes.
  */
-export function createSocketAwareWriteOperations(baseOperations = {}) {
+export async function isInSocketDirectory(address, root) {
+  if (ipc.isNamespace(address)) return false;
+  const inside = (value, base) => {
+    const relative = path.relative(base, value);
+    return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+  };
+  const absolute = path.resolve(address);
+  const base = path.resolve(root);
+  if (inside(absolute, base)) return true;
+  const canonical = async (value) => {
+    let current = value;
+    const suffix = [];
+    for (;;) {
+      try { return path.join(await fsp.realpath(current), ...suffix); }
+      catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        const parent = path.dirname(current);
+        if (parent === current) return value;
+        suffix.unshift(path.basename(current));
+        current = parent;
+      }
+    }
+  };
+  return inside(await canonical(absolute), await canonical(base));
+}
+
+export function createSocketAwareWriteOperations(baseOperations = {}, transport = ipc) {
   const writeFile = baseOperations.writeFile || ((p, c) => fsp.writeFile(p, c, "utf-8"));
   const mkdir = baseOperations.mkdir || ((d) => fsp.mkdir(d, { recursive: true }));
   const onCheckStatus = baseOperations.onCheckStatus;
   const senderId = baseOperations.senderId || "main";
   const resolveEndpoint = baseOperations.resolveEndpoint;
+  const isReservedPath = baseOperations.isReservedPath;
+  const sendManaged = baseOperations.sendManaged;
 
   return {
-    mkdir,
+    mkdir: async (dir) => {
+      if (transport.isNamespace(dir) || (isReservedPath && await isReservedPath(dir))) return;
+      return mkdir(dir);
+    },
     async writeFile(absolutePath, content) {
-      if (typeof absolutePath === "string" && absolutePath.endsWith(".sock")) {
+      if (transport.isEndpoint(absolutePath)) {
         const ep = typeof resolveEndpoint === "function" ? await resolveEndpoint(absolutePath) : null;
         const isManaged = ep ? ep.isManaged : (typeof onCheckStatus === "function");
 
@@ -264,7 +273,12 @@ export function createSocketAwareWriteOperations(baseOperations = {}) {
           processedLines.push(JSON.stringify(parsed));
         }
         const outbound = processedLines.join("\n") + "\n";
-        return writeSocketOneWay(absolutePath, outbound);
+        return sendManaged ? sendManaged(ep, absolutePath, outbound) : writeSocketOneWay(absolutePath, outbound);
+      }
+      if (isReservedPath && await isReservedPath(absolutePath)) {
+        const error = new Error("IPC directories cannot contain files written by write.");
+        error.code = "ipc_directory_reserved";
+        throw error;
       }
       return writeFile(absolutePath, content);
     },

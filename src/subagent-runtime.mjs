@@ -777,15 +777,7 @@ export class SubagentRuntime {
         visible.add(MAIN_ACTOR_ID);
         for (const agent of agents) visible.add(agent.agentId);
       } else {
-        const group = (parentId, selfId) => {
-          const siblings = agents.filter((agent) => agent.parentAgentId === parentId);
-          const active = siblings.filter((agent) => agent.status === "running");
-          const stopped = siblings.filter((agent) => agent.status !== "running").reverse()
-            .sort((a, b) => (b.stoppedOrder ?? 0) - (a.stoppedOrder ?? 0));
-          const self = siblings.find((agent) => agent.agentId === selfId);
-          return [...(self ? [self] : []), ...active.filter((agent) => agent !== self), ...stopped.filter((agent) => agent !== self)]
-            .slice(0, MAX_ACTIVE_CHILDREN);
-        };
+        const group = (parentId, selfId) => this.#visibleGroup(parentId, selfId);
         const addChildren = (agent) => {
           if (agent.status !== "running") return;
           for (const child of group(agent.agentId)) visible.add(child.agentId);
@@ -826,6 +818,33 @@ export class SubagentRuntime {
       });
     }
     return { items };
+  }
+
+  /** Listener cache uses the same per-parent window as the public list. */
+  listenerGroup(parentId = null, includeId) {
+    return this.#visibleGroup(parentId, includeId).map((agent) => agent.agentId);
+  }
+
+  assertMessageAdmission(id) {
+    if (id === MAIN_ACTOR_ID) return;
+    const agent = this.#agents.get(id);
+    if (!agent) throw new SubagentError("unknown_agent", `No subagent registered as ${id}.`);
+    const live = this.#liveJobOf(agent);
+    if (live && live.status !== "running") throw new SubagentError("agent_stopping", `Agent ${id} is ${live.status}.`);
+    if (!live) {
+      const refusal = this.#reviveRefusal(agent);
+      if (refusal) throw refusal;
+    }
+  }
+
+  #visibleGroup(parentId, selfId) {
+    const siblings = [...this.#agents.values()].filter((agent) => agent.parentAgentId === parentId);
+    const active = siblings.filter((agent) => agent.status === "running");
+    const stopped = siblings.filter((agent) => agent.status !== "running").reverse()
+      .sort((a, b) => (b.stoppedOrder ?? 0) - (a.stoppedOrder ?? 0));
+    const self = siblings.find((agent) => agent.agentId === selfId);
+    return [...(self ? [self] : []), ...active.filter((agent) => agent !== self), ...stopped.filter((agent) => agent !== self)]
+      .slice(0, MAX_ACTIVE_CHILDREN);
   }
 
   /** Job-level snapshot, optionally restricted to specific job ids. */

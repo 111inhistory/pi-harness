@@ -4,6 +4,8 @@ const MAX_DIAGNOSTIC_CHARS = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 5_000;
 
 const POWERSHELL_PARSE_COMMAND = String.raw`
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $source = [Console]::In.ReadToEnd()
 $tokens = $null
 $errors = $null

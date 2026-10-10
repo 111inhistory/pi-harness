@@ -45,7 +45,8 @@
 - 不提供 `from` 或 `to`：宿主绑定发送者，Socket 路径决定接收者。
 - 写入成功不代表任务完成或接收者已经处理消息。
 - 写入 `stopped` Agent 的 Socket 会启动新一轮；不要向 `stopping`／`finalizing` Agent 投递。
-- `children.sock` 只广播给其所属 Agent 的直接子节点；不能使用别人的广播端点。
+- `children.sock` 只广播给其所属 Agent 当前同父窗口中的直接子节点（活跃优先、最近停止补齐，最多 4 个）；不能使用别人的广播端点。
+- IPC 地址稳定但 listener 可回收。write／msg_write 会通过当前会话注册表恢复历史端点；外部客户端直接连接已回收地址不会自动唤醒。write 不能在 IPC 保留目录创建普通文件。
 - 普通文件仍遵循原生 write 语义：新建或完整覆盖，局部修改用 edit。
 
 ## 其他工具

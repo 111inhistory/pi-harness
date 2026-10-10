@@ -13,6 +13,8 @@ import {
   getAgentSocketPath,
   getBroadcastSocketPath,
   writeSocketOneWay,
+  isWindowsPipe,
+  isInSocketDirectory,
 } from "../src/subagent-socket.mjs";
 import { deferred } from "../test-support/async.mjs";
 
@@ -57,14 +59,18 @@ test("agent socket delivers ordered NDJSON records without a response and retain
     if (received.length === 2) delivered.resolve();
   } });
   const socketPath = getAgentSocketPath("sub_01", fixture.socketDir);
-  const before = await fsp.stat(socketPath);
-  assert.ok(before.isSocket());
+  if (!server.server.listening) await once(server.server, "listening");
+  const before = isWindowsPipe(socketPath) ? null : await fsp.stat(socketPath);
+  if (before) assert.ok(before.isSocket());
+  assert.equal(server.server.address(), socketPath);
   await writeSocketOneWay(socketPath, '{"content":"hello"}\n{"content":"中文\\nnext"}\n');
   await delivered.promise;
   assert.deepEqual(received, [{ content: "hello" }, { content: "中文\nnext" }]);
-  assert.equal((await fsp.stat(socketPath)).ino, before.ino);
+  if (before) assert.equal((await fsp.stat(socketPath)).ino, before.ino);
+  assert.equal(server.server.address(), socketPath);
   await server.close();
-  await assert.rejects(fsp.stat(socketPath), { code: "ENOENT" });
+  if (before) await assert.rejects(fsp.stat(socketPath), { code: "ENOENT" });
+  else await assert.rejects(writeSocketOneWay(socketPath, { content: "closed" }));
 });
 
 test("agent socket buffers an incomplete frame across actual data events", options, async (t) => {
@@ -221,6 +227,25 @@ test("write operations deliver to sockets while delegating normal files and mkdi
   await operations.writeFile(file, "regular content");
   assert.deepEqual(calls, [["mkdir", dir], ["write", file, "regular content"]]);
   assert.equal(await fsp.readFile(file, "utf8"), "regular content");
+});
+
+test("reserved IPC directories reject files and skip mkdir, including directory aliases", options, async (t) => {
+  const root = await fsp.mkdtemp(path.join(tmpdir(), "pi-reserved-"));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const ipcRoot = path.join(root, "ipc");
+  await fsp.mkdir(ipcRoot);
+  const alias = path.join(root, "alias");
+  await fsp.symlink(ipcRoot, alias, "junction");
+  const operations = createSocketAwareWriteOperations({ isReservedPath: (address) => isInSocketDirectory(address, ipcRoot) });
+  for (const dir of [path.join(ipcRoot, "nested"), path.join(alias, "nested")]) {
+    await operations.mkdir(dir);
+    await assert.rejects(operations.writeFile(path.join(dir, "bad.txt"), "bad"), { code: "ipc_directory_reserved" });
+    await assert.rejects(fsp.stat(dir), { code: "ENOENT" });
+  }
+  const ordinary = path.join(root, "ipc-other", "result.txt");
+  await operations.mkdir(path.dirname(ordinary));
+  await operations.writeFile(ordinary, "good");
+  assert.equal(await fsp.readFile(ordinary, "utf8"), "good");
 });
 
 test("missing socket rejects delivery with ENOENT", options, async (t) => {

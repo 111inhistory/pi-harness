@@ -11,7 +11,7 @@ import {
 import { AssistantMessageEventStream, getSystemMessageText, getCurrentTools } from "@earendil-works/pi-ai";
 import subagentExtension from "../extensions/subagent.mjs";
 import capabilityExtension from "../extensions/capability.mjs";
-import { deriveSessionUid } from "../src/subagent-socket.mjs";
+import { deriveSessionUid, getAgentSocketPath, getBroadcastSocketPath } from "../src/subagent-socket.mjs";
 import { resolveTranscriptTools } from "../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js";
 import { convertResponsesMessages } from "../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 import { deferred, waitFor } from "./async.mjs";
@@ -125,7 +125,7 @@ function abortable(gate, signal) {
   });
 }
 
-const durable = scenario === "reload" || scenario === "upstream-main-reload";
+const durable = ["reload", "upstream-main-reload", "listener-cache"].includes(scenario);
 const sessionManager = durable ? SessionManager.create(cwd, path.join(cwd, "root-sessions")) : SessionManager.inMemory(cwd);
 if (durable) {
   sessionManager.appendMessage({ role: "user", content: "Root seed", timestamp: Date.now() });
@@ -184,9 +184,11 @@ async function call(name, params) {
   assert.ok(tool, `missing native registered tool ${name}`);
   return tool.execute(`test-call-${++toolSequence}`, params, undefined, undefined, session.extensionRunner.createContext());
 }
+async function listener(socketPath) {
+  return waitFor(() => process._getActiveHandles().find((handle) => handle instanceof net.Server && handle.listening && handle.address() === socketPath), { label: "host listener ready" });
+}
 async function writeForDelivery(socketPath, content) {
-  const server = process._getActiveHandles().find((handle) => handle instanceof net.Server && handle.address() === socketPath);
-  assert.ok(server, "the host must be listening on the returned endpoint");
+  const server = await listener(socketPath);
   const received = deferred();
   server.once("connection", (socket) => socket.once("data", received.resolve));
   await call("write", { path: socketPath, content });
@@ -215,7 +217,43 @@ async function events(file) {
 }
 
 try {
-  if (scenario === "reviewer-sol") {
+  if (scenario === "listener-cache") {
+    controls.chat = async (request) => {
+      if (request.text.includes("CACHE_PARENT")) {
+        const created = request.context.messages.findLast((message) => message.role === "toolResult" && message.toolName === "subagent_create");
+        if (!created) return toolAnswer("subagent_create", { tasks: [1, 2, 3, 4].map(() => ({ task: "CACHE_CHILD complete promptly" })) });
+        const children = JSON.parse(created.content.find((part) => part.type === "text").text).items;
+        await Promise.all(children.map((child) => stopped(child.id)));
+      }
+      return textAnswer("Cache actor complete");
+    };
+    const parent = await create("CACHE_PARENT create four children and finish");
+    await stopped(parent.id);
+    for (let index = 0; index < 11; index++) await stopped((await create("Cache history entry")).id);
+    const addresses = () => process._getActiveHandles().filter((handle) => handle instanceof net.Server && handle.listening).map((handle) => handle.address());
+    assert.equal(addresses().length, 6, "Main, root broadcast and four recent roots only");
+    assert.equal(addresses().includes(parent.socket), false);
+    const child = await item(parent.id + "_01");
+    assert.equal(addresses().includes(child.socket), false, "eviction also removes stopped descendant listeners");
+    const before = chats.length;
+    await call("write", { path: parent.socket, content: '{"content":"Resume historical parent"}\n' });
+    await waitFor(() => chats.length > before, { label: "historical fallback revival" });
+    await stopped(parent.id);
+    await listener(child.socket);
+    assert.equal(addresses().length, 11, "four roots and the revived parent's four children and broadcast");
+    await assert.rejects(call("write", { path: path.join(sessionSocketDir, "forbidden", "file.txt"), content: "must not exist" }), (error) => error.code === "ipc_directory_reserved");
+    await assert.rejects(fsp.stat(path.join(sessionSocketDir, "forbidden")), { code: "ENOENT" });
+    if (process.platform !== "win32") await assert.rejects(call("write", { path: path.join(sessionSocketDir, "ghost.sock"), content: '{"content":"unknown"}' }), (error) => error.code === "unknown_endpoint");
+    await session.reload();
+    assert.equal(addresses().length, 6, "entry restores only the recent depth-1 window");
+    assert.equal(addresses().includes(child.socket), false, "depth-2 listeners are not restored on entry");
+    const afterReload = chats.length;
+    await call("write", { path: parent.socket, content: '{"content":"Restore next layer"}\n' });
+    await waitFor(() => chats.length > afterReload, { label: "revival restores child window" });
+    await stopped(parent.id);
+    await listener(child.socket);
+    assert.equal(addresses().length, 11);
+  } else if (scenario === "reviewer-sol") {
     controls.classify = (context) => {
       assert.deepEqual(Object.keys(context.questions), ["role"], "singleton reviewer pool must not ask for model selection");
     };
@@ -455,17 +493,19 @@ try {
     for (const name of ["create", "list", "stop", "task", "hub", "wait"]) assert.equal(names.includes(name), false);
     await assert.rejects(call("subagent_create", { tasks: [{ task: "valid" }, { task: "invalid", model: "override" }] }));
     assert.deepEqual((await call("subagent_list", {})).details.items.map((agent) => agent.id), ["Main"]);
-    assert.deepEqual(await fsp.readdir(sessionSocketDir), ["Main.sock"], "invalid batches must not publish any child endpoint; Main's receiving endpoint exists independently");
+    await listener(getAgentSocketPath("Main", sessionSocketDir));
+    if (process.platform !== "win32") assert.deepEqual(await fsp.readdir(sessionSocketDir), ["Main.sock"], "invalid batches must not publish any child endpoint");
+    else assert.deepEqual(process._getActiveHandles().filter((handle) => handle instanceof net.Server && handle.listening).map((handle) => handle.address()), [getAgentSocketPath("Main", sessionSocketDir)]);
     const gate = controlledGate();
     controls.classify = (_, options) => abortable(gate, options.signal);
     const result = await call("subagent_create", { context: "Explicit batch context", tasks: [{ task: "Initial assignment" }, { task: "Stopped during routing" }] });
     const [first, second] = result.details.items;
     assert.deepEqual(result.details.items.map((r) => r.id), ["sub_01", "sub_02"]);
     for (const actor of [first, second]) {
-      assert.equal(actor.socket, path.join(sessionSocketDir, `${actor.id}.sock`));
-      assert.ok((await fsp.stat(actor.socket)).isSocket(), "socket is available before routing finishes");
+      assert.equal(actor.socket, getAgentSocketPath(actor.id, sessionSocketDir));
+      await listener(actor.socket);
     }
-    assert.ok((await fsp.stat(path.join(sessionSocketDir, "main", "children.sock"))).isSocket());
+    await listener(getBroadcastSocketPath("Main", sessionSocketDir));
     await call("write", { path: "ordinary.txt", content: "Native filesystem write" });
     assert.equal(await fsp.readFile(path.join(cwd, "ordinary.txt"), "utf8"), "Native filesystem write");
     await writeForDelivery(first.socket, '{"content":"Buffered during routing"}\n');
@@ -495,7 +535,7 @@ try {
     const dir = path.join(cwd, "external");
     await fsp.mkdir(dir);
     // Same basename as a stopping Agent, but NOT one of the registered endpoints.
-    const externalPath = path.join(dir, `${actor.id}.sock`);
+    const externalPath = getAgentSocketPath(actor.id, dir);
     const received = deferred();
     const server = net.createServer((socket) => {
       externalConnections.push(socket);
@@ -524,9 +564,9 @@ try {
     exit.resolve();
     await stopped(actor.id);
   } else if (["upstream-main", "upstream-main-steer", "upstream-main-reload"].includes(scenario)) {
-    const mainSocket = path.join(sessionSocketDir, "Main.sock");
-    assert.ok((await fsp.stat(mainSocket)).isSocket(), "Main must have its own receiving endpoint");
-    assert.notEqual(mainSocket, path.join(sessionSocketDir, "main", "children.sock"));
+    const mainSocket = getAgentSocketPath("Main", sessionSocketDir);
+    await listener(mainSocket);
+    assert.notEqual(mainSocket, getBroadcastSocketPath("Main", sessionSocketDir));
     const mainStarted = controlledGate();
     const mainExit = controlledGate();
     const delivered = controlledGate();
@@ -567,7 +607,7 @@ try {
       await session.reload();
       const restored = await item(sender.id);
       assert.equal("parentSocket" in restored, false);
-      assert.ok((await fsp.stat(mainSocket)).isSocket(), "reload rebuilds Main's receiving endpoint");
+      await listener(mainSocket);
       armed = true;
       await call("msg_write", { path: restored.socket, content: '{"content":"Send the explicit upstream message after reload"}\n' });
     }
@@ -635,7 +675,7 @@ try {
     controls.chat = async (request) => {
       const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
       if (request.text.includes("SOCKET_SENDER_ACTOR") && !wrote) {
-        return toolAnswer("write", { path: path.join(sessionSocketDir, "sub_02.sock"), content: '{"content":"PEER_SOURCE_MARKER"}\n' }, "peer-write");
+        return toolAnswer("write", { path: getAgentSocketPath("sub_02", sessionSocketDir), content: '{"content":"PEER_SOURCE_MARKER"}\n' }, "peer-write");
       }
       if (request.text.includes("SOCKET_RECEIVER_ACTOR")) await receiverExit.promise;
       return textAnswer("actor done");
@@ -677,7 +717,7 @@ try {
   } else if (scenario === "revive") {
     const first = await create("Original assignment marker");
     await stopped(first.id);
-    const endpoint = await fsp.stat(first.socket);
+    const endpoint = await listener(first.socket);
     let previousMarkdown = await fsp.readFile(first.history.summary, "utf8");
     let previousJsonl = await fsp.readFile(first.history.cleanJsonl, "utf8");
     assert.match(previousMarkdown, /Local result/);
@@ -688,7 +728,7 @@ try {
       const current = await stopped(first.id);
       assert.equal(current.socket, first.socket);
       assert.deepEqual(current.history, first.history);
-      assert.equal((await fsp.stat(first.socket)).ino, endpoint.ino, "revive must not replace the listener");
+      assert.equal(await listener(first.socket), endpoint, "revive must not replace the listener");
       assert.equal(classifications.length, 2, "settled identity must not reroute");
       assert.equal("budget" in (await stopped(first.id)), false);
       assert.match(chats[round - 1].text, new RegExp(`Explicit continuation ${round}`));
@@ -774,7 +814,7 @@ try {
     for (const parent of roots) {
       assert.equal(actors.filter((actor) => actor.parentId === parent.id).length, 4);
     }
-    for (const actor of actors) assert.ok((await fsp.stat(actor.socket)).isSocket());
+    for (const actor of actors) await listener(actor.socket);
     exit.resolve();
     await Promise.all(actors.map((actor) => stopped(actor.id)));
   } else if (scenario === "broadcast") {
@@ -787,7 +827,7 @@ try {
       if (request.text.includes("SPAWN_MARKER")) {
         const broadcastSent = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "write");
         if (spawned && !broadcastSent) {
-          return toolAnswer("write", { path: path.join(sessionSocketDir, "sub_01", "children.sock"), content: '{"content":"CHILD_BROADCAST_ONLY"}\n' }, "child-broadcast");
+          return toolAnswer("write", { path: getBroadcastSocketPath("sub_01", sessionSocketDir), content: '{"content":"CHILD_BROADCAST_ONLY"}\n' }, "child-broadcast");
         }
       }
       await exit.promise;
@@ -804,8 +844,8 @@ try {
         chats.filter((request) => request.text.includes("Child assignment")).length === 2 && found;
     }, { label: "depth-2 children run alongside four active parents" });
     assert.deepEqual(children.map((child) => child.id), ["sub_01_01", "sub_01_02"]);
-    await assert.rejects(call("msg_write", { path: path.join(sessionSocketDir, "sub_01", "children.sock"), content: '{"content":"OVERSTEP"}\n' }), (err) => err.message.includes("invalid_target"));
-    await writeForDelivery(path.join(sessionSocketDir, "main", "children.sock"), '{"content":"ROOT_BROADCAST_ONLY"}\n');
+    await assert.rejects(call("msg_write", { path: getBroadcastSocketPath("sub_01", sessionSocketDir), content: '{"content":"OVERSTEP"}\n' }), (err) => err.message.includes("invalid_target"));
+    await writeForDelivery(getBroadcastSocketPath("Main", sessionSocketDir), '{"content":"ROOT_BROADCAST_ONLY"}\n');
     exit.resolve();
     await Promise.all([...roots, ...children].map((actor) => stopped(actor.id)));
     const childRequests = chats.filter((request) => request.text.includes("Child assignment"));
@@ -882,14 +922,14 @@ try {
   } else if (scenario === "reload") {
     const first = await create("Persisted original assignment");
     await stopped(first.id);
-    assert.ok((await fsp.stat(first.socket)).isSocket());
+    await listener(first.socket);
     assert.ok(sessionManager.getSessionFile(), "the root must be durable");
     assert.ok(sessionManager.getBranch().some((entry) => entry.type === "custom" && entry.customType === "subagent-state"), "the runtime must checkpoint into the actual root branch");
     await session.reload();
     const restored = await item(first.id);
     assert.equal(restored.id, first.id);
     assert.deepEqual(restored.history, first.history);
-    assert.ok((await fsp.stat(restored.socket)).isSocket(), "reload must rebuild host-owned listeners for idle actors");
+    await listener(restored.socket);
     await call("msg_write", { path: restored.socket, content: '{"content":"Continue after reload"}\n' });
     await waitFor(() => chats.length === 2, { label: "revive from persisted session" });
     await stopped(first.id);

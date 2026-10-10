@@ -38,6 +38,7 @@ for (const [name, description] of [
   ["responses-prefix", "Responses Capability retains its declaration prefix, blocks inherited execution and returns compact interfaces"],
   ["responses-only", "Codemode-only Responses retain Capability interfaces when direct declarations are hidden"],
   ["surface", "inactive Subagent surface, explicit activation, atomic validation and native file/socket write"],
+  ["listener-cache", "bounded listener windows, historical fallback, lazy depth-2 restoration and reserved IPC directories"],
   ["namespace", "Capability discovers one Subagent namespace and activates all members while preserving native write prompts and Socket backend"],
   ["namespace-reverse", "Subagent and Capability compose in the reverse extension load order"],
   ["namespace-leaf", "Depth 2 Capability accepts the loaded two-tool Subagent namespace"],
