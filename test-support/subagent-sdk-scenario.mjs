@@ -49,6 +49,10 @@ Object.assign(routing.models.find((candidate) => candidate.id === "gemini"), { p
 await fsp.writeFile(path.join(agentDir, "subagent-routing.json"), JSON.stringify(routing));
 const classifications = [];
 const chats = [];
+// Automatic host notifications run through the actual root SDK too. Track
+// their requests separately so actor-count assertions do not mistake them for
+// another execution of the delegated task.
+const notificationChats = [];
 let streamedFragments = 0;
 const controls = { classify: null, chat: null };
 let externalToolExecutions = 0;
@@ -90,10 +94,16 @@ runtime.streamSimple = (actualModel, context, options) => {
   assert.equal(actualModel.id, model.id);
   const stream = new AssistantMessageEventStream();
   const call = { context, options, text: textOf(context) };
-  chats.push(call);
+  const latest = options.sessionId === sessionManager.getSessionId()
+    ? session.messages.findLast((message) => message.role !== "system") : null;
+  const notice = latest?.role === "custom" &&
+    (latest.customType === "agent-completion" || (latest.customType === "agent-delivery" && latest.details?.source === "host")) &&
+    !String(typeof latest.content === "string" ? latest.content : JSON.stringify(latest.content)).includes("[Message from ");
+  (notice ? notificationChats : chats).push(call);
   (async () => {
     try {
-      const message = controls.chat ? await controls.chat(call) : textAnswer("Local result. Difficulty: low — scripted offline response.");
+      const message = notice ? textAnswer("Root received the host task notification.") :
+        controls.chat ? await controls.chat(call) : textAnswer("Local result. Difficulty: low — scripted offline response.");
       const text = message.content.find((block) => block.type === "text");
       if (text) {
         stream.push({ type: "start", partial: { ...message, content: [], stopReason: "pending" } });
@@ -162,7 +172,7 @@ const resourceLoader = new DefaultResourceLoader({
     ...(scenario !== "namespace-reverse" ? [{ name: "capability", factory: capabilityExtension }] : []),
     ...(scenario === "capability-missing" ? [] : [{ name: "subagent", factory: subagentExtension }]),
     ...(scenario === "namespace-reverse" ? [{ name: "capability", factory: capabilityExtension }] : []),
-    ...(scenario.startsWith("responses-") ? [{ name: "codemode", factory: createCodemodeExtension() }] : []),
+    ...(scenario.startsWith("responses-") ? [{ name: "codemode", factory: createCodemodeExtension(), replaceable: true }] : []),
     { name: "external-test-tool", factory(pi) {
       pi.registerTool({ name: "external_test_tool", label: "External Test Tool", description: "A non-transplantable test extension tool.",
         parameters: { type: "object", properties: {} }, execute: async () => { externalToolExecutions++; return { content: [{ type: "text", text: "unused" }] }; },
@@ -236,7 +246,7 @@ try {
     const child = await item(parent.id + "_01");
     assert.equal(addresses().includes(child.socket), false, "eviction also removes stopped descendant listeners");
     const before = chats.length;
-    await call("write", { path: parent.socket, content: '{"content":"Resume historical parent"}\n' });
+    await call("write", { path: parent.socket, content: "Resume historical parent" });
     await waitFor(() => chats.length > before, { label: "historical fallback revival" });
     await stopped(parent.id);
     await listener(child.socket);
@@ -248,7 +258,7 @@ try {
     assert.equal(addresses().length, 6, "entry restores only the recent depth-1 window");
     assert.equal(addresses().includes(child.socket), false, "depth-2 listeners are not restored on entry");
     const afterReload = chats.length;
-    await call("write", { path: parent.socket, content: '{"content":"Restore next layer"}\n' });
+    await call("write", { path: parent.socket, content: "Restore next layer" });
     await waitFor(() => chats.length > afterReload, { label: "revival restores child window" });
     await stopped(parent.id);
     await listener(child.socket);
@@ -335,8 +345,10 @@ try {
       if (declared.includes("capability_search")) {
         internalCalls++;
         assert.equal(request.options.reasoning, "high", "retrieval keeps the parent's effort for compatible Responses");
-        assert.deepEqual(request.context.messages[0], initial, "retrieval retains the initial prompt and tool prefix");
-        assert.equal(resolveTranscriptTools(request.context.messages, true).anchorsAdditions, true);
+        const head = request.context.messages[0];
+        const { capabilities: _discoveryMemory, ...baseSections } = head.sections ?? {};
+        assert.deepEqual({ ...head, sections: baseSections }, initial, "retrieval retains the base prompt and tool prefix while adding branch discovery memory");
+        assert.deepEqual(resolveTranscriptTools(request.context.messages, "changes").requestTools, [], "changes-capable Responses declare interfaces in the transcript");
         assert.match(getSystemMessageText(request.context.messages.at(-1)), /only capability_search and submit_result/);
         const deniedWrite = resultOf("write");
         if (!deniedWrite) return toolAnswer("write", { path: "forbidden.txt", content: "must not execute" }, "forbidden-write");
@@ -357,7 +369,7 @@ try {
     const compact = JSON.parse(discovery.content[0].text);
     assert.equal(compact.tools[0].tools, undefined);
     assert.equal(compact.tools[0].description, undefined);
-    assert.match(compact.tools[0].instructions, /one JSON object per line/);
+    assert.match(compact.tools[0].instructions, /plain text/);
     assert.deepEqual(discovery.details.tools[0].tools.map((tool) => tool.name), members);
     assert.ok(members.every((name) => session.getActiveToolNames().includes(name)));
     const repeated = await call("capability", {});
@@ -372,11 +384,11 @@ try {
     await assert.rejects(fsp.stat(path.join(cwd, "forbidden-nested.txt")), { code: "ENOENT" });
     await session.prompt("Continue after capability activation.");
     const addedContext = chats.at(-1).context;
-    const resolved = resolveTranscriptTools(addedContext.messages, true);
-    assert.equal(resolved.anchorsAdditions, true, "Codemode description updates must not collapse the tools prefix");
-    assert.deepEqual(resolved.requestTools, initial.toolsAdded);
+    const resolved = resolveTranscriptTools(addedContext.messages, "changes");
+    assert.deepEqual(resolved.requestTools, [], "current Responses use inline tool declarations rather than a second top-level loadout");
     const wire = convertResponsesMessages(model, addedContext, new Set([model.provider]), { includeSystemPrompt: false, ...model.compat });
-    assert.deepEqual(wire.filter((item) => item.type === "additional_tools").flatMap((item) => item.tools.map((tool) => tool.name)), members);
+    const declaredInterfaces = wire.filter((item) => item.type === "additional_tools").flatMap((item) => item.tools);
+    for (const name of members) assert.ok(declaredInterfaces.some((tool) => tool.name === name && typeof tool.parameters === "object"), `wire request declares ${name}`);
     session.setActiveToolsByName(session.getActiveToolNames().filter((name) => name !== "external_test_tool"));
     controls.chat = (request) => {
       const results = request.context.messages.filter((message) => message.role === "toolResult");
@@ -392,22 +404,26 @@ try {
     assert.match(refused[0].content[0].text, /external_test_tool.*(not found|unavailable)/);
     assert.match(refused[1].content.map((part) => part.text ?? "").join("\n"), /DISABLED_EXTERNAL_TOOL:/, "nested call must reach the script and be refused before execution");
     assert.doesNotMatch(refused[1].content.map((part) => part.text ?? "").join("\n"), /UNEXPECTED_EXECUTION/);
-    assert.equal(resolveTranscriptTools(chats.at(-1).context.messages, true).anchorsAdditions, true);
+    assert.deepEqual(resolveTranscriptTools(chats.at(-1).context.messages, "changes").requestTools, []);
     assert.match(textOf(chats.at(-1).context), /external_test_tool is unavailable/);
     session.setActiveToolsByName([...session.getActiveToolNames(), "external_test_tool"]);
     controls.chat = () => textAnswer("Re-enabled");
     await session.prompt("Re-enable without a second declaration.");
     const last = chats.at(-1).context;
-    assert.deepEqual(resolveTranscriptTools(last.messages, true).requestTools, initial.toolsAdded);
+    assert.deepEqual(resolveTranscriptTools(last.messages, "changes").requestTools, []);
     assert.equal(last.messages.flatMap((message) => message.toolsAdded ?? []).filter((tool) => tool.name === "external_test_tool").length, 1);
     assert.match(textOf(last), /external_test_tool is available again/);
   } else if (scenario === "capability-missing") {
+    controls.chat = (request) => {
+      const searched = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "capability_search");
+      return searched ? toolAnswer("submit_result", { refs: [] }) :
+        toolAnswer("capability_search", { query: "no matching local fixture", src: "local" });
+    };
     const result = await call("capability", {});
-    assert.equal(result.isError, true);
-    assert.equal(result.details.status, "failed");
-    assert.match(result.details.warnings.join("\n"), /requires the Subagent extension/);
-    assert.equal(chats.length, 0, "dependency failure must not spend a model call");
-    assert.equal(classifications.length, 0);
+    assert.equal(result.isError, false, JSON.stringify(result.details));
+    assert.equal(result.details.status, "ok");
+    assert.ok(chats.length > 0, "internal execution does not require public Subagent tools");
+    assert.equal(classifications.length, 0, "internal retrieval does not enter public task role routing");
   } else if (scenario === "namespace-leaf") {
     let leafResult;
     controls.chat = (request) => {
@@ -452,17 +468,17 @@ try {
     assert.equal(discovery.tools[0].kind, "namespace");
     assert.equal(discovery.tools[0].namespace, "subagent");
     assert.deepEqual(discovery.tools[0].tools.map((tool) => tool.name), members);
-    assert.match(discovery.tools[0].instructions, /one JSON object per line/);
+    assert.match(discovery.tools[0].instructions, /plain text/);
     assert.ok(members.every((name) => session.getActiveToolNames().includes(name)));
     assert.equal(session.getToolDefinition("write").description, nativeWrite.description);
     const metadata = await call("read", { path: discovery.tools[0].ref });
     assert.match(metadata.content[0].text, /subagent_stop/);
-    assert.match(metadata.content[0].text, /one JSON object per line/);
+    assert.match(metadata.content[0].text, /plain text/);
     const gate = deferred();
     controls.classify = (_, options) => abortable(gate, options.signal);
     controls.chat = () => textAnswer("Namespace child done");
     const actor = await create("Namespace task");
-    await writeForDelivery(actor.socket, '{"content":"Namespace buffered message"}\n');
+    await writeForDelivery(actor.socket, "Namespace buffered message");
     gate.resolve();
     await stopped(actor.id);
     assert.match(chats.at(-1).text, /Namespace buffered message/);
@@ -486,9 +502,9 @@ try {
     session.setActiveToolsByName([...names, ...subagents]);
     const modelPrompt = session.systemPrompt;
     assert.match(modelPrompt, /Fresh agents need self-contained task\/context/);
-    assert.match(modelPrompt, /The host binds the sender; omit from and to/);
+    assert.match(modelPrompt, /host binds the sender/i);
     assert.match(modelPrompt, /stopped means ended, not necessarily succeeded/);
-    assert.equal(modelPrompt.match(/Normal completion does not wake you/g).length, 1, "shared namespace rules are deduplicated");
+    assert.match(modelPrompt, /host terminal notification/i);
     assert.match(session.getToolDefinition("subagent_stop").description, /does not wait for shutdown/);
     for (const name of ["create", "list", "stop", "task", "hub", "wait"]) assert.equal(names.includes(name), false);
     await assert.rejects(call("subagent_create", { tasks: [{ task: "valid" }, { task: "invalid", model: "override" }] }));
@@ -508,7 +524,7 @@ try {
     await listener(getBroadcastSocketPath("Main", sessionSocketDir));
     await call("write", { path: "ordinary.txt", content: "Native filesystem write" });
     assert.equal(await fsp.readFile(path.join(cwd, "ordinary.txt"), "utf8"), "Native filesystem write");
-    await writeForDelivery(first.socket, '{"content":"Buffered during routing"}\n');
+    await writeForDelivery(first.socket, "Buffered during routing");
     assert.equal((await call("subagent_stop", { id: second.id })).details.status, "stopping");
     gate.resolve();
     await stopped(first.id);
@@ -518,8 +534,8 @@ try {
     assert.match(chats[0].text, /Initial assignment/);
     assert.match(chats[0].text, /Buffered during routing/);
     const childPrompt = chats[0].context.messages.filter((message) => message.role === "system").map(getSystemMessageText).join("\n");
-    assert.match(childPrompt, /Normal completion does not wake you/);
-    assert.match(childPrompt, /The host binds the sender; omit from and to/);
+    assert.match(childPrompt, /host terminal notification/i);
+    assert.match(childPrompt, /host binds the sender/i);
     assert.equal("budget" in (await stopped(first.id)), false);
   } else if (scenario === "external-socket") {
     const exit = controlledGate();
@@ -563,6 +579,50 @@ try {
     assert.equal(sessionManager.getBranch().filter((entry) => entry.type === "custom_message").length, 0, "external responses must not become Agent messages");
     exit.resolve();
     await stopped(actor.id);
+  } else if (["upstream-main-clear", "upstream-main-esc"].includes(scenario)) {
+    const escaping = scenario === "upstream-main-esc";
+    const mainSocket = getAgentSocketPath("Main", sessionSocketDir);
+    await listener(mainSocket);
+    const mainStarted = controlledGate();
+    const mainExit = controlledGate();
+    const childExit = controlledGate();
+    controls.chat = async (request) => {
+      if (request.text.includes("UPSTREAM_CLEAR_CHILD")) {
+        const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
+        if (!wrote) return toolAnswer("msg_write", { path: mainSocket, content: "PROGRESS_EXPLICITLY_CLEARED" }, "clear-progress-write");
+        await childExit.promise;
+        return textAnswer("Child completed after the ordinary steer was cleared");
+      }
+      mainStarted.resolve();
+      await abortable(mainExit, request.options.signal);
+      return textAnswer("Root model turn completed");
+    };
+    const rootTurn = session.prompt("ROOT_CLEAR_BUSY");
+    await mainStarted.promise;
+    const actor = await create("UPSTREAM_CLEAR_CHILD: send progress, then finish");
+    await waitFor(() => session.agent.hasQueuedMessages(), { label: "ordinary child steer queued" });
+    if (escaping) {
+      await session.abort();
+      await rootTurn;
+    }
+    session.clearQueue();
+    assert.equal(session.agent.hasQueuedMessages(), false);
+    childExit.resolve();
+    if (escaping) {
+      await waitFor(() => notificationChats.length === 1, { label: "post-abort completion wakes Main through native steer" });
+    } else {
+      await waitFor(() => session.agent.hasQueuedMessages(), { label: "terminal notification queues after native clearQueue" });
+      mainExit.resolve();
+      await rootTurn;
+    }
+    await stopped(actor.id);
+    await session.waitForIdle();
+    const received = session.messages.filter((message) => message.role === "custom" && message.customType === "agent-delivery");
+    assert.equal(received.length, 1, "only the post-clear terminal steer is delivered");
+    assert.equal(received[0].details.sourceId, actor.id);
+    assert.equal(received[0].details.status, "completed");
+    assert.doesNotMatch(JSON.stringify(received[0].content), /PROGRESS_EXPLICITLY_CLEARED/, "cleared ordinary steering is not replayed");
+    assert.equal(notificationChats.length, 1);
   } else if (["upstream-main", "upstream-main-steer", "upstream-main-reload"].includes(scenario)) {
     const mainSocket = getAgentSocketPath("Main", sessionSocketDir);
     await listener(mainSocket);
@@ -581,7 +641,7 @@ try {
         assert.match(request.text, /Your direct parent is Main/);
         assert.ok(request.text.includes(mainSocket), "child context exposes the real parent receiving endpoint");
         const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
-        if (armed && !wrote) return toolAnswer("msg_write", { path: mainSocket, content: '{"content":"UPSTREAM_MAIN_MARKER"}\n' }, "upstream-write");
+        if (armed && !wrote) return toolAnswer("msg_write", { path: mainSocket, content: "UPSTREAM_MAIN_MARKER" }, "upstream-write");
         return textAnswer("Child done");
       }
       mainRequests++;
@@ -603,27 +663,90 @@ try {
     assert.equal("parentSocket" in sender, false);
     if (!armed) {
       await stopped(sender.id);
-      assert.equal(mainRequests, 0, "normal completion must not wake Main");
+      await session.waitForIdle();
+      assert.ok(notificationChats.length > 0, "normal completion wakes Main through a host notification");
+      assert.equal(mainRequests, 0, "no explicit upstream message has been sent yet");
       await session.reload();
       const restored = await item(sender.id);
       assert.equal("parentSocket" in restored, false);
       await listener(mainSocket);
       armed = true;
-      await call("msg_write", { path: restored.socket, content: '{"content":"Send the explicit upstream message after reload"}\n' });
+      await call("msg_write", { path: restored.socket, content: "Send the explicit upstream message after reload" });
     }
     if (steering) {
       await waitFor(() => session.agent.hasQueuedMessages(), { label: "child message queued as native Main steering" });
+      await stopped(sender.id);
       mainExit.resolve();
       await mainPrompt;
     }
     await delivered.promise;
     await stopped(sender.id);
     await session.waitForIdle();
-    const received = session.messages.filter((message) => message.role === "custom" && message.customType === "agent-message");
-    assert.equal(received.length, 1, "one write produces exactly one Main message");
-    assert.deepEqual(received[0].details, { from: sender.id, to: "Main" });
+    const received = session.messages.filter((message) => message.role === "custom" &&
+      message.customType === "agent-delivery" && JSON.stringify(message.content).includes("UPSTREAM_MAIN_MARKER"));
+    assert.equal(received.length, 1, "one write produces exactly one Main delivery item");
+    assert.equal(received[0].details.sourceId, sender.id);
+    if (steering) {
+      assert.equal(received[0].details.status, "completed", "still-queued progress and terminal become one host delivery");
+      assert.match(received[0].content, /\[Subagent .* completed/);
+      assert.equal(notificationChats.length, 0, "the merged terminal does not start another root request");
+    }
     assert.equal(mainRequests, steering ? 2 : 1);
-    await assert.rejects(call("msg_write", { path: mainSocket, content: '{"from":"sub_99","content":"forged"}\n' }), (error) => error.code === "invalid_message");
+    // JSON-literal sender spoofing is covered by sender-reserved against a
+    // distinct actor. Sending Main -> Main here would instead be a forbidden
+    // self-send, irrespective of the literal text.
+  } else if (scenario === "upstream-parent-steer") {
+    const send = controlledGate();
+    const parentWaiting = controlledGate();
+    const parentExit = controlledGate();
+    let parent;
+    let parentRequests = 0;
+    let mergedSeen = false;
+    controls.chat = async (request) => {
+      if (request.text.includes("PARENT_MERGE_LEAF")) {
+        await send.promise;
+        const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
+        if (!wrote) return toolAnswer("msg_write", { path: parent.socket, content: "PARENT_MERGE_PROGRESS" }, "parent-merge-write");
+        return textAnswer("Leaf completed");
+      }
+      assert.ok(request.text.includes("PARENT_MERGE_OWNER"));
+      parentRequests++;
+      const created = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent_create");
+      if (!created) return toolAnswer("subagent_create", { tasks: [{ task: "PARENT_MERGE_LEAF: send progress to your direct parent" }] }, "parent-merge-create");
+      if (!request.text.includes("PARENT_MERGE_PROGRESS")) {
+        parentWaiting.resolve();
+        await parentExit.promise;
+        return textAnswer("Parent finishes its held model turn");
+      }
+      // The provider receives Pi's LLM conversion, not raw custom messages.
+      // Check its combined body here and the typed native history below.
+      const deliveries = request.context.messages.filter((message) =>
+        message.role !== "system" && JSON.stringify(message.content).includes("PARENT_MERGE_PROGRESS"));
+      assert.equal(deliveries.length, 1);
+      assert.match(JSON.stringify(deliveries[0].content), /\[Subagent .* completed/);
+      mergedSeen = true;
+      return textAnswer("Parent received one combined progress and terminal delivery");
+    };
+    parent = await create("PARENT_MERGE_OWNER: delegate one leaf and consume its result");
+    await parentWaiting.promise;
+    const leaf = (await call("subagent_list", { all: true })).details.items.find((entry) => entry.id !== "Main" && entry.id !== parent.id);
+    assert.ok(leaf);
+    send.resolve();
+    await stopped(leaf.id);
+    parentExit.resolve();
+    await waitFor(() => mergedSeen, { label: "busy Subagent parent consumes merged host delivery" });
+    await stopped(parent.id);
+    await session.waitForIdle();
+    assert.equal(parentRequests, 3, "one parent assignment turn, one held turn, and one merged continuation");
+    assert.equal(classifications.length, 4, "notification does not route another parent assignment");
+    const stored = (await events(parent.history.cleanJsonl)).filter((event) => event.type === "message_end" &&
+      event.role === "custom" && JSON.stringify(event.content).includes("PARENT_MERGE_PROGRESS"));
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].customType, "agent-delivery");
+    assert.equal(stored[0].details.source, "host");
+    assert.equal(stored[0].details.sourceId, leaf.id);
+    assert.equal(stored[0].details.status, "completed");
+    assert.match(stored[0].content, /\[Subagent .* completed/);
   } else if (scenario === "upstream-parent") {
     const send = controlledGate();
     const received = controlledGate();
@@ -635,7 +758,7 @@ try {
         assert.match(request.text, /Your direct parent is sub_01/);
         assert.ok(request.text.includes(parent.socket));
         const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
-        if (!wrote) return toolAnswer("msg_write", { path: parent.socket, content: '{"content":"UPSTREAM_PARENT_MARKER"}\n' }, "leaf-upstream-write");
+        if (!wrote) return toolAnswer("msg_write", { path: parent.socket, content: "UPSTREAM_PARENT_MARKER" }, "leaf-upstream-write");
         return textAnswer("Leaf done");
       }
       if (request.text.includes("UPSTREAM_PARENT")) {
@@ -664,7 +787,8 @@ try {
     assert.ok(sent && !sent.isError, JSON.stringify(sent));
     await received.promise;
     await stopped(parent.id);
-    assert.equal(parentRuns, 3, "leaf write revives its stopped parent exactly once");
+    assert.ok(parentRuns >= 3 && parentRuns <= 4, "parent consumes the leaf message and terminal notice without rerouting its original assignment");
+    assert.equal(classifications.length, 4, "only the original parent and leaf assignments are routed; notification continuation reuses their identities");
     assert.equal(session.messages.some((message) => message.role === "custom" && message.customType === "agent-message"), false);
   } else if (scenario === "sender-wire" || scenario === "sender-context") {
     // The model of sub_01 executes native write to sub_02, rather than the root
@@ -675,7 +799,7 @@ try {
     controls.chat = async (request) => {
       const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
       if (request.text.includes("SOCKET_SENDER_ACTOR") && !wrote) {
-        return toolAnswer("write", { path: getAgentSocketPath("sub_02", sessionSocketDir), content: '{"content":"PEER_SOURCE_MARKER"}\n' }, "peer-write");
+        return toolAnswer("write", { path: getAgentSocketPath("sub_02", sessionSocketDir), content: "PEER_SOURCE_MARKER" }, "peer-write");
       }
       if (request.text.includes("SOCKET_RECEIVER_ACTOR")) await receiverExit.promise;
       return textAnswer("actor done");
@@ -708,12 +832,15 @@ try {
       assert.equal(text.includes("[Message from Main]"), false);
     }
   } else if (scenario === "sender-reserved") {
-    const exit = controlledGate();
-    controls.chat = async () => { await exit.promise; return textAnswer("done"); };
-    const actor = await create("Managed endpoint rejects caller-supplied identity");
-    await waitFor(() => chats.length === 1, { label: "native actor request" });
-    await assert.rejects(call("msg_write", { path: actor.socket, content: '{"from":"sub_99","content":"forged source"}\n' }), (error) => error.code === "invalid_message");
-    exit.resolve();
+    controls.chat = () => textAnswer("done");
+    const actor = await create("Managed endpoint treats JSON as message text");
+    await stopped(actor.id);
+    await call("msg_write", { path: actor.socket, content: '{"from":"sub_99","content":"forged source"}\n' });
+    await waitFor(() => chats.some((request) => request.text.includes("forged source")), { label: "literal message reaches the resumed actor" });
+    await stopped(actor.id);
+    assert.match(chats.at(-1).text, /forged source/);
+    assert.match(chats.at(-1).text, /\[Message from Main\]/);
+    assert.doesNotMatch(chats.at(-1).text, /\[Message from sub_99\]/);
   } else if (scenario === "revive") {
     const first = await create("Original assignment marker");
     await stopped(first.id);
@@ -723,7 +850,7 @@ try {
     assert.match(previousMarkdown, /Local result/);
     assert.equal(classifications.length, 2);
     for (const round of [2, 3]) {
-      await call("msg_write", { path: first.socket, content: JSON.stringify({ content: `Explicit continuation ${round}` }) + "\n" });
+      await call("msg_write", { path: first.socket, content: `Explicit continuation ${round}` });
       await waitFor(() => chats.length === round, { label: `revival ${round} native request` });
       const current = await stopped(first.id);
       assert.equal(current.socket, first.socket);
@@ -772,7 +899,7 @@ try {
     };
     const first = await create("One original assignment");
     await waitFor(() => chats.length === 1, { label: "first native stream" });
-    await writeForDelivery(first.socket, '{"content":"Steering marker exactly once"}\n');
+    await writeForDelivery(first.socket, "Steering marker exactly once");
     exit.resolve();
     await waitFor(() => chats.length === 2, { label: "steered native stream" });
     const terminal = await stopped(first.id);
@@ -781,7 +908,10 @@ try {
     assert.equal("budget" in (await stopped(first.id)), false);
     assert.equal(chats[1].text.split("Steering marker exactly once").length - 1, 1);
     assert.equal(chats[1].text.split("One original assignment").length - 1, 1);
-    assert.equal(sessionManager.getBranch().filter((entry) => entry.type === "custom_message").length, 0, "normal completion must be silent");
+    await session.waitForIdle();
+    const completedNotices = sessionManager.getBranch().filter((entry) => entry.type === "custom_message" &&
+      (entry.details?.status === "completed" || entry.details?.terminal?.status === "completed"));
+    assert.equal(completedNotices.length, 1, "normal completion produces one host terminal notification");
   } else if (scenario === "parallel") {
     const exit = controlledGate();
     controls.chat = async (request) => {
@@ -827,7 +957,7 @@ try {
       if (request.text.includes("SPAWN_MARKER")) {
         const broadcastSent = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "write");
         if (spawned && !broadcastSent) {
-          return toolAnswer("write", { path: getBroadcastSocketPath("sub_01", sessionSocketDir), content: '{"content":"CHILD_BROADCAST_ONLY"}\n' }, "child-broadcast");
+          return toolAnswer("write", { path: getBroadcastSocketPath("sub_01", sessionSocketDir), content: "CHILD_BROADCAST_ONLY" }, "child-broadcast");
         }
       }
       await exit.promise;
@@ -844,8 +974,8 @@ try {
         chats.filter((request) => request.text.includes("Child assignment")).length === 2 && found;
     }, { label: "depth-2 children run alongside four active parents" });
     assert.deepEqual(children.map((child) => child.id), ["sub_01_01", "sub_01_02"]);
-    await assert.rejects(call("msg_write", { path: getBroadcastSocketPath("sub_01", sessionSocketDir), content: '{"content":"OVERSTEP"}\n' }), (err) => err.message.includes("invalid_target"));
-    await writeForDelivery(getBroadcastSocketPath("Main", sessionSocketDir), '{"content":"ROOT_BROADCAST_ONLY"}\n');
+    await assert.rejects(call("msg_write", { path: getBroadcastSocketPath("sub_01", sessionSocketDir), content: "OVERSTEP" }), (err) => err.message.includes("invalid_target"));
+    await writeForDelivery(getBroadcastSocketPath("Main", sessionSocketDir), "ROOT_BROADCAST_ONLY");
     exit.resolve();
     await Promise.all([...roots, ...children].map((actor) => stopped(actor.id)));
     const childRequests = chats.filter((request) => request.text.includes("Child assignment"));
@@ -893,7 +1023,7 @@ try {
     assert.equal((await item(first.id)).status, "stopping");
     try {
       if (scenario === "stopping") {
-        await assert.rejects(call("msg_write", { path: first.socket, content: '{"content":"must not be accepted"}\n' }), (err) => err.code === "agent_stopping");
+        await assert.rejects(call("msg_write", { path: first.socket, content: "must not be accepted" }), (err) => err.code === "agent_stopping");
       }
     } finally {
       exit.resolve();
@@ -901,7 +1031,7 @@ try {
     assert.equal("budget" in (await stopped(first.id)), false);
     assert.match(await fsp.readFile(first.history.summary, "utf8"), /`cancelled`/);
     controls.chat = null;
-    await call("msg_write", { path: first.socket, content: '{"content":"resume after actual exit"}\n' });
+    await call("msg_write", { path: first.socket, content: "resume after actual exit" });
     await waitFor(() => chats.length === 2, { label: "explicit revive after cancellation" });
     await stopped(first.id);
     assert.equal(classifications.length, 2);
@@ -913,12 +1043,15 @@ try {
     assert.match(await fsp.readFile(first.history.summary, "utf8"), /`failed`[\s\S]*Local provider failure/);
     const notices = sessionManager.getBranch().filter((entry) => entry.type === "custom_message");
     assert.equal(notices.length, 1);
-    assert.equal(chats.length, 1, "an error notification must not start a root model turn");
+    await session.waitForIdle();
+    assert.equal(chats.length, 1, "the failing child dispatched one request");
+    assert.equal(notificationChats.length, 1, "failure notification wakes Main once");
     assert.equal(session.isStreaming, false);
-    assert.equal(notices[0].details.type, "notification");
-    assert.equal(notices[0].details.subagentId, first.id);
-    assert.equal(notices[0].details.status, "failed");
-    assert.deepEqual(notices[0].details.history, first.history);
+    const notice = notices[0].details;
+    assert.equal(notice.source, "host");
+    assert.equal(notice.sourceId, first.id);
+    assert.equal(notice.status, "failed");
+    assert.deepEqual(notice.terminal.details.history, first.history);
   } else if (scenario === "reload") {
     const first = await create("Persisted original assignment");
     await stopped(first.id);
@@ -930,7 +1063,7 @@ try {
     assert.equal(restored.id, first.id);
     assert.deepEqual(restored.history, first.history);
     await listener(restored.socket);
-    await call("msg_write", { path: restored.socket, content: '{"content":"Continue after reload"}\n' });
+    await call("msg_write", { path: restored.socket, content: "Continue after reload" });
     await waitFor(() => chats.length === 2, { label: "revive from persisted session" });
     await stopped(first.id);
     assert.equal(classifications.length, 2);

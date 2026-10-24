@@ -10,16 +10,17 @@ import {
   DefaultResourceLoader,
   SessionManager,
   SettingsManager,
-  createAgentSession,
   createWriteToolDefinition,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 
 import path, { join } from "node:path";
-import { once } from "node:events";
-
 import { SubagentError, copyInheritedEntries, createSubagentRuntime } from "../src/subagent-runtime.mjs";
+import { ServiceLifecycle, takeQueuedMessages } from "../src/subagent/lifecycle.ts";
+import { openSubagentExecution } from "../src/subagent/execution.ts";
+import { createSteerDelivery, DELIVERY_CUSTOM_TYPE } from "../src/subagent/delivery.ts";
 import { captureInheritedContext } from "../src/inherited-context.mjs";
+import { ensurePrivateSocketRoot } from "../src/subagent-ipc.mjs";
 import { installModelCallBudget } from "../src/pi-job-budget.mjs";
 import { routeSubagent } from "../src/subagent-routing.mjs";
 import { SUBAGENT_SESSIONS_DIR, createSubagentStore, SubagentStoreError } from "../src/subagent-storage.mjs";
@@ -58,11 +59,11 @@ const SUBAGENT_NAMESPACE = Object.freeze({
   description: "Delegate independent background tasks, exchange messages, and collect their results.",
   instructions: [
     "Where available, use subagent_create to delegate independent tasks. Fresh agents need self-contained task/context; inheritContext copies this session's snapshot. Agents share the working directory; avoid simultaneous edits to the same files.",
-    "Each parent can have four active children, with two child levels. Normal completion does not wake you; use subagent_list and read history.summary for the outcome or history.cleanJsonl for full messages.",
+    "Each parent can have four active children, with two child levels. Each execution round ends with a host terminal notification carrying its status, job and round; use subagent_list and read history.summary for the outcome or history.cleanJsonl for full messages.",
     "running includes initialization; stopping waits for execution exit; finalizing writes history; stopped means ended, not necessarily succeeded. Use subagent_stop only to cancel unwanted work.",
-    'To send a message, use write if enabled, otherwise msg_write, with the returned socket path and one JSON object per line: {"content":"Please check the tests"}, ending with a newline. The host binds the sender; omit from and to.',
+    "To send a message, use write if enabled, otherwise msg_write, with the returned socket path and plain text content. The host binds the sender, frames the transport and omits from/to; do not write your own Socket client.",
     "To contact your direct parent, use your enabled write or msg_write with the parent socket stated in your agent context. Main's receiving socket is distinct from main/children.sock; the latter only broadcasts downward.",
-    "A successful Socket write is not a task result. Writing to a stopped agent starts a new run; wait for stopped before messaging an agent that is stopping or finalizing.",
+    "A successful write is not a task result. Writing to a stopped agent starts a new run; wait for stopped before messaging an agent that is stopping or finalizing.",
     "Your children.sock endpoint broadcasts only to your direct children, never recursively. Query progress when needed, not in a tight loop.",
   ].join("\n"),
 });
@@ -110,12 +111,15 @@ export default function subagentExtension(pi) {
     pi,
     agentDir: getAgentDir(),
     settings: new Map(),
-    /** Root-session service, rebuilt by session_start / the lazy entry. */
-    service: null,
-    /** In-flight retirement, so a replacement can wait for real quiescence. */
-    retirement: null,
-    /** In-flight activation, so concurrent entries share one service. */
-    activation: null,
+    /**
+     * The current root-session service. `ServiceLifecycle` owns activation,
+     * service-specific retirement and the generation guard, so a completed
+     * retirement never becomes a permanent latch and a stale callback cannot
+     * retire its successor.
+     */
+    lifecycle: new ServiceLifecycle({
+      retire: (service) => retireService(controller, service),
+    }),
     /** Allocated agent IDs per root session ID, preserved across branch switches. */
     allocatedAgentIdsBySession: new Map(),
   };
@@ -128,7 +132,43 @@ export default function subagentExtension(pi) {
     await activateRootSession(controller, ctx);
   });
   pi.on("session_shutdown", async () => {
-    await retireService(controller);
+    await controller.lifecycle.retire();
+  });
+  // Merge an undelivered Agent message with the terminal notice of the same
+  // sender and execution round. Pi still owns steering, interruption and
+  // continuation; this hook only supplies the finalized snapshot.
+  pi.on("input", () => {
+    // A new user input is an ordinary native boundary. Later content must not
+    // merge into an older Agent event batch, even if the old batch was cleared.
+    controller.lifecycle.service?.mainDelivery?.breakMergeKeys();
+  });
+  pi.on("message_start", (event) => {
+    const service = controller.lifecycle.service;
+    if (service === null || !service.active) return;
+    const delivery = service.mainDelivery;
+    if (delivery === undefined || delivery === null) return;
+    // A real user input starts a new merge boundary; a custom delivery batch
+    // is marked as started so preparation/history races can still finalize it.
+    if (event.message?.role === "user") delivery.breakMergeKeys();
+    delivery.messageStarted(event.message);
+  });
+  pi.on("agent_settled", () => {
+    controller.lifecycle.service?.mainDelivery?.settle();
+  });
+  pi.on("agent_end", (event) => {
+    // An aborted native turn is an ordinary cancellation boundary, not a
+    // notification permission switch: release stale merge slots and let the
+    // next real event stand alone.
+    const last = event.messages?.at(-1);
+    if (last?.role === "assistant" && last.stopReason === "aborted") {
+      controller.lifecycle.service?.mainDelivery?.settle();
+    }
+  });
+  pi.on("message_end", (event) => {
+    const service = controller.lifecycle.service;
+    if (service === null || !service.active) return undefined;
+    const message = service.mainDelivery?.replaceMessage(event.message);
+    return message === undefined ? undefined : { message };
   });
   installSessionSurface(pi, (ctx) => rootService(controller, ctx), { allowInherited: true, parentAgentId: null, depth: 0, senderId: "main" });
 }
@@ -142,7 +182,7 @@ export default function subagentExtension(pi) {
  * a caller that arrives while a replacement is being built waits for it.
  */
 async function rootService(controller, ctx) {
-  const service = controller.service;
+  const service = controller.lifecycle.service;
   if (service !== null && service.active) return service;
   return activateRootSession(controller, ctx);
 }
@@ -153,19 +193,12 @@ async function rootService(controller, ctx) {
  * other's service.
  */
 async function activateRootSession(controller, ctx) {
-  const inFlight = controller.activation;
-  if (inFlight !== null) return inFlight;
-  const run = (async () => {
-    await retireService(controller);
+  return controller.lifecycle.activate(async (generation) => {
     const service = createService(controller, ctx);
-    controller.service = service;
+    service.generation = generation;
     await restoreService(service, ctx);
     return service;
-  })();
-  controller.activation = run.finally(() => {
-    controller.activation = null;
   });
-  return controller.activation;
 }
 
 /**
@@ -176,13 +209,16 @@ async function activateRootSession(controller, ctx) {
  * otherwise append to the same child session a restored runtime is about to
  * continue.
  */
-async function retireService(controller) {
-  if (controller.retirement) return controller.retirement;
-  const service = controller.service;
-  if (service === null) return undefined;
-  controller.service = null;
+async function retireService(controller, service) {
   service.active = false;
   service.closed = true;
+
+  // Invalidate pending merge slots before any callback can enqueue into the
+  // generation that is leaving. A later session starts with a fresh delivery
+  // coordinator rather than inheriting an in-flight slot.
+  service.mainDelivery?.retire();
+  for (const delivery of service.agentDeliveries.values()) delivery.retire();
+  service.agentDeliveries.clear();
 
   const liveJobs = service.runtime
     ? service.runtime.jobs().jobs.filter((job) => LIVE_JOB_STATUSES.has(job.status))
@@ -213,22 +249,18 @@ async function retireService(controller) {
     }
   })();
 
-  const retirement = (async () => {
-    try {
-      await Promise.all([
-        closeSocketsPromise,
-        ...liveJobs.map((job) => service.runtime.jobDone(job.jobId)),
-      ]);
-    } catch {
-      // Every Job still settles through its own handle; a failed wait here must
-      // not leave a later session without its retirement record.
-    } finally {
-      service.retained.clear();
-      service.liveJobs.clear();
-    }
-  })();
-  controller.retirement = retirement;
-  return retirement;
+  try {
+    await Promise.all([
+      closeSocketsPromise,
+      ...liveJobs.map((job) => service.runtime.jobDone(job.jobId)),
+    ]);
+  } catch {
+    // Every Job still settles through its own handle; a failed wait here must
+    // not skip the remaining generation cleanup.
+  } finally {
+    service.retained.clear();
+    service.liveJobs.clear();
+  }
 }
 
 /** One root session's runtime, storage and retained actor records. */
@@ -236,6 +268,10 @@ function createService(controller, ctx) {
   const sessionId = ctx?.sessionManager?.getSessionId?.() || ctx?.sessionId || "default";
   const sessionUid = deriveSessionUid(sessionId);
   const baseSocketDir = path.resolve(ctx?.cwd ?? process.cwd(), DEFAULT_SOCKET_DIR);
+  // Validate/create the managed root before any session directory or listener.
+  // Nested session directories are still validated by each listener; this is
+  // the fail-fast boundary for a symlinked/non-directory/non-private root.
+  ensurePrivateSocketRoot(baseSocketDir);
   const socketDir = path.join(baseSocketDir, sessionUid);
   const historyDir = path.join(".pi/subagents", sessionUid);
   const cwd = ctx?.cwd ?? process.cwd();
@@ -293,6 +329,13 @@ function createService(controller, ctx) {
     modelRegistry: ctx?.modelRegistry ?? null,
     /** Live runs by jobId: message hand-over goes through these sessions. */
     liveJobs: new Map(),
+    /**
+     * One coordinator for the root conversation. Service retirement retires it,
+     * so a slot from an old branch can never replace a message in the new one.
+     */
+    mainDelivery: null,
+    /** One delivery coordinator per Subagent conversation receiving child events. */
+    agentDeliveries: new Map(),
     /** Retained session descriptors, so an idle agent keeps its conversation. */
     retained: new Map(),
     /** Live Unix Domain Socket servers mapped by actor id or broadcast key. */
@@ -303,6 +346,25 @@ function createService(controller, ctx) {
     jobHistory: new Map(),
     runtime: null,
   };
+  // Root queue observation gap in Pi 1.4: ExtensionContext exposes only
+  // `hasPendingMessages()`, backed by the textual steering/follow-up mirrors.
+  // It does not include custom steered messages and there is no public Agent
+  // reference in the root extension context. Passing it as `hasPendingMessages`
+  // would report a live custom batch as cleared. The root coordinator therefore
+  // omits the oracle and relies on message_start/input/agent_settled boundaries.
+  // A native clearQueue() while the root is busy emits none of those events, so
+  // that specific boundary cannot be observed without an SDK API change.
+  service.mainDelivery = createSteerDelivery({
+    isActive: () => service.active && !service.closed,
+    send: (payload) => {
+      if (!service.active || service.closed) throw new Error("Subagent service was retired before delivery.");
+      // The host owns wake/interruption semantics: this is exactly a native
+      // steer message, not a second notification state machine. Pi accepts the
+      // custom-message fields, not the internal transport envelope.
+      const { customType, content, display, details } = payload;
+      service.controller.pi.sendMessage({ customType, content, display, details }, { triggerTurn: true, deliverAs: "steer" });
+    },
+  });
   service.runtime = createSubagentRuntime({
     socketDir,
     historyDir,
@@ -603,55 +665,162 @@ function isPlainObject(value) {
 }
 
 /**
- * Deliver a message to the root session through native Pi messaging.
+ * Submit one event to the root delivery coordinator.
  *
- * An explicit peer message may wake the root session. A Job completion is a
- * durable typed notification instead: it is appended to the context (immediately
- * when idle, at the end of the running turn otherwise) and never starts a turn,
- * so a finished subagent cannot trigger a new root run on its own.
+ * Both explicit peer messages and terminal notices use Pi's ordinary steer
+ * path. The coordinator merges an undelivered message with the terminal notice
+ * of the same sender/round before Pi seals it into history; Pi still owns
+ * queueing, interruption and continuation.
  */
 async function deliverToMain(service, message) {
-  if (!service.active) return;
+  if (!service.active || service.mainDelivery === null) return;
   if (message?.type === "completion" || message?.type === "notification") {
-    service.controller.pi.sendMessage(
-      {
-        customType: COMPLETION_CUSTOM_TYPE,
-        content: formatCompletion(message),
-        display: true,
+    const sourceId = typeof message.from === "string" ? message.from : message.subagentId;
+    if (typeof sourceId !== "string" || sourceId === "") return;
+    const result = service.mainDelivery.enqueue({
+      sourceId,
+      round: Number.isInteger(message.round) ? message.round : 1,
+      content: typeof message.content === "string" ? message.content : formatCompletion(message),
+      terminal: {
+        status: typeof message.status === "string" ? message.status : "failed",
         details: completionDetails(message),
       },
-      { triggerTurn: false },
-    );
+    });
+    if (!result.accepted) {
+      service.ui?.notify?.(`Terminal notification for ${sourceId} was not accepted: ${result.reason ?? "inactive"}`, "error");
+    }
     return;
   }
-  service.controller.pi.sendMessage(
-    {
-      customType: MESSAGE_CUSTOM_TYPE,
-      content: formatPeerMessage(message),
-      display: true,
-      details: { from: message.from, to: "Main" },
-    },
-    { triggerTurn: true, deliverAs: "steer" },
-  );
+  if (typeof message.from !== "string" || message.from === "") return;
+  service.mainDelivery.enqueue({
+    sourceId: message.from,
+    round: Number.isInteger(message.round) ? message.round : 1,
+    content: formatPeerMessage(message),
+  });
 }
 
 /**
- * A completion keeps the same native custom-message path as a peer message, but
- * with its own type and without prompting: the runtime passes the creator's
- * live running Job id, or null when the creator is idle, stopping or finalizing. A
- * live creator gets the notice at the end of its current turn; an idle creator
- * gets it appended durably to its retained conversation, where its next normal
- * turn reads it. It never creates a Job, and it is attempted exactly once.
+ * Deliver one terminal notice to a Subagent parent.
+ *
+ * An idle/stopped parent is woken through the runtime's ordinary continuation
+ * Job path, so the same child-limit admission and a fresh Budget apply. A live
+ * parent takes the notice through its native custom-message path and may
+ * continue its turn. If the continuation is refused, the notice is appended to
+ * the retained conversation instead. Delivery is attempted exactly once.
  */
+function deliveryForAgent(service, agentId) {
+  const existing = service.agentDeliveries.get(agentId);
+  if (existing !== undefined) return existing;
+  const delivery = createSteerDelivery({
+    isActive: () => service.active && !service.closed,
+    hasPendingMessages: (batchId) => {
+      const live = [...service.liveJobs.values()].find((run) => run.agentId === agentId && !run.closed);
+      if (live?.pending.some((entry) => entry.kind === "custom" && entry.details?.batchId === batchId)) return true;
+      const agent = live?.session?.agent;
+      if (agent === undefined) return false;
+      // Our custom payloads always use steering. Preview all steering entries
+      // synchronously, without consuming them or changing the user's mode.
+      const mode = agent.steeringMode;
+      try {
+        agent.steeringMode = "all";
+        return agent.peekQueuedMessages().some((message) => message.role === "custom" &&
+          message.customType === "agent-delivery" && message.details?.batchId === batchId);
+      } finally {
+        agent.steeringMode = mode;
+      }
+    },
+    send: (payload) => sendAgentDeliveryPayload(service, agentId, payload),
+  });
+  service.agentDeliveries.set(agentId, delivery);
+  return delivery;
+}
+
+/** Send one coordinator payload into a live Subagent conversation or its retained record. */
+async function sendAgentDeliveryPayload(service, agentId, payload) {
+  const { customType, content, display, details } = payload;
+  const entry = { customType, content, display, details };
+  const live = [...service.liveJobs.values()].find((run) => run.agentId === agentId && !run.closed);
+  if (live === undefined) {
+    appendCustomToRetained(service, agentId, entry);
+    return;
+  }
+  if (live.session === null || !live.session.isStreaming) {
+    // Routing/setup has no native consumer yet, and an idle session must not be
+    // started concurrently with the primary prompt. Keep the custom envelope
+    // in the Job's existing pending buffer; the first-prompt flush or the
+    // end-of-job drain owns the one native append/run.
+    live.pending.push({
+      kind: "custom",
+      from: typeof details?.sourceId === "string" ? details.sourceId : "",
+      content,
+      text: content,
+      customType,
+      display,
+      details,
+      message: {
+        role: "custom",
+        customType,
+        content,
+        display,
+        details,
+        timestamp: Date.now(),
+      },
+    });
+    return;
+  }
+  // Track the native custom steer exactly like a peer steer: the Job's
+  // end-of-turn loop waits for it before closing the session.
+  const operation = (async () => {
+    await live.session.sendCustomMessage(entry, { triggerTurn: true, deliverAs: "steer" });
+  })();
+  live.steers.add(operation);
+  try {
+    await operation;
+  } finally {
+    live.steers.delete(operation);
+  }
+}
+
 async function deliverMessage(service, { agentId, jobId, message }) {
   if (!service.active) return { accepted: false, reason: "runtime_retired" };
   if (message?.type === "completion" || message?.type === "notification") {
+    // An idle parent wakes through the ordinary continuation Job path, with
+    // the same child-limit admission and a fresh Budget. A busy or stopping
+    // parent keeps the notice in its current conversation instead.
+    if (typeof jobId !== "string" || service.liveJobs.get(jobId)?.closed === true) {
+      const wake = service.runtime?.reviveWithNotification?.(agentId, message);
+      if (wake?.woken === true) return { accepted: true, mode: "revived", jobId: wake.jobId };
+    }
+    const sourceId = typeof message.from === "string" ? message.from : message.subagentId;
+    if (typeof jobId === "string" && typeof sourceId === "string" && sourceId !== "") {
+      const result = deliveryForAgent(service, agentId).enqueue({
+        sourceId,
+        round: Number.isInteger(message.round) ? message.round : 1,
+        content: typeof message.content === "string" ? message.content : formatCompletion(message),
+        terminal: {
+          status: typeof message.status === "string" ? message.status : "failed",
+          details: completionDetails(message),
+        },
+      });
+      if (result.accepted) return { accepted: true, mode: "delivered" };
+    }
     // The append is awaited: a rejected native append must stay inside the
     // completion's own one-attempt boundary instead of escaping as an
     // unhandled rejection from a discarded promise. Its outcome never affects
     // the Job that sent the notice.
     await appendCompletion(service, agentId, typeof jobId === "string" ? jobId : null, message);
     return { accepted: true, mode: "retained" };
+  }
+
+  const sourceId = message?.from;
+  if (typeof jobId === "string" && typeof sourceId === "string" && sourceId !== "") {
+    const result = deliveryForAgent(service, agentId).enqueue({
+      sourceId,
+      round: Number.isInteger(message.round) ? message.round : 1,
+      content: formatPeerMessage(message),
+    });
+    if (!result.accepted) return { accepted: false, reason: result.reason ?? "delivery_rejected" };
+    return { accepted: true, mode: "delivered" };
   }
   return deliverToLiveJob(service, { agentId, jobId, message });
 }
@@ -670,31 +839,37 @@ async function appendCompletion(service, agentId, jobId, message) {
     } else if (live?.session != null) {
       const manager = service.retained.get(agentId)?.sessionManager ?? null;
       const before = manager?.getLeafId() ?? null;
-      await live.session.sendCustomMessage(entry, { triggerTurn: false });
+      // A live Subagent parent is still an ordinary Pi session: a terminal
+      // notice may wake/continue it, exactly like any other steer message.
+      await live.session.sendCustomMessage(entry, { triggerTurn: true });
       const after = manager?.getLeafId() ?? null;
       if (after !== before) checkpointAppendedAnchor(service, agentId, after);
       return;
     }
-    const retained = service.retained.get(agentId) ?? null;
-    const sessionManager =
-      retained?.sessionManager ??
-      (service.store.durable ? SessionManager.open(service.store.childSessionFile(agentId)) : null);
-    if (sessionManager === null) return;
-    // A restored actor's file is opened just for this append: place the notice
-    // where that checkpoint's conversation stands — never on a branch appended
-    // afterwards — and record the new leaf so the next revival keeps it. Only a
-    // conversation that already reached its file can carry a durable anchor;
-    // a notice native storage has not flushed is not adopted either. An idle
-    // actor's live manager takes the same checkpoint: without it the root
-    // branch would keep the previous leaf and a reload would branch back
-    // behind the notice that is already in the child session file.
-    const durableAppend = service.store.durable && service.store.hasSessionFile(agentId);
-    restoreChildLeaf(sessionManager, agentId, retained, null);
-    const entryId = sessionManager.appendCustomMessageEntry(COMPLETION_CUSTOM_TYPE, content, true, details);
-    if (durableAppend && typeof entryId === "string") checkpointAppendedAnchor(service, agentId, entryId);
+    appendCustomToRetained(service, agentId, entry);
   } catch {
     // A notification is attempted once: it is never queued, retried or replayed.
   }
+}
+
+function appendCustomToRetained(service, agentId, entry) {
+  const retained = service.retained.get(agentId) ?? null;
+  const sessionManager =
+    retained?.sessionManager ??
+    (service.store.durable ? SessionManager.open(service.store.childSessionFile(agentId)) : null);
+  if (sessionManager === null) return;
+  // A restored actor's file is opened just for this append: place the notice
+  // where that checkpoint's conversation stands — never on a branch appended
+  // afterwards — and record the new leaf so the next revival keeps it. Only a
+  // conversation that already reached its file can carry a durable anchor;
+  // a notice native storage has not flushed is not adopted either. An idle
+  // actor's live manager takes the same checkpoint: without it the root
+  // branch would keep the previous leaf and a reload would branch back
+  // behind the notice that is already in the child session file.
+  const durableAppend = service.store.durable && service.store.hasSessionFile(agentId);
+  restoreChildLeaf(sessionManager, agentId, retained, null);
+  const entryId = sessionManager.appendCustomMessageEntry(entry.customType, entry.content, entry.display, entry.details);
+  if (durableAppend && typeof entryId === "string") checkpointAppendedAnchor(service, agentId, entryId);
 }
 
 /**
@@ -727,13 +902,15 @@ function withSocketChanges(service, operation) {
 async function listenAgent(service, id) {
   const wrapper = ensureAgentSocketServer(service, id);
   if (!wrapper) throw new Error(`Cannot establish IPC listener for ${id}.`);
-  if (!wrapper.server.listening) await once(wrapper.server, "listening");
+  // `ready` settles after ownership preparation and binding. Waiting on the
+  // server's "listening" event would hang when prepare rejects asynchronously.
+  await wrapper.ready;
 }
 
 async function listenBroadcast(service, parentId) {
   const wrapper = ensureBroadcastSocketServer(service, parentId);
   if (!wrapper) throw new Error(`Cannot establish broadcast listener for ${parentId ?? "Main"}.`);
-  if (!wrapper.server.listening) await once(wrapper.server, "listening");
+  await wrapper.ready;
 }
 
 async function closeListener(service, key) {
@@ -811,11 +988,20 @@ function ensureAgentSocketServer(service, agentId) {
     const server = createAgentSocketServer({
       id: agentId,
       socketDir: service.socketDir,
+      root: service.baseSocketDir,
       onMessage: (msg) => {
-        const content = typeof msg === "string" ? msg : msg?.content || JSON.stringify(msg);
+        const content = typeof msg === "string" ? msg : (msg?.content ?? JSON.stringify(msg));
         const from = (typeof msg === "object" && msg !== null && typeof msg.from === "string" && msg.from !== "")
           ? msg.from
           : "Main";
+        // Main's receiving endpoint accepts a host-bound write from Main itself;
+        // the runtime's actor-to-actor rule still rejects self-sends elsewhere.
+        if (agentId === "Main" && from === "Main") {
+          deliverToMain(service, { type: "message", from, content }).catch((err) => {
+            service.ui?.notify?.(`Failed to deliver socket message to Main: ${err.message}`, "error");
+          });
+          return;
+        }
         service.runtime
           ?.sendMessage({
             from,
@@ -851,12 +1037,19 @@ function ensureBroadcastSocketServer(service, parentId) {
     const server = createBroadcastSocketServer({
       parentId: normId,
       socketDir: service.socketDir,
+      root: service.baseSocketDir,
       getDirectChildren: () => {
+        // Broadcast is topology, not the bounded list window: every current
+        // direct child is a recipient, and each still follows the ordinary
+        // send/admission/continuation rules below.
         const pId = normId === "main" || normId === "Main" ? null : normId;
-        return service.runtime.listenerGroup(pId);
+        return service.runtime
+          .list()
+          .agents.filter((agent) => agent.parentAgentId === pId)
+          .map((agent) => agent.agentId);
       },
       deliverMessage: (childId, msg) => {
-        const content = typeof msg === "string" ? msg : msg?.content || JSON.stringify(msg);
+        const content = typeof msg === "string" ? msg : (msg?.content ?? JSON.stringify(msg));
         return service.runtime?.sendMessage({
           from: normId === "main" || normId === "Main" ? "Main" : normId,
           to: childId,
@@ -927,15 +1120,15 @@ function installSessionSurface(pi, resolveService, { allowInherited, parentAgent
     name: "msg_write",
     defaultActive: false,
     label: "Send Agent Message",
-    description: 'Send messages to a local IPC endpoint: Unix Socket or Windows Named Pipe. For agent messages supply NDJSON content and omit from and to. Cannot write files.',
-    promptSnippet: "Send messages to agents through their Socket paths",
-    promptGuidelines: ["For agent messages, provide NDJSON content with a trailing newline; omit from and to."],
+    description: "Send a plain-text message to a managed Agent IPC endpoint: Unix Socket or Windows Named Pipe. The host binds the sender and transport framing. Omit from/to, JSON or NDJSON envelopes, and trailing newlines. Cannot write files.",
+    promptSnippet: "Send plain-text messages to agents through their Socket paths",
+    promptGuidelines: ["Provide the message body as plain text content; do not add from/to, JSON/NDJSON framing, a trailing newline, or a custom Socket client."],
     parameters: {
       ...messageTool.parameters,
       properties: {
         ...messageTool.parameters.properties,
         path: { type: "string", description: "Returned Unix Socket or Windows Named Pipe address." },
-        content: { type: "string", description: "Message content; managed agent endpoints require NDJSON." },
+        content: { type: "string", description: "Plain-text message body. The host frames the transport and binds the sender." },
       },
     },
     async execute(...args) {
@@ -1209,6 +1402,7 @@ function watchBudget(budget, checkBudget) {
 
 function startPiJob(service, request) {
   let session = null;
+  let execution = null;
   let updateRetainedTools = null;
   let finalizeActor = null;
   let unsubscribe = null;
@@ -1230,16 +1424,25 @@ function startPiJob(service, request) {
   // yet must not be overtaken by the session dispose. There is no
   // acknowledgement bookkeeping: a message native steering took is owned by
   // that session and is never replayed.
-  const live = { jobId: request.jobId, agentId: request.agentId, session: null, pending: [], steers: new Set(), closed: false };
+  const live = { jobId: request.jobId, agentId: request.agentId, session: null, execution: null, pending: [], steers: new Set(), closed: false };
   // Startup input assigned to this Job, including the trigger of a revival, runs first.
   for (const message of request.pendingMessages) {
-    live.pending.push({ from: message.from, content: message.content, text: formatPeerMessage(message) });
+    const text = message.type === "notification" ? formatCompletion(message) : formatPeerMessage(message);
+    live.pending.push({ from: message.from, content: message.content, text });
   }
   service.liveJobs.set(request.jobId, live);
   // The runtime owns what an expired Budget does to the Job: checkBudget()
   // routes a hard failure through its stopping transition, which cancels this
   // handle — cancelled/closed plus both abort signals — once it is assigned.
   const stopBudgetWatch = watchBudget(request.budget, request.checkBudget);
+  // One reusable cleanup set: the execution handle owns it once a native
+  // session exists, and the failure path before creation still releases it.
+  const releaseJobResources = () => {
+    stopBudgetWatch();
+    unsubscribeClean?.();
+    unsubscribeBudget?.();
+    unsubscribe?.();
+  };
 
   const done = (async () => {
     // A retired service must never start native work for a session that no
@@ -1389,6 +1592,34 @@ function startPiJob(service, request) {
           cwd,
           senderId: request.agentId,
         });
+        // This Subagent conversation is the recipient of its own children's
+        // events. The same coordinator that queued an ordinary message can
+        // therefore merge the terminal notice of that sender and round before
+        // Pi writes it to history.
+        childPi.on("input", () => {
+          service.agentDeliveries.get(request.agentId)?.breakMergeKeys();
+        });
+        childPi.on("message_start", (event) => {
+          const delivery = service.agentDeliveries.get(request.agentId);
+          if (delivery === undefined) return;
+          if (event.message?.role === "user") delivery.breakMergeKeys();
+          delivery.messageStarted(event.message);
+        });
+        childPi.on("agent_settled", () => {
+          service.agentDeliveries.get(request.agentId)?.settle();
+        });
+        childPi.on("agent_end", (event) => {
+          const last = event.messages?.at(-1);
+          if (last?.role === "assistant" && last.stopReason === "aborted") {
+            service.agentDeliveries.get(request.agentId)?.settle();
+          }
+        });
+        childPi.on("message_end", (event) => {
+          const delivery = service.agentDeliveries.get(request.agentId);
+          if (delivery === undefined) return undefined;
+          const message = delivery.replaceMessage(event.message);
+          return message === undefined ? undefined : { message };
+        });
       },
     };
     const resourceLoader = new DefaultResourceLoader({
@@ -1402,26 +1633,34 @@ function startPiJob(service, request) {
       ...(systemPrompt !== null ? { systemPrompt } : {}),
       appendSystemPrompt: [
         ...(roleInstructions !== null ? [roleInstructions] : []),
-        `You are Subagent ${request.agentId}. Your direct parent is ${request.origin?.agentId ?? "Main"}. To message that parent, use your enabled write or msg_write with parentSocket ${getAgentSocketPath(request.origin?.agentId ?? "Main", service.socketDir)} and NDJSON {"content":"your message"} followed by a newline; omit from and to. This explicitly delivers a message, not an automatic completion notification.`,
+        `You are Subagent ${request.agentId}. Your direct parent is ${request.origin?.agentId ?? "Main"}. To message that parent, use your enabled write or msg_write with parentSocket ${getAgentSocketPath(request.origin?.agentId ?? "Main", service.socketDir)} and plain text content; omit from and to. The host frames the transport and binds your sender identity. Your execution round also ends with an automatic host notification; do not send a separate completion message unless you have content the parent needs.`,
       ],
     });
     await resourceLoader.reload();
     throwIfBudgetFailed(request.budget);
 
-    const created = await createAgentSession({
-      cwd,
-      agentDir: service.agentDir,
-      settingsManager: settings,
-      modelRuntime,
-      ...(model ? { model } : {}),
-      ...(thinkingLevel ? { thinkingLevel } : {}),
-      excludeTools: [...excludedTools, ...(request.depth >= MAX_AGENT_DEPTH ? ["capability", "subagent_create", "subagent_stop"] : [])],
-      sessionManager,
-      resourceLoader,
-    });
-    throwIfBudgetFailed(request.budget);
-    session = created.session;
+    // Creation owns the SDK Session immediately: the returned execution handle
+    // is registered here, before the next Budget check can throw, so a Budget
+    // failure can never leak a created session.
+    execution = await openSubagentExecution(
+      {
+        cwd,
+        agentDir: service.agentDir,
+        settingsManager: settings,
+        modelRuntime,
+        ...(model ? { model } : {}),
+        ...(thinkingLevel ? { thinkingLevel } : {}),
+        excludeTools: [...excludedTools, ...(request.depth >= MAX_AGENT_DEPTH ? ["capability", "subagent_create", "subagent_stop"] : [])],
+        sessionManager,
+        resourceLoader,
+      },
+      { signal: abort.signal },
+    );
+    session = execution.session;
     live.session = session;
+    live.execution = execution;
+    execution.addCleanup(releaseJobResources);
+    throwIfBudgetFailed(request.budget);
     plannedTools = [...new Set([...(plannedTools ?? session.getActiveToolNames()), ...enabledTools, ...harnessToolsForDepth(request.depth)])];
     session.setActiveToolsByName(plannedTools.filter((name) => capabilityAllowsTool(live.pi, name)));
     capabilityAvailableTools(live.pi);
@@ -1459,13 +1698,17 @@ function startPiJob(service, request) {
       if (request.depth < MAX_AGENT_DEPTH && request.continuedFromJobId) await restoreListenerGroup(service, request.agentId);
     });
 
-    const history = { spec: request.spec, roleId, model, appendChain: Promise.resolve() };
+    const history = { spec: request.spec, roleId, model, appendChain: Promise.resolve(), errors: [] };
     service.jobHistory.set(request.jobId, history);
     const queueCleanAppend = (event) => {
       history.appendChain = history.appendChain.then(async () => {
         try {
           await appendCleanJsonl(request.agentId, event, { baseDir: service.historyDir, cwd: service.cwd });
         } catch (err) {
+          // Keep every failure: a later successful append must not hide a
+          // partial transcript. The finalization hook reports all of them
+          // while the Job outcome stays frozen.
+          history.errors.push(err);
           service.ui?.notify?.(`Clean JSONL error on ${request.agentId}: ${err.message}`, "error");
         }
       });
@@ -1502,13 +1745,21 @@ function startPiJob(service, request) {
               timestamp: Date.now(),
             });
           } else if (type === "message_end") {
+            const message = event.message;
+            const custom = message?.role === "custom";
             queueCleanAppend({
               type: "message_end",
-              role: event.message?.role,
-              content: event.message?.content,
-              stopReason: event.message?.stopReason,
-              usage: event.message?.usage,
-              timestamp: Date.now(),
+              role: message?.role,
+              content: message?.content,
+              stopReason: message?.stopReason,
+              usage: message?.usage,
+              // Host terminal/ordinary delivery is distinguishable from Agent
+              // text only through these custom-message fields; dropping them
+              // loses job/round/status metadata from the clean JSONL audit.
+              ...(custom
+                ? { customType: message?.customType, display: message?.display, details: message?.details }
+                : {}),
+              timestamp: typeof message?.timestamp === "number" ? message.timestamp : Date.now(),
             });
           }
         } catch {}
@@ -1536,9 +1787,11 @@ function startPiJob(service, request) {
       if (isContinuation && assigned.length === 0) {
         throw new SubagentError("continuation_unavailable", `Continuation Job ${request.jobId} has no message to deliver.`);
       }
+      const startupCustom = assigned.filter((entry) => entry.kind === "custom");
+      const assignedText = assigned.filter((entry) => entry.kind !== "custom");
       const prompt = isContinuation
-        ? composeContinuationPrompt(assigned, pendingAssignment)
-        : composePrompt(pendingAssignment, assigned);
+        ? composeContinuationPrompt(assignedText, pendingAssignment)
+        : composePrompt(pendingAssignment, assignedText);
       // The assignment belongs to the conversation as soon as the session
       // recorded anything; until then a later revival must restate it.
       const markAssignmentDelivered = () => {
@@ -1550,10 +1803,30 @@ function startPiJob(service, request) {
 
       try {
         throwIfBudgetFailed(request.budget);
+        // Resolve startup custom snapshots and append their typed native
+        // history BEFORE the primary prompt. This is the same merge path as
+        // parked replay, so coalesced content and terminal details survive.
+        const startupDelivery = service.agentDeliveries.get(request.agentId) ?? null;
+        for (const entry of startupCustom) {
+          let resolved = entry.message;
+          if (startupDelivery !== null && resolved?.customType === DELIVERY_CUSTOM_TYPE) {
+            resolved = startupDelivery.replaceMessage(resolved) ?? resolved;
+          }
+          if (resolved?.role !== "custom" || typeof resolved.customType !== "string") continue;
+          await session.sendCustomMessage(
+            {
+              customType: resolved.customType,
+              content: resolved.content,
+              display: resolved.display,
+              details: resolved.details,
+            },
+            { triggerTurn: false },
+          );
+        }
         // Whatever the run then does — finish, fail or be stopped — its own
         // outcome decides the Job; the prompt submission itself is final.
         try {
-          await session.prompt(prompt, { expandPromptTemplates: false });
+          await execution.prompt(prompt, { expandPromptTemplates: false });
         } finally {
           markAssignmentDelivered();
         }
@@ -1561,7 +1834,7 @@ function startPiJob(service, request) {
         if (!cancelled) {
           const messages = jobMessages();
           assertRunCompleted(messages);
-          await drainLiveMessages(live, sessionManager);
+          await drainLiveMessages(live, sessionManager, service);
           throwIfBudgetFailed(request.budget);
         }
       } catch (error) {
@@ -1569,7 +1842,7 @@ function startPiJob(service, request) {
       }
     } else {
       try {
-        await session.abort();
+        await execution.abort();
       } catch {}
     }
 
@@ -1580,17 +1853,20 @@ function startPiJob(service, request) {
       messages: readTranscript(entriesAfter(sessionManager, boundary)),
       history: { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
     };
-  })().finally(() => {
+  })().finally(async () => {
     live.closed = true;
     service.liveJobs.delete(request.jobId);
     // A revival reuses the loadout the run actually ended with — capability
     // activation can open tools mid-run — never the pre-run allowlist.
     if (!service.closed) finalizeActor?.();
-    stopBudgetWatch();
-    unsubscribeClean?.();
-    unsubscribeBudget?.();
-    unsubscribe?.();
-    session?.dispose();
+    if (execution === null) releaseJobResources();
+    if (execution !== null) {
+      try {
+        await execution.dispose();
+      } catch (error) {
+        service.ui?.notify?.(`Subagent session cleanup failed for ${request.agentId}: ${errorMessage(error)}`, "error");
+      }
+    }
   });
 
   return {
@@ -1598,7 +1874,7 @@ function startPiJob(service, request) {
       cancelled = true;
       live.closed = true;
       abort.abort();
-      const pending = session?.abort();
+      const pending = execution?.abort();
       if (pending && typeof pending.catch === "function") pending.catch(() => {});
     },
     done,
@@ -1610,10 +1886,18 @@ function startPiJob(service, request) {
  * Invoked once per job by Runtime with frozen outcome.
  */
 async function finalizePiJob(service, { job, outcome }) {
-  const { spec = {}, roleId, model, appendChain } = service.jobHistory.get(job.jobId) ?? {};
+  const { spec = {}, roleId, model, appendChain, errors = [] } = service.jobHistory.get(job.jobId) ?? {};
+  const failures = [...errors];
+  const attempt = async (operation) => {
+    try {
+      await operation();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
   try {
     await appendChain;
-    await appendCleanJsonl(
+    await attempt(() => appendCleanJsonl(
       job.agentId,
       {
         type: "job_end",
@@ -1625,8 +1909,8 @@ async function finalizePiJob(service, { job, outcome }) {
         timestamp: Date.now(),
       },
       { baseDir: service.historyDir, cwd: service.cwd },
-    );
-    await writeCompactedSummary(
+    ));
+    await attempt(() => writeCompactedSummary(
       job.agentId,
       {
         name: spec.name ?? job.name,
@@ -1640,9 +1924,12 @@ async function finalizePiJob(service, { job, outcome }) {
         round: outcome.round,
       },
       { append: outcome.round > 1, baseDir: service.historyDir, cwd: service.cwd },
-    );
+    ));
   } finally {
     service.jobHistory.delete(job.jobId);
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `History finalization failed for ${job.agentId}.`);
   }
 }
 
@@ -1847,8 +2134,12 @@ function completionDetails(message) {
   if (message?.type === "notification") {
     return {
       type: "notification",
+      from: message.from ?? message.subagentId ?? null,
       subagentId: message.subagentId || message.from,
+      jobId: message.jobId ?? null,
+      round: message.round ?? null,
       status: message.status ?? "failed",
+      error: message.error ?? null,
       history: message.history ?? getSubagentHistoryPaths(message.subagentId || message.from),
       content: message.content ?? null,
     };
@@ -1887,7 +2178,7 @@ async function deliverToLiveJob(service, { jobId, message }) {
   if (live.session !== null && live.session.isStreaming) {
     const steer = (async () => {
       try {
-        await live.session.steer(text);
+        await (live.execution ?? live.session).steer(text);
         return null;
       } catch (error) {
         return error instanceof Error ? error.message : String(error);
@@ -1926,24 +2217,101 @@ async function deliverToLiveJob(service, { jobId, message }) {
  * Each round is classified like the first prompt: a round whose run failed
  * stops the Job instead of being treated as delivered work.
  */
-async function drainLiveMessages(live, sessionManager) {
+async function drainLiveMessages(live, sessionManager, service) {
   if (live.session === null) return;
   for (;;) {
     while (live.steers.size > 0) {
       await Promise.all([...live.steers]);
     }
-    const parked = takeParkedTexts(live.session);
+    const parked = takeParkedMessages(live.session);
     const buffered = live.pending.splice(0);
     if (parked.length === 0 && buffered.length === 0) {
       live.closed = true;
       return;
     }
-    const boundary = sessionManager.getLeafId();
-    await live.session.prompt([...parked, ...buffered.map((entry) => entry.text)].join("\n\n"), {
-      expandPromptTemplates: false,
-    });
-    assertRunCompleted(messagesAfter(sessionManager, boundary));
+    const delivery = service?.agentDeliveries?.get(live.agentId) ?? null;
+    // Replay each parked native message with its original semantics. A parked
+    // `agent-delivery` custom message is only the first snapshot: resolve it
+    // through the recipient coordinator so coalesced content and the terminal
+    // notice are not lost before the custom message re-enters the session.
+    for (const message of parked) {
+      if (message?.role === "custom") {
+        await replayParkedCustom(live, sessionManager, message, delivery);
+      } else {
+        await replayParkedUser(live, sessionManager, message);
+      }
+    }
+    const bufferedText = [];
+    for (const entry of buffered) {
+      if (entry.kind === "custom") {
+        await replayParkedCustom(live, sessionManager, entry.message, delivery);
+      } else {
+        bufferedText.push(entry);
+      }
+    }
+    if (bufferedText.length > 0) {
+      const boundary = sessionManager.getLeafId();
+      const run = live.execution ?? live.session;
+      await run.prompt(bufferedText.map((entry) => entry.text).join("\n\n"), {
+        expandPromptTemplates: false,
+      });
+      assertRunCompleted(messagesAfter(sessionManager, boundary));
+    }
   }
+}
+
+async function replayParkedCustom(live, sessionManager, message, delivery) {
+  let resolved = message;
+  if (message.customType === DELIVERY_CUSTOM_TYPE && delivery !== null) {
+    resolved = delivery.replaceMessage(message) ?? message;
+  }
+  if (resolved?.role !== "custom" || typeof resolved.customType !== "string") return;
+  const boundary = sessionManager.getLeafId();
+  // The supported AgentSession path preserves customType/display/details and
+  // runs the same ModelCall Budget hooks as any other turn. Re-feeding the
+  // snapshot as plain user text would both lose host metadata and replay only
+  // the first delta.
+  const operation = (async () => {
+    await live.session.sendCustomMessage(
+      {
+        customType: resolved.customType,
+        content: resolved.content,
+        display: resolved.display,
+        details: resolved.details,
+      },
+      { triggerTurn: true, deliverAs: "steer" },
+    );
+  })();
+  live.steers.add(operation);
+  try {
+    await operation;
+  } finally {
+    live.steers.delete(operation);
+  }
+  assertRunCompleted(messagesAfter(sessionManager, boundary));
+}
+
+async function replayParkedUser(live, sessionManager, message) {
+  const content = message?.content;
+  const texts = [];
+  const images = [];
+  if (typeof content === "string") {
+    texts.push(content);
+  } else if (Array.isArray(content)) {
+    for (const part of content) {
+      if (part?.type === "text" && typeof part.text === "string") texts.push(part.text);
+      else if (part?.type === "image") images.push(part);
+    }
+  }
+  const text = texts.join("\n");
+  if (text === "" && images.length === 0) return;
+  const boundary = sessionManager.getLeafId();
+  const run = live.execution ?? live.session;
+  await run.prompt(text, {
+    expandPromptTemplates: false,
+    ...(images.length > 0 ? { images } : {}),
+  });
+  assertRunCompleted(messagesAfter(sessionManager, boundary));
 }
 
 /** Native messages appended since a boundary, for run classification. */
@@ -2010,22 +2378,28 @@ function assertRunCompleted(messages) {
 }
 
 /**
- * Remove and return the texts still parked in the session's own queues. They
+ * Remove and return every message parked in the session's own queues. They
  * were never consumed, so the Job's end-of-turn loop owns their delivery; a
  * steering message the run already consumed is gone from the queue and is
- * never replayed.
+ * never replayed. Custom messages stay custom instead of being flattened.
  */
-function takeParkedTexts(session) {
+function takeParkedMessages(session) {
   const agent = session?.agent;
   if (typeof agent?.hasQueuedMessages !== "function" || !agent.hasQueuedMessages()) return [];
-  const queued = typeof agent.peekQueuedMessages === "function" ? agent.peekQueuedMessages() : [];
-  agent.clearAllQueues?.();
-  const texts = [];
-  for (const message of queued) {
-    const text = textOf(message?.content);
-    if (text !== "") texts.push(text);
-  }
-  return texts;
+  let probeSequence = 0;
+  // Both queue modes are forced to "all" only for this synchronous read. The
+  // probes make `peekQueuedMessages()` select each queue in turn, so multiple
+  // steering messages and follow-ups are preserved rather than reduced to the
+  // next default-mode batch. No private queue field is touched.
+  const queued = takeQueuedMessages(agent, (queue) => ({
+    role: "user",
+    content: [{ type: "text", text: `\u0000subagent-queue-probe-${queue}-${++probeSequence}` }],
+    timestamp: 0,
+  }));
+  // Agent queues are empty now; clear the AgentSession text mirrors without
+  // dropping any custom message (they were returned above).
+  session.clearQueue?.();
+  return queued;
 }
 
 /**

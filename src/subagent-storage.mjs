@@ -1,63 +1,53 @@
 /**
- * Native persistence for the subagent harness.
+ * Native persistence for the subagent harness (storage version 2).
  *
- * Two native Pi storage surfaces, no harness-owned store:
+ * Two storage surfaces, both native Pi sessions:
  *
- * - The root session's active branch carries the registry checkpoints as
- *   ordinary `custom` entries (`customType: "subagent-state"`, written through
- *   `pi.appendEntry`). Each checkpoint is one complete, JSON-safe snapshot:
- *   `{ version: 1, registry: <runtime exportState()>, actors: { <agentId>: … } }`.
- *   Reload and process restarts rebuild the latest snapshot from the branch, so
- *   abandoned branches keep their own (older) state and a resumed session sees
- *   exactly the checkpoints its branch recorded.
- * - Every actor owns one native Pi session file under
- *   `<agentDir>/subagent-sessions/<rootSessionId>/<agentId>.jsonl`. Fresh
- *   children create it through the ordinary SessionManager; inherited children
- *   get a one-time standard-JSONL seed (the captured parent branch, verbatim),
- *   and from then on the native SessionManager owns every read and append.
+ * - The root session branch carries small lifecycle events as `custom`
+ *   entries (`subagent-*`). The registry of a branch position is the fold of
+ *   the events on that path, so rewind (`/tree`) and fork/clone (which copy
+ *   the path) restore exactly what happened before that position. Large
+ *   values (a task, a result, a role prompt) are written once, in the event
+ *   that introduces them; nothing is re-written per turn.
+ * - Every actor owns one native session file. A root session only ever writes
+ *   files under its own directory; a file recorded by another root session (a
+ *   fork's parent) is read-only, and the first write copies the recorded path
+ *   into the own directory (copy-on-write).
  *
- * Reads are native: the adapter injects `openSession` (its `SessionManager.open`),
- * and the store only uses the documented read surface — `getHeader()` /
- * `getEntries()` for the seed prefix, `getBranch(endEntryId)` / `getLeafId()` for
- * a Job's sealed slice, the current leaf and whether a turn was recorded. File
- * order is never treated as branch order, and no JSONL is parsed here. The one
- * thing this module still writes by hand is the one-time seed: a standard
- * `{type:"session",…}` header plus entry lines, materialized atomically because
- * no public API creates a session file at an exact path.
- *
- * Inherited-context snapshots are captured branch copies, so a checkpoint that
- * embedded them verbatim would duplicate a parent transcript inside every
- * snapshot and grow without bound. `save()` therefore materializes the seed
- * file first and then substitutes the raw `inheritedContext.entries` array with
- * a reference (`{seedFile, entryCount}`) while the state is JSON-cloned into
- * the checkpoint, so the captured transcript is never walked or copied by a
- * checkpoint; `hydrate()` reads the file back into the original shape, so the
- * runtime always receives what it captured. The walk is structural (every
- * `inheritedContext` object reachable from the registry state) and needs no
- * knowledge of internal runtime record types.
- *
- * A missing or unreadable native session is an explicit coded failure, never an
- * empty answer: opening a path the native manager would silently create is only
- * ever done after an existence check, so a recorded conversation can never be
- * reset to a fresh session by a read.
- *
- * The module is deliberately free of Pi imports: the extension injects
- * `appendEntry`/`readBranch` (root session) and `openSession` (child sessions),
- * so this file stays testable under plain Node.
+ * The module is free of Pi imports: the adapter injects `appendEntry`,
+ * `readBranch`, `readEntries` and `openSession`, so this file stays testable
+ * under plain Node.
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
-/** Custom entry type of a registry checkpoint on the root session branch. */
-export const SUBAGENT_STATE_CUSTOM_TYPE = "subagent-state";
+export const STORAGE_VERSION = 2;
 
-/** Checkpoint payload version. Unknown versions fail instead of being guessed. */
-export const SUBAGENT_STATE_VERSION = 1;
+/** Every harness-owned root entry starts with this prefix. */
+export const EVENT_PREFIX = "subagent-";
+
+export const EVENTS = Object.freeze({
+  /** Full identity record of one actor; written when it changes. */
+  actor: "subagent-actor",
+  /** Native leaf an idle actor's conversation moved to. */
+  anchor: "subagent-anchor",
+  /** One Job registered: topology, spec and origin. */
+  job: "subagent-job",
+  /** The native entry a Job's transcript starts after. */
+  jobStart: "subagent-job-start",
+  /** One Job's terminal outcome: status, result, history bounds, Budget. */
+  jobEnd: "subagent-job-end",
+});
+
+const EVENT_TYPES = new Set(Object.values(EVENTS));
 
 /** Directory name under the agent directory that holds subagent session files. */
 export const SUBAGENT_SESSIONS_DIR = "subagent-sessions";
+
+/** Read-only native sessions kept open between reads of the same file. */
+const READ_CACHE_SIZE = 4;
 
 /** Harness-owned storage error with a stable machine-readable code. */
 export class SubagentStoreError extends Error {
@@ -73,419 +63,373 @@ function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function describe(value) {
-  if (value === null) return "null";
-  if (typeof value === "string") return JSON.stringify(value);
-  if (Array.isArray(value)) return "an array";
-  return `a ${typeof value}`;
-}
-
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * JSON round-trip the value: persistence must never carry a live object (a
- * Model, a Budget, a session manager) that silently serializes to `{}`. The
- * optional replacer is what lets `save` substitute a native seed reference for
- * a raw inherited snapshot while stringifying, so the captured entries behind
- * it are never traversed by the clone.
- */
-function jsonClone(value, where, replacer = undefined) {
-  try {
-    return JSON.parse(JSON.stringify(value, replacer));
-  } catch (error) {
-    throw new SubagentStoreError("storage_invalid_state", `${where} is not JSON-safe: ${messageOf(error)}`, { where });
-  }
+/** True for a root entry this module owns. */
+export function isHarnessEntry(entry) {
+  return entry?.type === "custom" && typeof entry.customType === "string" && entry.customType.startsWith(EVENT_PREFIX);
 }
 
 /**
- * Write one atomic seed file; a partial write must never become a session file.
- * The content is the standard Pi JSONL: one session header, then one JSON
- * entry per line. The entries are serialized before anything is created, so a
- * capture that cannot be persisted fails as a storage error, not a raw
- * serialization error.
+ * Drop entries and re-link every follower to its nearest kept ancestor, in one
+ * pass. Entries are copied only when their parent changes.
  */
-function writeSeedFile(file, entries) {
-  let text;
-  try {
-    text = entries.map((entry) => `${JSON.stringify(entry)}\n`).join("");
-  } catch (error) {
-    throw new SubagentStoreError(
-      "storage_invalid_state",
-      `The inherited snapshot for ${file} is not JSON-safe: ${messageOf(error)}`,
-      { file },
-    );
+export function withoutEntries(entries, drop) {
+  const replacement = new Map();
+  const kept = [];
+  for (const entry of entries) {
+    const parentId = entry?.parentId;
+    const parent = typeof parentId === "string" && replacement.has(parentId) ? replacement.get(parentId) : parentId;
+    if (drop(entry)) {
+      if (typeof entry?.id === "string") replacement.set(entry.id, parent ?? null);
+      continue;
+    }
+    kept.push(parent === parentId ? entry : { ...entry, parentId: parent ?? null });
   }
+  return kept;
+}
+
+/** Atomic write: a partial file never becomes a session or a view. */
+export function writeFileAtomic(file, text) {
   mkdirSync(dirname(file), { recursive: true });
-  const temporary = `${file}.seed-${randomUUID().slice(0, 8)}`;
+  const temporary = `${file}.tmp-${randomUUID().slice(0, 8)}`;
   writeFileSync(temporary, text);
   renameSync(temporary, file);
 }
 
-/**
- * A seed is a standard session file: exactly one header first. Captures of a
- * headerless session get a fresh one so the file itself is a valid session.
- */
-function withSessionHeader(entries, cwd) {
-  if (entries.length > 0 && entries[0]?.type === "session") return entries;
-  return [
-    { type: "session", version: 3, id: randomUUID(), timestamp: new Date().toISOString(), cwd },
-    ...entries,
-  ];
+function writeSessionFile(file, header, entries) {
+  writeFileAtomic(file, [header, ...entries].map((entry) => `${JSON.stringify(entry)}\n`).join(""));
 }
 
 /**
- * Visit every inherited-context snapshot reachable from a registry state.
+ * Fold the harness events of one root branch into a registry description.
  *
- * The snapshot itself is the only object with this exact shape; the actor id
- * of the enclosing job names the session file the seed belongs to. Registry
- * states keep jobs as either a list or a map and continuation specs embed the
- * initial spec under `seed`, so the walk follows values instead of record
- * types. A snapshot is visited whether it still carries its raw `entries`
- * array (live or hydrated state) or the persisted seed reference that replaced
- * it, so the same walk serves both `save` and `hydrate`.
- *
- * `walking` holds the values on the current path, so a state that contains
- * itself terminates: `save` walks the live state and lets its JSON clone
- * refuse such a state, and a shared (acyclic) value is still visited once per
- * occurrence.
+ * Jobs keep event order (the global creation chronology). Unknown or malformed
+ * events are reported, never guessed at.
  */
-function eachInheritedSnapshot(value, visit, context = { agentId: null }, walking = new Set()) {
-  if (typeof value !== "object" || value === null) return;
-  if (walking.has(value)) return;
-  walking.add(value);
-  if (Array.isArray(value)) {
-    for (const item of value) eachInheritedSnapshot(item, visit, context, walking);
-  } else {
-    const agentId = typeof value.agentId === "string" && value.agentId !== "" ? value.agentId : context.agentId;
-    for (const [key, child] of Object.entries(value)) {
-      if (key === "inheritedContext" && isPlainObject(child)) {
-        visit(child, agentId);
-        continue;
+export function foldEvents(branch) {
+  const actors = new Map();
+  const jobs = new Map();
+  let endSequence = 0;
+  for (const entry of branch) {
+    if (!isHarnessEntry(entry) || !EVENT_TYPES.has(entry.customType)) continue;
+    const data = entry.data;
+    if (!isPlainObject(data) || data.v !== STORAGE_VERSION) {
+      throw new SubagentStoreError("storage_corrupt", `Subagent event ${entry.id ?? "?"} has no version-${STORAGE_VERSION} payload.`, {
+        entryId: entry.id ?? null,
+      });
+    }
+    switch (entry.customType) {
+      case EVENTS.job: {
+        if (jobs.has(data.jobId)) throw corrupt(entry, `Job ${data.jobId} is registered twice.`);
+        if (isPlainObject(data.actor)) {
+          if (actors.has(data.agentId)) throw corrupt(entry, `Actor ${data.agentId} is registered twice.`);
+          actors.set(data.agentId, {
+            agentId: data.agentId,
+            name: data.actor.name ?? null,
+            parentAgentId: data.actor.parentAgentId ?? null,
+            depth: data.actor.depth,
+            record: null,
+            anchor: null,
+            stoppedOrder: 0,
+          });
+        } else if (!actors.has(data.agentId)) {
+          throw corrupt(entry, `Job ${data.jobId} belongs to unknown actor ${data.agentId}.`);
+        }
+        const { v: _v, actor: _actor, ...job } = data;
+        jobs.set(data.jobId, { ...job, startEntryId: null, started: false, end: null });
+        break;
       }
-      eachInheritedSnapshot(child, visit, { agentId }, walking);
+      case EVENTS.jobStart: {
+        const job = jobs.get(data.jobId);
+        if (job === undefined) throw corrupt(entry, `Start of unknown Job ${data.jobId}.`);
+        job.started = true;
+        job.startEntryId = data.startEntryId ?? null;
+        break;
+      }
+      case EVENTS.jobEnd: {
+        const job = jobs.get(data.jobId);
+        if (job === undefined) throw corrupt(entry, `End of unknown Job ${data.jobId}.`);
+        const { v: _v, jobId: _jobId, ...end } = data;
+        job.end = end;
+        actors.get(job.agentId).stoppedOrder = ++endSequence;
+        break;
+      }
+      case EVENTS.actor: {
+        const actor = actors.get(data.agentId);
+        if (actor === undefined) throw corrupt(entry, `Identity of unknown actor ${data.agentId}.`);
+        const { v: _v, agentId: _agentId, anchor, ...record } = data;
+        actor.record = record;
+        actor.anchor = anchor ?? null;
+        break;
+      }
+      case EVENTS.anchor: {
+        const actor = actors.get(data.agentId);
+        if (actor === undefined) throw corrupt(entry, `Anchor of unknown actor ${data.agentId}.`);
+        actor.anchor = data.anchor ?? null;
+        break;
+      }
     }
   }
-  walking.delete(value);
+  return { actors: [...actors.values()], jobs: [...jobs.values()] };
+}
+
+function corrupt(entry, message) {
+  return new SubagentStoreError("storage_corrupt", message, { entryId: entry.id ?? null });
 }
 
 /**
  * @param {{
- *   sessionFile?: string,
  *   dir?: string,
- *   cwd?: string,
  *   appendEntry?: (customType: string, data: unknown) => void,
- *   readBranch?: () => unknown[],
- *   openSession?: (file: string) => {
- *     getHeader: () => object | null,
- *     getEntries: () => object[],
- *     getBranch: (fromId?: string | null) => object[],
- *     getLeafId: () => string | null,
- *   },
+ *   readBranch?: () => object[],
+ *   readEntries?: () => object[],
+ *   openSession?: (file: string) => object,
  * }} options
  */
 export function createSubagentStore(options = {}) {
-  const { sessionFile, dir, appendEntry, readBranch, openSession } = options;
+  const { appendEntry, readBranch, readEntries, openSession } = options;
+  const dir = typeof options.dir === "string" && options.dir !== "" ? resolve(options.dir) : null;
   const durable =
-    typeof sessionFile === "string" &&
-    sessionFile !== "" &&
-    typeof dir === "string" &&
-    dir !== "" &&
+    dir !== null &&
     typeof appendEntry === "function" &&
     typeof readBranch === "function" &&
+    typeof readEntries === "function" &&
     typeof openSession === "function";
 
-  // Seed files verified during this store's lifetime, so repeated checkpoints
-  // do not re-open (and never rewrite) an already materialized seed.
-  const seeded = new Map();
+  /** Small LRU of read-only native sessions, invalidated by size and mtime. */
+  const readCache = new Map();
 
-  function childSessionFile(agentId) {
+  function requireDurable() {
     if (!durable) {
       throw new SubagentStoreError("storage_unavailable", "This root session is memory-only, so its actors have no session files.");
     }
+  }
+
+  function childFile(agentId) {
+    requireDurable();
     if (typeof agentId !== "string" || agentId === "") {
-      throw new SubagentStoreError("storage_invalid_state", `An actor id is required, received ${describe(agentId)}.`);
+      throw new SubagentStoreError("storage_invalid_state", "An actor id is required.");
     }
     return join(dir, `${agentId}.jsonl`);
   }
 
-  /**
-   * Open one native session. Missing files are handled by the callers, each
-   * with its own coded error, so this never opens a path just to create a
-   * fresh session; an unreadable file fails explicitly instead.
-   */
-  function openNative(file, where) {
+  function ownsFile(file) {
+    return durable && typeof file === "string" && dirname(resolve(file)) === dir;
+  }
+
+  function append(type, data) {
+    if (!durable) return;
     try {
-      return openSession(file);
+      appendEntry(type, { v: STORAGE_VERSION, ...data });
     } catch (error) {
-      throw new SubagentStoreError("storage_corrupt", `${file} is not a readable Pi session (${where}): ${messageOf(error)}`, {
-        file,
-      });
+      throw new SubagentStoreError("storage_write_failed", `Could not append ${type}: ${messageOf(error)}`);
     }
   }
 
-  /** The file's entries as written: header first, then every entry in file order. */
-  function fileEntries(manager) {
-    const entries = manager.getEntries();
-    const header = manager.getHeader();
-    return header === null ? entries : [header, ...entries];
-  }
-
-  /**
-   * Materialize the one-time seed of an inherited actor; never rewrite a file.
-   * Returns the session file and the number of entries the seed occupies in it,
-   * which is what hydration slices back out.
-   */
-  function writeSeedIfMissing(agentId, entries) {
-    if (!durable) return null;
-    if (!Array.isArray(entries)) {
-      throw new SubagentStoreError("storage_invalid_state", `The inherited snapshot of ${agentId} carries no entry array.`);
-    }
-    const file = childSessionFile(agentId);
-    const clean = withSessionHeader(entries, options.cwd ?? process.cwd());
-    const headerId = clean[0].id;
-    const known = seeded.get(agentId);
-    if (known !== undefined) {
-      if (known.headerId !== headerId) {
-        throw new SubagentStoreError(
-          "storage_seed_conflict",
-          `Actor ${agentId} already has a different seed session; refusing to overwrite ${file}.`,
-          { agentId, file },
-        );
-      }
-      return { sessionFile: file, entryCount: known.entryCount };
-    }
-    if (existsSync(file)) {
-      const stored = fileEntries(openNative(file, "seed"));
-      if (stored[0]?.type !== "session" || stored[0].id !== headerId || stored.length < clean.length) {
-        throw new SubagentStoreError(
-          "storage_seed_conflict",
-          `The session file of actor ${agentId} does not start with the captured seed; refusing to overwrite ${file}.`,
-          { agentId, file },
-        );
-      }
-    } else {
-      writeSeedFile(file, clean);
-    }
-    seeded.set(agentId, { headerId, entryCount: clean.length });
-    return { sessionFile: file, entryCount: clean.length };
-  }
-
-  function seedReference(snapshot, agentId) {
-    const seed = writeSeedIfMissing(agentId, snapshot.entries);
-    return { seedFile: seed.sessionFile, entryCount: seed.entryCount };
-  }
-
-  /** Replace seed references with the entries they stand for (a clone). */
-  function hydrate(checkpoint) {
-    const copy = jsonClone(checkpoint, "the subagent checkpoint");
-    eachInheritedSnapshot(copy.registry, (snapshot) => {
-      const reference = snapshot.entries;
-      if (Array.isArray(reference)) return; // already raw entries
-      if (!isPlainObject(reference) || typeof reference.seedFile !== "string" || !Number.isInteger(reference.entryCount)) {
-        throw new SubagentStoreError(
-          "storage_corrupt",
-          "A persisted inherited snapshot carries neither native entries nor a seeded-session reference.",
-        );
-      }
-      const file = reference.seedFile;
-      if (!existsSync(file)) {
-        throw new SubagentStoreError(
-          "storage_seed_missing",
-          `The seeded session file of an inherited subagent is missing: ${file}`,
-          { file },
-        );
-      }
-      const stored = fileEntries(openNative(file, "seed"));
-      if (stored.length < reference.entryCount) {
-        throw new SubagentStoreError(
-          "storage_corrupt",
-          `The seeded session file ${file} holds ${stored.length} entries, fewer than the recorded ${reference.entryCount}.`,
-          { file, entryCount: reference.entryCount },
-        );
-      }
-      snapshot.entries = stored.slice(0, reference.entryCount);
-    });
-    return copy;
-  }
-
-  /** The latest checkpoint on the active root branch, or null when none exists. */
   function load() {
-    if (!durable) return null;
+    if (!durable) return { actors: [], jobs: [] };
     let branch;
     try {
       branch = readBranch();
     } catch (error) {
       throw new SubagentStoreError("storage_read_failed", `Could not read the root session branch: ${messageOf(error)}`);
     }
-    if (!Array.isArray(branch)) {
-      throw new SubagentStoreError("storage_read_failed", "The root session branch is not an entry list.");
-    }
-    let latest = null;
-    for (const entry of branch) {
-      if (entry?.type === "custom" && entry.customType === SUBAGENT_STATE_CUSTOM_TYPE) latest = entry;
-    }
-    if (latest === null) return null;
-    const data = latest.data;
-    if (!isPlainObject(data)) {
-      throw new SubagentStoreError("storage_corrupt", `Subagent checkpoint ${describe(latest.id)} carries no state object.`, {
-        entryId: latest.id ?? null,
-      });
-    }
-    if (data.version !== SUBAGENT_STATE_VERSION) {
-      throw new SubagentStoreError(
-        "storage_corrupt",
-        `Subagent checkpoint ${describe(latest.id)} has unsupported version ${describe(data.version)}.`,
-        { entryId: latest.id ?? null, version: data.version ?? null },
-      );
-    }
-    if (!isPlainObject(data.registry) || !isPlainObject(data.actors)) {
-      throw new SubagentStoreError("storage_corrupt", `Subagent checkpoint ${describe(latest.id)} is incomplete.`, {
-        entryId: latest.id ?? null,
-      });
-    }
-    return { version: data.version, registry: data.registry, actors: data.actors, entryId: latest.id ?? null };
+    return foldEvents(branch);
   }
 
   /**
-   * Append one checkpoint to the active root branch. Seed snapshots are
-   * materialized once and referenced from then on, and the reference is
-   * substituted while the state is JSON-cloned, so a checkpoint never walks,
-   * copies, or rewrites the captured transcript behind an existing seed.
+   * Every actor and Job id this root session ever used, on any branch, plus
+   * the actor files in its directory. A rewound branch never reuses an id an
+   * abandoned branch (or an earlier storage version) already owns.
    */
-  function save({ registry, actors }) {
-    if (!durable) return false;
-    if (!isPlainObject(registry) || !isPlainObject(actors)) {
-      throw new SubagentStoreError("storage_invalid_state", "save() requires the runtime registry state and the actor records.");
+  function takenIds() {
+    const ids = new Set();
+    if (!durable) return ids;
+    for (const entry of readEntries()) {
+      if (!isHarnessEntry(entry) || !isPlainObject(entry.data)) continue;
+      if (typeof entry.data.agentId === "string") ids.add(entry.data.agentId);
+      if (typeof entry.data.jobId === "string") ids.add(entry.data.jobId);
     }
-    // Materialize (or verify) the native seed of every raw inherited snapshot
-    // and remember the substitute the clone uses for it, so JSON.stringify
-    // replaces the raw `entries` array with its reference instead of
-    // descending into it. The live registry state is never modified.
-    const replaced = new Map();
-    eachInheritedSnapshot(registry, (snapshot, agentId) => {
-      // A snapshot already carrying a persisted reference (a state that was
-      // hydrated but not yet restored) keeps it; raw entries are replaced.
-      if (!Array.isArray(snapshot.entries)) return;
-      if (typeof agentId !== "string" || agentId === "") {
-        throw new SubagentStoreError(
-          "storage_invalid_state",
-          "An inherited-context snapshot in the registry state is not attached to an actor id, so its seed session cannot be stored.",
-        );
-      }
-      replaced.set(snapshot, { ...snapshot, entries: seedReference(snapshot, agentId) });
-    });
-    const state = jsonClone(registry, "the runtime registry state", (_key, value) => replaced.get(value) ?? value);
-    const payload = {
-      version: SUBAGENT_STATE_VERSION,
-      registry: state,
-      actors: jsonClone(actors, "the actor records"),
-    };
+    if (existsSync(dir)) {
+      for (const name of readdirSync(dir)) if (name.endsWith(".jsonl")) ids.add(name.slice(0, -".jsonl".length));
+    }
+    return ids;
+  }
+
+  /** Open a recorded conversation for reading; null when the file is missing. */
+  function read(file) {
+    requireDurable();
+    if (!existsSync(file)) return null;
+    const stat = statSync(file);
+    const cached = readCache.get(file);
+    if (cached !== undefined && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+      readCache.delete(file);
+      readCache.set(file, cached);
+      return cached.manager;
+    }
+    let manager;
     try {
-      appendEntry(SUBAGENT_STATE_CUSTOM_TYPE, payload);
+      manager = openSession(file);
     } catch (error) {
-      throw new SubagentStoreError("storage_write_failed", `Could not append the subagent checkpoint: ${messageOf(error)}`);
+      throw new SubagentStoreError("storage_corrupt", `${file} is not a readable Pi session: ${messageOf(error)}`, { file });
     }
-    return true;
+    readCache.set(file, { manager, size: stat.size, mtimeMs: stat.mtimeMs });
+    while (readCache.size > READ_CACHE_SIZE) readCache.delete(readCache.keys().next().value);
+    return manager;
   }
 
   /**
-   * The native entries of one Job: the branch path ending at `endEntryId`
-   * (or at the current leaf when none is recorded), strictly after
-   * `startEntryId`. Native branch traversal is what keeps a sealed slice
-   * sealed: entries appended after `endEntryId`, on this or any other branch,
-   * are not on that path.
+   * Materialize an inherited actor's conversation: the captured branch, minus
+   * harness events, under a fresh session header. Returns the file and the
+   * leaf the actor starts from.
+   */
+  function writeSeed(agentId, entries, cwd) {
+    const file = childFile(agentId);
+    if (existsSync(file)) {
+      throw new SubagentStoreError("storage_seed_conflict", `Actor ${agentId} already has a session file; refusing to overwrite ${file}.`, {
+        agentId,
+        file,
+      });
+    }
+    const body = withoutEntries(
+      entries.filter((entry) => entry?.type !== "session"),
+      isHarnessEntry,
+    );
+    const header = { type: "session", version: 3, id: randomUUID(), timestamp: new Date().toISOString(), cwd };
+    writeSessionFile(file, header, body);
+    return { file, seedLeafId: body.at(-1)?.id ?? null };
+  }
+
+  /**
+   * The native session an actor appends to, positioned at `anchor`.
    *
-   * `liveManager` is an actor's running native session. A live conversation is
-   * read from it directly — a memory-only root keeps its whole transcript there
-   * — and a restored one is read from its stored file.
+   * An own file is opened in place and branched to the anchor. A file owned by
+   * another root session (a fork's parent) is never written: the recorded path
+   * is copied into this session's directory first, and the caller records the
+   * new file. A missing file starts a fresh own session.
+   *
+   * @returns {{ manager: object, file: string, relocated: boolean }}
    */
-  function readHistory({ agentId, startEntryId = null, endEntryId = null }, liveManager = null) {
-    // A Job that was never scoped by a native boundary has no recorded history.
-    if (startEntryId === null && endEntryId === null) return [];
-    let manager = liveManager;
+  function openForAppend(agentId, file, anchor) {
+    const own = childFile(agentId);
+    let target = typeof file === "string" && file !== "" ? resolve(file) : own;
+    let relocated = false;
+    if (target !== own && !ownsFile(target)) {
+      const source = read(target);
+      if (source !== null) {
+        if (existsSync(own)) {
+          throw new SubagentStoreError("storage_seed_conflict", `Actor ${agentId} already has a session file; refusing to overwrite ${own}.`, {
+            agentId,
+            file: own,
+          });
+        }
+        const path = anchor === null ? source.getBranch() : branchTo(source, anchor, agentId);
+        const header = { ...source.getHeader(), id: randomUUID(), timestamp: new Date().toISOString(), parentSession: target };
+        writeSessionFile(own, header, path);
+      }
+      target = own;
+      relocated = true;
+    }
+    readCache.delete(target);
+    let manager;
+    try {
+      manager = openSession(target);
+    } catch (error) {
+      throw new SubagentStoreError("storage_corrupt", `${target} is not a readable Pi session: ${messageOf(error)}`, { file: target });
+    }
+    if (anchor !== null && manager.getLeafId() !== anchor) {
+      if (manager.getEntry(anchor) === undefined) throw anchorMissing(agentId, anchor);
+      manager.branch(anchor);
+    }
+    return { manager, file: target, relocated };
+  }
+
+  function branchTo(manager, anchor, agentId) {
+    if (manager.getEntry(anchor) === undefined) throw anchorMissing(agentId, anchor);
+    return manager.getBranch(anchor);
+  }
+
+  /**
+   * Entries of one Job: the path ending at `endEntryId` (the leaf when null),
+   * strictly after `startEntryId`.
+   */
+  function readSlice(file, startEntryId, endEntryId) {
+    const manager = read(file);
     if (manager === null) {
-      // A memory-only root never persisted a conversation to read.
-      if (!durable) return [];
-      const file = childSessionFile(agentId);
-      if (!existsSync(file)) {
-        throw new SubagentStoreError(
-          "storage_history_unavailable",
-          `The native session file of ${agentId} is missing, so its recorded history cannot be read: ${file}`,
-          { agentId, file },
-        );
-      }
-      manager = openNative(file, "history");
+      throw new SubagentStoreError("storage_history_unavailable", `The session file ${file} is missing.`, { file });
+    }
+    if (endEntryId !== null && manager.getEntry(endEntryId) === undefined) {
+      throw new SubagentStoreError("storage_history_unavailable", `Entry ${endEntryId} is not in ${file}.`, { file });
     }
     const branch = endEntryId === null ? manager.getBranch() : manager.getBranch(endEntryId);
-    if (endEntryId !== null && !branch.some((entry) => entry.id === endEntryId)) {
-      throw new SubagentStoreError(
-        "storage_history_unavailable",
-        `The recorded history end ${describe(endEntryId)} of ${agentId} is not in its native conversation.`,
-        { agentId, endEntryId },
-      );
+    if (startEntryId === null) return branch;
+    const at = branch.findIndex((entry) => entry.id === startEntryId);
+    if (at === -1) {
+      throw new SubagentStoreError("storage_history_unavailable", `Entry ${startEntryId} is not on the recorded branch of ${file}.`, { file });
     }
-    let startAt = -1;
-    if (startEntryId !== null) {
-      startAt = branch.findIndex((entry) => entry.id === startEntryId);
-      if (startAt === -1) {
-        throw new SubagentStoreError(
-          "storage_history_unavailable",
-          `The recorded history start ${describe(startEntryId)} of ${agentId} is not on the branch in its native conversation.`,
-          { agentId, startEntryId },
-        );
-      }
-    }
-    return branch.slice(startAt + 1);
+    return branch.slice(at + 1);
   }
 
   /**
-   * Whether the actor's native session file exists. Entries a native manager
-   * still holds unflushed never reach a file, so this is what keeps an anchor
-   * from becoming durable before the entries it names are.
+   * Where an interrupted Job's transcript ends: the last entry, in file order,
+   * that descends from its start. Null when the file holds nothing after it.
    */
-  function hasSessionFile(agentId) {
-    return durable && existsSync(childSessionFile(agentId));
+  function interruptedEnd(file, startEntryId) {
+    const manager = read(file);
+    if (manager === null) return null;
+    const entries = manager.getEntries();
+    if (startEntryId === null) return entries.at(-1)?.id ?? null;
+    const descends = new Set([startEntryId]);
+    let end = null;
+    for (const entry of entries) {
+      if (typeof entry.parentId === "string" && descends.has(entry.parentId)) {
+        descends.add(entry.id);
+        end = entry.id;
+      }
+    }
+    return end;
   }
 
-  /**
-   * Whether the actor's own conversation recorded a user or assistant message
-   * after `startEntryId`, up to `endEntryId` (the current leaf when none is
-   * given). The path walked is the native branch, so a recorded leaf anchor
-   * answers for the conversation as it was at that checkpoint, independent of
-   * entries appended afterwards.
-   */
-  function hasRecordedTurn(agentId, startEntryId = null, endEntryId = null) {
-    if (!durable) return false;
-    const file = childSessionFile(agentId);
-    if (!existsSync(file)) return false;
-    const manager = openNative(file, "recorded turn");
-    const branch = endEntryId === null ? manager.getBranch() : manager.getBranch(endEntryId);
-    if (endEntryId !== null && !branch.some((entry) => entry.id === endEntryId)) return false;
-    let at = -1;
-    if (startEntryId !== null) {
-      at = branch.findIndex((entry) => entry.id === startEntryId);
-      if (at === -1) return false;
+  /** Whether the conversation recorded a user or assistant message after `start`, up to `end`. */
+  function hasRecordedTurn(file, startEntryId, endEntryId) {
+    let entries;
+    try {
+      entries = readSlice(file, startEntryId, endEntryId);
+    } catch {
+      return false;
     }
-    for (const entry of branch.slice(at + 1)) {
-      if (entry.type !== "message") continue;
-      if (entry.message?.role === "user" || entry.message?.role === "assistant") return true;
-    }
-    return false;
+    return entries.some((entry) => entry.type === "message" && (entry.message?.role === "user" || entry.message?.role === "assistant"));
   }
 
   return {
     get durable() {
       return durable;
     },
-    childSessionFile,
-    hasSessionFile,
-    hasRecordedTurn,
-    writeSeedIfMissing,
+    get dir() {
+      return dir;
+    },
+    childFile,
+    ownsFile,
+    append,
     load,
-    save,
-    hydrate,
-    readHistory,
+    takenIds,
+    read,
+    writeSeed,
+    openForAppend,
+    readSlice,
+    interruptedEnd,
+    hasRecordedTurn,
   };
+}
+
+function anchorMissing(agentId, anchor) {
+  return new SubagentStoreError(
+    "session_anchor_unavailable",
+    `The recorded conversation leaf ${anchor} of ${agentId} is not in its native session; refusing to continue it from a ` +
+      "position that may belong to another branch.",
+    { agentId, anchor },
+  );
 }

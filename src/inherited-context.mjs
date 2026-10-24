@@ -17,10 +17,12 @@
  * followed it are re-linked to its parent, so the branch stays connected;
  * nothing is fabricated to replace it. The header is copied with a fresh
  * session id: the child keeps the conversation, never the caller's session
- * identity.
+ * identity. Harness `subagent-*` bookkeeping entries are dropped the same way.
  */
 
 import { randomUUID } from "node:crypto";
+
+import { isHarnessEntry, withoutEntries } from "./subagent-storage.mjs";
 
 /**
  * The inherited session keeps the caller's conversation, not the caller's
@@ -59,26 +61,6 @@ function trailingAssistantIndex(entries) {
 }
 
 /**
- * Drop one entry from the capture and re-link its direct followers to its
- * parent, so the remaining branch list stays connected. Only the removed
- * entry's identity disappears; followers are copied, their content is
- * untouched, and deeper descendants keep their own parent.
- */
-function withoutEntry(entries, index) {
-  const removed = entries[index];
-  const copy = [...entries];
-  copy.splice(index, 1);
-  if (typeof removed?.id !== "string") return copy;
-  const parentId = removed.parentId ?? null;
-  for (let cursor = 0; cursor < copy.length; cursor += 1) {
-    const entry = copy[cursor];
-    if (entry?.parentId !== removed.id) continue;
-    copy[cursor] = { ...entry, parentId };
-  }
-  return copy;
-}
-
-/**
  * Remove the in-flight tool call(s) from the trailing assistant message while
  * keeping every unrelated native block. Entries are copied, never mutated: the
  * captured session keeps its own live objects. A message that held nothing but
@@ -93,7 +75,7 @@ function withoutInFlightToolCalls(entries) {
   const resolved = toolResultIds(entries);
   const content = message.content.filter((block) => block?.type !== "toolCall" || resolved.has(block.id));
   if (content.length === message.content.length) return entries;
-  if (content.length === 0) return withoutEntry(entries, index);
+  if (content.length === 0) return withoutEntries(entries, (entry) => entry === entries[index]);
   const copy = [...entries];
   copy[index] = { ...entries[index], message: { ...message, content } };
   return copy;
@@ -126,6 +108,7 @@ export function captureInheritedContext(pi, ctx) {
     model: ctx.model ?? null,
     thinkingLevel: ctx.thinkingLevel ?? null,
     tools: pi.getActiveTools(),
-    entries: withOwnSessionId(withoutInFlightToolCalls(header ? [header, ...branch] : [...branch])),
+    // Harness bookkeeping never enters model context, so a child does not inherit it.
+    entries: withOwnSessionId(withoutInFlightToolCalls(withoutEntries(header ? [header, ...branch] : branch, isHarnessEntry))),
   };
 }

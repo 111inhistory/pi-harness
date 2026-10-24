@@ -22,10 +22,13 @@ const CONFIG = {
     { id: "researcher", instructions: "RESEARCH INSTRUCTIONS", thinking: "medium", excludeTools: ["edit", "write", "grep", "find", "ls"], enableTools: ["msg_write"] },
     { id: "executor", instructions: "EXECUTOR INSTRUCTIONS", thinking: "high", excludeTools: ["grep", "find", "ls"], enableTools: [] },
     { id: "reviewer", instructions: "REVIEWER INSTRUCTIONS", thinking: "high", excludeTools: ["bash", "edit", "write", "grep", "find", "ls"], enableTools: ["msg_write"] },
-  ].map((role) => ({ ...role, candidates: [
-    { model: "gemini", thinking: { min: "low", max: "medium" } },
-    { model: "deepseek", thinking: { min: "low", max: "high" } },
-  ] })),
+  ].map((role) => ({
+    ...role,
+    candidates: [
+      { model: "gemini", thinking: role.id === "executor" ? "medium" : (role.id === "researcher" ? "medium" : "high") },
+      { model: "deepseek", thinking: role.id === "executor" ? "high" : (role.id === "researcher" ? "medium" : "high") },
+    ],
+  })),
   models: [
     { id: "gemini", provider: "openrouter", model: "~google/gemini-pro-latest", preference: "GEMINI PREFERENCE" },
     { id: "deepseek", provider: "openrouter", model: "~deepseek/deepseek-pro-latest", preference: "DEEPSEEK PREFERENCE" },
@@ -157,7 +160,7 @@ test("selects the probability argmax and keeps ties in the configured criteria o
   assert.equal(registry.calls[3].context.state.selected_role.id, "researcher");
 });
 
-test("clamps the role thinking level into the candidate band", async () => {
+test("uses the selected candidate thinking directly without a role clamp", async () => {
   const registry = createRegistry({
     responses: [
       stopped({ role: choice("executor", { researcher: 0.1, executor: 0.8, reviewer: 0.1 }) }),
@@ -166,7 +169,38 @@ test("clamps the role thinking level into the candidate band", async () => {
   });
   const result = await routeSubagent({ registry, budget: createBudget(), task: "TASK", config: CONFIG });
   assert.equal(result.model, GEMINI);
-  assert.equal(result.thinkingLevel, "medium");
+  assert.equal(result.thinkingLevel, "medium", "the executor role's legacy thinking must not clamp the candidate");
+});
+
+test("the chosen candidate's direct level decides thinking for a multi-model pool", async () => {
+  const config = structuredClone(CONFIG);
+  config.roles.find((role) => role.id === "executor").candidates = [
+    { model: "gemini", thinking: "low" },
+    { model: "deepseek", thinking: "high" },
+  ];
+  const registry = createRegistry({ responses: [
+    stopped({ role: choice("executor", { researcher: 0.1, executor: 0.8, reviewer: 0.1 }) }),
+    stopped({ model: choice("deepseek", { gemini: 0.2, deepseek: 0.8 }) }),
+  ] });
+  const result = await routeSubagent({ registry, budget: createBudget(), task: "TASK", config });
+  assert.equal(result.model, DEEPSEEK);
+  assert.equal(result.thinkingLevel, "high", "selecting deepseek also selects its direct candidate thinking");
+  assert.equal(registry.calls[1].context.questions.model.criteria.deepseek, "DEEPSEEK PREFERENCE");
+});
+
+test("an explicitly unsupported model thinking level fails instead of being silently rewritten", async () => {
+  const restricted = { ...DEEPSEEK, thinkingLevelMap: { high: null } };
+  const registry = createRegistry({
+    models: new Map([["~google/gemini-pro-latest", GEMINI], ["~deepseek/deepseek-pro-latest", restricted]]),
+    responses: [
+      stopped({ role: choice("executor", { researcher: 0.1, executor: 0.8, reviewer: 0.1 }) }),
+      stopped({ model: choice("deepseek", { gemini: 0.1, deepseek: 0.9 }) }),
+    ],
+  });
+  await assert.rejects(
+    routeSubagent({ registry, budget: createBudget(), task: "TASK", config: CONFIG }),
+    routingError("routing_thinking_unsupported"),
+  );
 });
 
 test("an aborted signal stops before any provider dispatch", async () => {
@@ -312,7 +346,8 @@ test("a malformed config fails before any classifier call", async () => {
   const registry = createRegistry();
   const budget = createBudget();
 
-  const badThinking = { ...CONFIG, roles: [{ id: "researcher", instructions: "TEXT", thinking: "max", excludeTools: [] }] };
+  const badThinking = structuredClone(CONFIG);
+  badThinking.roles[0].candidates[0].thinking = "max";
   await assert.rejects(
     routeSubagent({ registry, budget, task: "TASK", config: badThinking }),
     routingError("routing_invalid_config"),
@@ -377,16 +412,7 @@ test("Pi user routing config is re-read and never falls back to the bundled temp
   assert.throws(() => loadSubagentRoutingConfig(configPath), (error) => error.code === "routing_invalid_config");
 });
 
-test("current routing template uses OpenRouter only for Jev and DeepSeek only for Flash", () => {
-  const config = loadSubagentRoutingConfig(fileURLToPath(new URL("../config/subagent-routing.json", import.meta.url)));
-  assert.deepEqual(config.classifier, { provider: "openrouter", id: "~typesafe/jev-latest" });
-  assert.ok(config.models.every((candidate) => candidate.provider !== "openrouter"));
-  assert.deepEqual(config.models.filter((candidate) => candidate.id === "deepseek").map(({ provider, model }) => ({ provider, model })), [{ provider: "deepseek", model: "deepseek-flash" }]);
-  assert.deepEqual(config.roles.find((role) => role.id === "reviewer").candidates, [{ model: "sol", thinking: { min: "high", max: "high" } }]);
-  assert.deepEqual(config.models.filter((model) => model.id === "sol").map(({ provider, model }) => ({ provider, model })), [{ provider: "openai-codex", model: "gpt-6.1-sol" }]);
-});
-
-test("reviewer has only Sol; equal high bounds fix thinking and skip model classification", async () => {
+test("reviewer has only Sol; its direct high thinking survives legacy role defaults and skips model classification", async () => {
   const template = loadSubagentRoutingConfig(fileURLToPath(new URL("../config/subagent-routing.json", import.meta.url)));
   const sol = { type: "chat", provider: "openai-codex", id: "gpt-6.1-sol" };
   for (const desired of ["low", "medium", "high"]) {
@@ -396,7 +422,7 @@ test("reviewer has only Sol; equal high bounds fix thinking and skip model class
     const budget = createBudget();
     const result = await routeSubagent({ registry, budget, task: "Independently review", config });
     assert.equal(result.model, sol);
-    assert.equal(result.thinkingLevel, "high", `${desired} must be clamped to the high..high pool band`);
+    assert.equal(result.thinkingLevel, "high", `candidate thinking must stay high regardless of legacy role thinking ${desired}`);
     assert.equal(registry.calls.length, 1);
     assert.deepEqual(budget.debits, [1]);
   }
@@ -406,8 +432,8 @@ test("role pools share global Preferences and constrain model classification", a
   const config = structuredClone(CONFIG);
   config.models.push({ id: "sol", provider: "openai-codex", model: "gpt-6.1-sol", preference: "GENERAL SOL PREFERENCE" });
   config.roles.find((role) => role.id === "executor").candidates = [
-    { model: "gemini", thinking: { min: "low", max: "low" } },
-    { model: "sol", thinking: { min: "high", max: "high" } },
+    { model: "gemini", thinking: "low" },
+    { model: "sol", thinking: "high" },
   ];
   const registry = createRegistry({ responses: [
     stopped({ role: choice("executor", { researcher: 0.1, executor: 0.8, reviewer: 0.1 }) }),
@@ -415,7 +441,7 @@ test("role pools share global Preferences and constrain model classification", a
   ] });
   const result = await routeSubagent({ registry, budget: createBudget(), task: "TASK", config });
   assert.deepEqual(registry.calls[1].context.questions.model.criteria, { gemini: "GEMINI PREFERENCE", sol: "GENERAL SOL PREFERENCE" });
-  assert.equal(result.thinkingLevel, "low", "same global model can have a different role-local fixed band");
+  assert.equal(result.thinkingLevel, "low", "same global model can have a different direct role-local level");
   const outside = createRegistry({ responses: [
     stopped({ role: choice("executor", { researcher: 0.1, executor: 0.8, reviewer: 0.1 }) }),
     stopped({ model: choice("deepseek", { gemini: 0.1, sol: 0.1, deepseek: 0.8 }) }),
@@ -431,9 +457,10 @@ test("a missing singleton model fails without switching to another role's models
 });
 
 test("empty, duplicate, unknown and inverted role pool entries fail before classification", async () => {
-  for (const pool of [[], [{ model: "missing", thinking: { min: "high", max: "high" } }],
-    [{ model: "gemini", thinking: { min: "high", max: "low" } }],
-    [{ model: "gemini", thinking: { min: "low", max: "high" } }, { model: "gemini", thinking: { min: "high", max: "high" } }]]) {
+  for (const pool of [[], [{ model: "missing", thinking: "high" }],
+    [{ model: "gemini", thinking: { min: "low", max: "high" } }],
+    [{ model: "gemini", thinking: "max" }],
+    [{ model: "gemini", thinking: "high" }, { model: "gemini", thinking: "high" }]]) {
     const config = structuredClone(CONFIG);
     config.roles[0].candidates = pool;
     const registry = createRegistry();

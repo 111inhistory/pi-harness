@@ -30,15 +30,41 @@ test("disable, re-enable and description changes preserve the original declarati
   assert.match(projected[4].content, /read is available again/);
   assert.match(projected[4].content, /codemode has updated interface/);
   assert.ok(projected.every((message) => !message.toolsRemoved));
-  const resolution = resolveTranscriptTools(projected, true);
-  assert.equal(resolution.anchorsAdditions, true);
-  assert.deepEqual(resolution.requestTools, initial.toolsAdded);
+  // Pi 1.4 native declarations: the transport supports in-place changes, so no tool is
+  // folded into the top-level request field and every system message keeps its changes.
+  const resolution = resolveTranscriptTools(projected, "changes");
+  assert.deepEqual(resolution.requestTools, []);
+  assert.equal(resolution.foldedSystemMessages, 0);
   const wire = convertResponsesMessages(model, { messages: projected }, new Set([model.provider]), {
     includeSystemPrompt: false, supportsMidConvoSystemMessages: true, supportsAdditionalTools: true,
   });
-  assert.deepEqual(wire.filter((item) => item.type === "additional_tools").flatMap((item) => item.tools.map((entry) => entry.name)), ["subagent_create"]);
+  const declared = wire.filter((item) => item.type === "additional_tools").flatMap((item) => item.tools);
+  assert.deepEqual(declared.map((entry) => entry.name), ["read", "codemode", "subagent_create", "codemode"]);
+  // The same-name redeclaration reaches the request; the latest definition replaces the earlier one.
+  assert.equal(declared.at(-1).description, "new inline tools");
+  assert.deepEqual(declared.at(-1).parameters, { type: "object", properties: {} });
   assert.deepEqual(messages, before, "projection cannot mutate stored history or permission state");
   assert.deepEqual(additiveToolTranscript(projected), projected, "projection is idempotent");
+});
+
+test("a same-name schema change is replayed as a replacement declaration, not dropped", () => {
+  const oldSchema = { type: "object", properties: { path: { type: "string" } }, required: ["path"] };
+  const newSchema = { type: "object", properties: { uri: { type: "string" }, limit: { type: "number" } }, required: ["uri"] };
+  const messages = [
+    { role: "system", content: "base", toolsAdded: [{ name: "read", description: "Read", parameters: oldSchema }], timestamp: 0 },
+    { role: "user", content: "task", timestamp: 1 },
+    { role: "system", content: "", toolsAdded: [{ name: "read", description: "Read a URI", parameters: newSchema }], timestamp: 2 },
+  ];
+  const projected = additiveToolTranscript(messages);
+  const wire = convertResponsesMessages(model, { messages: projected }, new Set([model.provider]), {
+    includeSystemPrompt: false, supportsMidConvoSystemMessages: true, supportsAdditionalTools: true,
+  });
+  const readDeclarations = wire.filter((item) => item.type === "additional_tools").flatMap((item) => item.tools).filter((entry) => entry.name === "read");
+  assert.equal(readDeclarations.length, 2, "the change is declared to the model, not merely noted");
+  assert.equal(readDeclarations.at(-1).description, "Read a URI");
+  assert.deepEqual(readDeclarations.at(-1).parameters, newSchema);
+  assert.match(projected[2].content, /read has updated interface/);
+  assert.deepEqual(additiveToolTranscript(projected), projected, "a projected replacement must not be lost or duplicated");
 });
 
 test("retrieval placeholders reject execution without obtaining parent handles", async () => {

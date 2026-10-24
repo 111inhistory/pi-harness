@@ -1,25 +1,27 @@
-# 运行 `work` 实现
+# 运行 Work 原型
 
-当前实现使用 `work-mvp.md` 确认的递归 `attach + items[] + desc[]` 批量 API。`src/work.mjs`、JSONL CLI 和 Pi `work` Extension 共用同一个 dispatcher。
+**本原型暂缓，不属于主线功能。是否做成 Pi 插件尚未决定。**
 
-Subagent 不在此 CLI 中模拟；真实 Pi 子 Session 由 `extensions/subagent.mjs` 创建。
+原型保留 [Work 原型 API](work-mvp.md) 中的递归 `attach + items[] + desc[]` 交互。内存工作树、JSONL CLI 和 Pi 接入实验共用本目录的 dispatcher。
+
+CLI 不模拟 Subagent，也不依赖主线 Capability 或协议路由。以下命令从仓库根目录执行。
 
 ## 演示
 
 ```bash
-npm run demo
+node experiments/work/prototype/demo.mjs
 ```
 
 ## 冒烟检查
 
 ```bash
-npm run smoke
+node experiments/work/prototype/demo.mjs --assert
 ```
 
 ## JSONL 交互
 
 ```bash
-npm run cli
+node experiments/work/prototype/cli.mjs
 ```
 
 每行输入一个结构化操作请求：

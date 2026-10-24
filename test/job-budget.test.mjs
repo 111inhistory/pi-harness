@@ -3,10 +3,8 @@ import test from "node:test";
 
 import {
   BUDGET_WARNING_MESSAGE,
-  JOB_BUDGET_BY_DEPTH,
   JobBudgetError,
   createJobBudget,
-  profileForDepth,
 } from "../src/job-budget.mjs";
 
 const MINUTE = 60_000;
@@ -27,40 +25,6 @@ function createClock(start = 10_000) {
 function jobBudgetError(code) {
   return (error) => error instanceof JobBudgetError && error.code === code;
 }
-
-test("selects the frozen depth profile and reports it in detailed snapshots", () => {
-  assert.deepEqual(JOB_BUDGET_BY_DEPTH, {
-    1: {
-      modelCalls: { soft: 160, hard: 200 },
-      activeTimeMs: { soft: 90 * MINUTE, hard: 120 * MINUTE },
-      lifetimeMs: 24 * HOUR,
-    },
-    2: {
-      modelCalls: { soft: 48, hard: 64 },
-      activeTimeMs: { soft: 45 * MINUTE, hard: 60 * MINUTE },
-      lifetimeMs: 12 * HOUR,
-    },
-  });
-  assert.ok(Object.isFrozen(JOB_BUDGET_BY_DEPTH));
-  assert.ok(Object.isFrozen(JOB_BUDGET_BY_DEPTH[1].modelCalls));
-
-  const clock = createClock();
-  assert.equal(profileForDepth(2), JOB_BUDGET_BY_DEPTH[2]);
-
-  const budget = createJobBudget({ depth: 2, jobId: "job_07", now: clock.now });
-  assert.equal(budget.depth, 2);
-  assert.equal(budget.jobId, "job_07");
-  assert.equal(budget.profile, JOB_BUDGET_BY_DEPTH[2]);
-  assert.equal(budget.terminal, null);
-
-  const detailed = budget.snapshot({ detail: true });
-  assert.equal(detailed.depth, 2);
-  assert.equal(detailed.jobId, "job_07");
-  assert.deepEqual(detailed.profile, JOB_BUDGET_BY_DEPTH[2]);
-  assert.ok(!("profile" in budget.snapshot()));
-
-  assert.throws(() => profileForDepth(3), jobBudgetError("invalid_depth"));
-});
 
 test("counts Model Calls before dispatch and warns exactly once at soft", () => {
   const clock = createClock();

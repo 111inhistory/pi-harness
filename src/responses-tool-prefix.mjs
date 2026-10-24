@@ -39,18 +39,26 @@ export function additiveToolTranscript(messages) {
         declared.set(tool.name, tool);
         additions.push(tool);
       } else if (!declarationsEqual(previous, tool)) {
+        // A later declaration under the same name replaces the earlier one on
+        // transports that support in-place tool changes. Dropping it would keep
+        // sending the stale interface and schema, so replay the replacement
+        // declaration instead of only noting it. Pi 1.4 expresses this as an
+        // additional_tools item ("its latest definition replaces the earlier one").
+        declared.set(tool.name, tool);
+        additions.push(tool);
         notes.push(`Tool ${tool.name} has updated interface or usage guidance. Inspect its current interface before calling it; execution validates current arguments.`);
+      } else if (!enabled.has(tool.name)) {
+        notes.push(`Tool ${tool.name} is available again.`);
       }
-      if (previous && !enabled.has(tool.name)) notes.push(`Tool ${tool.name} is available again.`);
       enabled.add(tool.name);
     }
-    if (!message.toolsRemoved?.length && additions.length === (message.toolsAdded?.length ?? 0)) return message;
-    const { toolsAdded, toolsRemoved, ...rest } = message;
+    if (!message.toolsRemoved?.length && notes.length === 0 && additions.length === (message.toolsAdded?.length ?? 0)) return message;
+    const { toolsAdded: _added, toolsRemoved: _removed, ...rest } = message;
     const content = typeof message.content === "string" ? message.content :
       (message.content ?? []).filter((part) => part.type === "text").map((part) => part.text).join("\n");
     return {
       ...rest,
-      content: [content, ...notes].filter(Boolean).join("\n\n"),
+      content: [content, ...notes.filter((note) => !content.includes(note))].filter(Boolean).join("\n\n"),
       ...(additions.length ? { toolsAdded: additions } : {}),
     };
   });
@@ -89,7 +97,7 @@ export function capabilityModelResult(result, declaredNames) {
   const compact = (hit) => {
     const members = Array.isArray(hit.tools) ? hit.tools : [hit];
     if (!members.length || !members.every((tool) => declaredNames.has(tool.name))) return hit;
-    const { tools, toolCount, description, exposure, match, score, reason, source, path, ...guidance } = hit;
+    const { tools, toolCount, description, exposure, parameters, outputSchema, promptGuidelines, match, score, reason, source, path, ...guidance } = hit;
     return { ...guidance, interface: "Declared through the session's tool loadout; use the tool declaration for arguments." };
   };
   return { ...result, tools: result.tools.map(compact), mcp: result.mcp.map(compact) };

@@ -11,7 +11,6 @@
   "roles": [
     {
       "id": "researcher",
-      "thinking": "medium",
       "excludeTools": [
         "edit",
         "write",
@@ -19,28 +18,23 @@
         "find",
         "ls"
       ],
-      "enableTools": ["msg_write"],
+      "enableTools": [
+        "msg_write"
+      ],
       "instructions": "# Responsibility\nYou investigate questions whose requested outcome is understanding, evidence, diagnosis, or a comparison of options. Work may include source-code exploration, reading documentation, tracing behavior, investigating a reported failure, or developing an implementation proposal that has not been authorized for execution.\n\n# Working method\nStart from the actual question. Inspect relevant artifacts, follow dependencies when needed, and use narrow non-destructive checks to test material hypotheses. Distinguish observed facts, user-provided facts, and inference. Reconcile conflicting evidence rather than collecting snippets. Provide concrete paths, symbols, sources, or reproducible observations that support your answer.\n\n# Authority and boundaries\nThis role does not modify production deliverables, repository code, configuration, or documentation. Read access and controlled diagnostic commands do not imply permission to repair what you discover. Explanatory code samples and proposed changes may appear in the answer, but are not applied. If the requested final outcome is an actual authorized change, choose the execution role instead. If the task is specifically an independent assessment of an existing artifact for defects or compliance, choose the review role instead.\n\n# Completion\nDeliver an evidence-backed answer, diagnosis, or recommendation with uncertainties and the next actionable decisions. Do not claim execution or verification you did not perform. After completion, report experienced difficulty as low, medium, or high with one factual reason; this is retrospective feedback, not a request to select a model or thinking level.",
       "candidates": [
         {
           "model": "gemini",
-          "thinking": {
-            "min": "low",
-            "max": "high"
-          }
+          "thinking": "medium"
         },
         {
           "model": "deepseek",
-          "thinking": {
-            "min": "low",
-            "max": "high"
-          }
+          "thinking": "medium"
         }
       ]
     },
     {
       "id": "executor",
-      "thinking": "high",
       "excludeTools": [
         "grep",
         "find",
@@ -51,23 +45,16 @@
       "candidates": [
         {
           "model": "gemini",
-          "thinking": {
-            "min": "low",
-            "max": "high"
-          }
+          "thinking": "high"
         },
         {
           "model": "deepseek",
-          "thinking": {
-            "min": "low",
-            "max": "high"
-          }
+          "thinking": "high"
         }
       ]
     },
     {
       "id": "reviewer",
-      "thinking": "high",
       "excludeTools": [
         "edit",
         "write",
@@ -75,15 +62,14 @@
         "find",
         "ls"
       ],
-      "enableTools": ["msg_write"],
+      "enableTools": [
+        "msg_write"
+      ],
       "instructions": "# Responsibility\nYou independently evaluate an existing artifact against its intended behavior, requirements, correctness obligations, or stated claims. Artifacts may include code changes, configurations, designs, documentation, or completed work. Your deliverable is an assessment, not ownership of implementation.\n\n# Working method\nUnderstand the artifact and the claim being evaluated. Trace affected callers and relevant evidence. Identify concrete failure conditions, missing requirements, misleading statements, or material risks. Validate important suspicions with narrow non-destructive checks when useful. Rank findings by practical consequence. Treat style preferences and speculative concerns differently from demonstrated defects.\n\n# Authority and boundaries\nDo not modify the artifact or silently take over repair. Suggested fixes or replacement wording may be included in findings, but must not be applied. If the assignment authorizes and requires fixing confirmed problems before completion, it belongs to the execution role. If the primary goal is open-ended understanding or comparing unapproved approaches rather than evaluating an existing artifact, it belongs to the research role.\n\n# Completion\nProvide actionable findings with location, trigger, consequence, and evidence. If no supported finding exists, say so and state the coverage limits; finding something is not mandatory. After completion, report experienced difficulty as low, medium, or high with one factual reason; do not infer or change the execution model or thinking level.",
       "candidates": [
         {
           "model": "sol",
-          "thinking": {
-            "min": "high",
-            "max": "high"
-          }
+          "thinking": "high"
         }
       ]
     }

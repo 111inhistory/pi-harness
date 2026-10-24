@@ -9,10 +9,16 @@
  * actually returned, validates the submission against those refs, and maps the
  * run outcome to the broker's grouped result shape.
  *
- * Pi-specific plumbing (session creation, the shared budget hook, the
- * inherited-context capture, the npm marketplace helper) stays in the
- * extension, so this module is importable without the Pi SDK and its protocol
- * behavior is unit-testable: brokers and sessions are injected.
+ * Search is local-only: remote installation candidates stay out of the
+ * discovery result, Main's tool content and the branch memory until a user
+ * approval receiver exists (rewrite plan D4). Every result therefore carries an
+ * explicit `coverage` object saying local was (or was not) searched and remote
+ * was not searched, so an empty result cannot be read as "no remote resources".
+ *
+ * Pi-specific plumbing (shared Subagent execution, the budget hook, the
+ * inherited-context capture) stays in the extension, so this module is
+ * importable without the Pi SDK and its protocol behavior is unit-testable:
+ * brokers and sessions are injected.
  */
 
 import { createJobBudget } from "./job-budget.mjs";
@@ -50,14 +56,14 @@ export const CAPABILITY_DISCOVERY_SYSTEM_PROMPT = [
   "You are the internal capability retrieval agent. Use the conversation above to identify the current task, its constraints, and the guidance or capabilities that would help complete it. Find reusable knowledge and methods as well as missing operations; do not limit discovery to tools the caller lacks.",
   "",
   "Tools:",
-  `- ${CAPABILITY_SEARCH_TOOL_NAME}: search capabilities. "query" is short keywords, or an exact ref from an earlier result for a direct lookup. "src" is "local" (this session's tools, MCP servers and skills), "remote" (npm marketplace metadata for uninstalled packages) or "all" (both, local first).`,
+  `- ${CAPABILITY_SEARCH_TOOL_NAME}: search capabilities. "query" is short keywords, or an exact ref from an earlier result for a direct lookup. "src" must be "local" (this session's tools, MCP servers and skills). Remote package search is disabled until a user approval receiver exists.`,
   `- ${SUBMIT_RESULT_TOOL_NAME}: submit the exact refs of the relevant capabilities. Call it exactly once; the run ends there.`,
   "",
   "Selection:",
   "- Skills may contain workflows, rules, preferences, fixed background, or descriptions. Look for guidance relevant to this task, not only executable tools.",
   "- Select relevant guidance alongside tools and MCP capabilities. Generic tool descriptions do not replace the caller's applicable preferences or task context.",
   "- A namespace is one candidate containing its tools and shared instructions. Submit its top-level ref, not its member refs.",
-  "- Search local resources first. Search remote package metadata only for needs the local results do not cover.",
+  "- Search local resources. Remote package search is disabled in this run; never claim that remote resources do not exist.",
   "- Prefer relevant, established resources over rebuilding a workflow from scratch. Submit a focused set of complementary refs, not every loosely related hit.",
   "",
   "Rules:",
@@ -73,9 +79,25 @@ export const CAPABILITY_DISCOVERY_SYSTEM_PROMPT = [
  */
 export const CAPABILITY_DISCOVERY_PROMPT = [
   "Find reusable guidance and capabilities for the current task. Submit relevant guidance and tool refs together.",
-  `Search local resources with ${CAPABILITY_SEARCH_TOOL_NAME} first; search remote metadata if local resources leave a gap. Then call ${SUBMIT_RESULT_TOOL_NAME} with the exact refs you selected from the results.`,
+  `Search local resources with ${CAPABILITY_SEARCH_TOOL_NAME} using src "local". Remote search is disabled in this run, so the npm marketplace was not searched; do not claim that remote resources do not exist. Then call ${SUBMIT_RESULT_TOOL_NAME} with the exact refs you selected from the results.`,
   "Submit an empty refs list only if the completed searches found nothing relevant.",
 ].join("\n");
+
+/** Remote search stays off until a user approval receiver exists (D4). */
+export const CAPABILITY_REMOTE_SEARCH_DISABLED =
+  'Remote search is disabled until a user approval receiver exists. Call capability_search with src "local"; ' +
+  "this run does not search the npm marketplace, which is not evidence that no remote resource exists.";
+
+/**
+ * What this run actually covered. `local` counts completed local searches, so a
+ * run whose only search failed reports `not_searched` instead of a no-match.
+ */
+export function capabilityCoverage(run) {
+  return {
+    local: (run?.completedSearches ?? 0) > 0 ? "searched" : "not_searched",
+    remote: "not_searched",
+  };
+}
 
 const GROUP_BY_ARRAY = Object.freeze({ tools: "tools", mcp: "mcp", skills: "skills", remote: "remote" });
 const GROUP_BY_KIND = Object.freeze({ tool: "tools", mcp: "mcp", skill: "skills", package: "remote" });
@@ -85,13 +107,14 @@ const GROUP_BY_KIND = Object.freeze({ tool: "tools", mcp: "mcp", skill: "skills"
  * cancelled, failed and misbehaving runs alike, so a failure is never presented
  * as a clean "no match".
  */
-export function capabilityFailureResult(message, warnings = []) {
+export function capabilityFailureResult(message, warnings = [], coverage = { local: "not_searched", remote: "not_searched" }) {
   return {
     status: "failed",
     tools: [],
     mcp: [],
     skills: [],
     remote: [],
+    coverage: { ...coverage },
     missingCapabilities: [],
     warnings: [...warnings, String(message)],
   };
@@ -135,8 +158,12 @@ function recordHits(run, result) {
   for (const [arrayKey, fallbackGroup] of Object.entries(GROUP_BY_ARRAY)) {
     for (const hit of ensureArray(result?.[arrayKey])) {
       if (!hit || typeof hit.ref !== "string" || hit.ref === "") continue;
+      const group = GROUP_BY_KIND[hit.kind] ?? fallbackGroup;
+      // Remote candidates are never selectable or returned until an approval
+      // receiver exists (D4); a remote ref is not a valid submission.
+      if (group === "remote") continue;
       returned += 1;
-      run.hits.set(hit.ref, { group: GROUP_BY_KIND[hit.kind] ?? fallbackGroup, hit });
+      run.hits.set(hit.ref, { group, hit });
     }
   }
   return returned;
@@ -159,7 +186,8 @@ function capabilitySearchTool(run) {
     label: "Capability Search",
     description:
       "Search registered tools, MCP capabilities, and local skills for reusable guidance and missing operations. " +
-      "Skills may cover workflows, rules, preferences, or background. remote searches npm metadata for uninstalled candidates. " +
+      "Skills may cover workflows, rules, preferences, or background. Only local resources are searched: " +
+      CAPABILITY_REMOTE_SEARCH_DISABLED + " " +
       "A namespace is one candidate with all its visible tools and shared instructions. Submit its top-level ref. " +
       "Returns candidate refs with metadata; only refs returned here can be submitted with " +
       `${SUBMIT_RESULT_TOOL_NAME}.`,
@@ -173,8 +201,9 @@ function capabilitySearchTool(run) {
       const query = typeof params?.query === "string" ? params.query.trim() : "";
       if (query === "") return errorToolResult("capability_search requires a non-empty query string.");
       const src = params?.src;
-      if (src !== "local" && src !== "remote" && src !== "all") {
-        return errorToolResult('capability_search requires src to be "local", "remote" or "all".');
+      if (src !== "local") {
+        if (src === "remote" || src === "all") return errorToolResult(CAPABILITY_REMOTE_SEARCH_DISABLED);
+        return errorToolResult('capability_search requires src to be "local".');
       }
       let result;
       try {
@@ -333,7 +362,8 @@ function submissionResult(run) {
     tools: groups.tools,
     mcp: groups.mcp,
     skills: groups.skills,
-    remote: groups.remote,
+    remote: [],
+    coverage: capabilityCoverage(run),
     missingCapabilities:
       run.submission.refs.length === 0 ? run.emptyQueries.slice(0, MISSING_QUERIES) : [],
     warnings: [...run.warnings],
@@ -341,22 +371,25 @@ function submissionResult(run) {
 }
 
 function settleRun(run, thrown, budget) {
+  const coverage = capabilityCoverage(run);
   if (run.submission) return submissionResult(run);
-  if (run.stop?.code === "cancelled") return capabilityFailureResult(run.stop.message, run.warnings);
-  if (run.stop?.code === "budget") return capabilityFailureResult(run.stop.message, run.warnings);
+  if (run.stop?.code === "cancelled") return capabilityFailureResult(run.stop.message, run.warnings, coverage);
+  if (run.stop?.code === "budget") return capabilityFailureResult(run.stop.message, run.warnings, coverage);
   const terminal = budget.check().terminal;
   if (terminal && terminal.status === "failed") {
-    return capabilityFailureResult(budgetStopMessage(terminal), run.warnings);
+    return capabilityFailureResult(budgetStopMessage(terminal), run.warnings, coverage);
   }
   if (thrown) {
     return capabilityFailureResult(
       `capability discovery failed: the internal retrieval model errored: ${errorMessage(thrown)}.`,
       run.warnings,
+      coverage,
     );
   }
   return capabilityFailureResult(
     "capability discovery failed: the internal retrieval agent finished without an accepted submission.",
     run.warnings,
+    coverage,
   );
 }
 
@@ -364,13 +397,13 @@ function settleRun(run, thrown, budget) {
  * Build one discovery engine over injected dependencies.
  *
  * `openSession(request)` must start the isolated internal session over the
- * caller's inherited native context and resolve to `{ prompt, abort, dispose }`.
- * The request carries `instructions` (the retrieval addendum the host appends
- * to the inherited system prompt), the two `customTools`, the run's `budget`
- * (fixed internal profile) and `beforeRequest`, a pre-debit stop check the host
- * must install as the session's pre-provider-request hook together with the
- * shared Model Call debit: when it returns `{ stop: true }` the request must not
- * be dispatched.
+ * caller's inherited native context and resolve to `{ prompt, abort, dispose }`;
+ * `dispose()` may be async and is awaited. The request carries `instructions`
+ * (the retrieval addendum the host appends to the inherited system prompt), the
+ * two `customTools`, the run's `budget` (fixed internal profile), `beforeRequest`
+ * (a pre-debit stop check the host must install as the session's pre-provider-
+ * request hook together with the shared Model Call debit: when it returns
+ * `{ stop: true }` the request must not be dispatched) and the caller `signal`.
  *
  * `prompt(text)` resolves to the assistant messages of that run. A provider
  * failure stays a resolved native prompt, so the adapter hands this run's own
@@ -420,6 +453,7 @@ export function createCapabilityDiscovery({ broker, openSession } = {}) {
           customTools: [capabilitySearchTool(run), submitResultTool(run)],
           budget,
           beforeRequest: beforeModelRequest(run),
+          signal,
         });
         run.session = session;
         // Opening the session can take long enough for the caller to abort; an
@@ -465,9 +499,17 @@ export function createCapabilityDiscovery({ broker, openSession } = {}) {
         }
         return settleRun(run, thrown, budget);
       } catch (error) {
+        if (signal?.aborted) {
+          return capabilityFailureResult(
+            "capability discovery cancelled: the caller aborted while the internal retrieval session was starting.",
+            run.warnings,
+            capabilityCoverage(run),
+          );
+        }
         return capabilityFailureResult(
           `capability discovery failed: could not run the internal retrieval session: ${errorMessage(error)}.`,
           run.warnings,
+          capabilityCoverage(run),
         );
       } finally {
         if (onAbort) signal.removeEventListener("abort", onAbort);
@@ -477,7 +519,9 @@ export function createCapabilityDiscovery({ broker, openSession } = {}) {
           budget.terminate({ reason: run.submission ? "model_final" : "cancelled" });
         }
         try {
-          session?.dispose?.();
+          // The shared Subagent execution owns the session and its cleanups; its
+          // dispose is idempotent and also waits for the aborted run to go idle.
+          await session?.dispose?.();
         } catch {
           // Teardown failures must not replace the already-decided run result.
         }

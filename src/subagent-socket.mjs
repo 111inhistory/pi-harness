@@ -5,6 +5,8 @@ import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
 import { ipc, DEFAULT_SOCKET_DIR, endpointKey, isIpcPath, isWindowsPipe } from "./subagent-ipc.mjs";
+import { createOwnedServer } from "./ipc/endpoint.ts";
+import { managedFrame } from "./ipc/message.ts";
 export { DEFAULT_SOCKET_DIR, endpointKey, isIpcPath, isWindowsPipe };
 
 export function deriveSessionUid(sessionId) {
@@ -24,59 +26,73 @@ export function getBroadcastSocketPath(parentId, socketDir = DEFAULT_SOCKET_DIR)
 }
 
 /**
- * Start a local IPC server for an individual Subagent (Unix Socket / Named Pipe).
- * Uses connection isolation and newline-delimited JSON buffering.
+ * Attach the newline-delimited frame reader to one accepted connection. The
+ * ownership helper tracks the socket, so teardown can destroy a connection
+ * that is held open or has sent only part of a frame.
  */
-export function createAgentSocketServer({ id, socketDir = DEFAULT_SOCKET_DIR, onMessage, onError }) {
-  const socketPath = getAgentSocketPath(id, socketDir);
-  ipc.prepare(socketPath);
+function readNdjson(socket, { onFrame, onError, parseErrorPrefix }) {
+  const decoder = new StringDecoder("utf8");
+  let buffer = "";
 
-  const server = net.createServer((socket) => {
-    const decoder = new StringDecoder("utf8");
-    let buffer = "";
+  socket.on("data", (chunk) => {
+    buffer += decoder.write(chunk);
+    const lines = buffer.split("\n");
+    buffer = lines.pop(); // Keep an incomplete trailing fragment in buffer
 
-    socket.on("data", (chunk) => {
-      buffer += decoder.write(chunk);
-      const lines = buffer.split("\n");
-      buffer = lines.pop(); // Keep incomplete trailing fragment in buffer
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed === "") continue;
-        try {
-          const parsed = JSON.parse(trimmed);
-          if (typeof onMessage === "function") {
-            onMessage(parsed);
-          }
-        } catch (err) {
-          if (typeof onError === "function") {
-            onError(new Error(`Failed to parse NDJSON line: ${trimmed}; error: ${err.message}`));
-          }
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed === "") continue;
+      let parsed;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch (err) {
+        if (typeof onError === "function") {
+          onError(new Error(`${parseErrorPrefix}: ${trimmed}; error: ${err.message}`));
         }
+        continue;
       }
-    });
-
-    socket.on("error", (err) => {
-      // EPIPE or connection resets are normal in one-way deliveries
-      if (err.code !== "EPIPE" && err.code !== "ECONNRESET" && typeof onError === "function") {
-        onError(err);
-      }
-    });
+      onFrame(parsed);
+    }
   });
 
-  server.listen(socketPath);
+  socket.on("error", (err) => {
+    // EPIPE or connection resets are normal in one-way deliveries
+    if (err.code !== "EPIPE" && err.code !== "ECONNRESET" && typeof onError === "function") {
+      onError(err);
+    }
+  });
+}
+
+/**
+ * Start a local IPC server for an individual Subagent (Unix Socket / Named Pipe).
+ * The returned `ready` rejects for an active, foreign, insecure or non-socket
+ * endpoint; `close` is idempotent and force-closes accepted clients.
+ */
+export function createAgentSocketServer({ id, socketDir = DEFAULT_SOCKET_DIR, root, onMessage, onError }) {
+  const socketPath = getAgentSocketPath(id, socketDir);
+  const owned = createOwnedServer({
+    address: socketPath,
+    isNamespace: ipc.isNamespace(socketPath),
+    root: root ?? path.resolve(DEFAULT_SOCKET_DIR),
+    onConnection(socket) {
+      readNdjson(socket, {
+        parseErrorPrefix: "Failed to parse NDJSON line",
+        onError,
+        onFrame(parsed) {
+          if (typeof onMessage === "function") onMessage(parsed);
+        },
+      });
+    },
+    onError,
+  });
 
   return {
     id,
     socketPath,
-    server,
-    close: () =>
-      new Promise((resolve) => {
-        server.close(() => {
-          ipc.remove(socketPath);
-          resolve();
-        });
-      }),
+    server: owned.server,
+    ready: owned.ready,
+    clients: owned.clients,
+    close: owned.close,
   };
 }
 
@@ -87,70 +103,56 @@ export function createAgentSocketServer({ id, socketDir = DEFAULT_SOCKET_DIR, on
 export function createBroadcastSocketServer({
   parentId,
   socketDir = DEFAULT_SOCKET_DIR,
+  root,
   getDirectChildren,
   deliverMessage,
   onError,
 }) {
   const socketPath = getBroadcastSocketPath(parentId, socketDir);
-  ipc.prepare(socketPath);
-
-  const server = net.createServer((socket) => {
-    const decoder = new StringDecoder("utf8");
-    let buffer = "";
-
-    socket.on("data", (chunk) => {
-      buffer += decoder.write(chunk);
-      const lines = buffer.split("\n");
-      buffer = lines.pop();
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed === "") continue;
-        try {
-          const parsed = JSON.parse(trimmed);
+  const owned = createOwnedServer({
+    address: socketPath,
+    isNamespace: ipc.isNamespace(socketPath),
+    root: root ?? path.resolve(DEFAULT_SOCKET_DIR),
+    onConnection(socket) {
+      readNdjson(socket, {
+        parseErrorPrefix: "Broadcast failed to parse NDJSON line",
+        onError,
+        onFrame(parsed) {
           const children = typeof getDirectChildren === "function" ? getDirectChildren() : [];
-          if (Array.isArray(children)) {
-            for (const childId of children) {
-              if (typeof deliverMessage === "function") {
-                deliverMessage(childId, parsed).catch((err) => {
+          if (!Array.isArray(children)) return;
+          for (const childId of children) {
+            if (typeof deliverMessage !== "function") continue;
+            try {
+              const pending = deliverMessage(childId, parsed);
+              if (pending && typeof pending.catch === "function") {
+                pending.catch((err) => {
                   if (typeof onError === "function") onError(err);
                 });
               }
+            } catch (err) {
+              if (typeof onError === "function") onError(err);
             }
           }
-        } catch (err) {
-          if (typeof onError === "function") {
-            onError(new Error(`Broadcast failed to parse NDJSON line: ${trimmed}; error: ${err.message}`));
-          }
-        }
-      }
-    });
-
-    socket.on("error", (err) => {
-      if (err.code !== "EPIPE" && err.code !== "ECONNRESET" && typeof onError === "function") {
-        onError(err);
-      }
-    });
+        },
+      });
+    },
+    onError,
   });
-
-  server.listen(socketPath);
 
   return {
     parentId,
     socketPath,
-    server,
-    close: () =>
-      new Promise((resolve) => {
-        server.close(() => {
-          ipc.remove(socketPath);
-          resolve();
-        });
-      }),
+    server: owned.server,
+    ready: owned.ready,
+    clients: owned.clients,
+    close: owned.close,
   };
 }
 
 /**
- * Client helper to send one-way NDJSON through Node's platform IPC transport.
+ * Client helper to send one already-formed transport frame through Node's
+ * platform IPC transport. Framing and sender binding belong to the managed
+ * write path, not to callers.
  */
 export function writeSocketOneWay(socketPath, payload, { timeoutMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -226,7 +228,10 @@ export function createSocketAwareWriteOperations(baseOperations = {}, transport 
         const isManaged = ep ? ep.isManaged : (typeof onCheckStatus === "function");
 
         if (!isManaged) {
-          return writeSocketOneWay(absolutePath, content);
+          const text = typeof content === "string"
+            ? content
+            : (content instanceof Uint8Array ? Buffer.from(content).toString("utf-8") : String(content));
+          return writeSocketOneWay(absolutePath, text);
         }
 
         const targetId = ep?.targetId || path.basename(absolutePath, ".sock");
@@ -248,32 +253,11 @@ export function createSocketAwareWriteOperations(baseOperations = {}, transport 
           }
         }
 
-        let text = typeof content === "string" ? content : content.toString("utf-8");
-        const lines = text.split("\n");
-        const processedLines = [];
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed === "") continue;
-          let parsed;
-          try {
-            parsed = JSON.parse(trimmed);
-          } catch (e) {
-            const err = new Error(`invalid_message: Malformed NDJSON frame: ${e.message}`);
-            err.code = "invalid_message";
-            throw err;
-          }
-          if (parsed && typeof parsed === "object") {
-            if ("from" in parsed) {
-              const err = new Error("invalid_message: Caller-supplied 'from' is rejected; sender is bound by the session host.");
-              err.code = "invalid_message";
-              throw err;
-            }
-            parsed.from = senderId;
-          }
-          processedLines.push(JSON.stringify(parsed));
-        }
-        const outbound = processedLines.join("\n") + "\n";
-        return sendManaged ? sendManaged(ep, absolutePath, outbound) : writeSocketOneWay(absolutePath, outbound);
+        // The caller's text is content, never a transport frame. The host
+        // constructs one sender envelope even for multiline, JSON-looking or
+        // scalar-looking text.
+        const { frame } = managedFrame({ senderId, content });
+        return sendManaged ? sendManaged(ep, absolutePath, frame) : writeSocketOneWay(absolutePath, frame);
       }
       if (isReservedPath && await isReservedPath(absolutePath)) {
         const error = new Error("IPC directories cannot contain files written by write.");

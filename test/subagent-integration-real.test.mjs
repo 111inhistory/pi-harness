@@ -42,16 +42,19 @@ for (const [name, description] of [
   ["namespace", "Capability discovers one Subagent namespace and activates all members while preserving native write prompts and Socket backend"],
   ["namespace-reverse", "Subagent and Capability compose in the reverse extension load order"],
   ["namespace-leaf", "Depth 2 Capability accepts the loaded two-tool Subagent namespace"],
-  ["capability-missing", "missing Subagent dependency fails before any internal model request"],
+  ["capability-missing", "Capability internal execution does not require public Subagent tools"],
   ["external-socket", "native write to a non-Subagent socket preserves payload and cannot affect a same-named stopping Agent"],
-  // These sender regressions exercise the newly revised contract, not a claimed implementation fix.
+  // These scenarios check host framing and native queue semantics through the loaded extensions.
   ["upstream-main", "native child write reaches Main's receiving socket and wakes Main with the real sender"],
   ["upstream-main-steer", "child-to-Main delivery steers a busy root without starting a concurrent turn"],
+  ["upstream-main-clear", "clearing an ordinary native steer cannot swallow the later host terminal notification"],
+  ["upstream-main-esc", "after native abort and queue restoration the later terminal notification can wake Main"],
   ["upstream-main-reload", "Main receiving endpoint is rebuilt after reload and a revived child can deliver upstream"],
   ["upstream-parent", "Depth 2 write reaches and revives only its direct parent, preserving the leaf sender"],
-  ["sender-wire", "native child write identifies its owner in the outbound NDJSON"],
+  ["upstream-parent-steer", "a busy Subagent parent receives progress and terminal as one native host steer"],
+  ["sender-wire", "plain-text child write is framed with the actual sender by the host"],
   ["sender-context", "the receiver preserves a native child sender rather than relabeling it as Main"],
-  ["sender-reserved", "managed socket write rejects caller-supplied sender identity"],
+  ["sender-reserved", "JSON literal message text cannot impersonate another sender"],
   ["revive", "explicit revival retains the listener, appends both histories and does not reroute"],
   ["history", "real native tool execution retains complete clean history and the final summary"],
   ["steer", "a running actor consumes native steering exactly once in the same Job"],
@@ -60,7 +63,7 @@ for (const [name, description] of [
   ["inherited", "Inherited captures signed native context, tools warnings, identity and thinking without routing"],
   ["stopping", "native socket write rejects stopping and only revives after actual model exit"],
   ["stop-history", "cancellation flushes readable history before reporting the native run as stopped"],
-  ["failure", "native model failure writes a summary and notifies without waking the root"],
+  ["failure", "native model failure writes a summary and wakes Main through a typed steer notice"],
   ["reload", "durable reload restores socket listeners and continues the checkpointed conversation"],
 ]) {
   test(`offline SDK: ${description}`, { timeout: 10000 }, (t) => scenario(t, name));

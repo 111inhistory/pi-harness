@@ -5,14 +5,19 @@
  * Runtime owns cancellation, Budget verdicts, finalization and terminal publication.
  * Messages received before an adapter is ready are buffered as startup input.
  * Explicit messages revive idle actors on their retained context or original seed.
- * Checkpoints restore actor identity and native history bounds without replaying work.
+ * Lifecycle events (`onEvent`) let the adapter persist topology and outcomes;
+ * `restoreState` rebuilds them without replaying work.
  */
 
 import { randomUUID } from "node:crypto";
 
 import { createJobBudget } from "./job-budget.mjs";
+import {
+  adjudicateTerminal,
+  firstEffectiveStopping,
+  terminalNotification,
+} from "./subagent/lifecycle.ts";
 import { getAgentSocketPath } from "./subagent-socket.mjs";
-import { getSubagentHistoryPaths } from "./subagent-history.mjs";
 
 const MAX_AGENT_DEPTH = 2;
 const MAX_ACTIVE_CHILDREN = 4;
@@ -21,25 +26,19 @@ const MAX_MESSAGE_CHARS = 32768;
 const MAIN_ACTOR_ID = "Main";
 const BROADCAST_TARGET = "all";
 
-const STATE_VERSION = 1;
-
 const BATCH_FIELDS = new Set(["context", "tasks"]);
 const TASK_FIELDS = new Set(["name", "task", "inheritContext"]);
 
 /** A live Job occupies its actor and its parent's active-child allowance. */
 const LIVE_STATUSES = new Set(["running", "stopping", "finalizing"]);
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
-const JOB_STATUSES = new Set([...LIVE_STATUSES, ...TERMINAL_STATUSES]);
 
-// Agent and Job ids carry a per-runtime namespace, so `agent://agent_..` and
-// `hub cancel job_..` addresses from before a reload (or from an earlier
-// process) can never reach an unrelated later actor. `all` and `Main` can
-// never match a generated id, which keeps the broadcast target and the root
-// actor outside the resolvable actor space.
-const AGENT_ID_PATTERN = /^(agent_[0-9a-z]+-[0-9]+|sub_[0-9a-zA-Z_]+)$/;
-const JOB_ID_PATTERN = /^(job_[0-9a-z]+-[0-9]+|job_sub_[0-9a-zA-Z_]+|sub_[0-9a-zA-Z_]+(#r[0-9]+)?)$/;
-const REF_PATTERN = /^(agent|history):\/\/((?!all$|Main$)(agent_[0-9a-z]+-[0-9]+|sub_[0-9a-zA-Z_]+))$/;
-const PROTOCOL_URI_PATTERN = /^(agent|history):\/\/(.*)$/;
+// Actor ids are `sub_NN` under Main and `<parent>_NN` below it; a Job id is its
+// actor id for the first round and `<actor>#rN` for continuations. `all` and
+// `Main` can never match, which keeps the broadcast target and the root actor
+// outside the resolvable actor space.
+const AGENT_ID_PATTERN = /^sub_[0-9a-zA-Z_]+$/;
+const JOB_ID_PATTERN = /^sub_[0-9a-zA-Z_]+(#r[0-9]+)?$/;
 
 /** Terminal state of a Job that was still live when the process went away. */
 const INTERRUPTED = Object.freeze({
@@ -117,19 +116,14 @@ function publicBudgetSnapshot(budget) {
 }
 
 /**
- * Normalized native history bounds of one Job.
- *
- * `startEntryId` is the append-only entry the Job started after and
- * `endEntryId` the entry its transcript currently reaches. A value that does
- * not have that shape is ignored instead of being stored half-formed, so a
- * malformed adapter report can never make a restored transcript unreadable in
- * a way the reader cannot see.
+ * Normalized native history bounds of one Job: the entry it started after and
+ * the entry its transcript reaches. A malformed adapter report is ignored
+ * instead of being stored half-formed.
  */
 function historyBounds(value) {
   if (!isPlainObject(value)) return null;
   const start = value.startEntryId ?? null;
   const end = value.endEntryId ?? null;
-  if (start === null && end === null) return null;
   if (start !== null && typeof start !== "string") return null;
   if (end !== null && typeof end !== "string") return null;
   return { startEntryId: start, endEntryId: end };
@@ -140,33 +134,8 @@ function stateError(message, detail = {}) {
 }
 
 /**
- * Parse a model-facing subagent reference.
- *
- * @param {unknown} ref
- * @returns {{ kind: "result" | "history", agentId: string } | null}
- */
-export function parseRef(ref) {
-  if (typeof ref !== "string") return null;
-  const match = REF_PATTERN.exec(ref.trim());
-  if (!match) return null;
-  return { kind: match[1] === "agent" ? "result" : "history", agentId: match[2] };
-}
-
-export function resultRef(agentId) {
-  return `agent://${agentId}`;
-}
-
-export function historyRef(agentId) {
-  return `history://${agentId}`;
-}
-
-/**
- * Canonicalize an actor id.
- *
- * `Main` is the reserved root actor and is matched case-insensitively; every
- * other actor is a stable `agent_<token>-<n>` id. The reserved broadcast
- * target `all` is not an actor and never resolves here. Returns null for
- * anything else.
+ * Canonicalize an actor id: `Main` (case-insensitive) or a generated subagent
+ * id. The broadcast target `all` is not an actor. Returns null for anything else.
  */
 export function canonicalActorId(value) {
   if (typeof value !== "string") return null;
@@ -176,104 +145,39 @@ export function canonicalActorId(value) {
 }
 
 /**
- * Parse a protocol URI owned by this runtime:
- *
- *   agent://                 list visible actors
- *   agent://all              write-only broadcast to the sender's direct children
- *   agent://<agentId>        immutable initial result of that agent
- *   history://<agentId>      conversation spanning every Job of that agent
- *
- * Returns null for any other URI; callers reject those explicitly instead of
- * falling back to filesystem paths.
- */
-export function parseProtocolRef(uri) {
-  if (typeof uri !== "string") return null;
-  const match = PROTOCOL_URI_PATTERN.exec(uri.trim());
-  if (!match) return null;
-  const [, scheme, rest] = match;
-  if (scheme === "history") {
-    const agentId = canonicalActorId(rest);
-    return agentId === null ? null : { scheme, kind: "history", agentId };
-  }
-  if (rest === "") return { scheme, kind: "list", agentId: null };
-  if (rest.toLowerCase() === BROADCAST_TARGET) return { scheme, kind: "broadcast", agentId: null };
-  const agentId = canonicalActorId(rest);
-  return agentId === null ? null : { scheme, kind: "result", agentId };
-}
-
-/**
- * Deep-copy captured native session entries for one consumer.
+ * Deep-copy captured native session entries for one in-memory consumer.
  *
  * `SessionManager.inMemory(cwd, {}, entries)` keeps the array it is handed and
- * appends its own entries to it, so two sessions built from one snapshot would
- * share append-only storage and one session identity. Every consumer therefore
- * gets its own structural copy with a fresh session id on the copied header.
- * Native blocks are cloned verbatim — thinking with its provider signature,
- * tool calls, tool results, custom entries — never flattened or rebuilt, and
- * the snapshot passed in is never mutated.
+ * appends to it, so two sessions built from one snapshot would share storage
+ * and one session identity. Every consumer gets its own copy with a fresh
+ * session id on the copied header; native blocks are cloned verbatim.
  */
 export function copyInheritedEntries(entries) {
   if (!Array.isArray(entries)) return entries;
-  let copy;
-  try {
-    copy = structuredClone(entries);
-  } catch {
-    // Session entries are plain data, so this is the theoretical path only;
-    // the array is still private to the consumer, which is what matters.
-    copy = [...entries];
-  }
-  let replaced = false;
-  for (let index = 0; index < copy.length; index += 1) {
-    const entry = copy[index];
-    if (replaced || entry?.type !== "session" || typeof entry.id !== "string") continue;
-    replaced = true;
-    copy[index] = { ...entry, id: randomUUID() };
-  }
+  const copy = structuredClone(entries);
+  const header = copy.findIndex((entry) => entry?.type === "session" && typeof entry.id === "string");
+  if (header !== -1) copy[header] = { ...copy[header], id: randomUUID() };
   return copy;
 }
 
 /**
- * One child's copy of a captured context snapshot: the same capture instant,
- * its own top-level object and its own native entries.
+ * The persisted form of a Job spec. A continuation is persisted by name only
+ * (its seed is the actor's first spec), and captured conversation entries are
+ * never persisted: a durable adapter stores them in the actor's own session.
  */
-function snapshotForChild(snapshot) {
-  if (!isPlainObject(snapshot)) return snapshot;
-  const copy = { ...snapshot };
-  if (Array.isArray(snapshot.entries)) copy.entries = copyInheritedEntries(snapshot.entries);
-  return copy;
-}
-
-/**
- * Copy one Job spec for the persisted state.
- *
- * The spec itself is small, but an inherited-context snapshot is not: its
- * native entries are shared with the live spec instead of being deep-copied
- * on every checkpoint. The adapter replaces the whole `inheritedContext`
- * value with a native seed-session reference, so sharing the entries array is
- * safe as long as it is never mutated in place — which nothing here does.
- */
-function exportSpec(spec) {
-  if (!isPlainObject(spec)) return spec;
-  if (spec.kind === "continuation") {
-    return { kind: "continuation", name: spec.name ?? null, seed: spec.seed === null ? null : exportSpec(spec.seed) };
-  }
+function persistedSpec(spec) {
+  if (spec.kind === "continuation") return { kind: "continuation", name: spec.name ?? null };
   const copy = { ...spec };
-  copy.name = spec.name ?? null;
-  copy.context = spec.context ?? null;
-  copy.inheritContext = spec.inheritContext === true;
-  copy.inheritedContext = isPlainObject(spec.inheritedContext)
-    ? { ...spec.inheritedContext, entries: spec.inheritedContext.entries ?? null }
-    : null;
+  if (isPlainObject(spec.inheritedContext)) {
+    const { entries: _entries, ...meta } = spec.inheritedContext;
+    copy.inheritedContext = meta;
+  }
   return copy;
 }
 
 /**
- * Non-fatal warnings that belong to a Job's entry.
- *
- * The adapter records them on the inherited-context snapshot it captures (for
- * example the inherited tools that Pi's public API cannot transplant), so they
- * survive persistence and revival. An initial Job carries the snapshot itself;
- * a continuation carries it as its seed.
+ * Non-fatal warnings that belong to a Job's entry (for example inherited tools
+ * that Pi's public API cannot transplant). A continuation reads its seed's.
  */
 function inheritedWarnings(spec) {
   const warnings = spec?.inheritedContext?.warnings ?? spec?.seed?.inheritedContext?.warnings;
@@ -288,241 +192,88 @@ function completionText(job) {
   if (job.error !== null && job.error !== undefined) {
     lines.push(`Error: [${job.error.code}] ${job.error.message}`);
   }
-  const historyPaths = getSubagentHistoryPaths(job.agentId);
-  lines.push(`Summary: ${historyPaths.summary}`, `Clean JSONL: ${historyPaths.cleanJsonl}`);
   return lines.join("\n");
 }
 
-function requireStateString(value, where) {
-  if (typeof value !== "string" || value === "") throw stateError(`${where} must be a non-empty string.`);
-  return value;
-}
-
 /**
- * Validate and normalize a persisted state into registry structures.
+ * Validate a restored registry description (see `restoreState`).
  *
- * Persisted state is a trust boundary: it is read back from a native session
- * file that may be truncated, hand-edited or written by another build, so
- * every id, link, status and reference is checked before it reaches the
- * registry. Reserved actor names (`Main`, `all`) can never be restored.
+ * The description is folded from the adapter's own events, but it is still
+ * read back from a file that may be truncated or hand-edited, so topology and
+ * ownership are checked before anything reaches the registry.
  */
 function planRestore(state) {
-  if (!isPlainObject(state)) throw stateError("The persisted subagent state must be an object.");
-  if (state.version !== STATE_VERSION) {
-    throw stateError(
-      `Unsupported subagent state version ${describe(state.version)}; this runtime restores version ${STATE_VERSION} only.`,
-      { version: state.version ?? null },
-    );
+  if (!isPlainObject(state) || !Array.isArray(state.actors) || !Array.isArray(state.jobs)) {
+    throw stateError("The restored subagent state must carry actor and Job lists.");
   }
-  const sequences = state.sequences;
-  if (!isPlainObject(sequences) || !Number.isInteger(sequences.agent) || sequences.agent < 0 || !Number.isInteger(sequences.job) || sequences.job < 0) {
-    throw stateError("state.sequences must carry non-negative integer agent and job counters.");
+  const actors = new Map();
+  for (const raw of state.actors) {
+    const agentId = raw?.agentId;
+    if (typeof agentId !== "string" || !AGENT_ID_PATTERN.test(agentId)) throw stateError(`${describe(agentId)} is not a subagent actor id.`);
+    if (actors.has(agentId)) throw stateError(`Actor ${agentId} appears more than once.`);
+    if (!Number.isInteger(raw.depth) || raw.depth < 1 || raw.depth > MAX_AGENT_DEPTH) {
+      throw stateError(`Actor ${agentId} has an invalid depth.`, { agentId });
+    }
+    actors.set(agentId, {
+      agentId,
+      name: typeof raw.name === "string" ? raw.name : null,
+      parentAgentId: raw.parentAgentId ?? null,
+      depth: raw.depth,
+      status: "idle",
+      jobIds: [],
+      pending: [],
+      stoppedOrder: Number.isSafeInteger(raw.stoppedOrder) ? raw.stoppedOrder : 0,
+    });
   }
-  if (!Array.isArray(state.actors)) throw stateError("state.actors must be an array.");
-  if (!Array.isArray(state.jobs)) throw stateError("state.jobs must be an array.");
-  if (state.pending !== undefined && !Array.isArray(state.pending)) throw stateError("state.pending must be an array when present.");
-
-  const actors = [];
-  const actorsById = new Map();
-  for (const [index, raw] of state.actors.entries()) {
-    const where = `state.actors[${index}]`;
-    if (!isPlainObject(raw)) throw stateError(`${where} must be an object.`);
-    const agentId = raw.agentId;
-    if (typeof agentId !== "string" || !AGENT_ID_PATTERN.test(agentId)) {
-      const reserved =
-        typeof agentId === "string" &&
-        (agentId.trim().toLowerCase() === BROADCAST_TARGET || agentId.trim().toLowerCase() === MAIN_ACTOR_ID.toLowerCase());
-      throw stateError(
-        reserved
-          ? `${where}.agentId ${describe(agentId)} is a reserved actor name and can never be restored.`
-          : `${where}.agentId ${describe(agentId)} is not a subagent actor id.`,
-      );
-    }
-    if (actorsById.has(agentId)) throw stateError(`${where}.agentId ${agentId} appears more than once.`);
-    const name = raw.name === undefined || raw.name === null ? null : requireStateString(raw.name, `${where}.name`);
-    const depth = raw.depth;
-    if (!Number.isInteger(depth) || depth < 1 || depth > MAX_AGENT_DEPTH) {
-      throw stateError(`${where}.depth must be an integer between 1 and ${MAX_AGENT_DEPTH}.`, { agentId });
-    }
-    const parentAgentId = raw.parentAgentId ?? null;
-    if (parentAgentId !== null && typeof parentAgentId !== "string") {
-      throw stateError(`${where}.parentAgentId must be an actor id or null.`, { agentId });
-    }
-    if (!Array.isArray(raw.jobIds) || raw.jobIds.some((jobId) => typeof jobId !== "string" || jobId === "")) {
-      throw stateError(`${where}.jobIds must be an array of Job ids.`, { agentId });
-    }
-    if (raw.stoppedOrder !== undefined && (!Number.isSafeInteger(raw.stoppedOrder) || raw.stoppedOrder < 0)) {
-      throw stateError(`${where}.stoppedOrder must be a non-negative integer.`);
-    }
-    const actor = { agentId, name, parentAgentId, depth, jobIds: [...raw.jobIds], pending: [], stoppedOrder: raw.stoppedOrder ?? 0 };
-    actors.push(actor);
-    actorsById.set(agentId, actor);
-  }
-  for (const actor of actors) {
-    if (actor.parentAgentId === null) {
-      if (actor.depth !== 1) throw stateError(`Actor ${actor.agentId} has no parent but depth ${actor.depth}.`, { agentId: actor.agentId });
-      continue;
-    }
-    const parent = actorsById.get(actor.parentAgentId);
-    if (parent === undefined) {
-      throw stateError(`Actor ${actor.agentId} names unknown parent ${actor.parentAgentId}.`, { agentId: actor.agentId });
-    }
-    if (parent.agentId === actor.agentId) throw stateError(`Actor ${actor.agentId} is its own parent.`, { agentId: actor.agentId });
-    if (parent.depth + 1 !== actor.depth) {
-      throw stateError(`Actor ${actor.agentId} declares depth ${actor.depth} under a depth-${parent.depth} parent.`, { agentId: actor.agentId });
-    }
+  for (const actor of actors.values()) {
+    const parent = actor.parentAgentId === null ? null : actors.get(actor.parentAgentId);
+    if (parent === undefined) throw stateError(`Actor ${actor.agentId} names unknown parent ${actor.parentAgentId}.`);
+    if ((parent?.depth ?? 0) + 1 !== actor.depth) throw stateError(`Actor ${actor.agentId} has an inconsistent depth.`);
   }
 
-  const rawJobs = [];
-  const jobsById = new Map();
-  for (const [index, raw] of state.jobs.entries()) {
-    const where = `state.jobs[${index}]`;
-    if (!isPlainObject(raw)) throw stateError(`${where} must be an object.`);
-    const jobId = raw.jobId;
-    if (typeof jobId !== "string" || !JOB_ID_PATTERN.test(jobId)) throw stateError(`${where}.jobId ${describe(jobId)} is not a Job id.`);
-    if (jobsById.has(jobId)) throw stateError(`${where}.jobId ${jobId} appears more than once.`);
-    if (typeof raw.agentId !== "string" || !actorsById.has(raw.agentId)) {
-      throw stateError(`${where}.agentId ${describe(raw.agentId)} is not a registered actor.`, { jobId });
+  const jobs = new Map();
+  for (const raw of state.jobs) {
+    const jobId = raw?.jobId;
+    if (typeof jobId !== "string" || !JOB_ID_PATTERN.test(jobId)) throw stateError(`${describe(jobId)} is not a Job id.`);
+    if (jobs.has(jobId)) throw stateError(`Job ${jobId} appears more than once.`);
+    const actor = actors.get(raw.agentId);
+    if (actor === undefined) throw stateError(`Job ${jobId} belongs to unknown actor ${describe(raw.agentId)}.`);
+    if (!isPlainObject(raw.spec)) throw stateError(`Job ${jobId} has no spec.`);
+    const previous = raw.continuedFromJobId ?? null;
+    if (previous !== null && jobs.get(previous)?.agentId !== actor.agentId) {
+      throw stateError(`Job ${jobId} continues ${describe(previous)}, which is not an earlier Job of its actor.`);
     }
-    const status = raw.status;
-    if (typeof status !== "string" || !JOB_STATUSES.has(status)) {
-      throw stateError(`${where}.status ${describe(status)} is not a Job status.`, { jobId });
-    }
-    const createdBy = raw.createdBy;
-    if (typeof createdBy !== "string" || (createdBy !== MAIN_ACTOR_ID && !actorsById.has(createdBy))) {
-      throw stateError(`${where}.createdBy ${describe(createdBy)} is not the root actor or a registered actor.`, { jobId });
-    }
-    if (raw.index !== undefined && raw.index !== null && (!Number.isInteger(raw.index) || raw.index < 0)) {
-      throw stateError(`${where}.index must be a non-negative integer or null.`, { jobId });
-    }
-    if (raw.origin !== undefined && raw.origin !== null && !isPlainObject(raw.origin)) {
-      throw stateError(`${where}.origin must be an object or null.`, { jobId });
-    }
-    if (raw.error !== undefined && raw.error !== null && !isPlainObject(raw.error)) {
-      throw stateError(`${where}.error must be an object or null.`, { jobId });
-    }
-    if (!isPlainObject(raw.budget)) throw stateError(`${where}.budget must be the public Budget snapshot.`, { jobId });
-    const interrupted = LIVE_STATUSES.has(status);
-    const job = {
+    const end = isPlainObject(raw.end) ? raw.end : null;
+    const spec =
+      raw.spec.kind === "continuation"
+        ? { kind: "continuation", name: raw.spec.name ?? null, seed: jobs.get(actor.jobIds[0])?.spec ?? null }
+        : raw.spec;
+    jobs.set(jobId, {
       jobId,
-      agentId: raw.agentId,
+      agentId: actor.agentId,
       index: raw.index ?? null,
-      spec: restoreSpec(raw.spec, where),
+      spec,
       origin: raw.origin ?? null,
-      createdBy,
-      continuedFromJobId: raw.continuedFromJobId ?? null,
-      status: interrupted ? "failed" : status,
-      result: raw.result === undefined ? null : cloneValue(raw.result),
-      error: interrupted
-        ? { ...INTERRUPTED }
-        : raw.error === undefined || raw.error === null
-          ? null
-          : cloneValue(raw.error),
-      history: historyBounds(raw.history),
-      messages: null,
+      createdBy: raw.createdBy ?? MAIN_ACTOR_ID,
+      continuedFromJobId: previous,
+      status: end === null ? "failed" : terminalStatus(end.status, jobId),
+      result: end?.result ?? null,
+      error: end === null ? { ...INTERRUPTED } : (end.error ?? null),
+      history: historyBounds(end === null ? raw.history : end.history),
+      interrupted: end === null,
       budget: null,
-      // A restored Job is terminal, so its Budget snapshot is reporting only:
-      // it is preserved verbatim except that nothing can still be running.
-      budgetSnapshot: { ...cloneValue(raw.budget), running: false },
+      // A restored Job is terminal; its Budget snapshot is reporting only.
+      budgetSnapshot: end?.budget ? { ...end.budget, running: false } : null,
       stopping: null,
-    };
-    rawJobs.push(job);
-    jobsById.set(jobId, job);
+    });
+    actor.jobIds.push(jobId);
   }
-
-  const jobIdsByActor = new Map();
-  for (const job of rawJobs) {
-    const ids = jobIdsByActor.get(job.agentId) ?? [];
-    ids.push(job.jobId);
-    jobIdsByActor.set(job.agentId, ids);
-  }
-  for (const actor of actors) {
-    const declared = actor.jobIds;
-    if (declared.length === 0) throw stateError(`Actor ${actor.agentId} has no Jobs; an actor always owns at least its first Job.`, { agentId: actor.agentId });
-    if (new Set(declared).size !== declared.length) throw stateError(`Actor ${actor.agentId} lists one Job more than once.`, { agentId: actor.agentId });
-    const owned = jobIdsByActor.get(actor.agentId) ?? [];
-    if (owned.length !== declared.length || owned.some((jobId) => !declared.includes(jobId))) {
-      throw stateError(
-        `Actor ${actor.agentId} and its Jobs disagree about which Jobs belong to it (actor: ${declared.join(", ") || "none"}; jobs: ${owned.join(", ") || "none"}).`,
-        { agentId: actor.agentId },
-      );
-    }
-  }
-  for (const job of rawJobs) {
-    if (job.continuedFromJobId === null) continue;
-    const previous = jobsById.get(job.continuedFromJobId);
-    if (previous === undefined) {
-      throw stateError(`Job ${job.jobId} continues unknown Job ${job.continuedFromJobId}.`, { jobId: job.jobId });
-    }
-    if (previous.agentId !== job.agentId) {
-      throw stateError(`Job ${job.jobId} continues a Job of another actor.`, { jobId: job.jobId });
-    }
-  }
-
-  const pendingEntries = state.pending ?? [];
-  for (const [index, raw] of pendingEntries.entries()) {
-    const where = `state.pending[${index}]`;
-    if (!isPlainObject(raw)) throw stateError(`${where} must be an object.`);
-    const actor = typeof raw.agentId === "string" ? actorsById.get(raw.agentId) : undefined;
-    if (actor === undefined) throw stateError(`${where}.agentId ${describe(raw.agentId)} is not a registered actor.`);
-    if (!Array.isArray(raw.messages)) throw stateError(`${where}.messages must be an array.`);
-    for (const [position, envelope] of raw.messages.entries()) {
-      actor.pending.push(restoreEnvelope(envelope, `${where}.messages[${position}]`, actorsById));
-    }
-  }
-
-  // Jobs keep the exact order they were persisted in: the registry map's
-  // order is the global Job creation chronology, and a reload must not
-  // regroup it by actor. Each actor's own `jobIds` carry its per-actor order
-  // for result and history reads.
-  return { sequences: { agent: sequences.agent, job: sequences.job }, actors, jobs: rawJobs };
+  return { actors: [...actors.values()], jobs: [...jobs.values()] };
 }
 
-function restoreSpec(value, where) {
-  if (!isPlainObject(value)) throw stateError(`${where}.spec must be an object.`, { jobId: where });
-  const name = value.name === undefined || value.name === null ? null : requireStateString(value.name, `${where}.spec.name`);
-  if (value.kind === "continuation") {
-    const seed = value.seed === undefined || value.seed === null ? null : restoreSpec(value.seed, `${where}.spec.seed`);
-    return { kind: "continuation", name, seed };
-  }
-  if (typeof value.task !== "string" || value.task.trim() === "") {
-    throw stateError(`${where}.spec.task must be a non-empty string.`);
-  }
-  if (value.context !== undefined && value.context !== null && typeof value.context !== "string") {
-    throw stateError(`${where}.spec.context must be a string or null.`);
-  }
-  if (value.inheritedContext !== undefined && value.inheritedContext !== null && !isPlainObject(value.inheritedContext)) {
-    throw stateError(`${where}.spec.inheritedContext must be an object or null.`);
-  }
-  return {
-    name,
-    task: value.task,
-    context: value.context ?? null,
-    inheritContext: value.inheritContext === true,
-    inheritedContext: value.inheritedContext ?? null,
-  };
-}
-
-function restoreEnvelope(value, where, actorsById) {
-  if (!isPlainObject(value)) throw stateError(`${where} must be an object.`);
-  const type = value.type;
-  if (type !== "message" && type !== "completion") throw stateError(`${where}.type ${describe(type)} is not a notification type.`);
-  const from = canonicalActorId(value.from);
-  if (from === null || (from !== MAIN_ACTOR_ID && !actorsById.has(from))) {
-    throw stateError(`${where}.from ${describe(value.from)} is not a registered actor.`);
-  }
-  const content = value.content;
-  if (typeof content !== "string" || content.trim() === "") throw stateError(`${where}.content must be a non-empty message body.`);
-  if (content.length > MAX_MESSAGE_CHARS) {
-    throw stateError(`${where}.content is longer than ${MAX_MESSAGE_CHARS} characters.`, { length: content.length });
-  }
-  if (type === "message") return { type, from, content };
-  const envelope = { type, from, content };
-  if (value.jobId !== undefined && value.jobId !== null) envelope.jobId = requireStateString(value.jobId, `${where}.jobId`);
-  if (value.status !== undefined && value.status !== null) envelope.status = requireStateString(value.status, `${where}.status`);
-  if (value.resultRef !== undefined && value.resultRef !== null) envelope.resultRef = requireStateString(value.resultRef, `${where}.resultRef`);
-  if (value.historyRef !== undefined && value.historyRef !== null) envelope.historyRef = requireStateString(value.historyRef, `${where}.historyRef`);
-  return envelope;
+function terminalStatus(status, jobId) {
+  if (!TERMINAL_STATUSES.has(status)) throw stateError(`Job ${jobId} ends with non-terminal status ${describe(status)}.`);
+  return status;
 }
 
 /**
@@ -536,13 +287,13 @@ export class SubagentRuntime {
   #startJob;
   #deliverMessage;
   #deliverToMain;
-  #onStateChange;
-  #readHistory;
+  #onEvent;
   #allowInherited;
   #socketDir;
-  #historyDir;
-  #isAgentIdTaken;
-  #onAgentIdAllocated;
+  #historyPaths;
+  #prepareInherited;
+  #isIdTaken;
+  #onIdAllocated;
   #finalizeJob;
 
   #agents = new Map();
@@ -551,11 +302,8 @@ export class SubagentRuntime {
   #handles = new Map();
   #lifetimeTimers = new Map();
   #waiters = new Map();
-  #agentSequence = 0;
-  #jobSequence = 0;
-  #idToken;
-  #checkpointDepth = 0;
-  #checkpointPending = false;
+  #childSequences = new Map();
+  #transitionDepth = 0;
   #completions = [];
 
   constructor(options = {}) {
@@ -566,13 +314,13 @@ export class SubagentRuntime {
       startJob,
       deliverMessage,
       deliverToMain,
-      onStateChange,
-      readHistory,
+      onEvent,
       allowInherited = true,
       socketDir,
-      historyDir,
-      isAgentIdTaken,
-      onAgentIdAllocated,
+      historyPaths,
+      prepareInherited,
+      isIdTaken,
+      onIdAllocated,
       finalizeJob,
     } = options;
 
@@ -588,47 +336,37 @@ export class SubagentRuntime {
     if (deliverToMain !== undefined && typeof deliverToMain !== "function") {
       throw new SubagentError("invalid_options", "deliverToMain must be a function when provided.");
     }
-    if (onStateChange !== undefined && typeof onStateChange !== "function") {
-      throw new SubagentError("invalid_options", "onStateChange must be a function when provided.");
-    }
-    if (readHistory !== undefined && typeof readHistory !== "function") {
-      throw new SubagentError("invalid_options", "readHistory must be a function when provided.");
+    for (const [name, value] of Object.entries({ onEvent, historyPaths, prepareInherited, isIdTaken, onIdAllocated })) {
+      if (value !== undefined && typeof value !== "function") {
+        throw new SubagentError("invalid_options", `${name} must be a function when provided.`);
+      }
     }
     if (typeof allowInherited !== "boolean") {
       throw new SubagentError("invalid_options", "allowInherited must be a boolean.");
-    }
-    if (onAgentIdAllocated !== undefined && typeof onAgentIdAllocated !== "function") {
-      throw new SubagentError("invalid_options", "onAgentIdAllocated must be a function when provided.");
     }
 
     this.#startJob = startJob;
     this.#deliverMessage = deliverMessage ?? null;
     this.#deliverToMain = deliverToMain ?? null;
-    this.#onStateChange = onStateChange ?? null;
-    this.#readHistory = readHistory ?? null;
+    this.#onEvent = onEvent ?? null;
     this.#allowInherited = allowInherited;
     this.#socketDir = socketDir;
-    this.#historyDir = historyDir;
-    this.#isAgentIdTaken = typeof isAgentIdTaken === "function" ? isAgentIdTaken : null;
-    this.#onAgentIdAllocated = typeof onAgentIdAllocated === "function" ? onAgentIdAllocated : null;
+    this.#historyPaths = historyPaths ?? null;
+    this.#prepareInherited = prepareInherited ?? null;
+    this.#isIdTaken = isIdTaken ?? null;
+    this.#onIdAllocated = onIdAllocated ?? null;
     this.#finalizeJob = typeof finalizeJob === "function" ? finalizeJob : null;
-    this.#idToken = randomUUID().replaceAll("-", "");
   }
 
-  /** Create subagents batch according to the public contract (returns unified id, socket, history). */
+  /** Create a subagent batch according to the public contract (id, status, socket). */
   create(batch, options = {}) {
     const res = this.task(batch, options);
     const result = {
       items: res.items.map((item) => {
-        const historyPaths = getSubagentHistoryPaths(item.agentId, this.#historyDir);
         const mapped = {
           id: item.agentId,
           status: item.status,
           socket: getAgentSocketPath(item.agentId, this.#socketDir),
-          history: {
-            summary: historyPaths.summary,
-            cleanJsonl: historyPaths.cleanJsonl,
-          },
         };
         if (item.warnings !== undefined) {
           mapped.warnings = item.warnings;
@@ -658,15 +396,10 @@ export class SubagentRuntime {
     if (!isPlainObject(options)) {
       throw new SubagentError("invalid_options", "task options must be an object.");
     }
-    return this.#withCheckpoint(() => {
-      const entries = this.#planBatch(batch, options);
-      for (const { spec } of entries) {
-        const assignment = spec.context?.trim() ? `# Batch context\n\n${spec.context}\n\n# Task\n\n${spec.task}` : spec.task;
-        const chars = Array.from(assignment);
-        if (chars.filter((char) => char.codePointAt(0) > 127).length > chars.length * 0.2) {
-          throw new SubagentError("assignment_language", "Write subagent requirements in English.");
-        }
-      }
+    return this.#withTransition(() => {
+      const { entries, snapshot } = this.#planBatch(batch, options);
+      // Task language is not a lifecycle decision. The router may prefer
+      // English, but the runtime no longer rejects a batch by character ratio.
       const parentAgentId = options.parentAgentId ?? null;
       const parent = parentAgentId === null ? null : this.#agents.get(parentAgentId);
       if (parentAgentId !== null && !parent) {
@@ -693,10 +426,25 @@ export class SubagentRuntime {
           },
         );
       }
+      const agentIds = entries.map(() => this.#allocateAgentId(parentAgentId));
+      // Same batch, same parent context instant. Each inherited child gets its
+      // own conversation: materialized by the adapter, or an in-memory copy.
+      entries.forEach((entry, position) => {
+        if (!entry.spec.inheritContext) return;
+        const agentId = agentIds[position];
+        try {
+          entry.spec.inheritedContext =
+            this.#prepareInherited === null
+              ? { ...snapshot, entries: copyInheritedEntries(snapshot.entries) }
+              : this.#prepareInherited({ agentId, snapshot });
+        } catch (error) {
+          throw new SubagentError("inherited_snapshot_failed", `Failed to store the calling context for ${agentId}: ${errorMessage(error)}`);
+        }
+      });
       const registered = [];
 
-      for (const entry of entries) {
-        const agentId = this.#allocateAgentId(parentAgentId, depth);
+      for (const [position, entry] of entries.entries()) {
+        const agentId = agentIds[position];
         const agent = { agentId, name: entry.spec.name, parentAgentId, depth, status: "running", jobIds: [], pending: [] };
         this.#agents.set(agentId, agent);
         registered.push(
@@ -717,7 +465,7 @@ export class SubagentRuntime {
 
   /** Register one more Job for an existing agent. */
   #createJob(agent, { index = null, spec, origin = null, createdBy, continuedFromJobId = null }) {
-    const jobId = continuedFromJobId ? `${agent.agentId}#r${agent.jobIds.length + 1}` : agent.agentId;
+    const jobId = continuedFromJobId === null ? agent.agentId : this.#allocateJobId(agent);
     const job = {
       jobId,
       agentId: agent.agentId,
@@ -728,10 +476,8 @@ export class SubagentRuntime {
       status: "running",
       result: null,
       error: null,
-      // Native entry bounds of the transcript this Job recorded, and the live
-      // in-memory messages; only the bounds are ever persisted.
+      // Native entry bounds of the transcript this Job recorded.
       history: null,
-      messages: null,
       budget: createJobBudget({ depth: agent.depth, jobId }),
       budgetSnapshot: null,
       continuedFromJobId,
@@ -741,10 +487,39 @@ export class SubagentRuntime {
     };
     agent.jobIds.push(jobId);
     this.#jobs.set(jobId, job);
+    this.#emit({
+      type: "job",
+      jobId,
+      agentId: agent.agentId,
+      ...(agent.jobIds.length === 1 ? { actor: { name: agent.name, parentAgentId: agent.parentAgentId, depth: agent.depth } } : {}),
+      index,
+      createdBy,
+      continuedFromJobId,
+      spec: persistedSpec(spec),
+      origin: cloneValue(origin),
+    });
     this.#scheduleLifetime(job);
     this.#refreshAgent(agent.agentId);
-    this.#markDirty();
     return job;
+  }
+
+  /** A continuation's id: never one used before, on any branch of this root. */
+  #allocateJobId(agent) {
+    let round = agent.jobIds.length + 1;
+    while (this.#jobs.has(`${agent.agentId}#r${round}`) || this.#isIdTaken?.(`${agent.agentId}#r${round}`)) round += 1;
+    const jobId = `${agent.agentId}#r${round}`;
+    this.#onIdAllocated?.(jobId);
+    return jobId;
+  }
+
+  #emit(event) {
+    if (this.#onEvent === null) return;
+    try {
+      this.#onEvent(event);
+    } catch {
+      // A settled transition cannot be rolled back and a storage failure must
+      // never change a Job outcome; the adapter reports persistence errors.
+    }
   }
 
   /** Agent-level snapshot; job status is reported by jobs(), not here. */
@@ -805,17 +580,16 @@ export class SubagentRuntime {
       const liveJob = this.#liveJobOf(agent);
       const currentStatus = liveJob ? liveJob.status : (agent.status === "idle" ? "stopped" : agent.status);
       if (filter?.status !== undefined && filter.status !== currentStatus && filter.status !== agent.status) continue;
-      const historyPaths = getSubagentHistoryPaths(agent.agentId, this.#historyDir);
-      items.push({
+      const item = {
         id: agent.agentId,
         parentId: agent.parentAgentId ?? "Main",
         status: currentStatus,
         socket: getAgentSocketPath(agent.agentId, this.#socketDir),
-        history: {
-          summary: historyPaths.summary,
-          cleanJsonl: historyPaths.cleanJsonl,
-        },
-      });
+      };
+      const latest = [...agent.jobIds].reverse().map((jobId) => this.#jobs.get(jobId)).find((job) => TERMINAL_STATUSES.has(job.status));
+      const history = latest === undefined ? null : this.#historyPaths?.(latest.jobId);
+      if (history) item.history = { jobId: latest.jobId, ...history };
+      items.push(item);
     }
     return { items };
   }
@@ -900,39 +674,6 @@ export class SubagentRuntime {
   }
 
   /**
-   * Resolve an `agent://` or `history://` protocol reference to a structured
-   * payload. A restored Job's transcript is resolved from native storage
-   * through the synchronous `readHistory` hook, so this stays a plain read.
-   */
-  readProtocol(uri, options = {}) {
-    const parsed = parseProtocolRef(uri);
-    if (parsed === null) {
-      throw new SubagentError(
-        "invalid_ref",
-        `${describe(uri)} is not a supported subagent reference; use agent://, agent://<agentId> or history://<agentId>.`,
-      );
-    }
-    if (parsed.kind === "broadcast") {
-      throw new SubagentError(
-        "invalid_ref",
-        "agent://all is a write-only broadcast target; it has no result or history to read.",
-        { agentId: null },
-      );
-    }
-    if (parsed.kind === "list") {
-      return { ref: "agent://", kind: "list", actors: this.#actorList(options.mainStatus) };
-    }
-    if (parsed.agentId === MAIN_ACTOR_ID) {
-      throw new SubagentError(
-        "invalid_ref",
-        "Main is the root actor and has no agent result or history; use agent:// to list actors.",
-        { agentId: MAIN_ACTOR_ID },
-      );
-    }
-    return parsed.kind === "result" ? this.readRef(resultRef(parsed.agentId)) : this.readRef(historyRef(parsed.agentId));
-  }
-
-  /**
    * Cancel one job without touching any other job or agent.
    *
    * A Job whose adapter has not started goes directly through finalization.
@@ -942,7 +683,7 @@ export class SubagentRuntime {
    * @returns {{ ok: boolean, reason?: string, job: object }}
    */
   cancelJob(jobId) {
-    return this.#withCheckpoint(() => {
+    return this.#withTransition(() => {
       const job = this.#requireJob(jobId);
 
       if (TERMINAL_STATUSES.has(job.status)) {
@@ -994,65 +735,6 @@ export class SubagentRuntime {
     return { ok: true, id, status: agent.status };
   }
 
-  /**
-   * Resolve agent:// or history:// to repeatable content. A running job has a
-   * result only once it finishes, but its history can already be read. A job
-   * whose transcript lives only in native storage is resolved through the
-   * `readHistory` hook. `jobs()` never reads a transcript, so it stays a
-   * synchronous poll.
-   */
-  readRef(ref) {
-    const parsed = parseRef(ref);
-    if (!parsed) {
-      throw new SubagentError("invalid_ref", `${describe(ref)} is not a subagent reference; use agent://<agentId> or history://<agentId>.`);
-    }
-    const agent = this.#agents.get(parsed.agentId);
-    if (!agent) {
-      throw new SubagentError("unknown_agent", `No subagent registered as ${parsed.agentId}.`);
-    }
-    const jobs = agent.jobIds.map((jobId) => this.#jobs.get(jobId));
-    const initial = jobs[0];
-    const latest = jobs[jobs.length - 1];
-    if (parsed.kind === "result") {
-      // The initial result is immutable: continuation Jobs and their messages
-      // are read through history://, never by rewriting this payload.
-      return {
-        ref: resultRef(agent.agentId),
-        kind: "result",
-        agentId: agent.agentId,
-        jobId: initial.jobId,
-        name: initial.spec.name,
-        status: initial.status,
-        result: cloneValue(initial.result),
-        error: cloneValue(initial.error),
-      };
-    }
-    const messages = [];
-    const jobViews = [];
-    for (const job of jobs) {
-      const transcript = this.#jobTranscript(job);
-      if (transcript !== null) messages.push(...transcript);
-      jobViews.push({
-        jobId: job.jobId,
-        kind: job.continuedFromJobId === null ? "initial" : "continuation",
-        status: job.status,
-        continuedFromJobId: job.continuedFromJobId,
-        messageCount: transcript === null ? 0 : transcript.length,
-      });
-    }
-    return {
-      ref: historyRef(agent.agentId),
-      kind: "history",
-      agentId: agent.agentId,
-      jobId: latest.jobId,
-      name: latest.spec.name,
-      status: latest.status,
-      agentStatus: agent.status,
-      messages,
-      jobs: jobViews,
-    };
-  }
-
   /** Resolves once the job reaches a terminal status (or immediately if it already has). */
   jobDone(jobId) {
     const job = this.#requireJob(jobId);
@@ -1065,131 +747,65 @@ export class SubagentRuntime {
   }
 
   /**
-   * JSON-safe snapshot of the registry for persistence (state version 1).
-   *
-   * Transcripts and inherited-context entries are not copied; see the module
-   * header for the exact shape and for what the adapter must substitute before
-   * the state is written to native storage.
+   * Everything a readable view of one terminal Job needs. Null for a Job that
+   * is unknown or still live.
    */
-  exportState() {
-    const actors = [];
-    for (const agent of this.#agents.values()) {
-      actors.push({
-        agentId: agent.agentId,
-        name: agent.name,
-        parentAgentId: agent.parentAgentId,
-        depth: agent.depth,
-        jobIds: [...agent.jobIds],
-        stoppedOrder: agent.stoppedOrder ?? 0,
-      });
-    }
-    const jobs = [];
-    for (const job of this.#jobs.values()) {
-      jobs.push({
-        jobId: job.jobId,
-        agentId: job.agentId,
-        index: job.index,
-        status: job.status,
-        createdBy: job.createdBy,
-        continuedFromJobId: job.continuedFromJobId,
-        spec: exportSpec(job.spec),
-        origin: cloneValue(job.origin),
-        error: cloneValue(job.error),
-        result: cloneValue(job.result),
-        history: job.history === null ? null : { ...job.history },
-        budget: this.#budgetView(job),
-      });
-    }
-    const pending = [];
-    for (const agent of this.#agents.values()) {
-      if (agent.pending.length === 0) continue;
-      pending.push({ agentId: agent.agentId, messages: agent.pending.map((envelope) => cloneValue(envelope)) });
-    }
+  jobRecord(jobId) {
+    const job = this.#jobs.get(jobId);
+    if (job === undefined || !TERMINAL_STATUSES.has(job.status)) return null;
+    const agent = this.#agents.get(job.agentId);
+    const seed = job.spec.kind === "continuation" ? job.spec.seed : job.spec;
     return {
-      version: STATE_VERSION,
-      sequences: { agent: this.#agentSequence, job: this.#jobSequence },
-      actors,
-      jobs,
-      pending,
+      jobId: job.jobId,
+      agentId: job.agentId,
+      name: agent?.name ?? null,
+      round: Math.max(1, (agent?.jobIds.indexOf(job.jobId) ?? 0) + 1),
+      task: job.spec.kind === "continuation" ? null : (seed?.task ?? null),
+      status: job.status,
+      error: cloneValue(job.error),
+      result: job.result,
+      history: job.history === null ? null : { ...job.history },
+      budget: this.#budgetView(job),
+      previousJobId: job.continuedFromJobId,
     };
   }
 
   /**
-   * Restore a state produced by exportState().
+   * Restore a registry folded from persisted events into a fresh runtime.
    *
-   * The runtime must be fresh: a reload builds a new runtime and restores into
-   * it, so no live Job can be overwritten by an older snapshot. Every restored
-   * actor and Job keeps its original id and its immutable terminal result,
-   * while a Job that was still running, stopping or finalizing becomes `failed`
-   * with `interrupted` — it is never re-run and never re-notified.
+   * `state.actors` carry `{ agentId, name, parentAgentId, depth, stoppedOrder }`;
+   * `state.jobs` carry the registered Job fields plus `end` (the terminal
+   * outcome, or null) in creation order. A Job without an end was live when
+   * its process went away: it becomes `failed` with `interrupted`, is never
+   * re-run or re-notified, and its terminal event is emitted now (with the
+   * `history` bounds the adapter sealed for it).
    *
    * @returns {{ actors: number, jobs: number, interrupted: string[] }}
    */
   restoreState(state) {
     if (this.#agents.size > 0 || this.#jobs.size > 0) {
-      throw new SubagentError(
-        "invalid_state",
-        "restoreState requires a fresh runtime; this runtime already has registered actors or jobs.",
-      );
+      throw new SubagentError("invalid_state", "restoreState requires a fresh runtime; this runtime already has registered actors or jobs.");
     }
     const restored = planRestore(state);
-    return this.#withCheckpoint(() => {
-      this.#agentSequence = restored.sequences.agent;
-      this.#jobSequence = restored.sequences.job;
-      this.#syncSequencesFromActors(restored.actors);
-      for (const actor of restored.actors) {
-        this.#agents.set(actor.agentId, {
-          agentId: actor.agentId,
-          name: actor.name,
-          parentAgentId: actor.parentAgentId,
-          depth: actor.depth,
-          status: "idle",
-          jobIds: actor.jobIds,
-          stoppedOrder: actor.stoppedOrder,
-          pending: actor.pending,
-        });
-      }
-      this.#stoppedSequence = Math.max(0, ...restored.actors.map((actor) => actor.stoppedOrder));
-      const interrupted = [];
-      for (const job of restored.jobs) {
-        this.#jobs.set(job.jobId, job);
-        if (job.error?.code === INTERRUPTED.code) interrupted.push(job.jobId);
-      }
-      const interruptedActors = new Set(interrupted.map((jobId) => this.#jobs.get(jobId).agentId));
-      for (const agent of this.#agents.values()) {
-        if (interruptedActors.has(agent.agentId)) agent.status = "running";
-        this.#refreshAgent(agent.agentId);
-      }
-      this.#markDirty();
-      return { actors: this.#agents.size, jobs: this.#jobs.size, interrupted };
-    });
-  }
-
-  /** Publish the current state to the persistence hook, never during polls. */
-  #markDirty() {
-    this.#checkpointPending = true;
-    if (this.#checkpointDepth > 0) return;
-    this.#flushTransition();
-  }
-
-  /**
-   * Deliver one settled transition: the state checkpoint first, then the
-   * terminal notifications it produced. Both are skipped when nothing is
-   * pending, so a runtime without a persistence hook pays nothing.
-   */
-  #flushTransition() {
-    if (this.#checkpointPending) {
-      this.#checkpointPending = false;
-      if (this.#onStateChange !== null) {
-        try {
-          this.#onStateChange(this.exportState());
-        } catch {
-          // A settled transition cannot be rolled back and a storage failure
-          // must never change a Job outcome; the adapter reports persistence
-          // errors.
-        }
-      }
+    for (const actor of restored.actors) {
+      this.#agents.set(actor.agentId, actor);
+      this.#noteSequence(actor);
     }
+    this.#stoppedSequence = Math.max(0, ...restored.actors.map((actor) => actor.stoppedOrder));
+    const interrupted = [];
+    for (const job of restored.jobs) {
+      const { interrupted: wasLive, ...record } = job;
+      this.#jobs.set(job.jobId, record);
+      if (!wasLive) continue;
+      interrupted.push(job.jobId);
+      this.#emitEnd(record);
+    }
+    for (const agent of this.#agents.values()) this.#refreshAgent(agent.agentId);
+    return { actors: this.#agents.size, jobs: this.#jobs.size, interrupted };
+  }
+
+  /** Terminal notifications wait until the transition that produced them settled. */
+  #flushCompletions() {
     if (this.#completions.length === 0) return;
     const jobs = this.#completions;
     this.#completions = [];
@@ -1197,17 +813,17 @@ export class SubagentRuntime {
   }
 
   /**
-   * Coalesce the checkpoints of one synchronous transition: a batch that
-   * registers four Jobs, starts them and fails one of them emits one state
-   * (and its one notification) instead of seven.
+   * Coalesce one synchronous transition: a batch that registers four Jobs,
+   * starts them and fails one of them publishes its notification once the
+   * whole batch is registered.
    */
-  #withCheckpoint(run) {
-    this.#checkpointDepth += 1;
+  #withTransition(run) {
+    this.#transitionDepth += 1;
     try {
       return run();
     } finally {
-      this.#checkpointDepth -= 1;
-      if (this.#checkpointDepth === 0) this.#flushTransition();
+      this.#transitionDepth -= 1;
+      if (this.#transitionDepth === 0) this.#flushCompletions();
     }
   }
 
@@ -1230,8 +846,7 @@ export class SubagentRuntime {
     const context = batch.context ?? null;
     const entries = batch.tasks.map((raw, index) => this.#planTask(raw, index, context));
 
-    const inherited = entries.filter((entry) => entry.spec.inheritContext);
-    if (inherited.length > 0) {
+    if (entries.some((entry) => entry.spec.inheritContext)) {
       const allowInherited = options.allowInherited ?? this.#allowInherited;
       if (!allowInherited) {
         throw new SubagentError(
@@ -1249,16 +864,13 @@ export class SubagentRuntime {
       } catch (error) {
         throw new SubagentError("inherited_snapshot_failed", `Failed to snapshot the calling context: ${errorMessage(error)}`);
       }
-      if (snapshot === undefined || snapshot === null) {
+      if (!isPlainObject(snapshot)) {
         throw new SubagentError("inherited_snapshot_failed", "The inherited-context snapshot function returned no snapshot.");
       }
-      // Same batch, same parent context instant — but each child gets its own
-      // copy of the captured entries, so sibling sessions can neither share
-      // append-only storage nor reuse one session identity.
-      for (const entry of inherited) entry.spec.inheritedContext = snapshotForChild(snapshot);
+      return { entries, snapshot };
     }
 
-    return entries;
+    return { entries, snapshot: null };
   }
 
   #planTask(raw, index, context) {
@@ -1298,7 +910,7 @@ export class SubagentRuntime {
   }
 
   #start(job) {
-    return this.#withCheckpoint(() => {
+    return this.#withTransition(() => {
       if (job.status !== "running" || this.#handles.has(job.jobId)) return;
 
       const budgetStart = job.budget.startActive();
@@ -1357,20 +969,19 @@ export class SubagentRuntime {
       continuedFromJobId: job.continuedFromJobId,
       pendingMessages: pending.map((envelope) => cloneValue(envelope)),
       checkBudget: () => this.#checkBudget(job),
-      recordHistory: (messages, history) => this.#recordHistory(job, messages, history),
+      recordStart: (startEntryId) => this.#recordStart(job, startEntryId),
     };
   }
 
-  #recordHistory(job, messages, history) {
-    if (TERMINAL_STATUSES.has(job.status)) return;
-    if (Array.isArray(messages)) job.messages = cloneValue(messages);
-    // Only the bounds are persisted, so a checkpoint is emitted exactly when
-    // they move: a turn that adds no new native entry does not rewrite state.
-    const bounds = historyBounds(history);
-    if (bounds !== null && (job.history === null || job.history.startEntryId !== bounds.startEntryId || job.history.endEntryId !== bounds.endEntryId)) {
-      job.history = bounds;
-      this.#markDirty();
-    }
+  /**
+   * The native entry this Job's transcript starts after, recorded once before
+   * its first prompt. A process that dies mid-run is recovered from here.
+   */
+  #recordStart(job, startEntryId) {
+    if (job.history !== null || TERMINAL_STATUSES.has(job.status)) return;
+    if (startEntryId !== null && typeof startEntryId !== "string") return;
+    job.history = { startEntryId, endEntryId: null };
+    this.#emit({ type: "job-start", jobId: job.jobId, startEntryId });
   }
 
   #beginFinalization(job, execution = {}) {
@@ -1381,30 +992,18 @@ export class SubagentRuntime {
     this.#lifetimeTimers.delete(job.jobId);
 
     const payload = isPlainObject(execution) ? execution : {};
-    if (Array.isArray(payload.messages)) job.messages = cloneValue(payload.messages);
     if (payload.result !== undefined && payload.result !== null) job.result = cloneValue(payload.result);
     const bounds = historyBounds(payload.history);
     if (bounds !== null) job.history = bounds;
 
-    let status;
-    let error = null;
-    if (job.stopping !== null) {
-      ({ status, error } = job.stopping);
-    } else {
-      const terminal = job.budget.check().terminal;
-      if (terminal?.status === "failed") {
-        status = "failed";
-        error = publicBudgetError(terminal.error);
-      } else if (payload.error || payload.status === "failed") {
-        status = "failed";
-        error = errorInfo(payload.error, "job_failed");
-      } else if (payload.status === "cancelled") {
-        status = "cancelled";
-        error = { code: "cancelled", message: "Job cancelled." };
-      } else {
-        status = "completed";
-      }
-    }
+    const budgetTerminal = job.budget.check().terminal;
+    const decision = adjudicateTerminal({
+      stopping: job.stopping,
+      budgetError: budgetTerminal?.status === "failed" ? publicBudgetError(budgetTerminal.error) : null,
+      executionError: payload.error ? errorInfo(payload.error, "job_failed") : null,
+      executionStatus: typeof payload.status === "string" ? payload.status : null,
+    });
+    const { status, error } = decision;
     job.budget.terminate({ reason: status === "completed" ? "model_final" : status, error });
 
     const agent = this.#agents.get(job.agentId);
@@ -1412,7 +1011,8 @@ export class SubagentRuntime {
       status,
       error,
       result: job.result,
-      messages: job.messages,
+      // Passed through to finalization only; the runtime keeps no transcript.
+      transcript: Array.isArray(payload.transcript) ? payload.transcript : null,
       history: job.history,
       budget: job.budget.snapshot(),
       jobId: job.jobId,
@@ -1443,7 +1043,7 @@ export class SubagentRuntime {
   }
 
   #checkBudget(job) {
-    return this.#withCheckpoint(() => {
+    return this.#withTransition(() => {
       const verdict = job.budget.check();
       if (verdict.terminal?.status !== "failed") return verdict;
       const error = publicBudgetError(verdict.terminal.error);
@@ -1477,10 +1077,11 @@ export class SubagentRuntime {
    * one terminal payload from there.
    */
   #beginStopping(job, status, error) {
-    return this.#withCheckpoint(() => {
-      job.stopping = { status, error };
+    return this.#withTransition(() => {
+      // The first effective reason wins: a later cancellation or Budget
+      // observation cannot rewrite what this generation is stopping for.
+      job.stopping = firstEffectiveStopping(job.stopping, { status, error });
       job.status = "stopping";
-      this.#markDirty();
       clearTimeout(this.#lifetimeTimers.get(job.jobId));
       this.#lifetimeTimers.delete(job.jobId);
       if (this.#handles.has(job.jobId)) this.#cancelHandle(job);
@@ -1503,7 +1104,7 @@ export class SubagentRuntime {
   }
 
   #end(job, terminalInfo) {
-    this.#withCheckpoint(() => {
+    this.#withTransition(() => {
       clearTimeout(this.#lifetimeTimers.get(job.jobId));
       this.#lifetimeTimers.delete(job.jobId);
       job.status = terminalInfo.status;
@@ -1515,12 +1116,27 @@ export class SubagentRuntime {
         job.historyError = terminalInfo.historyError;
       }
       this.#handles.delete(job.jobId);
-      this.#markDirty();
+      this.#emitEnd(job);
       this.#settle(job);
     });
     // The notification is the only thing a terminal transition sends outwards;
-    // it is attempted after the state of this transition is persisted.
+    // it is attempted after the terminal event of this transition was emitted.
     this.#queueCompletion(job);
+  }
+
+  #emitEnd(job) {
+    const event = {
+      type: "job-end",
+      jobId: job.jobId,
+      status: job.status,
+      error: cloneValue(job.error),
+      result: job.result,
+      history: job.history === null ? null : { ...job.history },
+      budget: this.#budgetView(job),
+    };
+    if (job.historyState !== undefined) event.historyState = job.historyState;
+    if (job.historyError !== undefined) event.historyError = job.historyError;
+    this.#emit(event);
   }
 
   #settle(job) {
@@ -1541,30 +1157,35 @@ export class SubagentRuntime {
    * failure here can never change the Job's outcome.
    */
   #queueCompletion(job) {
+    if (job.completionQueued === true) return;
+    job.completionQueued = true;
     this.#completions.push(job);
-    if (this.#checkpointDepth > 0) return;
-    this.#flushTransition();
+    if (this.#transitionDepth > 0) return;
+    this.#flushCompletions();
   }
 
   #notifyTerminal(job) {
-    if (job.status !== "failed" && job.status !== "error") {
-      return;
-    }
-    const creator = job.createdBy;
+    // Completed, cancelled and failed rounds all publish one typed terminal
+    // event. The delivery coordinator decides how it merges or wakes; the
+    // runtime never suppresses a normal completion.
+    if (!TERMINAL_STATUSES.has(job.status)) return;
+    const sourceAgent = this.#agents.get(job.agentId);
+    // Host notifications follow topology, not whoever revived this round. A
+    // peer that wakes an idle agent must not steal its terminal notice from
+    // the direct parent. `createdBy` stays the audit field on the Job.
+    const creator = sourceAgent?.parentAgentId ?? MAIN_ACTOR_ID;
     if (typeof creator !== "string") return;
-    const historyPaths = getSubagentHistoryPaths(job.agentId, this.#historyDir);
-    const envelope = {
-      type: "notification",
-      subagentId: job.agentId,
+    const round = Math.max(1, (sourceAgent?.jobIds.indexOf(job.jobId) ?? 0) + 1);
+    const envelope = terminalNotification({
+      agentId: job.agentId,
+      jobId: job.jobId,
+      round,
       name: job.spec?.name,
       status: job.status,
       content: completionText(job),
-      error: job.error ? String(job.error.message || job.error) : null,
-      history: {
-        summary: historyPaths.summary,
-        cleanJsonl: historyPaths.cleanJsonl,
-      },
-    };
+      error: job.error ?? null,
+      history: this.#historyPaths?.(job.jobId) ?? null,
+    });
     if (creator === MAIN_ACTOR_ID) {
       if (this.#deliverToMain === null) return;
       const deliverToMain = this.#deliverToMain;
@@ -1607,6 +1228,34 @@ export class SubagentRuntime {
         maxActiveChildren: MAX_ACTIVE_CHILDREN,
       },
     );
+  }
+
+  /**
+   * Wake an idle agent with one host terminal notification.
+   *
+   * This uses the same admission and Budget path as an explicit write: the
+   * notification becomes the trigger of a normal continuation Job, so a
+   * completed child can wake a stopped/idle parent without a second execution
+   * orchestrator. A busy agent is not woken here; the caller appends the notice
+   * to its current conversation instead.
+   *
+   * @param {string} agentId
+   * @param {object} envelope host-owned terminal notification
+   * @returns {{ woken: boolean, jobId?: string, reason?: string }}
+   */
+  reviveWithNotification(agentId, envelope) {
+    const agent = this.#agents.get(agentId);
+    if (agent === undefined) return { woken: false, reason: "unknown_agent" };
+    return this.#withTransition(() => {
+      const live = this.#liveJobOf(agent);
+      if (live !== null) return { woken: false, reason: live.status };
+      const refusal = this.#reviveRefusal(agent);
+      if (refusal !== null) return { woken: false, reason: refusal.code };
+      agent.pending.push(cloneValue(envelope));
+      const revived = this.#scheduleContinuation(agent, agent.parentAgentId ?? MAIN_ACTOR_ID);
+      this.#start(revived);
+      return { woken: true, jobId: revived.jobId };
+    });
   }
 
   /**
@@ -1678,7 +1327,19 @@ export class SubagentRuntime {
 
   /** The typed envelope of one explicit write; `type` and `from` are host-owned. */
   #messageEnvelope(plan) {
-    return { type: "message", from: plan.from, content: plan.content };
+    const envelope = { type: "message", from: plan.from, content: plan.content };
+    // A Subagent message belongs to its sender's current execution round. The
+    // host can therefore merge it with that round's terminal notice without
+    // asking the caller to supply transport or run identity.
+    if (plan.from !== MAIN_ACTOR_ID) {
+      const source = this.#agents.get(plan.from);
+      const live = source === undefined ? null : this.#liveJobOf(source);
+      if (live !== null) {
+        envelope.jobId = live.jobId;
+        envelope.round = Math.max(1, source.jobIds.indexOf(live.jobId) + 1);
+      }
+    }
+    return envelope;
   }
 
   async #sendToMain(plan) {
@@ -1723,7 +1384,6 @@ export class SubagentRuntime {
       if (!this.#handles.has(live.jobId)) {
         // A registered sibling has not entered its adapter yet; buffer its initial input.
         agent.pending.push(this.#messageEnvelope(plan));
-        this.#markDirty();
         return this.#receipt(plan, live.jobId);
       }
 
@@ -1808,117 +1468,25 @@ export class SubagentRuntime {
     return null;
   }
 
-  /**
-   * The transcript of one Job: the live in-memory messages, or the native
-   * entries a restored Job resolves through the readHistory hook. A Job that
-   * never recorded anything contributes nothing.
-   */
-  #jobTranscript(job) {
-    if (job.messages !== null) return cloneValue(job.messages);
-    if (job.history === null) return null;
-    if (this.#readHistory === null) {
-      throw new SubagentError(
-        "history_unavailable",
-        `The transcript of Job ${job.jobId} is not in memory and this runtime has no readHistory hook to resolve it.`,
-        { jobId: job.jobId, agentId: job.agentId },
-      );
-    }
-    let resolved;
-    try {
-      resolved = this.#readHistory({ agentId: job.agentId, jobId: job.jobId, history: { ...job.history } });
-    } catch (error) {
-      throw new SubagentError(
-        "history_unavailable",
-        `Could not read the native transcript of Job ${job.jobId}: ${errorMessage(error)}`,
-        { jobId: job.jobId, agentId: job.agentId },
-      );
-    }
-    if (resolved !== null && typeof resolved === "object" && typeof resolved.then === "function") {
-      throw new SubagentError(
-        "history_unavailable",
-        `The readHistory hook must return the transcript synchronously; Job ${job.jobId} cannot be read through a pending read.`,
-        { jobId: job.jobId, agentId: job.agentId },
-      );
-    }
-    if (!Array.isArray(resolved)) {
-      throw new SubagentError("history_unavailable", `The readHistory hook returned no transcript for Job ${job.jobId}.`, {
-        jobId: job.jobId,
-        agentId: job.agentId,
-      });
-    }
-    return resolved;
-  }
-
-  #childSequences = new Map();
-
-  #allocateAgentId(parentAgentId, depth) {
-    const parentKey = (!parentAgentId || parentAgentId === MAIN_ACTOR_ID)
-      ? "Main"
-      : parentAgentId;
-    const prefix = parentKey === "Main" ? "sub" : parentKey;
-    let currentSeq = (this.#childSequences.get(parentKey) ?? 0) + 1;
-    let candidate = `${prefix}_${String(currentSeq).padStart(2, "0")}`;
-    while (this.#agents.has(candidate) || (this.#isAgentIdTaken && this.#isAgentIdTaken(candidate))) {
-      currentSeq += 1;
-      candidate = `${prefix}_${String(currentSeq).padStart(2, "0")}`;
-    }
-    this.#childSequences.set(parentKey, currentSeq);
-    if (this.#onAgentIdAllocated) {
-      this.#onAgentIdAllocated(candidate);
-    }
+  #allocateAgentId(parentAgentId) {
+    const prefix = parentAgentId ?? "sub";
+    let sequence = this.#childSequences.get(prefix) ?? 0;
+    let candidate;
+    do {
+      sequence += 1;
+      candidate = `${prefix}_${String(sequence).padStart(2, "0")}`;
+    } while (this.#agents.has(candidate) || this.#isIdTaken?.(candidate));
+    this.#childSequences.set(prefix, sequence);
+    this.#onIdAllocated?.(candidate);
     return candidate;
   }
 
-  #syncSequencesFromActors(actors) {
-    if (!Array.isArray(actors)) return;
-    for (const actor of actors) {
-      if (!actor || typeof actor.agentId !== "string") continue;
-      const parentKey = (!actor.parentAgentId || actor.parentAgentId === MAIN_ACTOR_ID) ? "Main" : actor.parentAgentId;
-      const prefix = parentKey === "Main" ? "sub" : parentKey;
-      if (actor.agentId.startsWith(prefix + "_")) {
-        const numStr = actor.agentId.slice(prefix.length + 1);
-        const num = parseInt(numStr, 10);
-        if (!Number.isNaN(num)) {
-          const current = this.#childSequences.get(parentKey) ?? 0;
-          if (num > current) {
-            this.#childSequences.set(parentKey, num);
-          }
-        }
-      }
-    }
-  }
-
-  #nextId(kind) {
-    if (kind === "agent") {
-      this.#agentSequence += 1;
-      return `agent_${this.#idToken}-${String(this.#agentSequence).padStart(2, "0")}`;
-    }
-    this.#jobSequence += 1;
-    return `job_${this.#idToken}-${String(this.#jobSequence).padStart(2, "0")}`;
-  }
-
-  #actorList(mainStatus) {
-    const actors = [
-      {
-        agentId: MAIN_ACTOR_ID,
-        name: MAIN_ACTOR_ID,
-        parentAgentId: null,
-        depth: 0,
-        status: typeof mainStatus === "string" ? mainStatus : "running",
-        root: true,
-      },
-    ];
-    for (const agent of this.#agents.values()) {
-      actors.push({
-        agentId: agent.agentId,
-        name: agent.name,
-        parentAgentId: agent.parentAgentId,
-        depth: agent.depth,
-        status: agent.status,
-        root: false,
-      });
-    }
-    return actors;
+  /** Keep generated ids ahead of every restored actor. */
+  #noteSequence(actor) {
+    const prefix = actor.parentAgentId ?? "sub";
+    if (!actor.agentId.startsWith(`${prefix}_`)) return;
+    const sequence = Number.parseInt(actor.agentId.slice(prefix.length + 1), 10);
+    if (Number.isSafeInteger(sequence) && sequence > (this.#childSequences.get(prefix) ?? 0)) this.#childSequences.set(prefix, sequence);
   }
 
   #requireJob(jobId) {
@@ -1940,8 +1508,6 @@ export class SubagentRuntime {
       status: job.status,
     };
     if (TERMINAL_STATUSES.has(job.status)) {
-      item.resultRef = resultRef(job.agentId);
-      item.historyRef = historyRef(job.agentId);
       if (job.historyState !== undefined) item.historyState = job.historyState;
       if (job.historyError !== undefined && job.historyError !== null) item.historyError = job.historyError;
     }
@@ -1962,8 +1528,6 @@ export class SubagentRuntime {
     };
     if (job.stopping !== null) view.stopping = job.stopping.status;
     if (TERMINAL_STATUSES.has(job.status)) {
-      view.resultRef = resultRef(job.agentId);
-      view.historyRef = historyRef(job.agentId);
       if (job.historyState !== undefined) view.historyState = job.historyState;
       if (job.historyError !== undefined && job.historyError !== null) view.historyError = job.historyError;
     }

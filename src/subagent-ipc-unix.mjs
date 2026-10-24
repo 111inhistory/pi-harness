@@ -1,5 +1,5 @@
-import fs from "node:fs";
 import path from "node:path";
+import { prepareEndpoint, releaseEndpoint } from "./ipc/endpoint.ts";
 
 export const unixIpc = {
   agentPath: (id, root) => path.join(root, `${id}.sock`),
@@ -7,15 +7,19 @@ export const unixIpc = {
   key: (address) => path.resolve(address),
   isEndpoint: (address) => typeof address === "string" && address.endsWith(".sock"),
   isNamespace: () => false,
+  /**
+   * Safe preparation lives in the ownership helper. It refuses symlinks,
+   * ordinary files, foreign or active endpoints instead of unlinking them.
+   */
   prepare(address) {
-    fs.mkdirSync(path.dirname(address), { recursive: true });
-    this.remove(address);
+    return prepareEndpoint({ address });
   },
-  remove(address) {
-    try {
-      if (fs.existsSync(address)) fs.unlinkSync(address);
-    } catch {
-      // Preserve the existing best-effort Unix socket cleanup.
-    }
+  /**
+   * Removal requires the identity recorded when this process bound the
+   * endpoint. Without it there is no proof of ownership, so nothing is removed.
+   */
+  remove(address, identity) {
+    if (identity === undefined || identity === null) return { removed: false, reason: "not_owned" };
+    return releaseEndpoint({ address, namespace: false, identity, staleRemoved: false });
   },
 };

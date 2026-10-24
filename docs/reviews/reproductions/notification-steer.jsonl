@@ -1,0 +1,3 @@
+{"scenario":"typed_notification_during_tool","additionalRequests":1,"customType":"agent-completion","detailsPreserved":true,"historyEntries":1,"errors":[]}
+{"scenario":"typed_notification_while_idle","additionalRequests":1,"customType":"agent-completion","detailsPreserved":true,"historyEntries":2,"errors":[]}
+{"scenario":"typed_notification_after_abort_settled","additionalRequests":1,"detailsPreserved":true,"historyEntries":3,"errors":[]}

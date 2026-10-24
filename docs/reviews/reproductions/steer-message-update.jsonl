@@ -1,0 +1,7 @@
+{"scenario":"mutate_original_payload","modelCalls":2,"history":[{"content":"CHILD_PROGRESS","status":"running","batchId":"batch-1"}],"diskMatches":true,"errors":[]}
+{"scenario":"mutate_peeked_reference","modelCalls":2,"history":[{"content":"CHILD_PROGRESS\nCHILD_COMPLETED","status":"completed","batchId":"batch-1"}],"diskMatches":true,"errors":[]}
+{"scenario":"message_end_while_queued","modelCalls":2,"history":[{"content":"CHILD_PROGRESS\nCHILD_COMPLETED","status":"completed","batchId":"batch-1"}],"diskMatches":true,"errors":[]}
+{"scenario":"message_end_after_drain","historyBeforeUpdate":0,"queueBeforeUpdate":0,"modelCalls":2,"history":[{"content":"CHILD_PROGRESS\nCHILD_COMPLETED","status":"completed","batchId":"batch-1"}],"diskMatches":true,"errors":[]}
+{"scenario":"message_end_preserves_other_messages","modelCalls":3,"history":[{"content":"CHILD_PROGRESS\nCHILD_COMPLETED","status":"completed","batchId":"batch-1"}],"diskMatches":true,"unrelatedMessagePreserved":true,"errors":[]}
+{"scenario":"later_handler_await_gap","historyBeforeUpdate":0,"queueBeforeUpdate":0,"modelCalls":2,"history":[{"content":"CHILD_PROGRESS","status":"running","batchId":"batch-1"}],"diskMatches":true,"errors":[]}
+{"scenario":"after_history_new_batch","modelCalls":3,"history":[{"content":"CHILD_PROGRESS","status":"running","batchId":"batch-1"},{"content":"CHILD_COMPLETED","status":"completed","batchId":"batch-2"}],"diskMatches":true,"errors":[]}

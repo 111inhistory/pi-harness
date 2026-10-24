@@ -78,7 +78,7 @@ function createFakeBroker({ results = {}, failures = {} } = {}) {
  * assistant messages (the adapter's post-prompt report).
  */
 async function runDiscovery({ broker, behavior, signal, openBehavior } = {}) {
-  const state = { requests: [], prompts: [], aborts: 0, disposals: 0 };
+  const state = { requests: [], prompts: [], aborts: 0, disposals: 0, disposedBeforeReturn: false };
   const openSession = async (request) => {
     state.requests.push(request);
     if (openBehavior) await openBehavior({ state, request });
@@ -91,7 +91,10 @@ async function runDiscovery({ broker, behavior, signal, openBehavior } = {}) {
       abort() {
         state.aborts += 1;
       },
-      dispose() {
+      async dispose() {
+        // The shared Subagent execution dispose awaits its cleanups before it
+        // resolves; discovery must await it before returning a result.
+        await new Promise((resolve) => setTimeout(resolve, 1));
         state.disposals += 1;
       },
     };
@@ -112,8 +115,9 @@ test("discovery supplies guidance-aware instructions and returns selected skill 
     async behavior({ request, text }) {
       assert.match(request.instructions, /rules, preferences, fixed background/);
       assert.match(request.instructions, /Generic tool descriptions do not replace/);
-      assert.match(request.instructions, /Search local resources first/);
+      assert.match(request.instructions, /Search local resources\. Remote package search is disabled/);
       assert.match(text, /guidance and tool refs together/);
+      assert.match(text, /Remote search is disabled in this run/);
       const search = request.customTools.find((tool) => tool.name === CAPABILITY_SEARCH_TOOL_NAME);
       const submit = request.customTools.find((tool) => tool.name === SUBMIT_RESULT_TOOL_NAME);
       assert.match(search.description, /reusable guidance and missing operations/);
@@ -126,6 +130,7 @@ test("discovery supplies guidance-aware instructions and returns selected skill 
   assert.deepEqual(result.skills, [SKILL_HIT]);
   assert.deepEqual(result.tools, [TOOL_HIT]);
   assert.deepEqual(result.remote, [], "unselected candidates are not returned");
+  assert.deepEqual(result.coverage, { local: "searched", remote: "not_searched" });
   assert.equal(state.prompts.length, 1);
   assert.equal(state.disposals, 1);
 });
@@ -167,8 +172,12 @@ test("invented refs are rejected and accepted refs return their real metadata", 
       assert.equal(rejected.isError, true);
       assert.match(rejected.content[0].text, /skill:\/\/made-up/);
 
+      const remoteRejected = await submit.execute("call-2b", { refs: [TOOL_HIT.ref, REMOTE_HIT.ref] });
+      assert.equal(remoteRejected.isError, true, "remote candidates are not selectable while approval is unsupported");
+      assert.match(remoteRejected.content[0].text, /npm:@example\/pi-tools@1\.2\.3/);
+
       const accepted = await submit.execute("call-3", {
-        refs: [SKILL_HIT.ref, ` ${TOOL_HIT.ref} `, REMOTE_HIT.ref, TOOL_HIT.ref],
+        refs: [SKILL_HIT.ref, ` ${TOOL_HIT.ref} `, TOOL_HIT.ref],
       });
       assert.equal(accepted.isError, undefined);
       assert.equal(accepted.terminate, true);
@@ -194,15 +203,13 @@ test("invented refs are rejected and accepted refs return their real metadata", 
     result.skills.map((hit) => hit.ref),
     [SKILL_HIT.ref],
   );
-  assert.deepEqual(
-    result.remote.map((hit) => hit.ref),
-    [REMOTE_HIT.ref],
-  );
+  assert.deepEqual(result.remote, [], "remote candidates never enter the selected result");
+  assert.deepEqual(result.coverage, { local: "searched", remote: "not_searched" });
   assert.deepEqual(result.mcp, []);
   assert.equal(result.tools[0].source, "builtin");
   assert.equal(result.skills[0].description, SKILL_HIT.description);
-  assert.equal(result.remote[0].status, "needs_approval");
   assert.equal(state.prompts.length, 1, "one run is exactly one prompt; no planning call follows the submission");
+  assert.equal(state.disposals, 1, "the run awaits the shared execution dispose before returning");
 });
 
 test("empty refs are only a no-match after a completed search", async () => {
@@ -214,7 +221,7 @@ test("empty refs are only a no-match after a completed search", async () => {
       const early = await submit.execute("call-1", { refs: [] });
       assert.equal(early.isError, true);
 
-      await toolOf(state, CAPABILITY_SEARCH_TOOL_NAME).execute("call-2", { query: "nothing", src: "remote" });
+      await toolOf(state, CAPABILITY_SEARCH_TOOL_NAME).execute("call-2", { query: "nothing", src: "local" });
       const accepted = await submit.execute("call-3", { refs: [] });
       assert.equal(accepted.isError, undefined);
       assert.equal(accepted.terminate, true);
@@ -223,6 +230,7 @@ test("empty refs are only a no-match after a completed search", async () => {
   assert.equal(result.status, "ok");
   assert.deepEqual(result.missingCapabilities, ["nothing"]);
   assert.deepEqual([result.tools, result.mcp, result.skills, result.remote], [[], [], [], []]);
+  assert.deepEqual(result.coverage, { local: "searched", remote: "not_searched" });
 });
 
 test("a failed search is explicit and cannot become a silent no-match", async () => {
@@ -243,23 +251,59 @@ test("a failed search is explicit and cannot become a silent no-match", async ()
   assert.deepEqual(result.missingCapabilities, []);
 });
 
-test("degraded searches downgrade a no-match submission to partial", async () => {
+test("degraded local searches downgrade a no-match submission to partial", async () => {
   const broker = createFakeBroker({
     results: { localThing: groupedResult() },
-    failures: { remoteThing: "marketplace offline" },
+    failures: { brokenThing: "skill index offline" },
   });
   const { result, state } = await runDiscovery({
     broker,
     behavior: async ({ state }) => {
       const search = toolOf(state, CAPABILITY_SEARCH_TOOL_NAME);
-      await search.execute("call-1", { query: "remoteThing", src: "remote" });
+      await search.execute("call-1", { query: "brokenThing", src: "local" });
       await search.execute("call-2", { query: "localThing", src: "local" });
       await toolOf(state, SUBMIT_RESULT_TOOL_NAME).execute("call-3", { refs: [] });
     },
   });
   assert.equal(result.status, "partial");
   assert.deepEqual(result.missingCapabilities, ["localThing"]);
-  assert.ok(result.warnings.some((warning) => /marketplace offline/.test(warning)));
+  assert.ok(result.warnings.some((warning) => /skill index offline/.test(warning)));
+  assert.deepEqual(result.coverage, { local: "searched", remote: "not_searched" });
+});
+
+test("remote search is disabled, never reaches the broker, and is reported as not searched", async () => {
+  const broker = createFakeBroker({ results: { firefox: groupedResult([TOOL_HIT]) } });
+  const { result, state } = await runDiscovery({
+    broker,
+    async behavior({ state, request }) {
+      assert.match(request.instructions, /Remote package search is disabled/);
+      const search = toolOf(state, CAPABILITY_SEARCH_TOOL_NAME);
+      const remote = await search.execute("call-1", { query: "firefox", src: "remote" });
+      assert.equal(remote.isError, true);
+      assert.match(remote.content[0].text, /disabled until a user approval receiver exists/);
+      assert.match(remote.content[0].text, /not evidence that no remote resource exists/);
+      const all = await search.execute("call-2", { query: "firefox", src: "all" });
+      assert.equal(all.isError, true);
+      await search.execute("call-3", { query: "firefox", src: "local" });
+      await toolOf(state, SUBMIT_RESULT_TOOL_NAME).execute("call-4", { refs: [TOOL_HIT.ref] });
+    },
+  });
+  assert.deepEqual(broker.calls, [{ query: "firefox", src: "local" }], "no remote or combined search reaches the broker");
+  assert.deepEqual(result.remote, []);
+  assert.deepEqual(result.coverage, { local: "searched", remote: "not_searched" });
+  assert.deepEqual(result.tools.map((hit) => hit.ref), [TOOL_HIT.ref]);
+});
+
+test("a failed or unstarted run reports that local was not searched", async () => {
+  const broker = createFakeBroker({ failures: { firefox: "registry request timed out" } });
+  const { result } = await runDiscovery({
+    broker,
+    behavior: async ({ state }) => {
+      await toolOf(state, CAPABILITY_SEARCH_TOOL_NAME).execute("call-1", { query: "firefox", src: "local" });
+    },
+  });
+  assert.equal(result.status, "failed");
+  assert.deepEqual(result.coverage, { local: "not_searched", remote: "not_searched" });
 });
 
 test("a model failure is explicit and the internal session is disposed", async () => {
@@ -348,6 +392,7 @@ test("an abort while the session is opening never prompts", async () => {
   });
   assert.equal(result.status, "failed");
   assert.equal(state.requests.length, 1, "the check runs once the session has opened");
+  assert.equal(state.requests[0].signal, controller.signal, "the caller signal is forwarded to the shared execution");
   assert.deepEqual(state.prompts, [], "no prompt is dispatched");
   assert.equal(state.aborts, 1, "the opened session is aborted");
   assert.equal(state.disposals, 1);

@@ -1,14 +1,39 @@
 {
-  "name": "pi-harness-interaction-mvp",
+  "name": "pi-harness",
+  "version": "0.1.0",
   "private": true,
+  "description": "Capability discovery and Subagent execution for Pi, with optional Shell Preflight",
   "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": ["./extensions/harness.ts"]
+  },
   "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx scripts/test.mjs",
+    "test:typed": "node --import tsx scripts/test.mjs typed",
+    "check": "npm run typecheck && npm test",
     "demo": "node prototype/demo.mjs",
     "smoke": "node prototype/demo.mjs --assert",
     "cli": "node prototype/cli.mjs",
-    "test": "node --test",
-    "test:work": "node --test test/work.test.mjs",
-    "test:subagent": "node --test test/subagent-runtime.test.mjs",
-    "test:shell-preflight": "node --test test/shell-preflight.test.mjs"
+    "test:work": "node --import tsx --test test/work.test.mjs",
+    "test:subagent": "node --import tsx --test test/subagent-runtime.test.mjs",
+    "test:shell-preflight": "node --import tsx --test test/shell-preflight.test.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-codemode": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0"
+  },
+  "overrides": {
+    "undici": "8.12.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
   }
 }

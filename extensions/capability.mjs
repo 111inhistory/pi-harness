@@ -1,22 +1,35 @@
 /**
  * Capability Pi extension.
  *
- * Adds the no-argument `capability` tool to a session. A call starts an
- * isolated internal Pi retrieval session (only `capability_search` and
- * `submit_result` may execute; compatible Responses also retain blocked parent
- * declarations, never parent handles; its own fixed budget) that
- * inherits the caller's native conversation — raw session entries, system
- * prompt, model — so provider-returned blocks such as thinking with their
- * signatures survive verbatim. Compatible Responses keep the parent's thinking
- * level and declaration prefix; other models use thinking low. The tool returns
- * full grouped metadata in details, compact model-facing refs/guidance where
- * native incremental declarations supply the interfaces, and
- * declares the selected already-registered tools active in this session. It
- * never installs, enables or executes anything.
+ * Adds the no-argument `capability` tool to a session. A call runs an isolated
+ * internal retrieval session through the shared Subagent execution entry point
+ * (`openSubagentExecution`), the same session lifetime, abort and cleanup used by
+ * public delegation. Only `capability_search` and `submit_result` may execute;
+ * compatible Responses also retain blocked parent declarations, never parent
+ * handles; the run has its own fixed budget. The session inherits the caller's
+ * native conversation — raw session entries, system prompt, physical model — so
+ * provider-returned blocks such as thinking with their signatures survive
+ * verbatim. Compatible Responses keep the parent's thinking level and
+ * declaration prefix; other models use thinking low. The tool returns full
+ * grouped metadata in details, compact model-facing refs/guidance where native
+ * incremental declarations supply the interfaces, and declares the selected
+ * already-registered tools active in this session. It never installs, enables or
+ * executes anything.
  *
- * The same extension registers the capability-owned read protocols
- * (`tool://`, `namespace://`, `mcp://`, `skill://`, `npm://`) through read-only installProtocolIO using
- * the broker's `read()`. It registers no protocol writer.
+ * Remote search is disabled until a user approval receiver exists (rewrite plan
+ * D4): the internal agent only searches local tools, MCP servers and skills, the
+ * result always reports that remote was not searched, and no remote candidate
+ * reaches Main, the branch memory or a summary.
+ *
+ * Each successful discovery is persisted as a `capability-discovery` branch
+ * entry (see ../src/capability/discovery-record.ts) before this tool returns, so
+ * a nested `ctx.executeTool("capability", ...)` keeps its memory even when the
+ * outer tool drops the inner result details. The request projection reads those
+ * records and applies the current tool permissions on every request.
+ *
+ * Skills return absolute entry paths for native read. Tool interfaces are
+ * supplied by selected results or native declarations; no resource protocol
+ * router or read/write override is installed.
  */
 
 import { readFile } from "node:fs/promises";
@@ -25,18 +38,15 @@ import {
   DefaultResourceLoader,
   SessionManager,
   SettingsManager,
-  createAgentSession,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 
-import { installProtocolIO } from "./protocol-io.mjs";
 import {
   CAPABILITY_PARAMETERS,
   CAPABILITY_TOOL_DESCRIPTION,
   CAPABILITY_TOOL_NAME,
   createCapabilityBroker,
 } from "../src/capability-broker.mjs";
-import { createNpmMarketplace } from "../src/capability-marketplace.mjs";
 import {
   CAPABILITY_DISCOVERY_SYSTEM_PROMPT,
   capabilityBudgetWarning,
@@ -47,6 +57,10 @@ import { installModelCallBudget } from "../src/pi-job-budget.mjs";
 import { captureInheritedContext } from "../src/inherited-context.mjs";
 import { discoverSessionSkills } from "../src/capability-skills.mjs";
 import { capabilityPublicResult } from "../src/capability-result.mjs";
+import { capabilityPromptTranscript } from "../src/capability-prompt.mjs";
+import { appendDiscoveryRecord } from "../src/capability/discovery-record.ts";
+import { openSubagentExecution } from "../src/subagent/execution.ts";
+import { installNativeDiscoveryBoundary } from "../src/capability/native-discovery.ts";
 import { capabilityAllowsTool, capabilityAvailableTools } from "../src/capability-scope.mjs";
 import {
   additiveToolTranscript, capabilityModelResult, capabilityToolDelta, retrievalToolLoadout, supportsAdditiveResponses,
@@ -56,9 +70,9 @@ import {
 const VIRTUAL_MODEL_API = "pi-virtual";
 
 export default function capabilityExtension(pi, { discovery = true } = {}) {
+  installNativeDiscoveryBoundary(pi);
   const service = {
     agentDir: getAgentDir(),
-    marketplace: null,
     projectTrusted: false,
   };
   const broker = createCapabilityBroker(createProviders(pi, service));
@@ -70,9 +84,15 @@ export default function capabilityExtension(pi, { discovery = true } = {}) {
     event.systemPromptOptions.skills = [];
   });
 
-  // Keep the request's declaration prefix stable without granting execution rights.
+  // Discovery memory follows the branch, not the lossy summary. Append native
+  // section updates at their original result anchors; only compaction checkpoints
+  // receive the accumulated older discoveries. Exposure and execution stay separate.
   pi.on?.("context_with_system", (event, ctx) => {
-    if (supportsAdditiveResponses(ctx.model)) return { messages: additiveToolTranscript(event.messages) };
+    const available = new Set(pi.getAllTools().filter((tool) => tool.exposure !== "hidden" && capabilityAllowsTool(pi, tool.name)).map((tool) => tool.name));
+    const messages = capabilityPromptTranscript(event.messages, ctx.sessionManager.getBranch(), {
+      allowsTool: (name) => available.has(name),
+    });
+    return { messages: supportsAdditiveResponses(ctx.model) ? additiveToolTranscript(messages) : messages };
   });
   pi.on?.("tool_call", (event) => {
     const tool = pi.getAllTools().find((entry) => entry.name === event.toolName);
@@ -82,9 +102,6 @@ export default function capabilityExtension(pi, { discovery = true } = {}) {
     }
   });
 
-  // Subagent owns the Socket-aware native write backend; Capability only adds readers.
-  installProtocolIO(pi, { readers: capabilityReaders(broker), readOnly: true });
-
   if (!discovery) return;
   pi.registerTool({
     name: CAPABILITY_TOOL_NAME,
@@ -93,22 +110,23 @@ export default function capabilityExtension(pi, { discovery = true } = {}) {
     promptSnippet: "Find reusable guidance and capabilities for the current task",
     promptGuidelines: [
       "Use capability to find missing capabilities or reuse established guidance and specialized tools before inventing a workflow or building a replacement, for example for Word editing or PPT creation.",
-      "Use capability for task-level discovery of guidance and tool names. For unfamiliar tools used through codemode, inspect the interface with describeTool or describeNamespace before calling it. Do not use searchTools as a separate discovery workflow.",
-      "Discover Skills through capability. Unless the user explicitly requests filesystem or web searches for Skills, do not search local directories, installed repositories, other agent profiles, or the web for them. A general request to find Skills does not authorize bypassing Capability's configured selection; report gaps or ask about configuration instead. Reading a returned Skill ref or its linked instructions is not a new discovery search.",
+      "Use capability for resource discovery. Native tool_search and global MCP resource listing are disabled. Codemode can execute enabled tools but provides no searchTools. Use selected tool declarations or the returned interfaces for arguments. Read Skill entry files by their returned absolute paths.",
+      "Discover Skills through capability. Unless the user explicitly requests filesystem or web searches for Skills, do not search local directories, installed repositories, other agent profiles, or the web for them. A general request to find Skills does not authorize bypassing Capability's configured selection; report gaps or ask about configuration instead. Reading a returned Skill file or its linked instructions is not a new discovery search.",
       "Skills may contain workflows, rules, preferences, fixed background, or descriptions. Read relevant guidance and use it alongside tool interfaces; a generic tool description may not fit the current task.",
       "Reuse relevant findings throughout the task. Search again when requirements change or a new capability gap appears, not before every tool call.",
       "A needs_approval result is a candidate, not permission to install or execute it.",
+      "Remote package search is disabled until a user approval receiver exists. A result reporting that remote was not searched does not mean remote resources do not exist.",
     ],
     parameters: CAPABILITY_PARAMETERS,
+    reachesTools: () => "all",
     async execute(toolCallId, _params, signal, _onUpdate, ctx) {
       let result;
       let compactNames = null;
       let previouslyActive = new Set();
       try {
-        const subagentTools = pi.getAllTools().filter((tool) => tool.namespace?.name === "subagent");
-        if (!["subagent_list", "subagent_stop"].every((name) => subagentTools.some((tool) => tool.name === name && tool.exposure !== "hidden"))) {
-          throw new Error("Capability requires the Subagent extension to be loaded; its tools need not be active.");
-        }
+        // The shared execution entry point is an import, not a public Subagent
+        // tool: discovery does not depend on subagent_create/list/stop being
+        // registered or active.
         service.projectTrusted = ctx.isProjectTrusted();
         const snapshot = captureInheritedContext(pi, ctx);
         const physicalModel = inheritedModel(snapshot, ctx, parentModelRuntime(ctx.modelRegistry), toolCallId);
@@ -117,6 +135,17 @@ export default function capabilityExtension(pi, { discovery = true } = {}) {
           openSession: (request) => openInternalSession(pi, service, ctx, request, snapshot, toolCallId),
         });
         result = await discovery.discover({ cwd: ctx.cwd, signal });
+        if (result.status !== "failed") {
+          // Persist before activation. Memory is the durability contract, so a
+          // failed record write fails closed: nothing is advertised as selected
+          // and nothing is activated, because the next request could not restore
+          // it. The thrown detail stays in the internal warnings audit.
+          try {
+            appendDiscoveryRecord(pi, toolCallId, result, result.coverage);
+          } catch (error) {
+            result = discoveryNotDurable(result, error);
+          }
+        }
         if (result.status !== "failed") {
           try {
             previouslyActive = new Set(pi.getActiveTools());
@@ -138,7 +167,7 @@ export default function capabilityExtension(pi, { discovery = true } = {}) {
       } catch (error) {
         result = capabilityFailureResult(`capability discovery failed: ${errorMessage(error)}.`);
       }
-      const delta = capabilityToolDelta(result, previouslyActive);
+      const delta = selectedInterfaces(capabilityToolDelta(result, previouslyActive), pi);
       return {
         content: [{ type: "text", text: JSON.stringify(capabilityPublicResult(compactNames ? capabilityModelResult(delta, compactNames) : delta)) }],
         details: result,
@@ -148,15 +177,27 @@ export default function capabilityExtension(pi, { discovery = true } = {}) {
   });
 }
 
+/**
+ * A discovery that could not be written to the branch is not durable, so it must
+ * not be presented as a successful selection or activated. The public failure
+ * reason says why; the internal warnings keep the full write error for audit.
+ */
+function discoveryNotDurable(result, error) {
+  const detail = errorMessage(error);
+  const reason =
+    "capability discovery failed: the selected resources could not be saved in this session branch, " +
+    `so they are not durable: ${detail}.`;
+  const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+  return capabilityFailureResult(reason, [...warnings, `capability record write failed: ${detail}`], result.coverage);
+}
+
 function createProviders(pi, service) {
   return {
     listTools: () => pi.getAllTools().filter((tool) => capabilityAllowsTool(pi, tool.name)),
     listActiveTools: () => pi.getActiveTools(),
     discoverSkills: (cwd) => discoverSessionSkills(pi, { cwd, agentDir: service.agentDir, projectTrusted: service.projectTrusted }),
     readSkillFile: (filePath) => readFile(filePath, "utf8"),
-    searchRemote: (query, options) => marketplace(pi, service).searchRemote(query, options),
-    readRemote: (ref, options) => marketplace(pi, service).readRemote(ref, options),
-    listInstalledPackages: () => installedPackageSources(pi),
+    // No remote provider: approval is not implemented.
   };
 }
 
@@ -190,28 +231,18 @@ function internalSettings(pi, trusted) {
   );
 }
 
-/** Pi's configured package sources; the installed identity check reads this. */
-function installedPackageSources(pi) {
-  const settings = safeSettings(pi);
-  return Array.isArray(settings?.packages) ? settings.packages : [];
-}
-
-function marketplace(pi, service) {
-  if (service.marketplace === null) {
-    service.marketplace = createNpmMarketplace({
-      // Installed packages never come back as installation requests; the
-      // helper fails closed when this source list is unavailable.
-      listInstalledPackages: () => installedPackageSources(pi),
-    });
-  }
-  return service.marketplace;
-}
-
-/** The read protocols capability owns. The wrapper hands the full URI through. */
-function capabilityReaders(broker) {
-  const read = (uri, ctx, options) =>
-    broker.read(String(uri), { cwd: ctx?.cwd, signal: options?.signal ?? ctx?.signal });
-  return { tool: read, namespace: read, mcp: read, skill: read, npm: read };
+/** Supply interfaces only after selection, not in the search catalog or branch records. */
+function selectedInterfaces(result, pi) {
+  const registered = new Map(pi.getAllTools().filter((tool) => tool.exposure !== "hidden" && capabilityAllowsTool(pi, tool.name)).map((tool) => [tool.name, tool]));
+  const enrich = (hit) => {
+    if (Array.isArray(hit.tools)) return { ...hit, tools: hit.tools.map(enrich) };
+    const tool = registered.get(hit.name);
+    return tool ? { ...hit, parameters: tool.parameters,
+      ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}),
+      ...(tool.promptGuidelines?.length ? { promptGuidelines: tool.promptGuidelines } : {}),
+    } : hit;
+  };
+  return { ...result, tools: result.tools.map(enrich), mcp: result.mcp.map(enrich) };
 }
 
 /**
@@ -249,7 +280,7 @@ function activateSelectedTools(pi, result) {
       warnings.push(`selected tool "${name}" is hidden and cannot be activated`);
       continue;
     }
-    if (active.has(name) || tool.exposure === "codemode" || tool.exposure === "deferred") continue;
+    if (active.has(name)) continue;
     activate.push(name);
   }
   if (activate.length > 0) pi.setActiveTools([...active, ...activate]);
@@ -329,7 +360,9 @@ async function openInternalSession(pi, service, ctx, request, snapshot, toolCall
   const additive = supportsAdditiveResponses(model);
   const inheritedMessages = snapshot.entries.filter((entry) => entry.type === "message").map((entry) => entry.message);
   const customTools = additive ? retrievalToolLoadout(inheritedMessages, request.customTools) : request.customTools;
-  const { session } = await createAgentSession({
+  // The shared Subagent execution owns session creation, caller-abort handling,
+  // budget cleanup ordering and the final session.dispose().
+  const execution = await openSubagentExecution({
     cwd,
     agentDir: service.agentDir,
     settingsManager: settings,
@@ -340,33 +373,49 @@ async function openInternalSession(pi, service, ctx, request, snapshot, toolCall
     resourceLoader,
     customTools,
     tools: customTools.map((tool) => tool.name),
-  });
-  // The blocked placeholders retain interfaces only; they never call parent tools.
-  const previousTransform = session.agent.transformContext;
-  if (additive) session.agent.transformContext = async (messages, signal) => {
-    const transformed = previousTransform ? await previousTransform(messages, signal) : messages;
-    return [...additiveToolTranscript(transformed), {
-      role: "system", content: "Capability discovery may execute only capability_search and submit_result. All other retained tool declarations are unavailable; execution is blocked.", timestamp: 0,
-    }];
-  };
-  const cleanupBudget = installModelCallBudget(session, request.budget, {
-    beforeRequest: request.beforeRequest,
-    warningText: capabilityBudgetWarning,
-  });
-  // Messages the inherited context already carried never count as this run's
-  // output; only what the run appends from here does.
-  const inheritedMessageSet = new Set(session.state?.messages ?? []);
-  return {
-    async prompt(text) {
-      await session.prompt(text, { expandPromptTemplates: false });
-      return (session.state?.messages ?? []).filter((message) => !inheritedMessageSet.has(message));
-    },
-    abort: () => session.abort(),
-    dispose: () => {
-      cleanupBudget();
-      session.dispose();
-    },
-  };
+  }, { signal: request.signal });
+  try {
+    const session = execution.session;
+    // The blocked placeholders retain interfaces only; they never call parent tools.
+    const previousTransform = session.agent.transformContext;
+    const available = new Set(pi.getAllTools().filter((tool) => tool.exposure !== "hidden" && capabilityAllowsTool(pi, tool.name)).map((tool) => tool.name));
+    session.agent.transformContext = async (messages, signal) => {
+      const transformed = previousTransform ? await previousTransform(messages, signal) : messages;
+      const remembered = capabilityPromptTranscript(transformed, snapshot.entries, {
+        allowsTool: (name) => available.has(name),
+      });
+      return additive ? [...additiveToolTranscript(remembered), {
+        role: "system", content: "Capability discovery may execute only capability_search and submit_result. All other retained tool declarations are unavailable; execution is blocked.", timestamp: 0,
+      }] : remembered;
+    };
+    const cleanupBudget = installModelCallBudget(session, request.budget, {
+      beforeRequest: request.beforeRequest,
+      warningText: capabilityBudgetWarning,
+    });
+    // Registered with the shared lifetime, so the budget hook is restored even
+    // when a later step fails and the execution is disposed by this function.
+    execution.addCleanup(cleanupBudget);
+    // Messages the inherited context already carried never count as this run's
+    // output; only what the run appends from here does.
+    const inheritedMessageSet = new Set(session.state?.messages ?? []);
+    return {
+      async prompt(text) {
+        await execution.prompt(text, { expandPromptTemplates: false });
+        return (session.state?.messages ?? []).filter((message) => !inheritedMessageSet.has(message));
+      },
+      abort: () => execution.abort(),
+      dispose: () => execution.dispose(),
+    };
+  } catch (error) {
+    // Creation succeeded, so this function owns the cleanup of the partially
+    // assembled retrieval session; never leak it on a failed post-setup check.
+    try {
+      await execution.dispose();
+    } catch {
+      // Preserve the original failure; cleanup errors do not replace it.
+    }
+    throw error;
+  }
 }
 
 /**

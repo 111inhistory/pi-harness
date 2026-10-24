@@ -1,8 +1,10 @@
-# `work` 公开 API
+# Work 原型 API（暂缓）
+
+> 本文保留原型的交互设计，不作为当前主线契约。Work 能力仍有需求，是否以 Pi 插件交付尚未决定。
 
 ## 状态
 
-本文记录已经确认并由 `src/work.mjs`、`extensions/work.mjs` 实现的公开交互；内部存储仍不属于契约。
+本文记录本目录原型已经实现的交互。代码位于 `experiments/work/src/work.mjs` 和 `experiments/work/extensions/work.mjs`；内部存储不属于原型 API。
 
 ## 工作结构
 
@@ -312,9 +314,9 @@ MVP 实现时选择满足当前行为的最简单方案；这些选择不能改�
 
 ## 实现状态
 
-- `src/work.mjs` 实现内存工作树和公开 dispatch；
-- `extensions/work.mjs` 注册 Pi `work` 工具；
-- `prototype/cli.mjs` 提供 JSONL 交互；
-- `test/work.test.mjs` 验证递归原子创建、Desc、focus 和两种树视图。
+- `experiments/work/src/work.mjs` 实现内存工作树和公开 dispatch；
+- `experiments/work/extensions/work.mjs` 保留 Pi 工具接入实验，不由主线装配；
+- `experiments/work/prototype/cli.mjs` 提供 JSONL 交互；
+- `experiments/work/test/work.test.mjs` 验证递归原子创建、Desc、focus 和两种树视图。
 
 尚未确认的状态转换没有进入实现。

@@ -67,6 +67,7 @@
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 
 import { PI_PACKAGE_KEYWORD, packageNameFromSource } from "./capability-marketplace.mjs";
 
@@ -74,7 +75,8 @@ export const CAPABILITY_TOOL_NAME = "capability";
 
 export const CAPABILITY_TOOL_DESCRIPTION =
   "Find reusable skills and task guidance alongside tools and MCP capabilities for the current task. " +
-  "Uses this conversation; no arguments. Returns relevant refs and availability, including uninstalled package candidates. " +
+  "Uses this conversation; no arguments. Returns relevant local refs and availability and reports that remote was not searched; " +
+  "remote package search is disabled until a user approval receiver exists. " +
   "A namespace is one candidate with its tools and shared instructions. " +
   "May activate selected tools already registered in this session, but never installs packages or executes capabilities. " +
   "For Skill discovery, use capability rather than manual filesystem or web searches unless the user explicitly requests those search methods.";
@@ -101,7 +103,7 @@ export const CAPABILITY_SEARCH_PARAMETERS = Object.freeze({
       minLength: 1,
       description:
         "Keywords for relevant guidance (workflows, rules, preferences, or background) or tools, or a ref from an earlier result " +
-        "(tool://read, namespace://subagent, mcp://firefox_devtools, skill://firefox-existing-profile, npm://pkg@1.0.0) " +
+        "(tool://read, namespace://subagent, mcp://firefox_devtools, or an absolute Skill entry path) " +
         "for an exact lookup.",
     }),
     src: Object.freeze({
@@ -154,7 +156,7 @@ export const CAPABILITY_LIMITS = Object.freeze({
   remoteTimeoutMs: 10_000,
 });
 
-const CAPABILITY_SCHEMES = new Set(["tool", "namespace", "mcp", "skill", "npm"]);
+const CAPABILITY_SCHEMES = new Set(["tool", "namespace", "mcp", "npm"]);
 const MCP_NAME_PREFIX = "mcp__";
 const DEFAULT_EXPOSURE = "direct";
 
@@ -704,6 +706,7 @@ function normalizeSkill(entry) {
     : typeof entry.path === "string"
       ? entry.path
       : "";
+  if (filePath.length === 0) return null;
   return {
     name,
     description: typeof entry.description === "string" ? entry.description : "",
@@ -713,9 +716,10 @@ function normalizeSkill(entry) {
 }
 
 /** Normalize native `loadSkills` output, the legacy `{ skills, warnings }` shape, or a bare array. */
-function normalizeSkills(discovered) {
+function normalizeSkills(discovered, cwd) {
   const list = Array.isArray(discovered) ? discovered : ensureArray(discovered?.skills);
-  return list.map(normalizeSkill).filter((skill) => skill !== null);
+  return list.map(normalizeSkill).filter((skill) => skill !== null)
+    .map((skill) => ({ ...skill, filePath: resolve(cwd, skill.filePath) }));
 }
 
 function normalizeSkillWarnings(discovered, limits) {
@@ -742,7 +746,7 @@ function normalizeSkillWarnings(discovered, limits) {
 async function snapshotSkills(providers, cwd, limits) {
   if (typeof providers.discoverSkills !== "function") throw new Error("discoverSkills provider is not configured");
   const discovered = await providers.discoverSkills(cwd);
-  return { skills: normalizeSkills(discovered), warnings: normalizeSkillWarnings(discovered, limits) };
+  return { skills: normalizeSkills(discovered, cwd), warnings: normalizeSkillWarnings(discovered, limits) };
 }
 
 async function readSkillText(skill, readSkillFile, limits) {
@@ -1018,9 +1022,9 @@ async function searchMcpHits(registryPromise, context, limits) {
   return { hits: hits.slice(0, limits.mcp), fuzzy, covered, warnings };
 }
 
-function buildSkillHit(skill, classified, body, limits, exact) {
+function buildSkillHit(skill, classified, limits) {
   return {
-    ref: `skill://${encodeURIComponent(skill.name)}`,
+    ref: skill.filePath,
     name: skill.name,
     description: truncate(skill.description, limits.descriptionChars),
     kind: "skill",
@@ -1029,7 +1033,6 @@ function buildSkillHit(skill, classified, body, limits, exact) {
     score: classified.score,
     filePath: skill.filePath,
     reason: `matched ${classified.labels.length > 0 ? classified.labels.join(", ") : "query"}`,
-    ...(exact && body !== null ? { body } : {}),
   };
 }
 
@@ -1040,20 +1043,10 @@ async function searchSkillHits(skillsPromise, providers, context, limits, signal
   const bodies = new Map();
   const hits = [];
 
-  if (context.ref !== null && context.ref.scheme === "skill") {
-    let name = null;
-    try {
-      name = decodePart(context.ref.rest);
-    } catch (error) {
-      warnings.push(`skill ref lookup failed: ${errorMessage(error, limits)}`);
-      return { hits, fuzzy: [], bodies, covered, warnings };
-    }
-    const skill = snapshot.skills.find((candidate) => candidate.name === name);
-    if (skill === undefined) {
-      warnings.push(`ref "${context.query}" did not resolve to a visible skill`);
-      return { hits, fuzzy: [], bodies, covered, warnings };
-    }
-    const ref = `skill://${encodeURIComponent(skill.name)}`;
+  const exact = snapshot.skills.find((candidate) => candidate.filePath === context.query);
+  if (exact) {
+    const skill = exact;
+    const ref = skill.filePath;
     let body = null;
     try {
       body = await readSkillText(skill, readSkillFile, limits);
@@ -1063,7 +1056,7 @@ async function searchSkillHits(skillsPromise, providers, context, limits, signal
       // reported instead of silently dropping the body.
       warnings.push(`skill "${skill.name}" body unreadable: ${errorMessage(error, limits)}`);
     }
-    hits.push(buildSkillHit(skill, { match: "ref", score: REF_SCORE, labels: ["ref"], tokens: new Set() }, body, limits, true));
+    hits.push(buildSkillHit(skill, { match: "ref", score: REF_SCORE, labels: ["path"], tokens: new Set() }, limits));
     return { hits, fuzzy: [], bodies, covered, warnings };
   }
 
@@ -1093,7 +1086,7 @@ async function searchSkillHits(skillsPromise, providers, context, limits, signal
   // constraints that live only in the body still reach the result.
   for (const candidate of candidates.slice(0, limits.skillBodies)) {
     if (signal?.aborted) throw abortError(signal.reason);
-    const ref = `skill://${encodeURIComponent(candidate.skill.name)}`;
+    const ref = candidate.skill.filePath;
     let body = null;
     try {
       body = await readSkillText(candidate.skill, readSkillFile, limits);
@@ -1109,7 +1102,7 @@ async function searchSkillHits(skillsPromise, providers, context, limits, signal
       score: candidate.classified.score + bodyMatch.count * BODY_TOKEN_WEIGHT,
       labels: bodyMatch.count > 0 ? [...candidate.classified.labels, "body"] : candidate.classified.labels,
     };
-    hits.push(buildSkillHit(candidate.skill, classified, body, limits, false));
+    hits.push(buildSkillHit(candidate.skill, classified, limits));
   }
 
   hits.sort(compareHits);
@@ -1489,40 +1482,15 @@ function applyFuzzyPhase({ tools, mcp, skills }, context, limits) {
       const classified = classifyFuzzy(entry.candidate, context, limits);
       if (classified === null) continue;
       for (const token of classified.tokens) skills.covered.add(token);
-      fuzzyHits.push(buildSkillHit(entry.skill, classified, null, limits, false));
+      fuzzyHits.push(buildSkillHit(entry.skill, classified, limits));
     }
     fuzzyHits.sort(compareHits);
     skills.hits = fuzzyHits.slice(0, limits.skills);
   }
 }
 
-function toolPayload(tool) {
-  return {
-    ref: toolRef(tool.name),
-    kind: "tool",
-    name: tool.name,
-    description: tool.description,
-    parameters: tool.parameters,
-    ...(tool.promptGuidelines.length > 0 ? { promptGuidelines: tool.promptGuidelines } : {}),
-    exposure: tool.exposure,
-    active: tool.active,
-    source: tool.source,
-    path: tool.path,
-    ...(tool.scope.length > 0 ? { scope: tool.scope } : {}),
-    ...(tool.origin.length > 0 ? { origin: tool.origin } : {}),
-    ...(tool.namespaceName.length > 0 ? { namespace: tool.namespaceName } : {}),
-    ...(tool.mcpIdentity !== null
-      ? {
-          server: tool.mcpIdentity.server,
-          ...(tool.mcpIdentity.tool !== undefined ? { tool: tool.mcpIdentity.tool } : {}),
-          serverIdentityBasis: tool.mcpIdentity.basis,
-        }
-      : {}),
-  };
-}
-
 /**
- * Build a broker over injected providers. Search and read are read-only and
+ * Build a broker over injected providers. Search is read-only and
  * side-effect free: they never install, enable, download or execute anything,
  * and the only filesystem access is the bounded skill body read.
  */
@@ -1650,130 +1618,5 @@ export function createCapabilityBroker(providers = {}) {
     };
   }
 
-  async function readTool(ref, rest) {
-    const name = decodePart(rest);
-    const registry = await snapshotRegistry(providers);
-    const tool = registry.tools.find((candidate) => candidate.name === name);
-    if (tool === undefined) throw new Error(`unknown tool: ${ref}`);
-    return JSON.stringify(toolPayload(tool), null, 2);
-  }
-
-  async function readNamespace(ref, rest) {
-    const name = decodePart(rest);
-    const registry = await snapshotRegistry(providers);
-    const group = registry.tools.filter((tool) => tool.namespaceName === name);
-    if (group.length === 0) throw new Error(`unknown namespace: ${ref}`);
-    return JSON.stringify({ ...buildNamespaceHit(name, group, { match: "ref", score: REF_SCORE, labels: ["ref"] }, CAPABILITY_LIMITS), tools: group.map(toolPayload) }, null, 2);
-  }
-
-  async function readMcp(ref, rest, limits) {
-    const slash = rest.indexOf("/");
-    const server = decodePart(slash === -1 ? rest : rest.slice(0, slash));
-    const encodedTool = slash === -1 ? undefined : rest.slice(slash + 1);
-    const toolName = encodedTool !== undefined && encodedTool.length > 0 ? decodePart(encodedTool) : undefined;
-    const registry = await snapshotRegistry(providers);
-    const group = registry.tools.filter(
-      (tool) => tool.isMcp && tool.mcpIdentity !== null && tool.mcpIdentity.server === server,
-    );
-    if (group.length === 0) throw new Error(`unknown MCP server: ${ref}`);
-    if (toolName === undefined) {
-      return JSON.stringify(
-        {
-          ref: mcpServerRef(server),
-          kind: "mcp",
-          server,
-          description: group.find((tool) => tool.namespaceDescription.length > 0)?.namespaceDescription ?? "",
-          ...(group[0].namespaceName ? { namespace: group[0].namespaceName } : {}),
-          instructions: group.find((tool) => tool.namespaceInstructions)?.namespaceInstructions ?? "",
-          active: group.some((tool) => tool.active),
-          tools: group.map((tool) => ({
-            ref: mcpRef(server, tool.mcpIdentity.tool),
-            name: tool.name,
-            description: truncate(tool.description, limits.descriptionChars),
-            ...(tool.mcpIdentity.tool !== undefined ? { tool: tool.mcpIdentity.tool } : {}),
-            active: tool.active,
-            exposure: tool.exposure,
-          })),
-        },
-        null,
-        2,
-      );
-    }
-    const tool = group.find((candidate) => candidate.mcpIdentity.tool === toolName || candidate.name === toolName);
-    if (tool === undefined) throw new Error(`unknown MCP tool: ${ref}`);
-    return JSON.stringify(
-      {
-        ...toolPayload(tool),
-        ref: mcpRef(server, tool.mcpIdentity.tool),
-        kind: "mcp",
-        server,
-        ...(tool.mcpIdentity.tool !== undefined ? { tool: tool.mcpIdentity.tool } : {}),
-      },
-      null,
-      2,
-    );
-  }
-
-  async function readSkill(ref, rest, cwd, limits, signal) {
-    const name = decodePart(rest);
-    const snapshot = await snapshotSkills(providers, cwd, limits);
-    const skill = snapshot.skills.find((candidate) => candidate.name === name);
-    if (skill === undefined) throw new Error(`unknown skill: ${ref}`);
-    throwIfAborted(signal);
-    try {
-      return await readSkillText(skill, readSkillFile, limits);
-    } catch (error) {
-      if (signal?.aborted) throw abortError(signal.reason);
-      throw new Error(`skill "${name}" body unreadable: ${errorMessage(error, limits)}`);
-    }
-  }
-
-  async function readPackage(ref, limits, signal) {
-    if (typeof providers.readRemote !== "function") throw new Error("remote marketplace helper is not configured");
-    let value;
-    try {
-      value = await runBounded(
-        (taskSignal) => Promise.resolve(providers.readRemote(ref, { signal: taskSignal })),
-        { signal, timeoutMs: limits.remoteTimeoutMs },
-      );
-    } catch (error) {
-      if (signal?.aborted) throw abortError(signal.reason);
-      if (error instanceof BranchTimeoutError) {
-        throw new Error(`remote marketplace read for ${ref} timed out after ${limits.remoteTimeoutMs}ms`);
-      }
-      throw error;
-    }
-    if (typeof value === "string") return value;
-    if (value === null || typeof value !== "object") throw new Error(`remote marketplace returned no metadata for ${ref}`);
-    return JSON.stringify(value, null, 2);
-  }
-
-  async function read(ref, { cwd = process.cwd(), signal } = {}) {
-    throwIfAborted(signal);
-    const parsed = parseCapabilityRef(ref);
-    let text;
-    switch (parsed.scheme) {
-      case "tool":
-        text = await readTool(ref, parsed.rest);
-        break;
-      case "namespace":
-        text = await readNamespace(ref, parsed.rest);
-        break;
-      case "mcp":
-        text = await readMcp(ref, parsed.rest, CAPABILITY_LIMITS);
-        break;
-      case "skill":
-        text = await readSkill(ref, parsed.rest, cwd, CAPABILITY_LIMITS, signal);
-        break;
-      case "npm":
-        text = await readPackage(ref, CAPABILITY_LIMITS, signal);
-        break;
-      default:
-        throw new Error(`unsupported capability protocol "${parsed.scheme}://"`);
-    }
-    throwIfAborted(signal);
-    return text;
-  }
-
-  return { search, read };
+  return { search };
 }

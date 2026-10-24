@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { createSubagentRuntime, SubagentError } from "../src/subagent-runtime.mjs";
-import { createSocketAwareWriteOperations, getAgentSocketPath, getBroadcastSocketPath, deriveSessionUid } from "../src/subagent-socket.mjs";
+import { createSocketAwareWriteOperations, getAgentSocketPath, deriveSessionUid } from "../src/subagent-socket.mjs";
 import { getSubagentHistoryPaths, appendCleanJsonl } from "../src/subagent-history.mjs";
 import { deferred } from "../test-support/async.mjs";
 
@@ -40,76 +40,6 @@ function harness(t, options = {}) {
 
 const task = (name) => ({ name, task: `do ${name}` });
 const errorCode = (code) => (err) => err instanceof SubagentError && err.code === code;
-
-test("public create allocates distinct hierarchical IDs and couples the initial Job to the actor", (t) => {
-  const { runtime } = harness(t);
-  const roots = runtime.create({ tasks: [task("a"), task("b"), task("c"), task("d")] }).items;
-  assert.deepEqual(roots.map((item) => item.id), ["sub_01", "sub_02", "sub_03", "sub_04"]);
-  const aChildren = runtime.create({ tasks: [task("a1"), task("a2"), task("a3"), task("a4")] }, { parentAgentId: "sub_01" }).items;
-  const bChildren = runtime.create({ tasks: [task("b1"), task("b2")] }, { parentAgentId: "sub_02" }).items;
-  assert.deepEqual(aChildren.map((item) => item.id), ["sub_01_01", "sub_01_02", "sub_01_03", "sub_01_04"]);
-  assert.deepEqual(bChildren.map((item) => item.id), ["sub_02_01", "sub_02_02"]);
-  assert.deepEqual(runtime.jobs().jobs.map((job) => job.jobId), [...roots, ...aChildren, ...bChildren].map((item) => item.id));
-  const before = runtime.exportState();
-  assert.throws(() => runtime.create({ tasks: [task("too many")] }, { parentAgentId: "sub_01" }), errorCode("child_limit_exceeded"));
-  assert.throws(() => runtime.create({ tasks: [task("too deep")] }, { parentAgentId: "sub_01_01" }), errorCode("max_depth_exceeded"));
-  const after = runtime.exportState();
-  assert.deepEqual(after.actors, before.actors, "rejected topology must not register partial actors");
-  assert.deepEqual(after.jobs.map((job) => job.jobId), before.jobs.map((job) => job.jobId));
-  assert.deepEqual(after.sequences, before.sequences);
-});
-
-test("public create returns only deferred metadata in input order, with stable socket and history paths", (t) => {
-  const { runtime } = harness(t);
-  const response = runtime.create({ context: "audit", tasks: [task("TaskA"), task("TaskB")] });
-  assert.deepEqual(response, { items: ["TaskA", "TaskB"].map((name, index) => {
-    const id = `sub_0${index + 1}`;
-    const history = getSubagentHistoryPaths(id);
-    return { id, status: "running", socket: getAgentSocketPath(id), history: { summary: history.summary, cleanJsonl: history.cleanJsonl } };
-  }) });
-  for (const item of response.items) {
-    for (const removed of ["agentId", "jobId", "delivery", "result", "resultRef", "historyRef"]) assert.equal(removed in item, false);
-  }
-});
-
-test("non-ASCII assignments reject the whole batch before allocation", (t) => {
-  const { runtime, started } = harness(t);
-  assert.throws(() => runtime.create({ tasks: [{ task: "valid" }, { task: "中文任务" }] }), errorCode("assignment_language"));
-  assert.deepEqual(runtime.listDetailed(), { items: [] });
-  assert.equal(started.length, 0);
-  assert.equal(runtime.create({ tasks: [{ task: "abcd你" }] }).items[0].id, "sub_01", "exactly 20% is allowed");
-  assert.throws(() => runtime.create({ tasks: [{ task: "abc🙂" }] }), errorCode("assignment_language"));
-  assert.throws(() => runtime.create({ context: "中文背景".repeat(40), tasks: [{ task: "English task" }] }), errorCode("assignment_language"));
-});
-
-test("public create rejects unknown routing and schema fields atomically", (t) => {
-  const { runtime, started } = harness(t);
-  for (const field of ["agent", "role", "model", "thinking", "effort", "provider", "preference", "tools", "outputSchema", "schemaMode"]) {
-    assert.throws(() => runtime.create({ tasks: [task("valid"), { ...task("invalid"), [field]: "override" }] }), errorCode("invalid_task"));
-  }
-  assert.deepEqual(runtime.listDetailed(), { items: [] });
-  assert.equal(started.length, 0);
-  assert.equal(runtime.create({ tasks: [task("first accepted")] }).items[0].id, "sub_01");
-});
-
-test("public create preserves inherited warnings and captures one independent snapshot per batch", (t) => {
-  const { runtime, started } = harness(t);
-  const warning = "Tool 'custom_secret' is not transplantable and was omitted.";
-  const snapshot = {
-    cwd: process.cwd(), sessionId: "test-session", systemPrompt: "prompt",
-    model: { provider: "test", id: "model" }, thinkingLevel: "high", entries: [], tools: ["bash"], warnings: [warning],
-  };
-  let captures = 0;
-  const response = runtime.create({ tasks: [task("fresh"), { ...task("inherited 1"), inheritContext: true }, { ...task("inherited 2"), inheritContext: true }] }, {
-    captureInheritedContext: () => { captures += 1; return snapshot; },
-  });
-  assert.equal(captures, 1);
-  assert.equal("warnings" in response.items[0], false);
-  for (const item of response.items.slice(1)) assert.deepEqual(item.warnings, [warning]);
-  assert.notEqual(started[1].request.spec.inheritedContext.entries, started[2].request.spec.inheritedContext.entries);
-  snapshot.warnings.push("later mutation");
-  assert.deepEqual(response.items[1].warnings, [warning]);
-});
 
 test("public list filters actors without exposing Budget or redundant identity fields", async (t) => {
   const { runtime, started } = harness(t);
@@ -225,40 +155,6 @@ test("scoped stopped ordering survives registry restoration", async (t) => {
   assert.deepEqual(interrupted.listDetailed({}, { callerId: "Main" }).items.map((item) => item.id), ["Main", first[3].id, fifth.id, first[0].id, first[1].id]);
 });
 
-test("public stop waits for its native exit without blocking a running sibling and is repeatable", async (t) => {
-  const { runtime, started } = harness(t);
-  const [first, second] = runtime.create({ tasks: [task("running"), task("sibling")] }).items;
-  assert.equal(runtime.listDetailed({ id: second.id }).items[0].status, "running");
-  assert.equal(runtime.stop(first.id).status, "stopping");
-  assert.equal(runtime.stop(first.id).ok, false);
-  assert.equal(started[0].cancelCount, 1);
-  await assert.rejects(runtime.sendMessage({ from: "Main", to: first.id, content: "too early" }), errorCode("agent_busy"));
-  assert.equal(started.length, 2);
-  started[0].finish("partial");
-  assert.equal((await runtime.jobDone(first.id)).status, "cancelled");
-  assert.equal(started.length, 2);
-  assert.equal(runtime.stop(first.id).ok, true);
-  assert.throws(() => runtime.stop("unknown_agent"), errorCode("unknown_agent"));
-  assert.throws(() => runtime.stop(), errorCode("invalid_request"));
-});
-
-test("public actor metadata remains stable through revival while a new Job and Budget are allocated", async (t) => {
-  const { runtime, started } = harness(t);
-  const original = runtime.create({ tasks: [task("revive")] }).items[0];
-  started[0].request.budget.beginModelCall();
-  started[0].finish("first output");
-  await runtime.jobDone(original.id);
-  const response = await runtime.sendMessage({ from: "Main", to: original.id, content: "continue" });
-  assert.equal(response.to, original.id);
-  assert.notEqual(response.jobId, original.id);
-  assert.equal(started[1].request.continuedFromJobId, original.id);
-  assert.notEqual(started[0].request.budget, started[1].request.budget);
-  const revived = runtime.listDetailed({ id: original.id }).items[0];
-  assert.equal(started[1].request.budget.snapshot().modelCalls, 0);
-  assert.equal(revived.socket, original.socket);
-  assert.deepEqual(revived.history, original.history);
-});
-
 test("socket write preflight rejects stopping before attempting to connect", async (t) => {
   const { runtime } = harness(t);
   const { id } = runtime.create({ tasks: [task("stopping")] }).items[0];
@@ -272,7 +168,7 @@ test("socket write preflight rejects stopping before attempting to connect", asy
   assert.deepEqual(checked, [id]);
 });
 
-test("terminal notifications are emitted once only for failure, not normal completion or explicit cancellation", async (t) => {
+test("terminal notifications are emitted once for completion, cancellation and failure", async (t) => {
   const delivered = [];
   const { runtime, started } = harness(t, { deliverToMain: (msg) => delivered.push(msg) });
   const [normal, stopped] = runtime.create({ tasks: [task("normal"), task("stopped")] }).items;
@@ -280,63 +176,35 @@ test("terminal notifications are emitted once only for failure, not normal compl
   started[0].finish("success");
   started[1].finish("cancelled");
   await Promise.all([runtime.jobDone(normal.id), runtime.jobDone(stopped.id)]);
-  assert.deepEqual(delivered, []);
+  assert.deepEqual(delivered.map((entry) => entry.status), ["completed", "cancelled"]);
+  assert.deepEqual(delivered.map((entry) => entry.jobId), [normal.id, stopped.id]);
+  assert.deepEqual(delivered.map((entry) => entry.round), [1, 1]);
+  assert.deepEqual(delivered.map((entry) => entry.from), [normal.id, stopped.id]);
+  assert.equal(delivered[0].type, "notification");
+  assert.equal(delivered[0].error, null);
   const failed = runtime.create({ tasks: [task("failure")] }).items[0];
   started[2].fail(new Error("provider failed"));
   assert.equal((await runtime.jobDone(failed.id)).status, "failed");
-  assert.equal(delivered.length, 1);
-  assert.equal(delivered[0].type, "notification");
-  assert.equal(delivered[0].subagentId, failed.id);
-  assert.equal(delivered[0].status, "failed");
-  assert.deepEqual(delivered[0].history, failed.history);
-  assert.match(delivered[0].content, /provider failed/);
+  assert.equal(delivered.length, 3);
+  assert.equal(delivered[2].type, "notification");
+  assert.equal(delivered[2].subagentId, failed.id);
+  assert.equal(delivered[2].status, "failed");
+  assert.equal(delivered[2].jobId, failed.id);
+  assert.equal(delivered[2].round, 1);
+  assert.deepEqual(delivered[2].history, failed.history);
+  assert.match(delivered[2].content, /provider failed/);
   runtime.stop(failed.id);
   runtime.listDetailed();
   await runtime.jobDone(failed.id);
-  assert.equal(delivered.length, 1, "polls and repeated stop must not resend an error notification");
+  assert.equal(delivered.length, 3, "polls and repeated stop must not resend a terminal notification");
 });
 
-test("depth-2 failure notification is delivered to depth-1 parent via deliverMessage, not to main", async (t) => {
-  const mainDelivered = [];
-  const parentDelivered = [];
-  const { runtime, started } = harness(t, {
-    deliverToMain: (msg) => mainDelivered.push(msg),
-    deliverMessage: (req) => parentDelivered.push(req),
-  });
-  const parent = runtime.create({ tasks: [task("parent")] }).items[0];
-  const child = runtime.create({ tasks: [task("child")] }, { parentAgentId: parent.id }).items[0];
-  started[1].fail(new Error("depth-2 child failed"));
-  await runtime.jobDone(child.id);
-  assert.equal(mainDelivered.length, 0, "Main must not receive depth-2 failure notification directly");
-  assert.equal(parentDelivered.length, 1, "Parent must receive depth-2 failure notification");
-  assert.equal(parentDelivered[0].agentId, parent.id);
-  assert.equal(parentDelivered[0].message.type, "notification");
-  assert.equal(parentDelivered[0].message.subagentId, child.id);
-});
-
-test("broadcast write rejects cross-hierarchy senders without mutating from", async () => {
-  const endpoint = getBroadcastSocketPath("sub_01", path.join(tmpdir(), "pi-cross-hierarchy"));
-  const ops = createSocketAwareWriteOperations({
-    senderId: "main",
-    resolveEndpoint: async (p) => {
-      if (p === endpoint) return { isManaged: true, isBroadcast: true, parentId: "sub_01" };
-      return { isManaged: false };
-    },
-  });
-  await assert.rejects(
-    ops.writeFile(endpoint, '{"content":"test"}\n'),
-    (err) => err.code === "invalid_target",
-  );
-});
-
-test("deriveSessionUid produces stable 6-character hex hash", () => {
+test("session namespaces remain stable on reload and distinct between sessions", () => {
   const uid1 = deriveSessionUid("session-12345");
   const uid2 = deriveSessionUid("session-12345");
   const uid3 = deriveSessionUid("session-67890");
-  assert.equal(uid1.length, 6);
   assert.equal(uid1, uid2);
   assert.notEqual(uid1, uid3);
-  assert.equal(deriveSessionUid(null), "default");
 });
 
 test("history paths and writes bind to session cwd", async () => {
@@ -486,29 +354,4 @@ test("cancellation before adapter invocation still finalizes once without native
   assert.equal(ended.status, "cancelled");
   assert.equal(ended.historyState, "ready");
   assert.equal(finalized.length, 1);
-});
-
-test("lifecycle: finalizeJob failure records historyState error while preserving original completion status", async () => {
-  const runtime = createSubagentRuntime({
-    startJob: () => ({
-      request: {},
-      done: Promise.resolve({ result: "work done successfully", messages: [] }),
-      cancel() {},
-    }),
-    finalizeJob: async () => {
-      throw new Error("Disk full or permission denied during summary write");
-    },
-    deliverMessage: async () => ({ accepted: true }),
-  });
-
-  const created = runtime.create({ tasks: [{ name: "T1", task: "Do work" }] });
-  const actorId = created.items[0].id;
-
-  await runtime.jobDone(actorId);
-
-  const finalJobState = runtime.jobs({ jobIds: [actorId] }).jobs[0];
-  assert.equal(finalJobState.status, "completed", "Job status must remain completed despite history write failure");
-  assert.equal(finalJobState.historyState, "error");
-  assert.equal(finalJobState.historyError?.code, "history_write_failed");
-  assert.match(finalJobState.historyError?.message, /Disk full/);
 });

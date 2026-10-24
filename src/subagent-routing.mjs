@@ -5,8 +5,10 @@
  * `routeSubagent` composes the batch assignment (the same rule as the child
  * prompt), asks the classifier once for the role over the full assignment,
  * appends the actual selected role text to the state, asks once for the model,
- * and returns the role instructions, the catalog chat model object, the role
- * level limited to the model's configured band, and the role tool whitelist.
+ * and returns the role instructions, the catalog chat model object, the
+ * selected candidate's direct thinking level, and the role tool whitelist.
+ * Selecting a model from a pool with differing candidate levels therefore
+ * also selects the thinking level; there is no role default to clamp it.
  * Tool registration, depth harness tools and the child prompt stay with the
  * adapter.
  *
@@ -17,9 +19,12 @@
  */
 
 import { readFileSync } from "node:fs";
-/** The automatic path never exceeds high; `max` stays a main-session choice. */
-const THINKING_LEVELS = ["low", "medium", "high"];
-const THINKING_RANK = { low: 0, medium: 1, high: 2 };
+import {
+  RoutingConfigError,
+  candidateThinking,
+  modelSupportsThinking,
+  validateRoutingConfig,
+} from "./subagent/routing.ts";
 
 /** Harness-owned routing error with a stable machine-readable code. */
 export class SubagentRoutingError extends Error {
@@ -45,58 +50,17 @@ function invalidConfigError(message) {
 }
 
 /**
- * Validate the parsed routing config inline. Unknown fields are ignored; a
- * missing or malformed essential fails the Job instead of quietly changing a
- * routing dimension.
+ * Validate the parsed routing config inline. Unknown fields are ignored, but
+ * each candidate carries its final thinking level directly. Legacy
+ * role.thinking is tolerated but never used to choose or clamp it.
  */
 function validateConfig(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== 2) {
-    throw invalidConfigError("must be a version 2 JSON object");
+  try {
+    return validateRoutingConfig(value);
+  } catch (error) {
+    if (error instanceof RoutingConfigError) throw invalidConfigError(error.message);
+    throw error;
   }
-  const { classifier, instructions, roles, models } = value;
-  if (!classifier || !filled(classifier.provider) || !filled(classifier.id)) {
-    throw invalidConfigError("classifier needs a provider and an id");
-  }
-  if (!instructions || !filled(instructions.role) || !filled(instructions.model)) {
-    throw invalidConfigError("instructions need the role and model text");
-  }
-  if (!Array.isArray(roles) || roles.length === 0) throw invalidConfigError("roles must be a non-empty array");
-  if (!Array.isArray(models) || models.length === 0) throw invalidConfigError("models must be a non-empty array");
-  const modelIds = new Set();
-  for (const [index, model] of models.entries()) {
-    if (!model || !filled(model.id) || modelIds.has(model.id)) throw invalidConfigError(`models[${index}] needs a unique id`);
-    if (!filled(model.provider) || !filled(model.model) || !filled(model.preference)) throw invalidConfigError(`models[${index}] needs provider, model and preference`);
-    modelIds.add(model.id);
-  }
-
-  const roleIds = [];
-  for (const [index, role] of roles.entries()) {
-    if (!role || !filled(role.id) || roleIds.includes(role.id)) throw invalidConfigError(`roles[${index}] needs a unique id`);
-    if (!filled(role.instructions) || !THINKING_LEVELS.includes(role.thinking)) {
-      throw invalidConfigError(`roles[${index}] needs instructions and a low, medium or high thinking level`);
-    }
-    if (Object.hasOwn(role, "tools")) {
-      throw invalidConfigError(`roles[${index}].tools is no longer supported; use excludeTools`);
-    }
-    if (!Array.isArray(role.excludeTools) || !role.excludeTools.every((name) => filled(name) && !/[?*]/.test(name))) {
-      throw invalidConfigError(`roles[${index}].excludeTools must be exact tool names`);
-    }
-    if (role.enableTools !== undefined && (!Array.isArray(role.enableTools) || !role.enableTools.every((name) => filled(name) && !/[?*]/.test(name)))) {
-      throw invalidConfigError(`roles[${index}].enableTools must be exact tool names`);
-    }
-    if (!Array.isArray(role.candidates) || role.candidates.length === 0) throw invalidConfigError(`roles[${index}].candidates must be non-empty`);
-    const poolIds = new Set();
-    for (const candidate of role.candidates) {
-      if (!candidate || !modelIds.has(candidate.model) || poolIds.has(candidate.model)) throw invalidConfigError(`roles[${index}].candidates needs unique refs to global models`);
-      const band = candidate.thinking;
-      if (!band || !THINKING_LEVELS.includes(band.min) || !THINKING_LEVELS.includes(band.max) || THINKING_RANK[band.min] > THINKING_RANK[band.max]) {
-        throw invalidConfigError(`roles[${index}].candidates thinking must have min <= max within low..high`);
-      }
-      poolIds.add(candidate.model);
-    }
-    roleIds.push(role.id);
-  }
-  return value;
 }
 
 /** Read the explicit Pi user config for each new Fresh route; no bundled fallback. */
@@ -149,12 +113,6 @@ function resolveChatModel(registry, candidate) {
     );
   }
   return model;
-}
-
-/** The role level limited to the candidate's band; Pi does the final clamp. */
-function clampThinking(desired, band) {
-  const bounded = Math.min(Math.max(THINKING_RANK[desired], THINKING_RANK[band.min]), THINKING_RANK[band.max]);
-  return THINKING_LEVELS[bounded];
 }
 
 function abortedError(stage) {
@@ -302,12 +260,21 @@ export async function routeSubagent({ registry, task, context = "", signal, budg
   });
   const candidate = pool.find((entry) => entry.model === modelId);
   const model = modelById.get(modelId);
+  const chatModel = resolveChatModel(registry, model);
+  const thinkingLevel = candidateThinking(candidate);
+  if (!modelSupportsThinking(chatModel, thinkingLevel)) {
+    throw new SubagentRoutingError(
+      "routing_thinking_unsupported",
+      `Selected model ${chatModel.provider}/${chatModel.id} does not support thinking level ${thinkingLevel}.`,
+      { candidate: candidate.model, thinking: thinkingLevel },
+    );
+  }
 
   return {
     roleId,
     instructions: role.instructions,
-    model: resolveChatModel(registry, model),
-    thinkingLevel: clampThinking(role.thinking, candidate.thinking),
+    model: chatModel,
+    thinkingLevel,
     excludeTools: [...role.excludeTools],
     enableTools: [...(role.enableTools ?? [])],
   };

@@ -2,6 +2,20 @@
 
 ## 状态
 
+Shell Preflight 是附加功能，不是项目核心目标。
+
+本文原有行为说明尚未完成本轮核对。下节记录作者报告的 Bug，不表示代码已经修复。
+
+## 已知 Bug
+
+作者报告：Windows 下，聊天框 `!` 命令使用 Bash，而不是预期的 PowerShell（`pwsh`）。本轮尚未在 Windows 复现，根因尚未定位。
+
+入口覆盖和 Shell 选择是两个问题。扩展已覆盖 Agent 的 Shell 工具调用与聊天框命令入口，但入口覆盖不能证明检查或执行时选对了 Shell。
+
+后续修复应分别验证 Agent 的 Bash 调用、Agent 的 PowerShell 调用和聊天框 `!` 命令。检查器应与实际执行器使用同一个 Shell，扩展不应把聊天框命令改到另一个 Shell 执行。
+
+## 实现位置
+
 第一版实现位于：
 
 - `src/shell-preflight.mjs`：Shell 识别和语法检查；
@@ -20,9 +34,11 @@
 
 - 模型调用的 `bash` 工具；
 - 模型调用的 `powershell` 工具；
-- 用户输入的 `!` / `!!` Bash 命令。
+- 用户在聊天框输入的 `!`／`!!` 命令。聊天框命令不应一概称为 Bash 命令。
 
-`bash` 和 `!` 使用扩展在当前 Session 首次检查时读取的 Pi `shellPath`；未配置时使用 Pi 自己的 `getShellConfig()` 解析结果。`shellCommandPrefix` 与待执行命令拼接后一起检查，这与 Pi 对 Bash 工具和用户命令的拼接方式一致。修改 Shell 设置后需要重新加载扩展，使 Preflight 与 Pi 重建后的工具配置同时更新。
+原说明将 `bash` 和 `!` 统一描述为使用 Pi 的 `shellPath`。此处仍待结合 Windows Bug 核对，不能视为预期行为。
+
+按原实现说明，扩展在当前 Session 首次检查时读取 Pi `shellPath`；未配置时使用 Pi 自己的 `getShellConfig()` 解析结果。`shellCommandPrefix` 与待执行命令拼接后一起检查，这与 Pi 对 Bash 工具和用户命令的拼接方式一致。修改 Shell 设置后需要重新加载扩展，使 Preflight 与 Pi 重建后的工具配置同时更新。
 
 语法失败、Shell 不受支持、解析器不存在或检查超时时，命令不会执行，并返回 Shell、失败类别和解析器诊断。
 
