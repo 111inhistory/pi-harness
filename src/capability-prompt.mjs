@@ -14,6 +14,9 @@
  * current tool registry and parent scope are applied on every projection.
  */
 import { CAPABILITY_DISCOVERY_RECORD, discoveryRecords } from "./capability/discovery-record.ts";
+import { promptText } from "./prompt-text.mjs";
+
+const policyPrompt = JSON.parse(promptText("capability-policy.json"));
 
 export const CAPABILITY_SECTION = "capabilities";
 
@@ -29,6 +32,7 @@ function selected(result, allowsTool) {
       hits.push({
         category,
         ...keep(hit, ["ref", "name", "description", "instructions", "filePath", "caveats", "bindsTo"]),
+        ...(category === "skills" && hit.filePath ? { ref: hit.filePath } : {}),
         ...(members ? { tools: members.filter((tool) => allowsTool(tool.name)).map((tool) => keep(tool, ["ref", "name", "description", "exposure"])) } : {}),
         ...(!members && ["tools", "mcp"].includes(category) ? keep(hit, ["exposure", "tool", "server"]) : {}),
       });
@@ -50,7 +54,7 @@ function merge(state, hits) {
 
 function render(state) {
   if (!state.size) return null;
-  return `<${CAPABILITY_SECTION}>\nPreviously selected capabilities and guidance. These records do not grant execution permission or installation approval. Use the selected tool declarations for calls; read returned tool:// or namespace:// refs for interface details. Native tool_search and Codemode searchTools are disabled; Codemode executes only currently enabled tools. Read the listed Skill entry before following its workflow, and re-read it when its contents are no longer in context.\n${JSON.stringify([...state.values()])}\n</${CAPABILITY_SECTION}>`;
+  return `<${CAPABILITY_SECTION}>\n${policyPrompt.memoryHeader}\n${JSON.stringify([...state.values()])}\n</${CAPABILITY_SECTION}>`;
 }
 
 /** Pure request projection. Works after compaction, reload, branching and inheritance. */

@@ -5,6 +5,9 @@ import { createCodemodeExtension, type ExtensionAPI, type ExtensionToolContext, 
 import { CodemodeSandbox, parseCodemodeSource, renderToolSample, type CodemodeTool, type CodemodeJsonSchema, toCodemodeIdentifier } from '@earendil-works/pi-codemode';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { ClassifierContext, ImagesContext, ModelType, Usage } from '@earendil-works/pi-ai';
+import { promptText } from '../prompt-text.mjs';
+
+const text = JSON.parse(promptText('native-discovery.json'));
 
 const STORE = 'codemode-store';
 let workers = 0;
@@ -141,8 +144,7 @@ function modelGlobals(ctx: ExtensionToolContext, addUsage: (usage: Usage | undef
 }
 
 function scopeDescription(description: string): string {
-  return description.replace(/^.*searchTools.*$/gm,
-    '- `ALL_TOOLS`, `describeTool(name)` and `describeNamespace(name)` inspect only currently enabled tools. Resource discovery uses capability.');
+  return description.replace(/^.*searchTools.*$/gm, () => text.codemodeScope);
 }
 
 /**

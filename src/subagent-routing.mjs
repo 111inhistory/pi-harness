@@ -3,22 +3,24 @@
  * pool (singleton pools select directly), plus local thinking synthesis.
  *
  * `routeSubagent` composes the batch assignment (the same rule as the child
- * prompt), asks the classifier once for the role over the full assignment,
- * appends the actual selected role text to the state, asks once for the model,
- * and returns the role instructions, the catalog chat model object, the
- * selected candidate's direct thinking level, and the role tool whitelist.
- * Selecting a model from a pool with differing candidate levels therefore
- * also selects the thinking level; there is no role default to clamp it.
- * Tool registration, depth harness tools and the child prompt stay with the
- * adapter.
+ * prompt), asks the classifier once for the role over the full assignment
+ * (with a bounded retry for transient transport failures), appends the actual
+ * selected role text to the state, asks once for the model, and returns the
+ * role instructions, the catalog chat model object, the selected candidate's
+ * direct thinking level, and the role tool whitelist. Selecting a model from a
+ * pool with differing candidate levels therefore also selects the thinking
+ * level; there is no role default to clamp it. Tool registration, depth harness
+ * tools and the child prompt stay with the adapter.
  *
- * There is one role call and, for multi-model pools, one model call; no fallback: a missing catalog
- * entry, a classifier error (including missing provider credentials), an abort
- * or a budget refusal throws SubagentRoutingError instead of degrading into a
- * silent selection.
+ * There is one logical role call and, for multi-model pools, one logical model
+ * call; no fallback: a missing catalog entry, a final classifier error
+ * (including missing provider credentials), an abort or a budget refusal
+ * throws SubagentRoutingError instead of degrading into a silent selection.
  */
 
 import { readFileSync } from "node:fs";
+import { composeAssignment } from "./subagent-prompt.mjs";
+import { isRetryableAssistantError, retryDelayMs } from "@earendil-works/pi-ai";
 import {
   RoutingConfigError,
   candidateThinking,
@@ -75,15 +77,6 @@ export function loadSubagentRoutingConfig(path) {
   return validateConfig(parsed);
 }
 
-/**
- * The Job's assignment text: batch context plus the task, assembled with the
- * same rule as the child prompt. Context bytes are preserved; the context is
- * only trimmed to decide whether it is present at all.
- */
-function composeAssignment(task, context) {
-  return context.trim() === "" ? task : `# Batch context\n\n${context}\n\n# Task\n\n${task}`;
-}
-
 function resolveClassifier(registry, classifier) {
   const model = registry.findOfType("classifier", classifier.provider, classifier.id);
   if (!model) {
@@ -132,6 +125,57 @@ function invalidAnswerError(stage, key, reason) {
 }
 
 /**
+ * Bounded retry policy for one idempotent routing classifier request. The SDK
+ * provider retry is disabled for these calls (`maxRetries: 0`), so every
+ * physical HTTP attempt is debited and timed here exactly once. The delays and
+ * jitter mirror the SDK provider policy: 0.5s, 1s, ... capped at 8s, shortened
+ * by up to 25%; a routing call makes at most three physical attempts.
+ */
+const CLASSIFIER_RETRY = Object.freeze({
+  maxAttempts: 3,
+  baseDelayMs: 500,
+  maxDelayMs: 8_000,
+  jitterRatio: 0.25,
+});
+
+/** Whether the SDK's transient-provider classifier considers a failure retryable. */
+function transientClassifierFailure(nativeError) {
+  return typeof nativeError === "string"
+    && isRetryableAssistantError({ stopReason: "error", errorMessage: nativeError });
+}
+
+/** Exponential retry delay with SDK-style bounded jitter. `attempt` is 1-indexed. */
+function classifierRetryDelayMs(attempt) {
+  const delay = retryDelayMs(
+    { baseDelayMs: CLASSIFIER_RETRY.baseDelayMs, maxAgentDelayMs: CLASSIFIER_RETRY.maxDelayMs },
+    attempt,
+  );
+  return Math.max(0, Math.round(delay * (1 - Math.random() * CLASSIFIER_RETRY.jitterRatio)));
+}
+
+/** Resolve after the backoff delay, or early when the Job is cancelled. */
+function waitForRetry(delayMs, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(false);
+      return;
+    }
+    let timer;
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, Math.max(0, delayMs));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    // An abort can land between the check above and listener registration.
+    if (signal?.aborted) onAbort();
+  });
+}
+
+/**
  * The decided label: the deterministic argmax over the answer's probabilities
  * across the configured criteria, ties keeping the configured order (the rule
  * the native reference classifier applies). The answer's label must name a
@@ -160,35 +204,51 @@ function selectLabel(stage, key, answers, criteria) {
 }
 
 /**
- * One native classifier call. The Job budget is debited before dispatch and
- * the abort signal is honored before the debit and before dispatch, so an
- * aborted or exhausted Job never reaches the provider.
+ * One logical classifier question. Each physical attempt takes its own Job
+ * budget debit and honors the abort signal before the debit and dispatch. Only
+ * a transient provider/transport failure is retried; auth/config failures,
+ * malformed answers and protocol/parse errors fail on their first attempt.
  */
 async function classifyChoice({ stage, key, registry, classifier, signal, budget, state, question }) {
   if (signal?.aborted) throw abortedError(stage);
-  const debit = budget.beginModelCall();
-  if (!debit || debit.ok !== true) {
-    const terminal = debit?.terminal ?? null;
-    throw new SubagentRoutingError(terminal?.error?.code ?? "budget_exceeded", `Routing stopped: the Job budget refused classifier call ${stage}.`, {
-      stage,
-      reason: debit?.reason ?? null,
-      terminal,
-    });
-  }
-  if (signal?.aborted) throw abortedError(stage);
 
-  let result;
-  try {
-    result = await registry.classify(classifier, { state, questions: { [key]: question } }, { signal });
-  } catch (error) {
+  for (let attempt = 1; attempt <= CLASSIFIER_RETRY.maxAttempts; attempt += 1) {
     if (signal?.aborted) throw abortedError(stage);
-    throw classificationFailedError(stage, classifier, messageOf(error));
+    const debit = budget.beginModelCall();
+    if (!debit || debit.ok !== true) {
+      const terminal = debit?.terminal ?? null;
+      throw new SubagentRoutingError(terminal?.error?.code ?? "budget_exceeded", `Routing stopped: the Job budget refused classifier call ${stage}.`, {
+        stage,
+        reason: debit?.reason ?? null,
+        terminal,
+      });
+    }
+    if (signal?.aborted) throw abortedError(stage);
+
+    let result;
+    let nativeError;
+    try {
+      // The routing retry loop is the only retry layer: a provider request
+      // must correspond to one debit, never to an unknown inner attempt count.
+      result = await registry.classify(classifier, { state, questions: { [key]: question } }, { signal, maxRetries: 0 });
+    } catch (error) {
+      if (signal?.aborted) throw abortedError(stage);
+      nativeError = messageOf(error);
+    }
+    if (result !== undefined) {
+      if (signal?.aborted || result?.stopReason === "aborted") throw abortedError(stage);
+      if (result?.stopReason === "stop") return selectLabel(stage, key, result.answers, question.criteria);
+      nativeError = result?.errorMessage ?? "the classifier returned no usable result";
+    }
+
+    const finalError = nativeError ?? "the classifier returned no usable result";
+    if (attempt < CLASSIFIER_RETRY.maxAttempts && transientClassifierFailure(finalError)) {
+      if (!(await waitForRetry(classifierRetryDelayMs(attempt), signal))) throw abortedError(stage);
+      if (signal?.aborted) throw abortedError(stage);
+      continue;
+    }
+    throw classificationFailedError(stage, classifier, finalError);
   }
-  if (signal?.aborted || result?.stopReason === "aborted") throw abortedError(stage);
-  if (!result || result.stopReason !== "stop") {
-    throw classificationFailedError(stage, classifier, result?.errorMessage ?? "the classifier returned no usable result");
-  }
-  return selectLabel(stage, key, result.answers, question.criteria);
 }
 
 /**

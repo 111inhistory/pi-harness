@@ -1,5 +1,7 @@
 # 核心实现验证记录
 
+**历史检查点：** 本文记录存储 v2 开工前的结果。当时 JSONL 膨胀和 OOM 阻断了 Subagent 与 Capability；下述 RED 用例和合并实验不是当前待办。后续已完成存储接入、撤回消息合并和历史迁移，见[插件内存收敛](subagent-memory-review.md)、[批量迁移](subagent-migration-batch.md)及[提示词外置与当前回归](prompt-extraction-review.md)。
+
 ## 验证范围
 
 2026-10-24，在 Linux、Node.js `22.23.4` 和 Pi SDK `1.4.0` 上验证当前工作区。SDK 模型回复由本地脚本模拟，没有请求真实模型。Windows 实机、多用户切换和真实模型行为不在本次验证范围内。
@@ -12,7 +14,7 @@
 | --- | --- |
 | `npm ci --ignore-scripts` | 根据锁文件重新安装成功 |
 | `npm run typecheck` | 通过 |
-| `npm run smoke` | 通过；仅覆盖原型契约，不代表核心功能全部通过 |
+| `node experiments/work/prototype/demo.mjs --assert` | Work 原型独立验证通过；不代表主线功能通过 |
 | `npm audit` | 当前锁文件报告 0 个漏洞 |
 | `npm test` | 发现边界回归加入后为 359 项：356 通过、1 失败、2 跳过；退出码为 1 |
 | `git diff --check` | 通过 |
@@ -65,7 +67,19 @@
 
 独立只读复核发现并复验了资源读取、历史目录和 worker 取消三个缺陷。修复后四项回归通过。测试不证明真实模型能正确选择资源，也不覆盖只有资源、没有工具的 MCP 服务器。
 
-## 唯一失败：Main 无事件清空原生队列
+## 协议与 Work 整理
+
+| 内容 | 决定 | 依据与保留边界 |
+| --- | --- | --- |
+| 通用 `protocol-io` 模块、扩展和专用测试 | Delete | 当前不需要可插拔 URI 读写；删除所有者握手、路由和读写覆写，不另建替代层 |
+| Broker 的资源 `read` API | Delete | Skill 已有物理文件，工具接口已有声明或结果；不保留第二套读取入口 |
+| Skill 入口与工具接口 | Keep | Skill 返回绝对路径；只有入选工具补充接口，搜索目录和分支记录不重复存储 schema |
+| Tool／MCP 候选 ref | Keep | 仅作为检索与提交的身份，不作为可读取 URI |
+| Work 能力与交付形态 | Defer | 能力仍有需求，Pi 插件形态未定；代码、测试与设计统一保存在 `experiments/work/` |
+
+当前整理只验证资源物理路径、接口提供、主线不挂载 Work，以及 Work 独立原型。不据此宣称 Subagent 存储、JSONL 膨胀或 OOM 已修复。
+
+## 此前唯一失败：Main 无事件清空原生队列
 
 失败测试为 `upstream-main-clear`，位于 `test/subagent-integration-real.test.mjs`，场景实现位于 `test-support/subagent-sdk-scenario.mjs`。
 

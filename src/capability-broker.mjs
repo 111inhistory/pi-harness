@@ -1,5 +1,5 @@
 /**
- * Read-only capability broker (v2 search/read contract).
+ * Read-only capability search broker.
  *
  * The public `capability` tool takes no arguments: the caller's conversation is
  * the request. Search runs inside an internal retrieval agent that calls this
@@ -33,7 +33,7 @@
  * ToolInfo is `{ name, description, parameters, exposure, namespace, sourceInfo }`.
  * Only visible capabilities are surfaced: `exposure === "hidden"` tools (registered
  * but unreachable) and `disableModelInvocation` skills (not model-invocable) are
- * excluded from search and rejected by `read`. MCP identity comes from the
+ * excluded from search. MCP identity comes from the
  * tool's `namespace` (`mcp__<server>`), the harness `mcp__<server>__<tool>` name,
  * or an explicit `mcp:<server>[/<tool>]` source path, in that order of specificity.
  * Every namespace is one candidate with all visible members and shared
@@ -41,23 +41,16 @@
  * use a server-level mcp:// candidate. Member lookups return the whole group. MCP-sourced tools without a
  * parseable identity keep the ordinary tool fallback (or their ordinary namespace).
  *
- * Hits carry stable URI refs, and `read(ref, { cwd, signal })` resolves exact
- * known resources only:
- *
- *   tool://<encoded-name>                     -> tool metadata JSON
- *   namespace://<encoded-name>                -> namespace instructions and all visible tool metadata
- *   mcp://<encoded-server>[/<encoded-tool>]   -> server/tool metadata JSON
- *   skill://<encoded-name>                    -> full skill body text
- *   npm://<encoded-package>@<version>         -> npm package metadata JSON
- *
- * Unknown schemes, malformed refs, unknown or hidden resources and unreadable
- * skill bodies fail explicitly; nothing is fabricated. Ranking is the v2 fixed
+ * Tool and namespace refs identify search candidates, not read endpoints.
+ * Skills use absolute entry paths for both ref and filePath. Native read opens
+ * those files; this broker installs no resource protocol or tool override.
+ * Skill body failures remain diagnostic warnings. Ranking is the fixed
  * ladder: exact ref, identifier/name, token+prefix recall, then single-edit
  * fuzzy — candidate limits apply after namespace grouping. Fuzzy fires only after the primary local groups have settled with
  * no ref/name/token hit anywhere among them (the remote group applies the same
  * rule inside its own branch). Hits carry only the two public states
  * (available / needs_approval), never activation or connection substates; the
- * exact registry metadata for a tool lives in `read(tool://...)`. An exact npm
+ * selected tool interfaces come from the host registry and native declarations. An exact npm
  * ref that the registry explicitly reports as absent is a legitimate no-hit;
  * transport, timeout and other registry failures degrade the remote group. An
  * exact npm ref for an already installed package or for a manifest without the
@@ -70,16 +63,13 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { PI_PACKAGE_KEYWORD, packageNameFromSource } from "./capability-marketplace.mjs";
+import { promptText } from "./prompt-text.mjs";
+
+const toolsPrompt = JSON.parse(promptText("capability-tools.json"));
 
 export const CAPABILITY_TOOL_NAME = "capability";
 
-export const CAPABILITY_TOOL_DESCRIPTION =
-  "Find reusable skills and task guidance alongside tools and MCP capabilities for the current task. " +
-  "Uses this conversation; no arguments. Returns relevant local refs and availability and reports that remote was not searched; " +
-  "remote package search is disabled until a user approval receiver exists. " +
-  "A namespace is one candidate with its tools and shared instructions. " +
-  "May activate selected tools already registered in this session, but never installs packages or executes capabilities. " +
-  "For Skill discovery, use capability rather than manual filesystem or web searches unless the user explicitly requests those search methods.";
+export const CAPABILITY_TOOL_DESCRIPTION = toolsPrompt.capability.description;
 
 /**
  * Model-visible schema of the public tool. Empty on purpose: the request is the
@@ -101,17 +91,12 @@ export const CAPABILITY_SEARCH_PARAMETERS = Object.freeze({
     query: Object.freeze({
       type: "string",
       minLength: 1,
-      description:
-        "Keywords for relevant guidance (workflows, rules, preferences, or background) or tools, or a ref from an earlier result " +
-        "(tool://read, namespace://subagent, mcp://firefox_devtools, or an absolute Skill entry path) " +
-        "for an exact lookup.",
+      description: toolsPrompt.search.parameters.query,
     }),
     src: Object.freeze({
       type: "string",
       enum: Object.freeze(["local", "remote", "all"]),
-      description:
-        "local: session tools, MCP servers and local skills. remote: uninstalled npm marketplace packages, " +
-        "returned as installation requests. all: both, local hits first.",
+      description: toolsPrompt.search.parameters.src,
     }),
   }),
   required: Object.freeze(["query", "src"]),
@@ -126,9 +111,7 @@ export const SUBMIT_RESULT_PARAMETERS = Object.freeze({
     refs: Object.freeze({
       type: "array",
       items: Object.freeze({ type: "string" }),
-      description:
-        "Relevant skill/guidance and tool refs from this invocation's capability_search results, most relevant first. Empty when nothing is relevant; " +
-        "refs that no search returned are rejected.",
+      description: toolsPrompt.submit.parameters.refs,
     }),
   }),
   required: Object.freeze(["refs"]),
@@ -1046,6 +1029,7 @@ async function searchSkillHits(skillsPromise, providers, context, limits, signal
   const exact = snapshot.skills.find((candidate) => candidate.filePath === context.query);
   if (exact) {
     const skill = exact;
+    for (const token of context.tokens) covered.add(token);
     const ref = skill.filePath;
     let body = null;
     try {

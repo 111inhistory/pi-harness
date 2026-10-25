@@ -52,7 +52,7 @@ test("discovery appends a native section immediately and preserves original mess
   const projected = capabilityPromptTranscript(messages, entries(...messages));
   assert.deepEqual(projected.slice(0, 3), messages);
   assert.equal(projected[3].role, "system");
-  assert.match(section(projected), /skill:\/\/slides/);
+  assert.doesNotMatch(section(projected), /skill:\/\//);
   assert.match(section(projected), /\/skills\/slides\/SKILL.md/);
   assert.match(section(projected), /Use the current tab/);
   assert.match(section(projected), /pages/);
@@ -82,18 +82,18 @@ test("native compaction and repeated compaction rehydrate from branch details, n
   sm.appendCompaction("Summary deliberately forgets skills and browser", keep, 100);
   const branch = sm.getBranch();
   const projected = capabilityPromptTranscript(sm.buildSessionProjection().messages, branch);
-  assert.match(projected[0].sections[CAPABILITY_SECTION], /skill:\/\/slides/);
+  assert.match(projected[0].sections[CAPABILITY_SECTION], /\/skills\/slides\/SKILL.md/);
   assert.match(projected[0].sections[CAPABILITY_SECTION], /namespace:\/\/browser/);
-  const next = result("b", { skills: [{ ...skill, ref: "skill://analysis", name: "analysis" }] });
+  const next = result("b", { skills: [{ ...skill, ref: "/skills/analysis/SKILL.md", filePath: "/skills/analysis/SKILL.md", name: "analysis" }] });
   appendDiscovery(sm, next);
   const immediately = capabilityPromptTranscript(sm.buildSessionProjection().messages, sm.getBranch());
   assert.deepEqual(immediately[0], projected[0], "new discovery must not rewrite the compacted head");
-  assert.match(section(immediately), /skill:\/\/analysis/);
+  assert.match(section(immediately), /\/skills\/analysis\/SKILL.md/);
   const keepAgain = sm.appendMessage({ ...user, content: "continue again", timestamp: 4 });
   sm.appendCompaction("Still no discovery facts", keepAgain, 100);
   const twice = capabilityPromptTranscript(sm.buildSessionProjection().messages, sm.getBranch());
-  assert.match(section(twice), /skill:\/\/slides/);
-  assert.match(section(twice), /skill:\/\/analysis/);
+  assert.match(section(twice), /\/skills\/slides\/SKILL.md/);
+  assert.match(section(twice), /\/skills\/analysis\/SKILL.md/);
   // Reconstructed manager models reload/inherited raw entries with no in-memory cache.
   const restored = SessionManager.inMemory("/test", {}, [sm.getHeader(), ...sm.getBranch()]);
   assert.deepEqual(capabilityPromptTranscript(restored.buildSessionProjection().messages, restored.getBranch()), twice);
@@ -101,12 +101,12 @@ test("native compaction and repeated compaction rehydrate from branch details, n
 
 test("branch selection, failures and tool scope are respected without changing permissions", () => {
   const first = result("a");
-  const failed = { ...result("b", { skills: [{ ...skill, ref: "skill://failed" }] }), isError: true };
+  const failed = { ...result("b", { skills: [{ ...skill, ref: "/skills/failed/SKILL.md", filePath: "/skills/failed/SKILL.md" }] }), isError: true };
   const partial = result("c", { status: "partial", mcp: [], tools: [{ ref: "tool://denied", name: "denied", kind: "tool" }], skills: [] });
   const branch = entries(first, failed, partial);
   const projected = capabilityPromptTranscript([head, user], branch, { allowsTool: (name) => name === "pages" });
   assert.deepEqual(records(projected).find((hit) => hit.ref === group.ref).tools.map((tool) => tool.name), ["pages"]);
-  assert.doesNotMatch(section(projected), /skill:\/\/failed|tool:\/\/denied|tool:\/\/click/);
+  assert.doesNotMatch(section(projected), /\/skills\/failed|tool:\/\/denied|tool:\/\/click/);
   assert.deepEqual(capabilityPromptTranscript([head, user], []), [head, user], "another branch cannot retain these discoveries");
 });
 
@@ -115,14 +115,14 @@ test("Responses wire prefix is unchanged on append; folding providers retain cur
   const options = { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true };
   const first = result("a");
   const initial = capabilityPromptTranscript([head, user, first], entries(first));
-  const second = result("b", { skills: [{ ...skill, ref: "skill://analysis" }] });
+  const second = result("b", { skills: [{ ...skill, ref: "/skills/analysis/SKILL.md", filePath: "/skills/analysis/SKILL.md" }] });
   const appended = capabilityPromptTranscript([head, user, first, second], entries(first, second));
   const wire = (messages, opts = options) => convertResponsesMessages(model, { messages }, new Set([model.provider]), opts);
   const before = wire(initial);
   assert.deepEqual(wire(appended).slice(0, before.length), before);
   const collapsed = JSON.stringify(wire(appended, { supportsMidConvoSystemMessages: false }));
-  assert.match(collapsed, /skill:\/\/slides/);
-  assert.match(collapsed, /skill:\/\/analysis/);
+  assert.match(collapsed, /\/skills\/slides\/SKILL.md/);
+  assert.match(collapsed, /\/skills\/analysis\/SKILL.md/);
 });
 
 test("real SDK extension exposes discovery on the next turn and after manual compaction", async () => {
@@ -172,12 +172,12 @@ test("real SDK extension exposes discovery on the next turn and after manual com
     await session.prompt("Discover capabilities");
     assert.equal(requests.length, 2);
     assert.equal(section(requests[0]), undefined);
-    assert.match(section(requests[1]), /skill:\/\/slides/);
+    assert.match(section(requests[1]), /\/skills\/slides\/SKILL.md/);
     assert.deepEqual(requests[1].slice(0, requests[0].length), requests[0]);
     await session.compact();
     await session.prompt("Continue without rediscovery");
     assert.equal(requests.length, 3);
-    assert.match(section(requests[2]), /skill:\/\/slides/);
+    assert.match(section(requests[2]), /\/skills\/slides\/SKILL.md/);
     assert.deepEqual(errors, []);
   } finally {
     session?.dispose();

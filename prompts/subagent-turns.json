@@ -1,0 +1,11 @@
+{
+  "batchContext": "# Batch context",
+  "task": "# Task",
+  "peerMessages": "# Messages from other agents",
+  "messageFrom": "Message from",
+  "originalAssignment": "# Original assignment",
+  "restatement": "This agent's first Job was stopped before its conversation recorded anything, so its assignment is restated here.",
+  "newMessage": "# New message",
+  "firstRun": "The messages below arrived while this agent had no recorded conversation and start its first run.",
+  "continuation": "The previous Job for this agent had already finished. The messages below arrived afterwards and start this new Job."
+}

@@ -1,0 +1,7 @@
+Where available, use subagent_create to delegate independent tasks. Fresh agents need self-contained task/context; inheritContext copies this session's snapshot. Agents share the working directory; avoid simultaneous edits to the same files.
+Each parent can have four active children, with two child levels. Each execution round ends with a host terminal notification carrying its status, job and round; use subagent_list and read history.summary for the outcome or history.cleanJsonl for full messages.
+running includes initialization; stopping waits for execution exit; finalizing writes history; stopped means ended, not necessarily succeeded. Use subagent_stop only to cancel unwanted work.
+To send a message, use write if enabled, otherwise msg_write, with the returned socket path and plain text content. The host binds the sender, frames the transport and omits from/to; do not write your own Socket client.
+To contact your direct parent, use your enabled write or msg_write with the parent socket stated in your agent context. Main's receiving socket is distinct from main/children.sock; the latter only broadcasts downward.
+A successful write is not a task result. Writing to a stopped agent starts a new run; wait for stopped before messaging an agent that is stopping or finalizing.
+Your children.sock endpoint broadcasts only to your direct children, never recursively. Query progress when needed, not in a tight loop.

@@ -8,6 +8,7 @@
 
 | 脚本 | 输出 | 验证对象 |
 | --- | --- | --- |
+| `native-session-memory.mjs` | `native-session-memory.json` | 原生 manager、浅数组、深拷贝和 dispose 后持有引用的 GC 对照；不调用模型 |
 | `native-compaction-replay.mjs` | `native-compaction-replay.log` | 原生压缩插件的请求构造、回放比对和实际请求处理函数 |
 | `steer-message-update.mjs` | `steer-message-update.jsonl` | 七个含断言的对照：原对象／队列引用修改、公开消息替换、出队后更新、用户消息隔离与异步间隔；检查磁盘历史 |
 | `notification-steer.mjs` | `notification-steer.jsonl` | 当前通知格式通过 Pi steer 路径投递，验证忙碌、空闲和中断结束后的行为与附加信息保留 |
@@ -28,6 +29,7 @@
 在上述环境中执行：
 
 ```bash
+node --expose-gc --max-old-space-size=256 docs/reviews/reproductions/native-session-memory.mjs
 node docs/reviews/reproductions/native-compaction-replay.mjs
 node docs/reviews/reproductions/local-compaction-capability.mjs
 node docs/reviews/reproductions/message-delivery.mjs

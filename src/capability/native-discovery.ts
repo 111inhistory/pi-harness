@@ -8,6 +8,9 @@ import {
 import { discoveryRecords } from './discovery-record.ts';
 import { installCapabilityCodemode } from './codemode.ts';
 import { capabilityAllowsTool } from '../capability-scope.mjs';
+import { promptText } from '../prompt-text.mjs';
+
+const text = JSON.parse(promptText('native-discovery.json'));
 
 const DISABLED = new Set(['tool_search', 'list_mcp_resources', 'list_mcp_resource_templates']);
 
@@ -70,7 +73,7 @@ export function installNativeDiscoveryBoundary(pi: ExtensionAPI): void {
     pi.registerTool({
       name,
       label: 'Disabled native discovery',
-      description: 'Disabled: Capability owns resource discovery in this harness.',
+      description: text.disabledDescription,
       exposure: 'hidden',
       defaultActive: false,
       parameters: { type: 'object', properties: {} },
@@ -127,7 +130,7 @@ export function installNativeDiscoveryBoundary(pi: ExtensionAPI): void {
           // declaration. Filtering separate MCP declarations is not enough.
           if (tool.name !== 'codemode' || !/\bsearchTools\b|\bmcp__/.test(tool.description)) return tool;
           const current = pi.getAllTools().find((entry) => entry.name === 'codemode');
-          return { ...tool, description: current?.description ?? 'Execute JavaScript using currently enabled tools. Discover resources through capability.' };
+          return { ...tool, description: current?.description ?? text.codemodeFallback };
         }) } : {}),
         ...(message.toolsRemoved ? { toolsRemoved: message.toolsRemoved.filter((tool) => allowed(tool.name)) } : {}),
       };
@@ -146,7 +149,7 @@ function executionTool<TParams extends ToolDefinition['parameters'], TDetails, T
   if (tool.name !== 'read_mcp_resource') return scoped;
   return {
     ...scoped,
-    description: `${tool.description}\nThe server must have a currently enabled tool selected through capability and permitted in this scope.`,
+    description: `${tool.description}\n${text.resourceReadRequirement}`,
     async execute(...args) {
       try { return await tool.execute(...args); }
       catch (error) {

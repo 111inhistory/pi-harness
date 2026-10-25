@@ -4,7 +4,7 @@ import test from "node:test";
 import { Agent } from "@earendil-works/pi-agent-core";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
-import { createSteerDelivery, DELIVERY_CUSTOM_TYPE } from "../../src/subagent/delivery.ts";
+import { sendDelivery, DELIVERY_CUSTOM_TYPE } from "../../src/subagent/delivery.ts";
 
 import { createSubagentRuntime, SubagentError } from "../../src/subagent-runtime.mjs";
 import {
@@ -267,45 +267,24 @@ test("a sibling revival does not steal the terminal notice from the direct paren
   assert.equal(runtime.jobs({ jobIds: [continuation.jobId] }).jobs[0]!.status, "completed");
 });
 
-test("a parked delivery snapshot is resolved through its coordinator before replay", () => {
+test("parked messages retain independent native payloads and terminal metadata", () => {
   const sent: any[] = [];
-  const delivery = createSteerDelivery({ send: (entry) => void sent.push(entry) });
-  delivery.enqueue({ sourceId: "sub_child", round: 1, content: "SNAPSHOT_A" });
-  delivery.enqueue({ sourceId: "sub_child", round: 1, content: "COALESCED_B" });
-  delivery.enqueue({
-    sourceId: "sub_child",
-    round: 1,
-    content: "TERMINAL_C",
-    terminal: { status: "completed", details: { jobId: "sub_child#r1" } },
-  });
-  assert.equal(sent.length, 1, "the native queue holds only the first snapshot");
-  const firstSnapshot = sent[0] as AgentMessage;
-  assert.equal((firstSnapshot as any).customType, DELIVERY_CUSTOM_TYPE);
-
-  const agent = new Agent({
-    streamFn: (() => { throw new Error("stream must not be called"); }) as never,
-    steeringMode: "one-at-a-time",
-    followUpMode: "one-at-a-time",
-  });
-  agent.steer(firstSnapshot);
-  const parked = takeQueuedMessages(agent, (queue) => ({
-    role: "user",
-    content: [{ type: "text", text: `subagent-queue-probe-${queue}` }],
-    timestamp: 0,
-  }) as AgentMessage);
-  assert.equal(parked.length, 1);
-
-  const resolved = delivery.replaceMessage(parked[0] as AgentMessage);
-  assert.ok(resolved, "the parked snapshot is resolved, not flattened");
-  const resolvedCustom = resolved as any;
-  assert.equal(resolvedCustom.customType, DELIVERY_CUSTOM_TYPE);
-  assert.match(resolvedCustom.content, /SNAPSHOT_A/);
-  assert.match(resolvedCustom.content, /COALESCED_B/);
-  assert.match(resolvedCustom.content, /TERMINAL_C/);
-  assert.match(resolvedCustom.content, /\[Subagent sub_child completed \(round 1\)\]/);
-  assert.equal(resolvedCustom.details.source, "host");
-  assert.equal(resolvedCustom.details.status, "completed");
-  assert.deepEqual(resolvedCustom.details.terminal.details, { jobId: "sub_child#r1" });
+  const options = { send: (entry: any) => { sent.push(entry); } };
+  sendDelivery({ sourceId: "sub_child", round: 1, content: "PROGRESS_A" }, options);
+  sendDelivery({ sourceId: "sub_child", round: 1, content: "PROGRESS_B" }, options);
+  sendDelivery({ sourceId: "sub_child", round: 1, content: "TERMINAL_C",
+    terminal: { status: "completed", details: { jobId: "sub_child#r1" } } }, options);
+  const agent = new Agent({ streamFn: (() => { throw new Error("stream must not be called"); }) as never,
+    steeringMode: "one-at-a-time", followUpMode: "one-at-a-time" });
+  for (const message of sent) agent.steer(message);
+  const parked = takeQueuedMessages(agent, (queue) => ({ role: "user",
+    content: [{ type: "text", text: `subagent-queue-probe-${queue}` }], timestamp: 0 }) as AgentMessage);
+  assert.equal(parked.length, 3);
+  assert.deepEqual(parked, sent);
+  assert.equal((parked[0] as any).customType, DELIVERY_CUSTOM_TYPE);
+  assert.equal((parked[0] as any).content, "PROGRESS_A");
+  assert.equal((parked[2] as any).details.source, "host");
+  assert.equal((parked[2] as any).details.status, "completed");
 });
 
 test("the first stopping reason survives later terminal observations", () => {

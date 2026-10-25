@@ -1,0 +1,33 @@
+{
+  "namespace": "Delegate independent background tasks, exchange messages, and collect their results.",
+  "parameters": {
+    "context": "Background, constraints, and source material shared by every task in this batch.",
+    "tasks": "Independent tasks. Order is preserved in the result, but it does not create execution dependencies.",
+    "name": "Caller-facing label; defaults to none.",
+    "task": "Self-contained assignment: deliverable, scope, and how to verify completion.",
+    "inheritContext": "Copy this session's conversation, system prompt, model, and thinking at creation time. Default false: start without this session's chat history.",
+    "all": "Show every agent, including Main and stopped agents, without group limits. Default false.",
+    "filterId": "Optional agent id to filter the visible list. Use all: true to query outside the default view.",
+    "stopId": "The subagent id to stop.",
+    "messagePath": "Returned Unix Socket or Windows Named Pipe address.",
+    "messageContent": "Plain-text message body. The host frames the transport and binds the sender."
+  },
+  "create": {
+    "description": "Create independent background agents. Returns each agent's id, status, socket, and history paths; does not wait for results.",
+    "snippet": "Delegate independent tasks to background agents",
+    "guideline": "Write requirements for subagents primarily in English."
+  },
+  "list": {
+    "description": "List the parent, peers (including self), and own children. Each group is capped at the per-parent concurrency limit: active first, then most recently stopped. Main also expands visible active children; stopped nodes and peers are not expanded. Set all: true for every agent. Main has no subagent history paths. Does not wait for completion.",
+    "snippet": "Check background agent progress and history paths"
+  },
+  "stop": {
+    "description": "Request cancellation of an agent by id. May return stopping or finalizing while execution or history writes finish; does not wait for shutdown.",
+    "snippet": "Cancel a background agent's current run"
+  },
+  "message": {
+    "description": "Send a plain-text message to a managed Agent IPC endpoint: Unix Socket or Windows Named Pipe. The host binds the sender and transport framing. Omit from/to, JSON or NDJSON envelopes, and trailing newlines. Cannot write files.",
+    "snippet": "Send plain-text messages to agents through their Socket paths",
+    "guidelines": ["Provide the message body as plain text content; do not add from/to, JSON/NDJSON framing, a trailing newline, or a custom Socket client."]
+  }
+}

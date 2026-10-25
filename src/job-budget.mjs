@@ -22,6 +22,8 @@
  * transition is refused. Tool Calls are deliberately not a budget dimension.
  */
 
+import { promptText } from "./prompt-text.mjs";
+
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 
@@ -33,10 +35,7 @@ export const BUDGET_PHASES = Object.freeze(["normal", "warning", "exhausted"]);
  * The soft control message injected into the next request once any dimension
  * reaches soft. Concrete limits stay harness-owned and are never included.
  */
-export const BUDGET_WARNING_MESSAGE = [
-  "Execution resources are becoming limited. Finish the current line of work,",
-  "avoid opening unrelated branches, verify the result, and return a final answer.",
-].join("\n");
+export const BUDGET_WARNING_MESSAGE = promptText("execution-budget-warning.md");
 
 /**
  * Harness-owned safety ceiling per subagent nesting depth. Profiles are only

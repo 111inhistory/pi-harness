@@ -30,7 +30,7 @@ const MCP_HIT = {
   tool: "list_pages",
 };
 const SKILL_HIT = {
-  ref: "skill://firefox-existing-profile",
+  ref: "/skills/firefox-existing-profile/SKILL.md",
   name: "firefox-existing-profile",
   description: "Take over an existing Firefox profile with logins and extensions.",
   kind: "skill",
@@ -168,9 +168,9 @@ test("invented refs are rejected and accepted refs return their real metadata", 
       assert.equal(found.isError, undefined);
 
       const submit = toolOf(state, SUBMIT_RESULT_TOOL_NAME);
-      const rejected = await submit.execute("call-2", { refs: ["skill://made-up", TOOL_HIT.ref] });
+      const rejected = await submit.execute("call-2", { refs: ["/missing/SKILL.md", TOOL_HIT.ref] });
       assert.equal(rejected.isError, true);
-      assert.match(rejected.content[0].text, /skill:\/\/made-up/);
+      assert.match(rejected.content[0].text, /\/missing\/SKILL.md/);
 
       const remoteRejected = await submit.execute("call-2b", { refs: [TOOL_HIT.ref, REMOTE_HIT.ref] });
       assert.equal(remoteRejected.isError, true, "remote candidates are not selectable while approval is unsupported");

@@ -170,7 +170,10 @@ function persistedSpec(spec) {
   const copy = { ...spec };
   if (isPlainObject(spec.inheritedContext)) {
     const { entries: _entries, ...meta } = spec.inheritedContext;
-    copy.inheritedContext = meta;
+    // Model definitions can carry headers, provider callbacks and runtime
+    // references. Persist identity only, never credentials or live SDK graphs.
+    const model = meta.model;
+    copy.inheritedContext = { ...meta, ...(model ? { model: { provider: model.provider, id: model.id } } : {}) };
   }
   return copy;
 }
@@ -239,11 +242,22 @@ function planRestore(state) {
     const actor = actors.get(raw.agentId);
     if (actor === undefined) throw stateError(`Job ${jobId} belongs to unknown actor ${describe(raw.agentId)}.`);
     if (!isPlainObject(raw.spec)) throw stateError(`Job ${jobId} has no spec.`);
+    if (raw.spec.kind !== undefined && raw.spec.kind !== "continuation") throw stateError(`Job ${jobId} has an unknown spec kind.`);
+    if (raw.spec.kind !== "continuation" && (typeof raw.spec.task !== "string" || raw.spec.task.trim() === "")) {
+      throw stateError(`Job ${jobId} has no non-empty task.`);
+    }
+    const createdBy = raw.createdBy ?? MAIN_ACTOR_ID;
+    if (createdBy !== MAIN_ACTOR_ID && !actors.has(createdBy)) throw stateError(`Job ${jobId} names unknown creator ${createdBy}.`);
+    if (raw.started && raw.startEntryId !== null && typeof raw.startEntryId !== "string") throw stateError(`Job ${jobId} has malformed start bounds.`);
     const previous = raw.continuedFromJobId ?? null;
     if (previous !== null && jobs.get(previous)?.agentId !== actor.agentId) {
       throw stateError(`Job ${jobId} continues ${describe(previous)}, which is not an earlier Job of its actor.`);
     }
+    if (raw.spec.kind === "continuation" && previous === null) throw stateError(`Job ${jobId} has no continuation predecessor.`);
+    if (raw.end != null && !isPlainObject(raw.end)) throw stateError(`Job ${jobId} has a malformed terminal outcome.`);
     const end = isPlainObject(raw.end) ? raw.end : null;
+    const bounds = end === null ? (raw.history ?? (raw.started ? { startEntryId: raw.startEntryId, endEntryId: null } : null)) : end.history;
+    if (bounds != null && historyBounds(bounds) === null) throw stateError(`Job ${jobId} has malformed history bounds.`);
     const spec =
       raw.spec.kind === "continuation"
         ? { kind: "continuation", name: raw.spec.name ?? null, seed: jobs.get(actor.jobIds[0])?.spec ?? null }
@@ -254,12 +268,12 @@ function planRestore(state) {
       index: raw.index ?? null,
       spec,
       origin: raw.origin ?? null,
-      createdBy: raw.createdBy ?? MAIN_ACTOR_ID,
+      createdBy,
       continuedFromJobId: previous,
       status: end === null ? "failed" : terminalStatus(end.status, jobId),
       result: end?.result ?? null,
       error: end === null ? { ...INTERRUPTED } : (end.error ?? null),
-      history: historyBounds(end === null ? raw.history : end.history),
+      history: historyBounds(bounds),
       interrupted: end === null,
       budget: null,
       // A restored Job is terminal; its Budget snapshot is reporting only.
@@ -747,12 +761,12 @@ export class SubagentRuntime {
   }
 
   /**
-   * Everything a readable view of one terminal Job needs. Null for a Job that
-   * is unknown or still live.
+   * Stable fields for a terminal or finalizing Job's readable view. Null for
+   * an unknown Job or one whose execution has not settled.
    */
   jobRecord(jobId) {
     const job = this.#jobs.get(jobId);
-    if (job === undefined || !TERMINAL_STATUSES.has(job.status)) return null;
+    if (job === undefined || (!TERMINAL_STATUSES.has(job.status) && job.status !== "finalizing")) return null;
     const agent = this.#agents.get(job.agentId);
     const seed = job.spec.kind === "continuation" ? job.spec.seed : job.spec;
     return {
@@ -763,7 +777,7 @@ export class SubagentRuntime {
       task: job.spec.kind === "continuation" ? null : (seed?.task ?? null),
       status: job.status,
       error: cloneValue(job.error),
-      result: job.result,
+      result: cloneValue(job.result),
       history: job.history === null ? null : { ...job.history },
       budget: this.#budgetView(job),
       previousJobId: job.continuedFromJobId,
@@ -798,6 +812,7 @@ export class SubagentRuntime {
       this.#jobs.set(job.jobId, record);
       if (!wasLive) continue;
       interrupted.push(job.jobId);
+      this.#agents.get(job.agentId).stoppedOrder = ++this.#stoppedSequence;
       this.#emitEnd(record);
     }
     for (const agent of this.#agents.values()) this.#refreshAgent(agent.agentId);
@@ -1176,6 +1191,13 @@ export class SubagentRuntime {
     const creator = sourceAgent?.parentAgentId ?? MAIN_ACTOR_ID;
     if (typeof creator !== "string") return;
     const round = Math.max(1, (sourceAgent?.jobIds.indexOf(job.jobId) ?? 0) + 1);
+    let history = null;
+    try {
+      history = this.#historyPaths?.(job.jobId) ?? null;
+    } catch {
+      // A derived view may be unavailable. It must not suppress the one terminal
+      // notice or reject the already-settled execution's completion chain.
+    }
     const envelope = terminalNotification({
       agentId: job.agentId,
       jobId: job.jobId,
@@ -1184,7 +1206,7 @@ export class SubagentRuntime {
       status: job.status,
       content: completionText(job),
       error: job.error ?? null,
-      history: this.#historyPaths?.(job.jobId) ?? null,
+      history,
     });
     if (creator === MAIN_ACTOR_ID) {
       if (this.#deliverToMain === null) return;

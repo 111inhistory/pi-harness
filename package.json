@@ -15,10 +15,6 @@
     "test": "node --import tsx scripts/test.mjs",
     "test:typed": "node --import tsx scripts/test.mjs typed",
     "check": "npm run typecheck && npm test",
-    "demo": "node prototype/demo.mjs",
-    "smoke": "node prototype/demo.mjs --assert",
-    "cli": "node prototype/cli.mjs",
-    "test:work": "node --import tsx --test test/work.test.mjs",
     "test:subagent": "node --import tsx --test test/subagent-runtime.test.mjs",
     "test:shell-preflight": "node --import tsx --test test/shell-preflight.test.mjs"
   },

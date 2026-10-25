@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { discoverSessionSkills } from "../src/capability-skills.mjs";
@@ -35,7 +35,9 @@ test("loaded package/temporary Skills are searchable without scanning other conf
   const broker = createCapabilityBroker({ listTools: () => [], discoverSkills: () => loaded });
   const hits = await broker.search({ query: "ppt", src: "local", cwd });
   assert.deepEqual(hits.skills.map((entry) => entry.name).sort(), ["ppt-master", "ppt-template"]);
-  const text = await broker.read("skill://ppt-master", { cwd });
+  const selectedPath = hits.skills.find((entry) => entry.name === "ppt-master").filePath;
+  assert.equal(selectedPath, packageSkill);
+  const text = await readFile(selectedPath, "utf8");
   assert.match(text, /Reusable PPT guidance/);
 });
 

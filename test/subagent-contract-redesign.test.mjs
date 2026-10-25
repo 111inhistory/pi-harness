@@ -1,20 +1,18 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import fsp from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import test from "node:test";
 
 import { createSubagentRuntime, SubagentError } from "../src/subagent-runtime.mjs";
+import { foldEvents } from "../src/subagent-storage.mjs";
 import { createSocketAwareWriteOperations, getAgentSocketPath, deriveSessionUid } from "../src/subagent-socket.mjs";
-import { getSubagentHistoryPaths, appendCleanJsonl } from "../src/subagent-history.mjs";
 import { deferred } from "../test-support/async.mjs";
 
 function harness(t, options = {}) {
   const started = [];
+  const events = [];
   const runtime = createSubagentRuntime({
     deliverMessage: async () => ({ accepted: true }),
     ...options,
+    onEvent(event) { events.push(event); options.onEvent?.(event); },
     startJob(request) {
       let resolve;
       let reject;
@@ -35,7 +33,9 @@ function harness(t, options = {}) {
     for (const handle of started) handle.finish();
     await Promise.all(runtime.jobs().jobs.map((job) => runtime.jobDone(job.jobId)));
   });
-  return { runtime, started };
+  return { runtime, started, state: () => foldEvents(events.map(({ type, ...data }) => ({
+    type: "custom", customType: `subagent-${type}`, data: { v: 2, ...data },
+  }))) };
 }
 
 const task = (name) => ({ name, task: `do ${name}` });
@@ -137,7 +137,7 @@ test("listener window stays bounded across one thousand stopped actors and reviv
 });
 
 test("scoped stopped ordering survives registry restoration", async (t) => {
-  const { runtime, started } = harness(t);
+  const { runtime, started, state } = harness(t);
   const first = runtime.create({ tasks: [task("first"), task("second"), task("third"), task("fourth")] }).items;
   for (const item of [...first].reverse()) {
     started.find((handle) => handle.request.agentId === item.id).finish();
@@ -147,11 +147,11 @@ test("scoped stopped ordering survives registry restoration", async (t) => {
   started.find((handle) => handle.request.agentId === fifth.id).finish();
   await runtime.jobDone(fifth.id);
   const { runtime: restored } = harness(t);
-  restored.restoreState(runtime.exportState());
+  restored.restoreState(state());
   assert.deepEqual(restored.listDetailed({}, { callerId: "Main" }).items.map((item) => item.id), ["Main", fifth.id, first[0].id, first[1].id, first[2].id]);
   await runtime.sendMessage({ from: "Main", to: first[3].id, content: "Resume before interruption" });
   const { runtime: interrupted } = harness(t);
-  interrupted.restoreState(runtime.exportState());
+  interrupted.restoreState(state());
   assert.deepEqual(interrupted.listDetailed({}, { callerId: "Main" }).items.map((item) => item.id), ["Main", first[3].id, fifth.id, first[0].id, first[1].id]);
 });
 
@@ -191,7 +191,7 @@ test("terminal notifications are emitted once for completion, cancellation and f
   assert.equal(delivered[2].status, "failed");
   assert.equal(delivered[2].jobId, failed.id);
   assert.equal(delivered[2].round, 1);
-  assert.deepEqual(delivered[2].history, failed.history);
+  assert.equal(delivered[2].history, null, "a memory-only host has no derived history files");
   assert.match(delivered[2].content, /provider failed/);
   runtime.stop(failed.id);
   runtime.listDetailed();
@@ -207,25 +207,12 @@ test("session namespaces remain stable on reload and distinct between sessions",
   assert.notEqual(uid1, uid3);
 });
 
-test("history paths and writes bind to session cwd", async () => {
-  const tmpCwd = await fsp.mkdtemp(path.join(tmpdir(), "pi-hist-cwd-"));
-  try {
-    const paths = getSubagentHistoryPaths("sub_01", ".pi/subagents", { cwd: tmpCwd });
-    assert.equal(paths.summary, ".pi/subagents/sub_01/summary.md");
-    assert.equal(paths.resolvedSummary, path.join(tmpCwd, ".pi/subagents/sub_01/summary.md"));
-    await appendCleanJsonl("sub_01", { type: "message_start", role: "assistant" }, { baseDir: ".pi/subagents", cwd: tmpCwd });
-    assert.ok(fs.existsSync(paths.resolvedCleanJsonl));
-  } finally {
-    await fsp.rm(tmpCwd, { recursive: true, force: true });
-  }
-});
-
 test("fresh agent does not reuse actor IDs taken by earlier branches", () => {
   const rootSessionAllocated = new Set();
   // Branch A: create an actor that is immediately stopped or never checkpointed
   const runtimeA = createSubagentRuntime({
-    isAgentIdTaken: (id) => rootSessionAllocated.has(id),
-    onAgentIdAllocated: (id) => rootSessionAllocated.add(id),
+    isIdTaken: (id) => rootSessionAllocated.has(id),
+    onIdAllocated: (id) => rootSessionAllocated.add(id),
     startJob: () => ({ request: {}, done: Promise.resolve({ result: "ok", messages: [] }), cancel() {} }),
   });
   const resA = runtimeA.create({ tasks: [{ name: "T1", task: "Do task A" }] });
@@ -234,8 +221,8 @@ test("fresh agent does not reuse actor IDs taken by earlier branches", () => {
 
   // Branch switch: runtimeB starts with empty registry on the new branch, sharing root session allocated IDs
   const runtimeB = createSubagentRuntime({
-    isAgentIdTaken: (id) => rootSessionAllocated.has(id),
-    onAgentIdAllocated: (id) => rootSessionAllocated.add(id),
+    isIdTaken: (id) => rootSessionAllocated.has(id),
+    onIdAllocated: (id) => rootSessionAllocated.add(id),
     startJob: () => ({ request: {}, done: Promise.resolve({ result: "ok", messages: [] }), cancel() {} }),
   });
   const resB = runtimeB.create({ tasks: [{ name: "T2", task: "Do task B" }] });

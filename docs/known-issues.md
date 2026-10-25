@@ -1,6 +1,6 @@
 # 已知问题与待定事项
 
-本页记录问题状态。目标要求、当前行为和待定细节见[接口契约](interface-contract.md)。
+本页记录已知问题与验收缺口，不是完整缺陷清单。测试和样本通过不代表全部边界正确；生命周期、并发、恢复、权限和模型行为仍需独立审查。目标要求、当前行为和待定细节见[接口契约](interface-contract.md)。
 
 ## Windows 聊天框命令选错 Shell
 
@@ -24,7 +24,7 @@ Pi 有两类命令入口：
 - 纯文本通信已落地：`write`／`msg_write` 接收纯文本内容，由宿主负责 NDJSON 分帧和发送者绑定；提示词明确告知调用方不再拼装 JSON/NDJSON，也不自行编写 Socket 客户端。
 - 任务语言硬拒绝已在路由和契约中删除，英文仅作为当前 Jev 路由器的推荐项。
 - Capability 提示词已明确按需检索与复用原则；Subagent 提示词已明确终态通知与空闲等待规则。
-- 提示词从代码中彻底分离的工作本轮暂不实施。
+- 提示词正文、工具说明、行为指引及参数说明已外置到 `prompts/`，动态装配和权限判断仍在代码中。共享加载器不做 trim、静默回退或模板引擎处理。修改正文后应重启 Pi，不能承诺 `/reload` 刷新全部 ESM 依赖。
 
 ## Socket 权限与退出清理
 
@@ -37,11 +37,11 @@ Pi 有两类命令入口：
 
 ## 原生压缩后不再使用已发现能力
 
-**状态：外部原生压缩插件暂缓处理；本地分支规范记录与动态权限过滤已落地。**
+**状态：外部原生压缩插件暂缓处理；Pi 自身根历史占用确认为 non-goal；本地分支规范记录与动态权限过滤已落地。**
 
 作者澄清，问题不是 `Tool not found`。使用 OpenAI 原生压缩后，Main 在 Capability 再次返回前不再使用此前发现的能力。
 
-本轮已在已安装版本中复现：原生压缩插件漏收 `additional_tools`，并在回放时因输入比对失败而跳过不透明压缩窗口。结果可能只剩占位摘要与保留尾部。详见[原生压缩兼容性调查](reviews/native-compaction-review.md)。作者决定暂缓处理外部插件，不提上游 issue，压缩方案在外部处理。
+本轮已在已安装版本中复现：原生压缩插件漏收 `additional_tools`，并在回放时因输入比对失败而跳过不透明压缩窗口。结果可能只剩占位摘要与保留尾部。详见[原生压缩兼容性调查](reviews/native-compaction-review.md)。作者决定暂缓处理外部插件，不提上游 issue，压缩方案在外部处理；Pi 自身的根历史上下文占用确认为 non-goal。
 
 本项目已通过持久化分支记录确保能力在压缩后不丢：
 - 会话历史通过 `pi.appendEntry` 保存规范的 `capability-discovery` 条目（`src/capability/discovery-record.ts`），嵌套调用亦能持久化。
@@ -61,18 +61,12 @@ Pi 有两类命令入口：
 
 ## 自动通知与消息合并
 
-**状态：核心 typed 模块与适配层已落地；存在已知 Pi 1.4 Root SDK 限制，不宣称所有清空行为已完全修复。**
+**状态：作者已撤回消息合并要求，独立原生 steer 投递已全面落地。**
 
-- 已实现：`src/subagent/lifecycle.ts` 实现正常完成（`completed`）、取消（`cancelled`）与失败（`failed`）的统一终态裁定与通知封装；`src/subagent/delivery.ts` 实现了基于 Pi steer message 的合并投递并在 `message_end` 封口；适配层接通了空闲父 Agent 唤醒续跑（revival）。
-- 已连接边界：协调器已接入 native input、`message_start`、`agent_end`（aborted）和 `agent_settled` 边界。
-- 子 Agent 队列识别：受管理的子 Agent 会话拥有公开 `agent.hasQueuedMessages()` 探针，能正确识别原生队列清空。
-- **已知 SDK 缺口（Root `clearQueue`）**：
-  - Pi 1.4 的 Root `ExtensionContext.hasPendingMessages()` 仅统计文本用户队列镜像，不统计自定义 steer 消息（`agent-delivery`）。
-  - Root 会话没有向扩展公开 `AgentSession`（或 `session.agent`），也不提供 `queue_cleared` 事件。
-  - 当 Root 忙碌且无输入、中断或沉降边界时，调用 `session.clearQueue()` 会移除待处理自定义消息。协调器对此不知情。同轮次后续终态通知合并到已丢失的槽中，导致通知丢失。
-  - Main 保持 `upstream-main-clear` 回归测试为失败（RED），作为上游 API 缺口证据。在支持的 Root API 提供前，不静默跳过该测试。
-  - 普通 Esc 后的通知（`upstream-main-esc`）、忙碌 Main 和忙碌 Subagent 父节点的合并均已通过离线 SDK 测试。这些结果不覆盖上述无事件的队列清空场景。
-- 全仓测试套件由 Main 统一执行，当前不引用最终测试统计数字。
+- 保留统一终态裁定、来源与轮次元数据、空闲父 Agent 的原生续跑。
+- 删除合并槽、批次缓存、写入前替换和队列观察探针，不增加重试。
+- 清除普通 steer 消息后产生的终态独立投递，不被吞没；主动清除已入队的终态后不重发。相关离线 SDK 回归测试已全部通过，不再作为活跃 RED 回归项保留。
+- Pi 的队列观察 API 没有改变。这里是通过撤回合并需求消除依赖，不是修复 Pi 接口。
 
 ## 用户无法直接查看 Subagent
 
@@ -89,13 +83,33 @@ Agent 的状态查询工具不能替代用户查看入口。查看内容和用�
 
 ## 内部架构与边界
 
-**状态：核心 typed 模块已实现并建立单元测试；适配层集成与跟进修复正在收尾。**
+**状态：核心 typed 模块已实现并建立单元测试；适配层集成与测试验收已通过。**
 
 架构重写已按计划分离落地核心 typed 模块（`src/subagent/execution.ts`、`lifecycle.ts`、`delivery.ts`、`routing.ts`、`src/ipc/endpoint.ts`、`message.ts`、`src/capability/discovery-record.ts`）：
 - 统一了执行会话生命周期与清理，消除公开工具注册依赖。
 - 确定了停止原因与终态裁定顺序，统一通知格式。
-- 实现了基于 Pi steer message 的消息合并投递与空闲唤醒续跑。
+- 实现了逐条原生 steer 投递与空闲唤醒续跑，不合并消息。
 - 实现了纯文本 NDJSON 分帧通信与私有 Socket 安全管理。
 - 规范了分支自定义条目能力持久化与动态权限校验。
+- 存储 v2 事件折叠架构落地，运行时忽略 v1 条目；旧 `src/subagent-history.mjs` 及过时测试已移除，保留 Job-view 覆盖。
+- 2026-10-25 Linux 默认 `npm run check` 通过：317 项测试，315 通过、0 失败、2 环境跳过。
 
-投递、根目录安全和 Capability 记录失败的修复已接入。全仓验证仍保留上述 SDK 队列缺口为失败，不应据此声明重写已完成。
+## Subagent 存储膨胀与旧历史迁移
+
+**状态：存储 v2 架构落地，运行时忽略 v1 条目；历史数据离线迁移完成并保留备份。**
+
+- 根因：旧 v1 每次状态变更写入全量快照，导致根会话与子会话 JSONL 文件膨胀并引发 OOM。
+- 方案：存储 v2 采用增量事件折叠与 Job-view 视图，运行时完全忽略 v1 条目且不进行运行时转换。
+- 离线批量迁移：
+  - 10 个非当前根会话原地迁移改写（63 个 Actor、122 个 Job、120 个可读取历史区间），文件总大小由约 1.23 GB 降至 154 MB。
+  - 原当前主会话与 Fork 迁移至新会话，原件及子文件完整保留：用户已在新主对话 `[v2迁移] pi-harness 主对话（10-23）`（ID `3e68473d-3cad-4a4f-98d6-4642458bd393`，30 Actors 48 Jobs）恢复使用；Fork 对应新会话 ID `d0087e3b-a98a-4235-8b40-578a33002221`（25 Actors 41 Jobs）。两份新对话 83 个有记录的历史区间均可读取。
+  - 迁移前保留 4.2 GB 223 个文件的全局备份（`$PI_CODING_AGENT_DIR/backups/subagent-storage-v2-20261025-131639/`）。
+  - 用户明确指出迁移脚本暂不急于清理，不作为当前阻断。详见 [批量迁移记录](reviews/subagent-migration-batch.md)。
+
+## 真实模型在线验证与长压测结果
+
+**状态：离线迁移后的单样本真实 Gemini 续跑通过；常规 Gemini 冒烟正常；Linux 长时间压力测试未完成。**
+
+- 单样本续跑与代理排查：在 `reviews/subagent-migration-smoke.md` 中，前两轮真实续跑失败系独立验收测试进程未对插件使用的 npm `undici` 实例配置环境代理；配置代理后第三轮续跑成功完成并返回 `MIGRATION_V2_RESUMED_2026`。正常 OAuth 刷新由 Pi SDK 自身处理，源码未作修改。
+- 在线 Gemini 冒烟：常规在线 Gemini 冒烟任务（`sub_32`）使用 `gemini-3.8-flash` 返回 `GEMINI_SMOKE_OK`，未复现 OAuth 异常。不依据单次独立 SDK 脚本中的临时代理现象判定普通 Pi OAuth 存在永久缺陷，亦未请求 OAuth 永久性修改。
+- Linux 长压力测试：长时间压力测试子 Agent 执行期间因模型提供方提前终止而失败，未取得完整长压测结果，不宣称压测完成。

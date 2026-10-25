@@ -3,7 +3,7 @@
  * Fresh jobs route on their own Budget; Inherited jobs retain the parent identity.
  * Each actor keeps its session and branch anchor across explicit revivals.
  * Runtime owns terminal outcomes; this adapter runs the SDK and writes history.
- * Root checkpoints are branch-scoped, while actor IDs are root-session-scoped.
+ * Root lifecycle events are branch-scoped, while IDs are root-session-scoped.
  */
 
 import {
@@ -15,15 +15,16 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import path, { join } from "node:path";
+import { existsSync } from "node:fs";
 import { SubagentError, copyInheritedEntries, createSubagentRuntime } from "../src/subagent-runtime.mjs";
 import { ServiceLifecycle, takeQueuedMessages } from "../src/subagent/lifecycle.ts";
 import { openSubagentExecution } from "../src/subagent/execution.ts";
-import { createSteerDelivery, DELIVERY_CUSTOM_TYPE } from "../src/subagent/delivery.ts";
+import { sendDelivery } from "../src/subagent/delivery.ts";
 import { captureInheritedContext } from "../src/inherited-context.mjs";
 import { ensurePrivateSocketRoot } from "../src/subagent-ipc.mjs";
 import { installModelCallBudget } from "../src/pi-job-budget.mjs";
 import { routeSubagent } from "../src/subagent-routing.mjs";
-import { SUBAGENT_SESSIONS_DIR, createSubagentStore, SubagentStoreError } from "../src/subagent-storage.mjs";
+import { EVENTS, SUBAGENT_SESSIONS_DIR, createSubagentStore, SubagentStoreError } from "../src/subagent-storage.mjs";
 import capabilityExtension from "./capability.mjs";
 import { setCapabilityParent, capabilityAvailableTools, capabilityAllowsTool } from "../src/capability-scope.mjs";
 import {
@@ -39,11 +40,9 @@ import {
   writeSocketOneWay,
   deriveSessionUid,
 } from "../src/subagent-socket.mjs";
-import {
-  appendCleanJsonl,
-  writeCompactedSummary,
-  getSubagentHistoryPaths,
-} from "../src/subagent-history.mjs";
+import { hasJobView, jobViewPaths, writeJobView, readTranscript } from "../src/subagent-view.mjs";
+import { promptText } from "../src/prompt-text.mjs";
+import { childContext, composeAssignment, composePrompt, composeContinuationPrompt, formatPeerMessage } from "../src/subagent-prompt.mjs";
 
 const MAX_AGENT_DEPTH = 2;
 const NATIVE_TOOL_NAMES = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"];
@@ -54,18 +53,11 @@ const COMPLETION_CUSTOM_TYPE = "agent-completion";
 /** Job statuses that never reached a terminal state in their own process. */
 const LIVE_JOB_STATUSES = new Set(["running", "stopping", "finalizing"]);
 
+const TOOL_TEXT = JSON.parse(promptText("subagent-tools.json"));
 const SUBAGENT_NAMESPACE = Object.freeze({
   name: "subagent",
-  description: "Delegate independent background tasks, exchange messages, and collect their results.",
-  instructions: [
-    "Where available, use subagent_create to delegate independent tasks. Fresh agents need self-contained task/context; inheritContext copies this session's snapshot. Agents share the working directory; avoid simultaneous edits to the same files.",
-    "Each parent can have four active children, with two child levels. Each execution round ends with a host terminal notification carrying its status, job and round; use subagent_list and read history.summary for the outcome or history.cleanJsonl for full messages.",
-    "running includes initialization; stopping waits for execution exit; finalizing writes history; stopped means ended, not necessarily succeeded. Use subagent_stop only to cancel unwanted work.",
-    "To send a message, use write if enabled, otherwise msg_write, with the returned socket path and plain text content. The host binds the sender, frames the transport and omits from/to; do not write your own Socket client.",
-    "To contact your direct parent, use your enabled write or msg_write with the parent socket stated in your agent context. Main's receiving socket is distinct from main/children.sock; the latter only broadcasts downward.",
-    "A successful write is not a task result. Writing to a stopped agent starts a new run; wait for stopped before messaging an agent that is stopping or finalizing.",
-    "Your children.sock endpoint broadcasts only to your direct children, never recursively. Query progress when needed, not in a tight loop.",
-  ].join("\n"),
+  description: TOOL_TEXT.namespace,
+  instructions: promptText("subagent-instructions.md"),
 });
 
 const taskParameters = {
@@ -73,20 +65,20 @@ const taskParameters = {
   properties: {
     context: {
       type: "string",
-      description: "Background, constraints, and source material shared by every task in this batch.",
+      description: TOOL_TEXT.parameters.context,
     },
     tasks: {
       type: "array",
       minItems: 1,
-      description: "Independent tasks. Order is preserved in the result, but it does not create execution dependencies.",
+      description: TOOL_TEXT.parameters.tasks,
       items: {
         type: "object",
         properties: {
-          name: { type: "string", description: "Caller-facing label; defaults to none." },
-          task: { type: "string", description: "Self-contained assignment: deliverable, scope, and how to verify completion." },
+          name: { type: "string", description: TOOL_TEXT.parameters.name },
+          task: { type: "string", description: TOOL_TEXT.parameters.task },
           inheritContext: {
             type: "boolean",
-            description: "Copy this session's conversation, system prompt, model, and thinking at creation time. Default false: start without this session's chat history.",
+            description: TOOL_TEXT.parameters.inheritContext,
           },
         },
         required: ["task"],
@@ -134,42 +126,6 @@ export default function subagentExtension(pi) {
   pi.on("session_shutdown", async () => {
     await controller.lifecycle.retire();
   });
-  // Merge an undelivered Agent message with the terminal notice of the same
-  // sender and execution round. Pi still owns steering, interruption and
-  // continuation; this hook only supplies the finalized snapshot.
-  pi.on("input", () => {
-    // A new user input is an ordinary native boundary. Later content must not
-    // merge into an older Agent event batch, even if the old batch was cleared.
-    controller.lifecycle.service?.mainDelivery?.breakMergeKeys();
-  });
-  pi.on("message_start", (event) => {
-    const service = controller.lifecycle.service;
-    if (service === null || !service.active) return;
-    const delivery = service.mainDelivery;
-    if (delivery === undefined || delivery === null) return;
-    // A real user input starts a new merge boundary; a custom delivery batch
-    // is marked as started so preparation/history races can still finalize it.
-    if (event.message?.role === "user") delivery.breakMergeKeys();
-    delivery.messageStarted(event.message);
-  });
-  pi.on("agent_settled", () => {
-    controller.lifecycle.service?.mainDelivery?.settle();
-  });
-  pi.on("agent_end", (event) => {
-    // An aborted native turn is an ordinary cancellation boundary, not a
-    // notification permission switch: release stale merge slots and let the
-    // next real event stand alone.
-    const last = event.messages?.at(-1);
-    if (last?.role === "assistant" && last.stopReason === "aborted") {
-      controller.lifecycle.service?.mainDelivery?.settle();
-    }
-  });
-  pi.on("message_end", (event) => {
-    const service = controller.lifecycle.service;
-    if (service === null || !service.active) return undefined;
-    const message = service.mainDelivery?.replaceMessage(event.message);
-    return message === undefined ? undefined : { message };
-  });
   installSessionSurface(pi, (ctx) => rootService(controller, ctx), { allowInherited: true, parentAgentId: null, depth: 0, senderId: "main" });
 }
 
@@ -212,13 +168,6 @@ async function activateRootSession(controller, ctx) {
 async function retireService(controller, service) {
   service.active = false;
   service.closed = true;
-
-  // Invalidate pending merge slots before any callback can enqueue into the
-  // generation that is leaving. A later session starts with a fresh delivery
-  // coordinator rather than inheriting an in-flight slot.
-  service.mainDelivery?.retire();
-  for (const delivery of service.agentDeliveries.values()) delivery.retire();
-  service.agentDeliveries.clear();
 
   const liveJobs = service.runtime
     ? service.runtime.jobs().jobs.filter((job) => LIVE_JOB_STATUSES.has(job.status))
@@ -273,7 +222,7 @@ function createService(controller, ctx) {
   // the fail-fast boundary for a symlinked/non-directory/non-private root.
   ensurePrivateSocketRoot(baseSocketDir);
   const socketDir = path.join(baseSocketDir, sessionUid);
-  const historyDir = path.join(".pi/subagents", sessionUid);
+  const historyDir = join(controller.agentDir, SUBAGENT_SESSIONS_DIR, sessionId, "views");
   const cwd = ctx?.cwd ?? process.cwd();
 
   let allocatedAgentIds = controller.allocatedAgentIdsBySession.get(sessionId);
@@ -282,25 +231,6 @@ function createService(controller, ctx) {
     controller.allocatedAgentIdsBySession.set(sessionId, allocatedAgentIds);
   }
 
-  // Rebuild allocated agent IDs from all entries in the root SessionManager across all branches
-  const sessionManager = ctx?.sessionManager;
-  if (sessionManager && typeof sessionManager.getEntries === "function") {
-    try {
-      const allEntries = sessionManager.getEntries();
-      for (const entry of allEntries) {
-        if (entry.type === "subagent-state" || entry.customType === "subagent-state") {
-          const stateData = entry.data || entry;
-          if (Array.isArray(stateData.actors)) {
-            for (const actor of stateData.actors) {
-              if (actor.agentId && actor.agentId !== "Main") {
-                allocatedAgentIds.add(actor.agentId);
-              }
-            }
-          }
-        }
-      }
-    } catch {}
-  }
 
   const service = {
     controller,
@@ -329,55 +259,34 @@ function createService(controller, ctx) {
     modelRegistry: ctx?.modelRegistry ?? null,
     /** Live runs by jobId: message hand-over goes through these sessions. */
     liveJobs: new Map(),
-    /**
-     * One coordinator for the root conversation. Service retirement retires it,
-     * so a slot from an old branch can never replace a message in the new one.
-     */
-    mainDelivery: null,
-    /** One delivery coordinator per Subagent conversation receiving child events. */
-    agentDeliveries: new Map(),
     /** Retained session descriptors, so an idle agent keeps its conversation. */
     retained: new Map(),
     /** Live Unix Domain Socket servers mapped by actor id or broadcast key. */
     socketServers: new Map(),
     registeredSockets: new Map(),
     socketChanges: Promise.resolve(),
-    /** Per-run history writer and metadata, released after finalization. */
-    jobHistory: new Map(),
+    /** Last written identities, without native managers or conversation entries. */
+    actorRecords: new Map(),
+    endedJobs: new Set(),
     runtime: null,
   };
-  // Root queue observation gap in Pi 1.4: ExtensionContext exposes only
-  // `hasPendingMessages()`, backed by the textual steering/follow-up mirrors.
-  // It does not include custom steered messages and there is no public Agent
-  // reference in the root extension context. Passing it as `hasPendingMessages`
-  // would report a live custom batch as cleared. The root coordinator therefore
-  // omits the oracle and relies on message_start/input/agent_settled boundaries.
-  // A native clearQueue() while the root is busy emits none of those events, so
-  // that specific boundary cannot be observed without an SDK API change.
-  service.mainDelivery = createSteerDelivery({
-    isActive: () => service.active && !service.closed,
-    send: (payload) => {
-      if (!service.active || service.closed) throw new Error("Subagent service was retired before delivery.");
-      // The host owns wake/interruption semantics: this is exactly a native
-      // steer message, not a second notification state machine. Pi accepts the
-      // custom-message fields, not the internal transport envelope.
-      const { customType, content, display, details } = payload;
-      service.controller.pi.sendMessage({ customType, content, display, details }, { triggerTurn: true, deliverAs: "steer" });
-    },
-  });
   service.runtime = createSubagentRuntime({
     socketDir,
     historyDir,
-    isAgentIdTaken: (id) => service.allocatedAgentIds.has(id),
-    onAgentIdAllocated: (agentId) => service.allocatedAgentIds.add(agentId),
+    isIdTaken: (id) => service.allocatedAgentIds.has(id),
+    onIdAllocated: (id) => service.allocatedAgentIds.add(id),
     startJob: (job) => startPiJob(service, job),
     finalizeJob: (arg) => finalizePiJob(service, arg),
     deliverMessage: (request) => deliverMessage(service, request),
     deliverToMain: (message) => deliverToMain(service, message),
-    // Checkpoints only exist on disk: a memory-only root runs without the hook
-    // instead of exporting the whole registry state into a no-op callback.
-    onStateChange: service.store.durable ? (state) => checkpoint(service, state) : undefined,
-    readHistory: (request) => readNativeHistory(service, request),
+    onEvent: (event) => persistRuntimeEvent(service, event),
+    prepareInherited: ({ agentId, snapshot }) => {
+      if (!service.store.durable) return { ...snapshot, entries: copyInheritedEntries(snapshot.entries) };
+      const { entries, ...metadata } = snapshot;
+      const { file, seedLeafId } = service.store.writeSeed(agentId, entries, snapshot.cwd ?? cwd);
+      return { ...metadata, seedFile: file, seedLeafId };
+    },
+    historyPaths: (jobId) => ensureJobView(service, jobId),
   });
   // A revived actor can start a Job without any preceding `task` call in this
   // session, so the parent ModelRuntime is adopted here when the bridge is
@@ -392,7 +301,7 @@ function createService(controller, ctx) {
   return service;
 }
 
-/** Root-session storage: `subagent-state` entries plus per-actor session files. */
+/** Root-session storage: v2 lifecycle events plus per-actor native session files. */
 function createStore(controller, ctx) {
   const sessionManager = ctx?.sessionManager;
   const sessionFile = sessionManager?.getSessionFile?.();
@@ -406,82 +315,54 @@ function createStore(controller, ctx) {
     dir: durable ? join(controller.agentDir, SUBAGENT_SESSIONS_DIR, sessionId) : undefined,
     appendEntry: (customType, data) => controller.pi.appendEntry(customType, data),
     readBranch: () => sessionManager.getBranch(),
+    readEntries: () => sessionManager.getEntries(),
     // Every child-session read goes through the same native manager the rest of
     // Pi uses; the store never parses a session file itself.
-    openSession: (file) => SessionManager.open(file),
+    openSession: (file, cwdOverride) => SessionManager.open(file, undefined, cwdOverride),
   });
 }
 
 /** Adopt the persisted registry of this root session, or start empty. */
 async function restoreService(service, ctx) {
-  let checkpoint;
   try {
-    checkpoint = service.store.load();
-  } catch (error) {
-    return latchStorageError(service, ctx, error);
-  }
-  if (checkpoint === null) {
-    service.ready = true;
-    await withSocketChanges(service, async () => { await listenAgent(service, "Main"); });
-    return;
-  }
-  let hydrated;
-  try {
-    hydrated = service.store.hydrate(checkpoint);
-  } catch (error) {
-    return latchStorageError(service, ctx, error);
-  }
-  try {
-    // Actor records are a trust boundary of their own: a record whose id the
-    // registry does not know would otherwise become permanent ghost state that
-    // every later checkpoint re-exports. A registry the runtime itself cannot
-    // read is left to restoreState below, which reports it precisely.
-    const registry = hydrated.registry;
-    const registered = Array.isArray(registry?.actors)
-      ? new Set(
-          registry.actors
-            .filter((actor) => isPlainObject(actor) && typeof actor.agentId === "string")
-            .map((actor) => actor.agentId),
-        )
-      : null;
-    for (const [agentId, record] of Object.entries(hydrated.actors)) {
-      if (registered !== null && !registered.has(agentId)) {
-        throw new SubagentStoreError(
-          "storage_corrupt",
-          `Actor record ${agentId} does not match any actor of the persisted registry.`,
-          { agentId },
-        );
-      }
-      service.retained.set(agentId, restoreActor(service, agentId, record));
+    const state = service.store.load();
+    for (const id of service.store.takenIds()) service.allocatedAgentIds.add(id);
+    for (const actor of state.actors) {
+      if (actor.record === null) continue; // Cancelled before identity/setup settled.
+      const seed = state.jobs.find((job) => job.agentId === actor.agentId && job.continuedFromJobId === null)?.spec?.inheritedContext;
+      const descriptor = restoreActor(service, actor.agentId, { ...actor.record,
+        systemPrompt: actor.record.systemPrompt ?? seed?.systemPrompt ?? null, leafId: actor.anchor });
+      service.retained.set(actor.agentId, descriptor);
+      service.actorRecords.set(actor.agentId, actor.record);
     }
-    // Jobs that were live when the process went away become explicit failures
-    // in restoreState; seal their history at the native leaf first, so the
-    // slice a reader gets stays what that Job recorded.
-    sealInterruptedHistory(service, hydrated.registry);
-    // A Job killed during its first model call never observed its own turn
-    // boundary, so the persisted assignment may already be in the native
-    // transcript. The entries decide, not the last adapter observation: a
-    // revival never restates an assignment the conversation holds.
-    clearDeliveredAssignments(service, hydrated.registry);
-    service.runtime.restoreState(hydrated.registry);
+    let stoppedOrder = Math.max(0, ...state.actors.map((actor) => actor.stoppedOrder));
+    const repairs = [];
+    for (const job of state.jobs) {
+      if (job.end !== null) { service.endedJobs.add(job.jobId); continue; }
+      const descriptor = service.retained.get(job.agentId);
+      const startEntryId = job.started ? job.startEntryId : (job.spec?.inheritedContext?.seedLeafId ?? null);
+      const endEntryId = descriptor ? service.store.interruptedEnd(descriptor.sessionFile, startEntryId) ?? startEntryId : startEntryId;
+      const end = { status: "failed", error: { code: "job_interrupted", message: "The process ended before this Job settled." },
+        result: null, budget: null, history: { startEntryId, endEntryId } };
+      job.end = end;
+      repairs.push({ jobId: job.jobId, ...end });
+      service.endedJobs.add(job.jobId);
+      if (descriptor && endEntryId !== null) descriptor.anchor = endEntryId;
+      state.actors.find((actor) => actor.agentId === job.agentId).stoppedOrder = ++stoppedOrder;
+    }
+    clearDeliveredAssignments(service, state);
+    service.runtime.restoreState(state);
+    // Validate the complete folded registry before appending recovery events.
+    // Malformed ownership must not change the root branch during failed restore.
+    for (const repair of repairs) service.store.append(EVENTS.jobEnd, repair);
   } catch (error) {
-    return latchStorageError(
-      service,
-      ctx,
-      error instanceof SubagentStoreError
-        ? error
-        : new SubagentStoreError("storage_restore_failed", `The persisted subagent registry could not be restored: ${errorMessage(error)}`),
-    );
+    return latchStorageError(service, ctx, error);
   }
   service.ready = true;
-  for (const agent of service.runtime.list().agents) service.allocatedAgentIds.add(agent.agentId);
   await withSocketChanges(service, async () => {
     await listenAgent(service, "Main");
     await restoreListenerGroup(service, null);
   });
-  // The restored snapshot may already differ from disk (interrupted Jobs became
-  // terminal failures), so write the post-restore state once.
-  checkpointNow(service);
 }
 
 /**
@@ -489,7 +370,7 @@ async function restoreService(service, ctx) {
  * conversation itself stays in its native session file, opened lazily by the
  * Job that continues it.
  *
- * The record is a version-1 storage object and is validated as one: a present
+ * The folded identity record is validated before use: a present
  * record with a missing or malformed field throws instead of being normalized,
  * because a dropped field would silently change who the actor is — a routed
  * identity would become a fresh one, a revival would land on a default model,
@@ -497,12 +378,12 @@ async function restoreService(service, ctx) {
  */
 function restoreActor(service, agentId, record) {
   if (!isPlainObject(record)) {
-    throw new SubagentStoreError("storage_corrupt", `Actor ${agentId} has no version-1 record object.`, { agentId });
+    throw new SubagentStoreError("storage_corrupt", `Actor ${agentId} has no identity record object.`, { agentId });
   }
   const cwd = requiredActorText(agentId, record, "cwd");
   const sessionFile = requiredActorText(agentId, record, "sessionFile");
   if (record.leafId !== null && (typeof record.leafId !== "string" || record.leafId === "")) {
-    // A version-1 checkpoint always records where the actor's conversation
+    // A folded actor record must say where its conversation
     // stood. Without it, a later revival could continue from turns that belong
     // to an abandoned root branch, so refuse instead of guessing.
     throw new SubagentStoreError(
@@ -536,7 +417,7 @@ function restoreActor(service, agentId, record) {
   };
 }
 
-/** A required non-empty text field of a version-1 actor record. */
+/** A required non-empty text field of a folded actor identity. */
 function requiredActorText(agentId, record, field) {
   const value = record[field];
   if (typeof value === "string" && value !== "") return value;
@@ -547,14 +428,14 @@ function requiredActorText(agentId, record, field) {
   );
 }
 
-/** A required boolean field of a version-1 actor record. */
+/** A required boolean field of a folded actor identity. */
 function requiredActorBoolean(agentId, record, field) {
   const value = record[field];
   if (typeof value === "boolean") return value;
   throw new SubagentStoreError("storage_corrupt", `Actor ${agentId} records a malformed ${field}.`, { agentId, field });
 }
 
-/** A nullable text field of a version-1 actor record. */
+/** A nullable text field of a folded actor identity. */
 function nullableActorText(agentId, record, field) {
   const value = record[field];
   if (value === null || value === undefined) return null;
@@ -563,7 +444,7 @@ function nullableActorText(agentId, record, field) {
 }
 
 /**
- * The model reference of a version-1 actor record. A routed actor must carry a
+ * The model reference of a folded actor identity. A routed actor must carry a
  * usable provider/id pair: without it a revival would silently continue the
  * conversation on whatever model the native session falls back to. A fresh
  * actor whose routing never settled legitimately records none — its first Job
@@ -615,7 +496,7 @@ function restoreActorTools(agentId, record) {
  */
 function recordedAnchor(service, agentId, manager, fallback) {
   if (manager === null) return fallback ?? null;
-  if (service.store.durable && !service.store.hasSessionFile(agentId)) return null;
+  if (service.store.durable && !existsSync(manager.getSessionFile())) return fallback ?? null;
   return manager.getLeafId() ?? null;
 }
 
@@ -665,37 +546,22 @@ function isPlainObject(value) {
 }
 
 /**
- * Submit one event to the root delivery coordinator.
- *
- * Both explicit peer messages and terminal notices use Pi's ordinary steer
- * path. The coordinator merges an undelivered message with the terminal notice
- * of the same sender/round before Pi seals it into history; Pi still owns
- * queueing, interruption and continuation.
+ * Submit each event independently through Pi's ordinary steer path.
+ * Pi owns queueing, interruption and continuation; no message is rewritten.
  */
 async function deliverToMain(service, message) {
-  if (!service.active || service.mainDelivery === null) return;
-  if (message?.type === "completion" || message?.type === "notification") {
-    const sourceId = typeof message.from === "string" ? message.from : message.subagentId;
-    if (typeof sourceId !== "string" || sourceId === "") return;
-    const result = service.mainDelivery.enqueue({
-      sourceId,
-      round: Number.isInteger(message.round) ? message.round : 1,
-      content: typeof message.content === "string" ? message.content : formatCompletion(message),
-      terminal: {
-        status: typeof message.status === "string" ? message.status : "failed",
-        details: completionDetails(message),
-      },
-    });
-    if (!result.accepted) {
-      service.ui?.notify?.(`Terminal notification for ${sourceId} was not accepted: ${result.reason ?? "inactive"}`, "error");
-    }
-    return;
-  }
-  if (typeof message.from !== "string" || message.from === "") return;
-  service.mainDelivery.enqueue({
-    sourceId: message.from,
-    round: Number.isInteger(message.round) ? message.round : 1,
-    content: formatPeerMessage(message),
+  if (!service.active || service.closed) return;
+  const terminal = message?.type === "completion" || message?.type === "notification";
+  const sourceId = typeof message.from === "string" ? message.from : message.subagentId;
+  if (typeof sourceId !== "string" || sourceId === "") return;
+  sendDelivery({ sourceId, round: Number.isInteger(message.round) ? message.round : 1,
+    content: terminal ? (typeof message.content === "string" ? message.content : formatCompletion(message)) : formatPeerMessage(message),
+    ...(terminal ? { terminal: { status: message.status ?? "failed", details: completionDetails(message) } } : {}),
+  }, {
+    isActive: () => service.active && !service.closed,
+    send: ({ customType, content, display, details }) => {
+      service.controller.pi.sendMessage({ customType, content, display, details }, { triggerTurn: true, deliverAs: "steer" });
+    },
   });
 }
 
@@ -708,34 +574,14 @@ async function deliverToMain(service, message) {
  * continue its turn. If the continuation is refused, the notice is appended to
  * the retained conversation instead. Delivery is attempted exactly once.
  */
-function deliveryForAgent(service, agentId) {
-  const existing = service.agentDeliveries.get(agentId);
-  if (existing !== undefined) return existing;
-  const delivery = createSteerDelivery({
+function sendToAgent(service, agentId, entry) {
+  return sendDelivery(entry, {
     isActive: () => service.active && !service.closed,
-    hasPendingMessages: (batchId) => {
-      const live = [...service.liveJobs.values()].find((run) => run.agentId === agentId && !run.closed);
-      if (live?.pending.some((entry) => entry.kind === "custom" && entry.details?.batchId === batchId)) return true;
-      const agent = live?.session?.agent;
-      if (agent === undefined) return false;
-      // Our custom payloads always use steering. Preview all steering entries
-      // synchronously, without consuming them or changing the user's mode.
-      const mode = agent.steeringMode;
-      try {
-        agent.steeringMode = "all";
-        return agent.peekQueuedMessages().some((message) => message.role === "custom" &&
-          message.customType === "agent-delivery" && message.details?.batchId === batchId);
-      } finally {
-        agent.steeringMode = mode;
-      }
-    },
     send: (payload) => sendAgentDeliveryPayload(service, agentId, payload),
   });
-  service.agentDeliveries.set(agentId, delivery);
-  return delivery;
 }
 
-/** Send one coordinator payload into a live Subagent conversation or its retained record. */
+/** Send one event into a live Subagent conversation or its retained record. */
 async function sendAgentDeliveryPayload(service, agentId, payload) {
   const { customType, content, display, details } = payload;
   const entry = { customType, content, display, details };
@@ -793,7 +639,7 @@ async function deliverMessage(service, { agentId, jobId, message }) {
     }
     const sourceId = typeof message.from === "string" ? message.from : message.subagentId;
     if (typeof jobId === "string" && typeof sourceId === "string" && sourceId !== "") {
-      const result = deliveryForAgent(service, agentId).enqueue({
+      const result = sendToAgent(service, agentId, {
         sourceId,
         round: Number.isInteger(message.round) ? message.round : 1,
         content: typeof message.content === "string" ? message.content : formatCompletion(message),
@@ -814,7 +660,7 @@ async function deliverMessage(service, { agentId, jobId, message }) {
 
   const sourceId = message?.from;
   if (typeof jobId === "string" && typeof sourceId === "string" && sourceId !== "") {
-    const result = deliveryForAgent(service, agentId).enqueue({
+    const result = sendToAgent(service, agentId, {
       sourceId,
       round: Number.isInteger(message.round) ? message.round : 1,
       content: formatPeerMessage(message),
@@ -856,7 +702,8 @@ function appendCustomToRetained(service, agentId, entry) {
   const retained = service.retained.get(agentId) ?? null;
   const sessionManager =
     retained?.sessionManager ??
-    (service.store.durable ? SessionManager.open(service.store.childSessionFile(agentId)) : null);
+    (service.store.durable && retained !== null
+      ? service.store.openForAppend(agentId, retained.sessionFile, retained.anchor, retained.cwd).manager : null);
   if (sessionManager === null) return;
   // A restored actor's file is opened just for this append: place the notice
   // where that checkpoint's conversation stands — never on a branch appended
@@ -866,7 +713,8 @@ function appendCustomToRetained(service, agentId, entry) {
   // actor's live manager takes the same checkpoint: without it the root
   // branch would keep the previous leaf and a reload would branch back
   // behind the notice that is already in the child session file.
-  const durableAppend = service.store.durable && service.store.hasSessionFile(agentId);
+  const durableAppend = service.store.durable && existsSync(sessionManager.getSessionFile());
+  if (retained !== null && service.store.durable) retained.sessionFile = sessionManager.getSessionFile();
   restoreChildLeaf(sessionManager, agentId, retained, null);
   const entryId = sessionManager.appendCustomMessageEntry(entry.customType, entry.content, entry.display, entry.details);
   if (durableAppend && typeof entryId === "string") checkpointAppendedAnchor(service, agentId, entryId);
@@ -883,10 +731,11 @@ function appendCustomToRetained(service, agentId, entry) {
 function checkpointAppendedAnchor(service, agentId, anchor) {
   const retained = service.retained.get(agentId) ?? null;
   if (retained === null) return;
-  if (!(service.store.durable && service.store.hasSessionFile(agentId))) return;
+  if (!(service.store.durable && existsSync(retained.sessionFile))) return;
   if (typeof anchor !== "string" || anchor === "") return;
   retained.anchor = anchor;
-  persistActors(service);
+  persistActor(service, agentId);
+  service.store.append(EVENTS.anchor, { agentId, anchor });
 }
 
 // Serialize listener ownership changes, not Jobs or message processing.
@@ -1072,10 +921,10 @@ function ensureBroadcastSocketServer(service, parentId) {
 const listParameters = {
   type: "object",
   properties: {
-    all: { type: "boolean", description: "Show every agent, including Main and stopped agents, without group limits. Default false." },
+    all: { type: "boolean", description: TOOL_TEXT.parameters.all },
     id: {
       type: "string",
-      description: "Optional agent id to filter the visible list. Use all: true to query outside the default view.",
+      description: TOOL_TEXT.parameters.filterId,
     },
   },
 };
@@ -1086,7 +935,7 @@ const stopParameters = {
   properties: {
     id: {
       type: "string",
-      description: "The subagent id to stop.",
+      description: TOOL_TEXT.parameters.stopId,
     },
   },
 };
@@ -1120,15 +969,15 @@ function installSessionSurface(pi, resolveService, { allowInherited, parentAgent
     name: "msg_write",
     defaultActive: false,
     label: "Send Agent Message",
-    description: "Send a plain-text message to a managed Agent IPC endpoint: Unix Socket or Windows Named Pipe. The host binds the sender and transport framing. Omit from/to, JSON or NDJSON envelopes, and trailing newlines. Cannot write files.",
-    promptSnippet: "Send plain-text messages to agents through their Socket paths",
-    promptGuidelines: ["Provide the message body as plain text content; do not add from/to, JSON/NDJSON framing, a trailing newline, or a custom Socket client."],
+    description: TOOL_TEXT.message.description,
+    promptSnippet: TOOL_TEXT.message.snippet,
+    promptGuidelines: [...TOOL_TEXT.message.guidelines],
     parameters: {
       ...messageTool.parameters,
       properties: {
         ...messageTool.parameters.properties,
-        path: { type: "string", description: "Returned Unix Socket or Windows Named Pipe address." },
-        content: { type: "string", description: "Plain-text message body. The host frames the transport and binds the sender." },
+        path: { type: "string", description: TOOL_TEXT.parameters.messagePath },
+        content: { type: "string", description: TOOL_TEXT.parameters.messageContent },
       },
     },
     async execute(...args) {
@@ -1145,12 +994,11 @@ function createTool(pi, resolveService, { allowInherited, parentAgentId, depth }
     namespace: SUBAGENT_NAMESPACE,
     defaultActive: false,
     label: "Create Subagent",
-    description:
-      "Create independent background agents. Returns each agent's id, status, socket, and history paths; does not wait for results.",
-    promptSnippet: "Delegate independent tasks to background agents",
+    description: TOOL_TEXT.create.description,
+    promptSnippet: TOOL_TEXT.create.snippet,
     promptGuidelines: [
       ...SUBAGENT_NAMESPACE.instructions.split("\n"),
-      "Write requirements for subagents primarily in English.",
+      TOOL_TEXT.create.guideline,
     ],
     parameters: taskParameters,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1182,9 +1030,8 @@ function listTool(resolveService, callerId) {
     namespace: SUBAGENT_NAMESPACE,
     defaultActive: false,
     label: "List Subagents",
-    description:
-      "List the parent, peers (including self), and own children. Each group is capped at the per-parent concurrency limit: active first, then most recently stopped. Main also expands visible active children; stopped nodes and peers are not expanded. Set all: true for every agent. Main has no subagent history paths. Does not wait for completion.",
-    promptSnippet: "Check background agent progress and history paths",
+    description: TOOL_TEXT.list.description,
+    promptSnippet: TOOL_TEXT.list.snippet,
     promptGuidelines: SUBAGENT_NAMESPACE.instructions.split("\n"),
     parameters: listParameters,
     async execute(_toolCallId, params) {
@@ -1202,9 +1049,8 @@ function stopTool(resolveService) {
     namespace: SUBAGENT_NAMESPACE,
     defaultActive: false,
     label: "Stop Subagent",
-    description:
-      "Request cancellation of an agent by id. May return stopping or finalizing while execution or history writes finish; does not wait for shutdown.",
-    promptSnippet: "Cancel a background agent's current run",
+    description: TOOL_TEXT.stop.description,
+    promptSnippet: TOOL_TEXT.stop.snippet,
     promptGuidelines: SUBAGENT_NAMESPACE.instructions.split("\n"),
     parameters: stopParameters,
     async execute(_toolCallId, params) {
@@ -1407,7 +1253,8 @@ function startPiJob(service, request) {
   let finalizeActor = null;
   let unsubscribe = null;
   let unsubscribeBudget = null;
-  let unsubscribeClean = null;
+  let sessionManager = null;
+  let boundary = null;
   let cancelled = false;
   // Job cancellation reaches the two routing classifications through this
   // signal, so an aborted Job never dispatches a classifier request.
@@ -1439,14 +1286,14 @@ function startPiJob(service, request) {
   // session exists, and the failure path before creation still releases it.
   const releaseJobResources = () => {
     stopBudgetWatch();
-    unsubscribeClean?.();
+
     unsubscribeBudget?.();
     unsubscribe?.();
   };
 
   const done = (async () => {
-    // A retired service must never start native work for a session that no
-    // longer exists; its Jobs fail explicitly instead.
+    // A retired or storage-fenced service must not start native work.
+    if (service.storageError !== null) throw service.storageError;
     if (!service.active || service.closed) {
       throw new SubagentError("runtime_closed", "This subagent runtime was retired; the Job was not started.");
     }
@@ -1504,6 +1351,10 @@ function startPiJob(service, request) {
       // the catalog keeps the same identity on a refreshed catalog entry.
       const captured = snapshot?.model ?? null;
       model = resolveModel(service.modelRegistry, modelRefOf(captured)) ?? captured;
+      if (model !== null && typeof model.api !== "string") {
+        throw new SubagentError("model_unavailable", `The captured model ${model.provider}/${model.id} is not in the model catalog.`,
+          { agentId: request.agentId, model: modelRefOf(captured) });
+      }
       thinkingLevel = typeof snapshot?.thinkingLevel === "string" ? snapshot.thinkingLevel : null;
       plannedTools = inheritedToolNames(service.controller.pi, snapshot, request.depth);
       identitySettled = true;
@@ -1534,9 +1385,11 @@ function startPiJob(service, request) {
       identitySettled = true;
     }
 
-    const sessionManager = retained?.sessionManager ?? openChildSession(service, request.agentId, snapshot, cwd);
+    sessionManager = retained?.sessionManager ?? openChildSession(service, request.agentId, snapshot, cwd, retained);
     restoreChildLeaf(sessionManager, request.agentId, retained, snapshot);
-    const sessionFile = service.store.durable ? service.store.childSessionFile(request.agentId) : null;
+    boundary = sessionManager.getLeafId();
+    request.recordStart(boundary);
+    const sessionFile = service.store.durable ? sessionManager.getSessionFile() : null;
     const allowInherited = retained === null ? configSpec.inheritContext !== true : retained.allowInherited;
 
     // What this agent is, written down before the first setup await a cancel
@@ -1544,10 +1397,8 @@ function startPiJob(service, request) {
     // the run is stopped during resource loading or session creation. The
     // effective fields are refreshed as soon as the native session exists.
     const effective = { tools: null, model: null, thinkingLevel: null };
-    // The descriptor is what a checkpoint persists for this actor: it is
-    // written on its own at every message boundary (the runtime's checkpoint
-    // then carries it) and followed by an explicit checkpoint only when the
-    // mutation did not move runtime state.
+    // Keep the live manager in one descriptor. Identity changes emit field
+    // patches; ordinary message progress stays in the native child file.
     const writeDescriptor = () => {
       service.retained.set(request.agentId, {
         sessionManager,
@@ -1570,9 +1421,12 @@ function startPiJob(service, request) {
     };
     const retain = () => {
       writeDescriptor();
-      persistActors(service);
+      persistActor(service, request.agentId);
     };
     retain();
+    // The native manager now owns the isolated in-memory seed. Keep no second
+    // seed in the Job registry; pure-memory actors retain their manager instead.
+    if (snapshot && Array.isArray(snapshot.entries)) delete snapshot.entries;
 
     const childFactory = {
       name: `subagent:${request.agentId}`,
@@ -1592,34 +1446,6 @@ function startPiJob(service, request) {
           cwd,
           senderId: request.agentId,
         });
-        // This Subagent conversation is the recipient of its own children's
-        // events. The same coordinator that queued an ordinary message can
-        // therefore merge the terminal notice of that sender and round before
-        // Pi writes it to history.
-        childPi.on("input", () => {
-          service.agentDeliveries.get(request.agentId)?.breakMergeKeys();
-        });
-        childPi.on("message_start", (event) => {
-          const delivery = service.agentDeliveries.get(request.agentId);
-          if (delivery === undefined) return;
-          if (event.message?.role === "user") delivery.breakMergeKeys();
-          delivery.messageStarted(event.message);
-        });
-        childPi.on("agent_settled", () => {
-          service.agentDeliveries.get(request.agentId)?.settle();
-        });
-        childPi.on("agent_end", (event) => {
-          const last = event.messages?.at(-1);
-          if (last?.role === "assistant" && last.stopReason === "aborted") {
-            service.agentDeliveries.get(request.agentId)?.settle();
-          }
-        });
-        childPi.on("message_end", (event) => {
-          const delivery = service.agentDeliveries.get(request.agentId);
-          if (delivery === undefined) return undefined;
-          const message = delivery.replaceMessage(event.message);
-          return message === undefined ? undefined : { message };
-        });
       },
     };
     const resourceLoader = new DefaultResourceLoader({
@@ -1633,7 +1459,7 @@ function startPiJob(service, request) {
       ...(systemPrompt !== null ? { systemPrompt } : {}),
       appendSystemPrompt: [
         ...(roleInstructions !== null ? [roleInstructions] : []),
-        `You are Subagent ${request.agentId}. Your direct parent is ${request.origin?.agentId ?? "Main"}. To message that parent, use your enabled write or msg_write with parentSocket ${getAgentSocketPath(request.origin?.agentId ?? "Main", service.socketDir)} and plain text content; omit from and to. The host frames the transport and binds your sender identity. Your execution round also ends with an automatic host notification; do not send a separate completion message unless you have content the parent needs.`,
+        childContext(request.agentId, request.origin?.agentId ?? "Main", getAgentSocketPath(request.origin?.agentId ?? "Main", service.socketDir)),
       ],
     });
     await resourceLoader.reload();
@@ -1675,6 +1501,7 @@ function startPiJob(service, request) {
       const tools = activeToolNames(session);
       if (tools !== null) effective.tools = tools;
       writeDescriptor();
+      persistActor(service, request.agentId);
     };
     finalizeActor = () => {
       updateRetainedTools();
@@ -1686,11 +1513,7 @@ function startPiJob(service, request) {
     // boundary is the leaf at start, and native compaction appends entries
     // instead of rewriting or dropping them. The boundary is recorded before
     // the run so a Job that dies mid-turn still has a sealed start.
-    const boundary = sessionManager.getLeafId();
     const jobMessages = () => messagesAfter(sessionManager, boundary);
-    // Bounds only, and no empty transcript: a Job keeps no in-memory messages
-    // until its final outcome, so every live read resolves the native entries.
-    request.recordHistory(undefined, { startEntryId: boundary, endEntryId: boundary });
 
     await withSocketChanges(service, async () => {
       const actor = service.runtime.list().agents.find((entry) => entry.agentId === request.agentId);
@@ -1698,87 +1521,16 @@ function startPiJob(service, request) {
       if (request.depth < MAX_AGENT_DEPTH && request.continuedFromJobId) await restoreListenerGroup(service, request.agentId);
     });
 
-    const history = { spec: request.spec, roleId, model, appendChain: Promise.resolve(), errors: [] };
-    service.jobHistory.set(request.jobId, history);
-    const queueCleanAppend = (event) => {
-      history.appendChain = history.appendChain.then(async () => {
-        try {
-          await appendCleanJsonl(request.agentId, event, { baseDir: service.historyDir, cwd: service.cwd });
-        } catch (err) {
-          // Keep every failure: a later successful append must not hide a
-          // partial transcript. The finalization hook reports all of them
-          // while the Job outcome stays frozen.
-          history.errors.push(err);
-          service.ui?.notify?.(`Clean JSONL error on ${request.agentId}: ${err.message}`, "error");
-        }
-      });
-    };
-
     let jobErr = null;
 
     if (!cancelled) {
-      unsubscribeClean = session.subscribe((event) => {
-        try {
-          if (!event || typeof event !== "object") return;
-          const type = event.type;
-          if (type === "message_start") {
-            queueCleanAppend({
-              type: "message_start",
-              role: event.message?.role,
-              timestamp: Date.now(),
-            });
-          } else if (type === "tool_execution_start") {
-            queueCleanAppend({
-              type: "tool_execution_start",
-              toolCallId: event.toolCallId,
-              toolName: event.toolName,
-              args: event.args,
-              timestamp: Date.now(),
-            });
-          } else if (type === "tool_execution_end") {
-            queueCleanAppend({
-              type: "tool_execution_end",
-              toolCallId: event.toolCallId,
-              toolName: event.toolName,
-              isError: event.isError,
-              result: event.result,
-              timestamp: Date.now(),
-            });
-          } else if (type === "message_end") {
-            const message = event.message;
-            const custom = message?.role === "custom";
-            queueCleanAppend({
-              type: "message_end",
-              role: message?.role,
-              content: message?.content,
-              stopReason: message?.stopReason,
-              usage: message?.usage,
-              // Host terminal/ordinary delivery is distinguishable from Agent
-              // text only through these custom-message fields; dropping them
-              // loses job/round/status metadata from the clean JSONL audit.
-              ...(custom
-                ? { customType: message?.customType, display: message?.display, details: message?.details }
-                : {}),
-              timestamp: typeof message?.timestamp === "number" ? message.timestamp : Date.now(),
-            });
-          }
-        } catch {}
-      });
-
-      // Every finalized native message commits the Job's progress: the history
-      // bounds move to the entry that just landed, and the actor record's leaf
-      // anchor follows it (a custom message that never reaches the file never
-      // becomes an anchor). The first user message therefore reaches the
-      // checkpoint before the provider request it belongs to is dispatched, so an
-      // interrupted run is recovered at what it actually committed rather than at
-      // its startup state. One subscription per Job, released in the finally.
+      // Tool activation can change identity during a run. Observe its finalized
+      // boundaries without copying history or appending per-turn root state.
+      // Interrupted progress is recovered from the native file after recordStart.
       unsubscribe = session.subscribe((event) => {
         if (event?.type !== "message_end" && event?.type !== "turn_end" && event?.type !== "agent_end") return;
-        // The transcript is not copied here: readers and the final outcome
-        // resolve it through the native session (the readHistory hook), so live
-        // progress costs one descriptor refresh plus the moved bounds.
         updateRetainedTools?.();
-        request.recordHistory(undefined, { startEntryId: boundary, endEntryId: sessionManager.getLeafId() });
+
       });
 
       // Messages this Job owns enter the first prompt; anything that arrives
@@ -1804,14 +1556,10 @@ function startPiJob(service, request) {
       try {
         throwIfBudgetFailed(request.budget);
         // Resolve startup custom snapshots and append their typed native
-        // history BEFORE the primary prompt. This is the same merge path as
-        // parked replay, so coalesced content and terminal details survive.
-        const startupDelivery = service.agentDeliveries.get(request.agentId) ?? null;
+        // history BEFORE the primary prompt, preserving each message's type
+        // and terminal metadata without combining or replacing payloads.
         for (const entry of startupCustom) {
-          let resolved = entry.message;
-          if (startupDelivery !== null && resolved?.customType === DELIVERY_CUSTOM_TYPE) {
-            resolved = startupDelivery.replaceMessage(resolved) ?? resolved;
-          }
+          const resolved = entry.message;
           if (resolved?.role !== "custom" || typeof resolved.customType !== "string") continue;
           await session.sendCustomMessage(
             {
@@ -1834,7 +1582,7 @@ function startPiJob(service, request) {
         if (!cancelled) {
           const messages = jobMessages();
           assertRunCompleted(messages);
-          await drainLiveMessages(live, sessionManager, service);
+          await drainLiveMessages(live, sessionManager);
           throwIfBudgetFailed(request.budget);
         }
       } catch (error) {
@@ -1850,10 +1598,14 @@ function startPiJob(service, request) {
     return {
       status: cancelled ? "cancelled" : "completed",
       result: readFinalText(jobMessages()),
-      messages: readTranscript(entriesAfter(sessionManager, boundary)),
+      transcript: readTranscript(entriesAfter(sessionManager, boundary)),
       history: { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
     };
-  })().finally(async () => {
+  })().catch((error) => ({
+    status: "failed", error,
+    history: sessionManager === null ? null : { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
+    transcript: sessionManager === null ? [] : readTranscript(entriesAfter(sessionManager, boundary)),
+  })).finally(async () => {
     live.closed = true;
     service.liveJobs.delete(request.jobId);
     // A revival reuses the loadout the run actually ended with — capability
@@ -1886,50 +1638,24 @@ function startPiJob(service, request) {
  * Invoked once per job by Runtime with frozen outcome.
  */
 async function finalizePiJob(service, { job, outcome }) {
-  const { spec = {}, roleId, model, appendChain, errors = [] } = service.jobHistory.get(job.jobId) ?? {};
-  const failures = [...errors];
-  const attempt = async (operation) => {
-    try {
-      await operation();
-    } catch (error) {
-      failures.push(error);
-    }
-  };
+  const descriptor = service.retained.get(job.agentId);
   try {
-    await appendChain;
-    await attempt(() => appendCleanJsonl(
-      job.agentId,
-      {
-        type: "job_end",
-        jobId: outcome.jobId,
-        round: outcome.round,
-        status: outcome.status,
-        error: outcome.error,
-        budget: outcome.budget,
-        timestamp: Date.now(),
-      },
-      { baseDir: service.historyDir, cwd: service.cwd },
-    ));
-    await attempt(() => writeCompactedSummary(
-      job.agentId,
-      {
-        name: spec.name ?? job.name,
-        task: typeof spec.task === "string" ? spec.task : "",
-        role: roleId ?? null,
-        model: modelRefOf(model)?.id ?? (typeof model === "string" ? model : null),
-        budget: outcome.budget,
-        result: outcome.result || (outcome.error ? `Terminated with error: ${outcome.error.message}` : "(No output recorded)"),
-        status: outcome.status,
-        error: outcome.error?.message ?? null,
-        round: outcome.round,
-      },
-      { append: outcome.round > 1, baseDir: service.historyDir, cwd: service.cwd },
-    ));
+    // The native transcript and terminal event are authoritative; a failed view
+    // write cannot erase or change the model outcome.
+    persistRuntimeEvent(service, { type: "job-end", jobId: job.jobId, status: outcome.status,
+      error: outcome.error, result: outcome.result, history: outcome.history, budget: outcome.budget });
+    if (!service.store.durable) return;
+    const record = service.runtime.jobRecord(job.jobId);
+    const transcript = outcome.transcript ?? [];
+    writeJobView(service.historyDir, { ...record, ...job, ...outcome, transcript,
+      roleId: descriptor?.roleId ?? null, model: descriptor?.modelRef?.id ?? null });
   } finally {
-    service.jobHistory.delete(job.jobId);
-  }
-  if (failures.length > 0) {
-    throw new AggregateError(failures, `History finalization failed for ${job.agentId}.`);
+    // dispose() ends SDK execution, but only removing the owner's reference
+    // releases the tree. Never discard a pure-memory actor's sole history.
+    if (descriptor && service.store.durable && existsSync(descriptor.sessionFile)) {
+      descriptor.anchor = outcome.history?.endEntryId ?? descriptor.anchor;
+      descriptor.sessionManager = null;
+    }
   }
 }
 
@@ -1961,7 +1687,7 @@ function restoreChildLeaf(sessionManager, agentId, retained, snapshot) {
       ? retained.anchor
       : snapshot !== null && Array.isArray(snapshot.entries) && snapshot.entries.length > 0
         ? snapshot.entries[snapshot.entries.length - 1].id
-        : null;
+        : snapshot?.seedLeafId ?? null;
   if (typeof anchor !== "string" || anchor === "") return;
   if (sessionManager.getLeafId() === anchor) return;
   if (sessionManager.getEntry(anchor) === undefined) {
@@ -1981,68 +1707,65 @@ function restoreChildLeaf(sessionManager, agentId, retained, snapshot) {
  * one is created by the native SessionManager on its first entry — while a
  * memory-only root keeps its actors in memory.
  */
-function openChildSession(service, agentId, snapshot, cwd) {
+function openChildSession(service, agentId, snapshot, cwd, retained = null) {
   const store = service.store;
-  if (store === null || !store.durable) {
+  if (!store.durable) {
     return snapshot
-      ? SessionManager.inMemory(snapshot.cwd ?? cwd, {}, copyInheritedEntries(snapshot.entries))
+      ? SessionManager.inMemory(snapshot.cwd ?? cwd, {}, snapshot.entries)
       : SessionManager.inMemory(cwd);
   }
-  if (snapshot !== null && Array.isArray(snapshot.entries)) store.writeSeedIfMissing(agentId, snapshot.entries);
-  return SessionManager.open(store.childSessionFile(agentId));
+  return store.openForAppend(agentId, retained?.sessionFile ?? snapshot?.seedFile ?? null,
+    retained?.anchor ?? snapshot?.seedLeafId ?? null, cwd).manager;
 }
 
 /** The persisted record of every retained actor; JSON-safe by construction. */
-function exportActors(service) {
-  const actors = {};
-  for (const [agentId, descriptor] of service.retained) {
-    actors[agentId] = {
-      sessionFile: descriptor.sessionFile ?? null,
-      // Where this actor's conversation stood when the checkpoint was written;
-      // a revival branches the native session back to it.
-      leafId: currentAnchor(service, agentId, descriptor),
-      cwd: descriptor.cwd,
-      trusted: descriptor.trusted === true,
-      allowInherited: descriptor.allowInherited === true,
-      systemPrompt: descriptor.systemPrompt ?? null,
-      roleId: descriptor.roleId ?? null,
-      roleInstructions: descriptor.roleInstructions ?? null,
-      model: descriptor.modelRef ?? null,
-      thinkingLevel: descriptor.thinkingLevel ?? null,
-      tools: Array.isArray(descriptor.tools) ? [...descriptor.tools] : null,
-      excludedTools: [...(descriptor.excludedTools ?? [])],
-      assignment: descriptor.assignment ?? null,
-      routed: descriptor.routed === true,
-    };
-  }
-  return actors;
+function persistActor(service, agentId) {
+  if (!service.store.durable || !service.ready || !service.active) return;
+  const descriptor = service.retained.get(agentId);
+  const record = {
+    sessionFile: descriptor.sessionFile, cwd: descriptor.cwd,
+    trusted: descriptor.trusted === true, allowInherited: descriptor.allowInherited === true,
+    // An inherited prompt is already recorded once in the initial Job's seed metadata.
+    roleId: descriptor.roleId ?? null,
+    roleInstructions: descriptor.roleInstructions ?? null, model: descriptor.modelRef ?? null,
+    thinkingLevel: descriptor.thinkingLevel ?? null,
+    tools: descriptor.tools === null ? null : [...(descriptor.tools ?? [])],
+    excludedTools: [...(descriptor.excludedTools ?? [])],
+    assignment: descriptor.assignment ?? null, routed: descriptor.routed === true,
+  };
+  const previous = service.actorRecords.get(agentId);
+  // Identity fields only: message progress must not re-write role prompts or
+  // the whole registry. Retain field values, not a second serialized identity.
+  const changed = Object.fromEntries(Object.entries(record).filter(([key, a]) => {
+    if (!previous) return true;
+    const b = previous[key];
+    if (Array.isArray(a) && Array.isArray(b)) return a.length !== b.length || a.some((value, index) => value !== b[index]);
+    if (key === "model") return a?.provider !== b?.provider || a?.id !== b?.id;
+    return a !== b;
+  }));
+  if (Object.keys(changed).length === 0) return;
+  service.store.append(EVENTS.actor, { agentId, ...changed, anchor: currentAnchor(service, agentId, descriptor) });
+  service.actorRecords.set(agentId, record);
 }
 
 /**
- * One checkpoint on the root branch: the runtime's JSON-safe state plus the
- * actor records. Called at mutating boundaries only; a read-only poll never
- * writes. Storage failures are reported, never swallowed, but they do not
- * remove the in-memory registry: the session keeps running and the next
- * checkpoint tries again.
+ * Append one lifecycle event, without exporting a registry or transcript.
+ * A failed write fences further work; the model outcome remains unchanged.
  */
-function checkpoint(service, state) {
+function persistRuntimeEvent(service, event) {
   if (!service.active || service.closed || !service.ready || service.storageError !== null) return;
-  if (service.store === null || !service.store.durable) return;
+  const { type, ...data } = event;
+  const customType = { job: EVENTS.job, "job-start": EVENTS.jobStart, "job-end": EVENTS.jobEnd }[type];
+  if (!customType) throw new Error(`Unknown subagent event ${type}.`);
+  if (type === "job-end" && service.endedJobs.has(data.jobId)) return;
   try {
-    service.store.save({ registry: state, actors: exportActors(service) });
+    service.store.append(customType, data);
+    if (type === "job-end") service.endedJobs.add(data.jobId);
   } catch (error) {
+    service.storageError = error;
     reportStorageError(service, error);
+    throw error;
   }
-}
-
-/** Checkpoint the current runtime state, for adapter-side mutations. */
-function checkpointNow(service) {
-  if (service.runtime === null) return;
-  checkpoint(service, service.runtime.exportState());
-}
-
-function persistActors(service) {
-  checkpointNow(service);
 }
 
 function reportStorageError(service, error) {
@@ -2067,33 +1790,31 @@ function clearDeliveredAssignments(service, registry) {
   for (const [agentId, descriptor] of service.retained) {
     if (descriptor.assignment === null) continue;
     const initial = jobs.find((job) => job.agentId === agentId && job.continuedFromJobId === null) ?? null;
-    const boundary = initial?.history?.startEntryId ?? null;
+    const boundary = initial?.startEntryId ?? null;
     // The anchor is what the revival will continue from, so the probe reads the
     // conversation as of that leaf — never a turn appended afterwards.
-    if (service.store.hasRecordedTurn(agentId, boundary, descriptor.anchor)) descriptor.assignment = null;
+    if (service.store.hasRecordedTurn(descriptor.sessionFile, boundary, descriptor.anchor)) descriptor.assignment = null;
   }
 }
 
 /**
- * A Job that was still live when the process went away is restored as an
- * explicit failure, and its history is sealed at the actor's checkpoint anchor:
- * the saved root branch is authoritative, and whatever the child file appended
- * after that checkpoint stays native-file data that recovery does not adopt.
+ * Rebuild a missing terminal view from sealed native bounds. A running actor's
+ * manager is reused; an idle file is opened only for this read, never cached.
  */
-function sealInterruptedHistory(service, registry) {
-  if (!service.store.durable) return;
-  for (const job of eachRegistryJob(registry)) {
-    if (!LIVE_JOB_STATUSES.has(job.status)) continue;
-    const anchor = service.retained.get(job.agentId)?.anchor ?? null;
-    if (typeof anchor !== "string" || anchor === "") continue;
-    if (!isPlainObject(job.history)) {
-      // A Job that never recorded bounds started at its conversation's
-      // beginning and ends where the checkpoint anchor stands.
-      job.history = { startEntryId: null, endEntryId: anchor };
-      continue;
-    }
-    if (job.history.endEntryId !== anchor) job.history.endEntryId = anchor;
+function ensureJobView(service, jobId) {
+  if (!service.store.durable) return null;
+  const record = service.runtime.jobRecord(jobId);
+  if (record === null) return null;
+  if (!hasJobView(service.historyDir, jobId)) {
+    const descriptor = service.retained.get(record.agentId);
+    const bounds = record.history;
+    const entries = descriptor && bounds && bounds.endEntryId !== bounds.startEntryId
+      ? service.store.readSlice(descriptor.sessionFile, bounds.startEntryId, bounds.endEntryId, descriptor.sessionManager ?? undefined) : [];
+    writeJobView(service.historyDir, { ...record, transcript: readTranscript(entries),
+      roleId: descriptor?.roleId ?? null, model: descriptor?.modelRef?.id ?? null });
   }
+  const paths = jobViewPaths(service.historyDir, jobId);
+  return { summary: paths.summary, cleanJsonl: paths.transcript };
 }
 
 function* eachRegistryJob(registry) {
@@ -2102,17 +1823,6 @@ function* eachRegistryJob(registry) {
   for (const job of list) {
     if (isPlainObject(job)) yield job;
   }
-}
-
-/** Resolve a restored Job's transcript through the actor's native session file. */
-function readNativeHistory(service, { agentId, jobId, history }) {
-  if (!service.active || service.storageError !== null) return [];
-  // A live actor is read from its running native session — a memory-only root
-  // keeps its whole transcript there — while a restored one is read from its
-  // session file. Either way the recorded bounds decide the slice, so a read
-  // never adopts entries a checkpoint did not account for.
-  const live = service.retained.get(agentId)?.sessionManager ?? null;
-  return readTranscript(service.store.readHistory({ agentId, jobId, ...(history ?? {}) }, live));
 }
 
 /** The typed completion notice text: refs, never the subagent's full answer. */
@@ -2140,7 +1850,7 @@ function completionDetails(message) {
       round: message.round ?? null,
       status: message.status ?? "failed",
       error: message.error ?? null,
-      history: message.history ?? getSubagentHistoryPaths(message.subagentId || message.from),
+      history: message.history ?? null,
       content: message.content ?? null,
     };
   }
@@ -2217,7 +1927,7 @@ async function deliverToLiveJob(service, { jobId, message }) {
  * Each round is classified like the first prompt: a round whose run failed
  * stops the Job instead of being treated as delivered work.
  */
-async function drainLiveMessages(live, sessionManager, service) {
+async function drainLiveMessages(live, sessionManager) {
   if (live.session === null) return;
   for (;;) {
     while (live.steers.size > 0) {
@@ -2229,14 +1939,10 @@ async function drainLiveMessages(live, sessionManager, service) {
       live.closed = true;
       return;
     }
-    const delivery = service?.agentDeliveries?.get(live.agentId) ?? null;
-    // Replay each parked native message with its original semantics. A parked
-    // `agent-delivery` custom message is only the first snapshot: resolve it
-    // through the recipient coordinator so coalesced content and the terminal
-    // notice are not lost before the custom message re-enters the session.
+    // Replay each accepted native message unchanged, with its original type.
     for (const message of parked) {
       if (message?.role === "custom") {
-        await replayParkedCustom(live, sessionManager, message, delivery);
+        await replayParkedCustom(live, sessionManager, message);
       } else {
         await replayParkedUser(live, sessionManager, message);
       }
@@ -2244,7 +1950,7 @@ async function drainLiveMessages(live, sessionManager, service) {
     const bufferedText = [];
     for (const entry of buffered) {
       if (entry.kind === "custom") {
-        await replayParkedCustom(live, sessionManager, entry.message, delivery);
+        await replayParkedCustom(live, sessionManager, entry.message);
       } else {
         bufferedText.push(entry);
       }
@@ -2260,17 +1966,12 @@ async function drainLiveMessages(live, sessionManager, service) {
   }
 }
 
-async function replayParkedCustom(live, sessionManager, message, delivery) {
-  let resolved = message;
-  if (message.customType === DELIVERY_CUSTOM_TYPE && delivery !== null) {
-    resolved = delivery.replaceMessage(message) ?? message;
-  }
+async function replayParkedCustom(live, sessionManager, resolved) {
   if (resolved?.role !== "custom" || typeof resolved.customType !== "string") return;
   const boundary = sessionManager.getLeafId();
   // The supported AgentSession path preserves customType/display/details and
   // runs the same ModelCall Budget hooks as any other turn. Re-feeding the
-  // snapshot as plain user text would both lose host metadata and replay only
-  // the first delta.
+  // custom message as plain user text would lose its host metadata.
   const operation = (async () => {
     await live.session.sendCustomMessage(
       {
@@ -2403,14 +2104,6 @@ function takeParkedMessages(session) {
 }
 
 /**
- * Text handed to a session. Attribution comes from the host-bound sender, so
- * a message body can never impersonate another actor.
- */
-function formatPeerMessage(message) {
-  return `[Message from ${message.from}]\n${message.content}`;
-}
-
-/**
  * The assignment text of a first Job: its batch context plus the task itself.
  * It is also what a revival restates when the conversation never recorded it.
  *
@@ -2421,44 +2114,7 @@ function formatPeerMessage(message) {
 function assignmentText(spec) {
   const task = typeof spec?.task === "string" ? spec.task : "";
   const context = typeof spec?.context === "string" ? spec.context : "";
-  return context.trim() === "" ? task : `# Batch context\n\n${context}\n\n# Task\n\n${task}`;
-}
-
-/** Peer messages for a fresh/inherited Job, appended after the assignment. */
-function composePrompt(assignment, messages) {
-  if (messages.length === 0) return assignment;
-  return `${assignment}\n\n# Messages from other agents\n\n${messages.map((entry) => entry.text).join("\n\n")}`;
-}
-
-/**
- * Peer messages for a revival Job. When the actor never recorded anything —
- * its first Job was stopped during setup, or cancelled while it was still
- * before SDK initialization — the original assignment is restated before them, so the new Job
- * has the context its conversation is missing.
- */
-function composeContinuationPrompt(messages, assignment) {
-  const restating = typeof assignment === "string" && assignment !== "";
-  const parts = [];
-  if (restating) {
-    parts.push(
-      "# Original assignment",
-      "",
-      "This agent's first Job was stopped before its conversation recorded anything, so its assignment is restated here.",
-      "",
-      assignment,
-      "",
-    );
-  }
-  parts.push(
-    "# New message",
-    "",
-    restating
-      ? "The messages below arrived while this agent had no recorded conversation and start its first run."
-      : "The previous Job for this agent had already finished. The messages below arrived afterwards and start this new Job.",
-    "",
-    messages.map((entry) => entry.text).join("\n\n"),
-  );
-  return parts.join("\n");
+  return composeAssignment(task, context);
 }
 
 /** The session's own tool loadout, or null when it cannot be read. */
@@ -2489,59 +2145,4 @@ function readFinalText(messages) {
     if (text !== "") return text;
   }
   return "";
-}
-
-function serializePart(part) {
-  if (!part || typeof part !== "object") return { type: "unknown" };
-  if (part.type === "text") return { type: "text", text: String(part.text ?? "") };
-  if (part.type === "thinking") return { type: "thinking", text: String(part.thinking ?? part.text ?? "") };
-  if (part.type === "image") return { type: "image", mimeType: part.mimeType ?? null };
-  const toolName = part.toolName ?? part.name;
-  if (part.type === "toolCall" || part.type === "tool_call" || typeof toolName === "string") {
-    return { type: "tool_call", name: toolName ?? null, arguments: part.arguments ?? part.input ?? null };
-  }
-  return { type: String(part.type ?? "unknown") };
-}
-
-function serializeMessage(message) {
-  if (!message || typeof message !== "object") return null;
-  const entry = { role: typeof message.role === "string" ? message.role : "unknown" };
-  if (typeof message.content === "string") {
-    entry.content = [{ type: "text", text: message.content }];
-  } else if (Array.isArray(message.content)) {
-    entry.content = message.content.map(serializePart);
-  } else {
-    entry.content = [];
-  }
-  if (typeof message.toolCallId === "string") entry.toolCallId = message.toolCallId;
-  if (message.isError === true) entry.isError = true;
-  if (typeof message.provider === "string") entry.provider = message.provider;
-  if (typeof message.model === "string") entry.model = message.model;
-  if (message.usage !== undefined) entry.usage = message.usage;
-  return entry;
-}
-
-/**
- * Serialize raw SessionManager entries into one Job's `history://` transcript.
- * Message entries carry the native message; a custom message entry and a
- * compaction summary appear as their own roles so a compacted conversation
- * stays readable instead of silently dropping content.
- */
-function readTranscript(entries) {
-  const transcript = [];
-  for (const entry of entries) {
-    if (entry.type === "message") {
-      const serialized = serializeMessage(entry.message);
-      if (serialized !== null) transcript.push(serialized);
-    } else if (entry.type === "custom_message") {
-      transcript.push({
-        role: "custom",
-        customType: entry.customType,
-        content: typeof entry.content === "string" ? [{ type: "text", text: entry.content }] : entry.content,
-      });
-    } else if (entry.type === "compaction") {
-      transcript.push({ role: "compactionSummary", summary: String(entry.summary ?? "") });
-    }
-  }
-  return transcript;
 }

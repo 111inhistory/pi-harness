@@ -47,6 +47,13 @@ assert.ok(model, "the installed Pi catalog must contain the offline fixture cand
 const routing = JSON.parse(await fsp.readFile(new URL("../config/subagent-routing.json", import.meta.url), "utf8"));
 Object.assign(routing.models.find((candidate) => candidate.id === "gemini"), { provider: model.provider, model: model.id });
 await fsp.writeFile(path.join(agentDir, "subagent-routing.json"), JSON.stringify(routing));
+const childManagers = [];
+const nativeOpen = SessionManager.open;
+if (scenario === "memory-owners") SessionManager.open = (...args) => {
+  const manager = nativeOpen(...args);
+  if (String(args[0]).includes("subagent-sessions")) childManagers.push(new WeakRef(manager));
+  return manager;
+};
 const classifications = [];
 const chats = [];
 // Automatic host notifications run through the actual root SDK too. Track
@@ -96,7 +103,10 @@ runtime.streamSimple = (actualModel, context, options) => {
   const call = { context, options, text: textOf(context) };
   const latest = options.sessionId === sessionManager.getSessionId()
     ? session.messages.findLast((message) => message.role !== "system") : null;
-  const notice = latest?.role === "custom" &&
+  const afterAssistant = options.sessionId === sessionManager.getSessionId()
+    ? session.messages.slice(session.messages.findLastIndex((message) => message.role === "assistant") + 1) : [];
+  const hasOrdinary = afterAssistant.some((message) => message.role === "custom" && message.customType === "agent-delivery" && message.details?.source === "agent");
+  const notice = !hasOrdinary && latest?.role === "custom" &&
     (latest.customType === "agent-completion" || (latest.customType === "agent-delivery" && latest.details?.source === "host")) &&
     !String(typeof latest.content === "string" ? latest.content : JSON.stringify(latest.content)).includes("[Message from ");
   (notice ? notificationChats : chats).push(call);
@@ -135,7 +145,7 @@ function abortable(gate, signal) {
   });
 }
 
-const durable = ["reload", "upstream-main-reload", "listener-cache"].includes(scenario);
+const durable = ["reload", "upstream-main-reload", "listener-cache", "revive", "history", "upstream-parent", "upstream-parent-steer", "stopping", "stop-history", "failure", "memory-owners", "restore-invalid"].includes(scenario);
 const sessionManager = durable ? SessionManager.create(cwd, path.join(cwd, "root-sessions")) : SessionManager.inMemory(cwd);
 if (durable) {
   sessionManager.appendMessage({ role: "user", content: "Root seed", timestamp: Date.now() });
@@ -196,6 +206,18 @@ async function call(name, params) {
 }
 async function listener(socketPath) {
   return waitFor(() => process._getActiveHandles().find((handle) => handle instanceof net.Server && handle.listening && handle.address() === socketPath), { label: "host listener ready" });
+}
+async function observeFrame(socketPath, marker) {
+  const received = deferred();
+  const server = await listener(socketPath);
+  server.once("connection", (socket) => {
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      if (buffer.endsWith("\n") && buffer.includes(marker)) received.resolve();
+    });
+  });
+  return received;
 }
 async function writeForDelivery(socketPath, content) {
   const server = await listener(socketPath);
@@ -303,7 +325,8 @@ try {
       const matches = JSON.parse(searched.content[0].text);
       assert.deepEqual(matches.skills.map((skill) => skill.name).sort(), expected);
       assert.deepEqual(matches.warnings, []);
-      return toolAnswer("submit_result", { refs: expected.map((name) => `skill://${name}`) });
+      assert.ok(matches.skills.every((skill) => path.isAbsolute(skill.filePath) && skill.ref === skill.filePath));
+      return toolAnswer("submit_result", { refs: matches.skills.map((skill) => skill.filePath) });
     };
     const discovery = await call("capability", {});
     assert.equal(discovery.isError, false, JSON.stringify(discovery.details));
@@ -315,7 +338,9 @@ try {
     }
     assert.ok(discovery.details.skills.every((hit) => typeof hit.score === "number" && typeof hit.reason === "string"), "ranking remains host-owned diagnostics");
     const nativeRead = session.getToolDefinition("read");
-    const resource = await nativeRead.execute("read-package-skill", { path: "skill://ppt-master" }, undefined, undefined, inventory);
+    const entryPath = visible.skills.find((skill) => skill.name === "ppt-master").filePath;
+    assert.ok(path.isAbsolute(entryPath));
+    const resource = await nativeRead.execute("read-package-skill", { path: entryPath }, undefined, undefined, inventory);
     assert.match(resource.content[0].text, /Native package PPT guidance/);
     assert.deepEqual(networkAttempts, [], "installed/CLI skills must not resolve or install missing packages");
   } else if (scenario === "responses-only") {
@@ -328,7 +353,9 @@ try {
     };
     const discovery = await call("capability", {});
     assert.equal(discovery.isError, false, JSON.stringify(discovery.details));
-    assert.equal(JSON.parse(discovery.content[0].text).tools[0].tools.length, 3, "hidden direct declarations must not imply supplied interfaces");
+    const selectedInterfaces = JSON.parse(discovery.content[0].text).tools[0].tools;
+    assert.equal(selectedInterfaces.length, 3, "hidden direct declarations must not imply supplied interfaces");
+    assert.ok(selectedInterfaces.every((tool) => tool.parameters?.type === "object"), "selected interfaces must be supplied without a resource-read protocol");
     controls.chat = () => textAnswer("Only mode continued");
     await session.prompt("Continue without directly declared Subagent interfaces.");
     assert.deepEqual(getCurrentTools(chats.at(-1).context.messages).map((tool) => tool.name), ["codemode"]);
@@ -471,9 +498,8 @@ try {
     assert.match(discovery.tools[0].instructions, /plain text/);
     assert.ok(members.every((name) => session.getActiveToolNames().includes(name)));
     assert.equal(session.getToolDefinition("write").description, nativeWrite.description);
-    const metadata = await call("read", { path: discovery.tools[0].ref });
-    assert.match(metadata.content[0].text, /subagent_stop/);
-    assert.match(metadata.content[0].text, /plain text/);
+    assert.ok(discovery.tools[0].tools.some((tool) => tool.name === "subagent_stop"));
+    assert.ok(discovery.tools[0].description.length > 0);
     const gate = deferred();
     controls.classify = (_, options) => abortable(gate, options.signal);
     controls.chat = () => textAnswer("Namespace child done");
@@ -510,7 +536,7 @@ try {
     await assert.rejects(call("subagent_create", { tasks: [{ task: "valid" }, { task: "invalid", model: "override" }] }));
     assert.deepEqual((await call("subagent_list", {})).details.items.map((agent) => agent.id), ["Main"]);
     await listener(getAgentSocketPath("Main", sessionSocketDir));
-    if (process.platform !== "win32") assert.deepEqual(await fsp.readdir(sessionSocketDir), ["Main.sock"], "invalid batches must not publish any child endpoint");
+    if (process.platform !== "win32") assert.deepEqual((await fsp.readdir(sessionSocketDir)).sort(), ["Main.sock", "main"], "invalid batches must not publish any child endpoint");
     else assert.deepEqual(process._getActiveHandles().filter((handle) => handle instanceof net.Server && handle.listening).map((handle) => handle.address()), [getAgentSocketPath("Main", sessionSocketDir)]);
     const gate = controlledGate();
     controls.classify = (_, options) => abortable(gate, options.signal);
@@ -579,7 +605,8 @@ try {
     assert.equal(sessionManager.getBranch().filter((entry) => entry.type === "custom_message").length, 0, "external responses must not become Agent messages");
     exit.resolve();
     await stopped(actor.id);
-  } else if (["upstream-main-clear", "upstream-main-esc"].includes(scenario)) {
+  } else if (["upstream-main-clear", "upstream-main-clear-terminal", "upstream-main-esc"].includes(scenario)) {
+    const clearTerminal = scenario === "upstream-main-clear-terminal";
     const escaping = scenario === "upstream-main-esc";
     const mainSocket = getAgentSocketPath("Main", sessionSocketDir);
     await listener(mainSocket);
@@ -612,17 +639,20 @@ try {
       await waitFor(() => notificationChats.length === 1, { label: "post-abort completion wakes Main through native steer" });
     } else {
       await waitFor(() => session.agent.hasQueuedMessages(), { label: "terminal notification queues after native clearQueue" });
+      if (clearTerminal) session.clearQueue();
       mainExit.resolve();
       await rootTurn;
     }
     await stopped(actor.id);
     await session.waitForIdle();
     const received = session.messages.filter((message) => message.role === "custom" && message.customType === "agent-delivery");
-    assert.equal(received.length, 1, "only the post-clear terminal steer is delivered");
-    assert.equal(received[0].details.sourceId, actor.id);
-    assert.equal(received[0].details.status, "completed");
-    assert.doesNotMatch(JSON.stringify(received[0].content), /PROGRESS_EXPLICITLY_CLEARED/, "cleared ordinary steering is not replayed");
-    assert.equal(notificationChats.length, 1);
+    assert.equal(received.length, clearTerminal ? 0 : 1, "native queue clearing is respected without replay");
+    if (!clearTerminal) {
+      assert.equal(received[0].details.sourceId, actor.id);
+      assert.equal(received[0].details.status, "completed");
+      assert.doesNotMatch(JSON.stringify(received[0].content), /PROGRESS_EXPLICITLY_CLEARED/, "cleared ordinary steering is not replayed");
+    }
+    assert.equal(notificationChats.length, clearTerminal ? 0 : 1);
   } else if (["upstream-main", "upstream-main-steer", "upstream-main-reload"].includes(scenario)) {
     const mainSocket = getAgentSocketPath("Main", sessionSocketDir);
     await listener(mainSocket);
@@ -631,6 +661,7 @@ try {
     const mainExit = controlledGate();
     const delivered = controlledGate();
     const steering = scenario === "upstream-main-steer";
+    const childExit = controlledGate();
     let armed = scenario !== "upstream-main-reload";
     let mainRequests = 0;
     controls.chat = async (request) => {
@@ -642,6 +673,7 @@ try {
         assert.ok(request.text.includes(mainSocket), "child context exposes the real parent receiving endpoint");
         const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
         if (armed && !wrote) return toolAnswer("msg_write", { path: mainSocket, content: "UPSTREAM_MAIN_MARKER" }, "upstream-write");
+        if (steering) await childExit.promise;
         return textAnswer("Child done");
       }
       mainRequests++;
@@ -674,7 +706,8 @@ try {
       await call("msg_write", { path: restored.socket, content: "Send the explicit upstream message after reload" });
     }
     if (steering) {
-      await waitFor(() => session.agent.hasQueuedMessages(), { label: "child message queued as native Main steering" });
+      await waitFor(() => session.agent.hasQueuedMessages(), { label: "ordinary progress queued before the child can terminate" });
+      childExit.resolve();
       await stopped(sender.id);
       mainExit.resolve();
       await mainPrompt;
@@ -687,9 +720,12 @@ try {
     assert.equal(received.length, 1, "one write produces exactly one Main delivery item");
     assert.equal(received[0].details.sourceId, sender.id);
     if (steering) {
-      assert.equal(received[0].details.status, "completed", "still-queued progress and terminal become one host delivery");
-      assert.match(received[0].content, /\[Subagent .* completed/);
-      assert.equal(notificationChats.length, 0, "the merged terminal does not start another root request");
+      assert.equal(received[0].details.status, "running", "ordinary progress is not rewritten by the later terminal");
+      const terminals = session.messages.filter((message) => message.role === "custom" && message.customType === "agent-delivery" &&
+        message.details?.sourceId === sender.id && message.details?.source === "host");
+      assert.equal(terminals.length, 1);
+      assert.equal(terminals[0].details.status, "completed");
+      assert.equal(JSON.stringify(terminals[0].content).includes("UPSTREAM_MAIN_MARKER"), false);
     }
     assert.equal(mainRequests, steering ? 2 : 1);
     // JSON-literal sender spoofing is covered by sender-reserved against a
@@ -699,14 +735,19 @@ try {
     const send = controlledGate();
     const parentWaiting = controlledGate();
     const parentExit = controlledGate();
+    let progressReceived;
     let parent;
     let parentRequests = 0;
-    let mergedSeen = false;
+    let progressSeen = false;
+    let terminalSeen = false;
     controls.chat = async (request) => {
       if (request.text.includes("PARENT_MERGE_LEAF")) {
         await send.promise;
         const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
         if (!wrote) return toolAnswer("msg_write", { path: parent.socket, content: "PARENT_MERGE_PROGRESS" }, "parent-merge-write");
+        // OS write completion is not host receipt. Hold the leaf until the
+        // parent's actual frame reader has queued the ordinary progress.
+        await progressReceived.promise;
         return textAnswer("Leaf completed");
       }
       assert.ok(request.text.includes("PARENT_MERGE_OWNER"));
@@ -718,35 +759,41 @@ try {
         await parentExit.promise;
         return textAnswer("Parent finishes its held model turn");
       }
-      // The provider receives Pi's LLM conversion, not raw custom messages.
-      // Check its combined body here and the typed native history below.
+      // Pi may consume the separate messages together or on successive turns.
+      // The plugin never rewrites the ordinary message with the terminal.
       const deliveries = request.context.messages.filter((message) =>
         message.role !== "system" && JSON.stringify(message.content).includes("PARENT_MERGE_PROGRESS"));
       assert.equal(deliveries.length, 1);
-      assert.match(JSON.stringify(deliveries[0].content), /\[Subagent .* completed/);
-      mergedSeen = true;
-      return textAnswer("Parent received one combined progress and terminal delivery");
+      assert.doesNotMatch(JSON.stringify(deliveries[0].content), /\[Subagent .* completed/);
+      progressSeen = true;
+      terminalSeen = request.text.includes(`[Subagent ${parent.id}_01 completed`);
+      return textAnswer("Parent received independent progress and terminal events");
     };
     parent = await create("PARENT_MERGE_OWNER: delegate one leaf and consume its result");
     await parentWaiting.promise;
     const leaf = (await call("subagent_list", { all: true })).details.items.find((entry) => entry.id !== "Main" && entry.id !== parent.id);
     assert.ok(leaf);
+    progressReceived = await observeFrame(parent.socket, "PARENT_MERGE_PROGRESS");
     send.resolve();
     await stopped(leaf.id);
     parentExit.resolve();
-    await waitFor(() => mergedSeen, { label: "busy Subagent parent consumes merged host delivery" });
+    await waitFor(() => progressSeen && terminalSeen, { label: "busy Subagent parent consumes both independent events" });
     await stopped(parent.id);
     await session.waitForIdle();
-    assert.equal(parentRequests, 3, "one parent assignment turn, one held turn, and one merged continuation");
+    assert.ok(parentRequests === 3 || parentRequests === 4, "Pi chooses whether separate queued messages need one or two turns");
     assert.equal(classifications.length, 4, "notification does not route another parent assignment");
-    const stored = (await events(parent.history.cleanJsonl)).filter((event) => event.type === "message_end" &&
+    const stored = (await events((await item(parent.id)).history.cleanJsonl)).filter((event) =>
       event.role === "custom" && JSON.stringify(event.content).includes("PARENT_MERGE_PROGRESS"));
     assert.equal(stored.length, 1);
     assert.equal(stored[0].customType, "agent-delivery");
-    assert.equal(stored[0].details.source, "host");
+    assert.equal(stored[0].details.source, "agent");
     assert.equal(stored[0].details.sourceId, leaf.id);
-    assert.equal(stored[0].details.status, "completed");
-    assert.match(stored[0].content, /\[Subagent .* completed/);
+    assert.equal(stored[0].details.status, "running");
+    const terminals = (await events((await item(parent.id)).history.cleanJsonl)).filter((event) =>
+      event.role === "custom" && event.details?.sourceId === leaf.id && event.details?.source === "host");
+    assert.equal(terminals.length, 1);
+    assert.equal(terminals[0].details.status, "completed");
+    assert.equal(JSON.stringify(terminals[0].content).includes("PARENT_MERGE_PROGRESS"), false);
   } else if (scenario === "upstream-parent") {
     const send = controlledGate();
     const received = controlledGate();
@@ -782,8 +829,8 @@ try {
     assert.equal("parentSocket" in leaf, false);
     send.resolve();
     await stopped(leaf.id);
-    const leafEvents = await events(leaf.history.cleanJsonl);
-    const sent = leafEvents.find((event) => event.type === "tool_execution_end" && event.toolName === "msg_write");
+    const leafEvents = await events((await stopped(leaf.id)).history.cleanJsonl);
+    const sent = leafEvents.find((event) => event.role === "toolResult" && event.toolName === "msg_write");
     assert.ok(sent && !sent.isError, JSON.stringify(sent));
     await received.promise;
     await stopped(parent.id);
@@ -843,10 +890,12 @@ try {
     assert.doesNotMatch(chats.at(-1).text, /\[Message from sub_99\]/);
   } else if (scenario === "revive") {
     const first = await create("Original assignment marker");
-    await stopped(first.id);
+    const initial = await stopped(first.id);
+    const initialMarkdown = await fsp.readFile(initial.history.summary, "utf8");
+    const initialJsonl = await fsp.readFile(initial.history.cleanJsonl, "utf8");
     const endpoint = await listener(first.socket);
-    let previousMarkdown = await fsp.readFile(first.history.summary, "utf8");
-    let previousJsonl = await fsp.readFile(first.history.cleanJsonl, "utf8");
+    let previousMarkdown = initialMarkdown;
+    let previousJsonl = initialJsonl;
     assert.match(previousMarkdown, /Local result/);
     assert.equal(classifications.length, 2);
     for (const round of [2, 3]) {
@@ -854,43 +903,42 @@ try {
       await waitFor(() => chats.length === round, { label: `revival ${round} native request` });
       const current = await stopped(first.id);
       assert.equal(current.socket, first.socket);
-      assert.deepEqual(current.history, first.history);
+      assert.notEqual(current.history.jobId, initial.history.jobId);
       assert.equal(await listener(first.socket), endpoint, "revive must not replace the listener");
       assert.equal(classifications.length, 2, "settled identity must not reroute");
       assert.equal("budget" in (await stopped(first.id)), false);
       assert.match(chats[round - 1].text, new RegExp(`Explicit continuation ${round}`));
       assert.equal(chats[round - 1].text.split("Original assignment marker").length - 1, 1, "the initial task is history, not re-injected");
-      const markdown = await fsp.readFile(first.history.summary, "utf8");
-      const jsonl = await fsp.readFile(first.history.cleanJsonl, "utf8");
-      assert.ok(markdown.startsWith(previousMarkdown));
-      assert.ok(jsonl.startsWith(previousJsonl));
-      assert.ok(markdown.length > previousMarkdown.length);
-      assert.ok(jsonl.length > previousJsonl.length);
+      const markdown = await fsp.readFile(current.history.summary, "utf8");
+      const jsonl = await fsp.readFile(current.history.cleanJsonl, "utf8");
+      assert.match(markdown, /Previous round/);
+      assert.notEqual(markdown, previousMarkdown);
+      assert.notEqual(jsonl, previousJsonl);
+      assert.equal(await fsp.readFile(initial.history.summary, "utf8"), initialMarkdown);
+      assert.equal(await fsp.readFile(initial.history.cleanJsonl, "utf8"), initialJsonl);
       previousMarkdown = markdown;
       previousJsonl = jsonl;
     }
-    assert.deepEqual((await fsp.readdir(path.dirname(first.history.summary))).sort(), ["session.clean.jsonl", "summary.md"]);
+    assert.deepEqual((await fsp.readdir(path.dirname(initial.history.summary))).sort(), ["summary.md", "transcript.jsonl"]);
   } else if (scenario === "history") {
     controls.chat = () => chats.length === 1 ? toolAnswer("write", { path: "artifact.txt", content: "Actual native tool result" }) : textAnswer("Complete final answer\n困难度：low");
     const first = await create("Execute a real file tool then report");
     const terminal = await stopped(first.id);
     assert.equal("budget" in (await stopped(first.id)), false);
     assert.equal(await fsp.readFile("artifact.txt", "utf8"), "Actual native tool result");
-    const records = await events(first.history.cleanJsonl);
-    assert.ok(records.some((r) => r.type === "message_start"));
-    const start = records.find((r) => r.type === "tool_execution_start");
-    const end = records.find((r) => r.type === "tool_execution_end");
-    assert.equal(start.toolName, "write");
-    assert.equal(start.args.content, "Actual native tool result");
-    assert.equal(end.toolCallId, start.toolCallId);
-    assert.equal(end.isError, false);
-    assert.ok(end.result.content.length > 0);
+    const records = await events(terminal.history.cleanJsonl);
+    const start = records.flatMap((r) => r.content ?? []).find((part) => part.type === "tool_call" && part.name === "write");
+    const end = records.find((r) => r.role === "toolResult" && r.toolName === "write");
+    assert.equal(start.arguments.content, "Actual native tool result");
+    assert.equal(end.toolCallId, start.id);
+    assert.equal(end.isError ?? false, false);
+    assert.ok(end.content.length > 0);
     assert.ok(streamedFragments > 0, "the native Session actually received stream fragments");
     assert.ok(records.every((r) => !["message_update", "text_delta", "toolcall_delta"].includes(r.type)));
-    const final = records.filter((r) => r.type === "message_end" && r.role === "assistant").at(-1);
+    const final = records.filter((r) => r.role === "assistant").at(-1);
     assert.equal(final.stopReason, "stop");
     assert.ok(JSON.stringify(final).includes("Complete final answer"), "clean history must retain finalized message content, not just usage");
-    assert.match(await fsp.readFile(first.history.summary, "utf8"), /Complete final answer/);
+    assert.match(await fsp.readFile(terminal.history.summary, "utf8"), /Complete final answer/);
   } else if (scenario === "steer") {
     const exit = controlledGate();
     controls.chat = async () => {
@@ -1029,7 +1077,7 @@ try {
       exit.resolve();
     }
     assert.equal("budget" in (await stopped(first.id)), false);
-    assert.match(await fsp.readFile(first.history.summary, "utf8"), /`cancelled`/);
+    assert.match(await fsp.readFile((await stopped(first.id)).history.summary, "utf8"), /`cancelled`/);
     controls.chat = null;
     await call("msg_write", { path: first.socket, content: "resume after actual exit" });
     await waitFor(() => chats.length === 2, { label: "explicit revive after cancellation" });
@@ -1040,7 +1088,7 @@ try {
     const first = await create("Fail a native model request");
     const terminal = await stopped(first.id);
     assert.equal("budget" in (await stopped(first.id)), false);
-    assert.match(await fsp.readFile(first.history.summary, "utf8"), /`failed`[\s\S]*Local provider failure/);
+    assert.match(await fsp.readFile(terminal.history.summary, "utf8"), /`failed`[\s\S]*Local provider failure/);
     const notices = sessionManager.getBranch().filter((entry) => entry.type === "custom_message");
     assert.equal(notices.length, 1);
     await session.waitForIdle();
@@ -1051,17 +1099,67 @@ try {
     assert.equal(notice.source, "host");
     assert.equal(notice.sourceId, first.id);
     assert.equal(notice.status, "failed");
-    assert.deepEqual(notice.terminal.details.history, first.history);
+    assert.deepEqual(notice.terminal.details.history, { summary: terminal.history.summary, cleanJsonl: terminal.history.cleanJsonl });
+  } else if (scenario === "memory-owners") {
+    assert.equal(typeof globalThis.gc, "function");
+    const actor = await create("Retain actor identity but release its native manager", { inheritContext: true });
+    const initial = await stopped(actor.id);
+    await session.waitForIdle();
+    // The fake provider records options for scheduler assertions. Those options
+    // contain Pi's live stream callback, which itself owns the native manager.
+    // A completed provider must release them before testing plugin ownership.
+    for (const request of chats) request.options = null;
+    for (let i = 0; i < 5; i++) { await new Promise((resolve) => setImmediate(resolve)); globalThis.gc(); }
+    assert.ok(childManagers.length > 0);
+    if (process.env.PI_HEAP_SNAPSHOT) (await import("node:v8")).writeHeapSnapshot(process.env.PI_HEAP_SNAPSHOT);
+    assert.ok(childManagers.every((reference) => reference.deref() === undefined), "terminal persistent managers must not stay in plugin registries/caches");
+    const original = await fsp.readFile(initial.history.summary, "utf8");
+    await fsp.rm(initial.history.summary);
+    const rebuilt = await item(actor.id);
+    assert.equal(await fsp.readFile(rebuilt.history.summary, "utf8"), original);
+    await session.reload();
+    await call("msg_write", { path: actor.socket, content: "Resume with the original assignment still in context" });
+    await waitFor(() => chats.length === 2, { label: "persistent actor reopened for continuation" });
+    const continued = await stopped(actor.id);
+    assert.notEqual(continued.history.jobId, initial.history.jobId);
+    assert.equal(classifications.length, 0, "inherited identity must survive file reopen and reload without routing");
+    assert.match(chats.at(-1).text, /Retain actor identity/);
+    assert.ok(sessionManager.getBranch().filter((entry) => entry.customType === "subagent-job")
+      .every((entry) => entry.data.spec.inheritedContext?.entries === undefined));
+    await session.waitForIdle();
+    for (const request of chats) request.options = null;
+    for (let i = 0; i < 5; i++) { await new Promise((resolve) => setImmediate(resolve)); globalThis.gc(); }
+    assert.ok(childManagers.every((reference) => reference.deref() === undefined), "reopened and temporary reader managers must be collectible too");
+  } else if (scenario === "restore-invalid") {
+    sessionManager.appendCustomEntry("subagent-job", { v: 2, jobId: "sub_99", agentId: "sub_99",
+      actor: { name: "corrupt", parentAgentId: null, depth: 1 }, createdBy: "unknown-sender",
+      spec: { task: "Must not execute" }, continuedFromJobId: null });
+    await session.reload();
+    await assert.rejects(call("subagent_list", {}), { code: "storage_read_failed" });
+    assert.equal(sessionManager.getBranch().filter((entry) => entry.customType === "subagent-job-end" && entry.data.jobId === "sub_99").length, 0,
+      "a rejected registry must not append recovery events");
+    assert.equal(chats.length, 0);
+    assert.equal(classifications.length, 0);
+  } else if (scenario === "memory-only") {
+    assert.equal(durable, false);
+    const actor = await create("PURE_MEMORY_ASSIGNMENT");
+    assert.equal((await stopped(actor.id)).history, undefined);
+    await call("msg_write", { path: actor.socket, content: "Continue the memory-only conversation" });
+    await waitFor(() => chats.length === 2, { label: "memory-only continuation consumed" });
+    assert.equal((await stopped(actor.id)).history, undefined);
+    assert.match(chats.at(-1).text, /PURE_MEMORY_ASSIGNMENT/);
+    assert.equal(classifications.length, 2);
+    await assert.rejects(fsp.access(path.join(agentDir, "subagent-sessions")), { code: "ENOENT" });
   } else if (scenario === "reload") {
     const first = await create("Persisted original assignment");
-    await stopped(first.id);
+    const initial = await stopped(first.id);
     await listener(first.socket);
     assert.ok(sessionManager.getSessionFile(), "the root must be durable");
-    assert.ok(sessionManager.getBranch().some((entry) => entry.type === "custom" && entry.customType === "subagent-state"), "the runtime must checkpoint into the actual root branch");
+    assert.ok(sessionManager.getBranch().some((entry) => entry.type === "custom" && entry.customType === "subagent-job-end"), "the runtime must append its terminal event to the actual root branch");
     await session.reload();
     const restored = await item(first.id);
     assert.equal(restored.id, first.id);
-    assert.deepEqual(restored.history, first.history);
+    assert.deepEqual(restored.history, initial.history);
     await listener(restored.socket);
     await call("msg_write", { path: restored.socket, content: "Continue after reload" });
     await waitFor(() => chats.length === 2, { label: "revive from persisted session" });

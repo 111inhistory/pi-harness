@@ -11,7 +11,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { writeFileAtomic } from "./subagent-storage.mjs";
+import { writeFileAtomic, writeJsonlAtomic } from "./subagent-storage.mjs";
 
 export function jobViewPaths(viewsDir, jobId) {
   const dir = join(viewsDir, jobId);
@@ -35,7 +35,7 @@ export function hasJobView(viewsDir, jobId) {
  */
 export function writeJobView(viewsDir, view) {
   const paths = jobViewPaths(viewsDir, view.jobId);
-  writeFileAtomic(paths.transcript, view.transcript.map((entry) => `${JSON.stringify(entry)}\n`).join(""));
+  writeJsonlAtomic(paths.transcript, view.transcript);
   writeFileAtomic(paths.summary, renderSummary(viewsDir, view));
   return paths;
 }
@@ -113,6 +113,8 @@ export function readTranscript(entries) {
       transcript.push({
         role: "custom",
         customType: entry.customType,
+        display: entry.display,
+        details: entry.details,
         content: typeof entry.content === "string" ? [{ type: "text", text: entry.content }] : entry.content,
       });
     } else if (entry.type === "compaction") {

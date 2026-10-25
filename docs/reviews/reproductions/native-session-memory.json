@@ -1,0 +1,56 @@
+{
+  "sdk": "1.4.0",
+  "node": "v22.23.4",
+  "textMiB": 8,
+  "modelCalls": 0,
+  "rows": [
+    {
+      "phase": "baseline",
+      "heapMiB": 30.27,
+      "rssMiB": 132.06,
+      "externalMiB": 2.91
+    },
+    {
+      "phase": "native-manager-8MiB-text",
+      "heapMiB": 38.4,
+      "rssMiB": 132.86,
+      "externalMiB": 2.92
+    },
+    {
+      "phase": "two-shallow-entry-arrays",
+      "heapMiB": 38.42,
+      "rssMiB": 132.86,
+      "externalMiB": 2.92
+    },
+    {
+      "phase": "three-deep-copies",
+      "heapMiB": 62.54,
+      "rssMiB": 163.01,
+      "externalMiB": 2.92
+    },
+    {
+      "phase": "deep-copies-released",
+      "heapMiB": 38.42,
+      "rssMiB": 163.01,
+      "externalMiB": 2.92
+    },
+    {
+      "phase": "native-session-created",
+      "heapMiB": 38.88,
+      "rssMiB": 163.14,
+      "externalMiB": 2.92
+    },
+    {
+      "phase": "disposed-but-manager-retained",
+      "heapMiB": 38.71,
+      "rssMiB": 163.14,
+      "externalMiB": 2.92
+    },
+    {
+      "phase": "all-session-owners-released",
+      "heapMiB": 30.67,
+      "rssMiB": 163.14,
+      "externalMiB": 2.92
+    }
+  ]
+}

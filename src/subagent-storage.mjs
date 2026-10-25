@@ -20,7 +20,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 export const STORAGE_VERSION = 2;
@@ -45,9 +45,6 @@ const EVENT_TYPES = new Set(Object.values(EVENTS));
 
 /** Directory name under the agent directory that holds subagent session files. */
 export const SUBAGENT_SESSIONS_DIR = "subagent-sessions";
-
-/** Read-only native sessions kept open between reads of the same file. */
-const READ_CACHE_SIZE = 4;
 
 /** Harness-owned storage error with a stable machine-readable code. */
 export class SubagentStoreError extends Error {
@@ -92,29 +89,52 @@ export function withoutEntries(entries, drop) {
 }
 
 /** Atomic write: a partial file never becomes a session or a view. */
-export function writeFileAtomic(file, text) {
+function atomicWrite(file, write) {
   mkdirSync(dirname(file), { recursive: true });
   const temporary = `${file}.tmp-${randomUUID().slice(0, 8)}`;
-  writeFileSync(temporary, text);
-  renameSync(temporary, file);
+  let fd;
+  try {
+    fd = openSync(temporary, "wx", 0o600);
+    write(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temporary, file);
+  } catch (error) {
+    if (fd !== undefined) closeSync(fd);
+    rmSync(temporary, { force: true });
+    throw error;
+  }
+}
+
+export function writeFileAtomic(file, text) {
+  atomicWrite(file, (fd) => writeFileSync(fd, text));
+}
+
+/** Serialize one record at a time instead of building a second full transcript. */
+export function writeJsonlAtomic(file, entries) {
+  atomicWrite(file, (fd) => {
+    for (const entry of entries) writeFileSync(fd, `${JSON.stringify(entry)}\n`);
+  });
 }
 
 function writeSessionFile(file, header, entries) {
-  writeFileAtomic(file, [header, ...entries].map((entry) => `${JSON.stringify(entry)}\n`).join(""));
+  writeJsonlAtomic(file, (function* () { yield header; yield* entries; })());
 }
 
 /**
  * Fold the harness events of one root branch into a registry description.
  *
- * Jobs keep event order (the global creation chronology). Unknown or malformed
- * events are reported, never guessed at.
+ * Jobs keep event order (the global creation chronology). Only known v2 event
+ * types are interpreted; unrelated/legacy entries remain untouched. Malformed
+ * v2 events are reported, never guessed at.
  */
 export function foldEvents(branch) {
   const actors = new Map();
   const jobs = new Map();
   let endSequence = 0;
   for (const entry of branch) {
-    if (!isHarnessEntry(entry) || !EVENT_TYPES.has(entry.customType)) continue;
+    if (!isHarnessEntry(entry)) continue;
+    if (!EVENT_TYPES.has(entry.customType)) continue;
     const data = entry.data;
     if (!isPlainObject(data) || data.v !== STORAGE_VERSION) {
       throw new SubagentStoreError("storage_corrupt", `Subagent event ${entry.id ?? "?"} has no version-${STORAGE_VERSION} payload.`, {
@@ -154,15 +174,17 @@ export function foldEvents(branch) {
         if (job === undefined) throw corrupt(entry, `End of unknown Job ${data.jobId}.`);
         const { v: _v, jobId: _jobId, ...end } = data;
         job.end = end;
-        actors.get(job.agentId).stoppedOrder = ++endSequence;
+        const actor = actors.get(job.agentId);
+        actor.stoppedOrder = ++endSequence;
+        if (typeof end.history?.endEntryId === "string") actor.anchor = end.history.endEntryId;
         break;
       }
       case EVENTS.actor: {
         const actor = actors.get(data.agentId);
         if (actor === undefined) throw corrupt(entry, `Identity of unknown actor ${data.agentId}.`);
         const { v: _v, agentId: _agentId, anchor, ...record } = data;
-        actor.record = record;
-        actor.anchor = anchor ?? null;
+        actor.record = { ...actor.record, ...record };
+        if (Object.hasOwn(data, "anchor")) actor.anchor = anchor ?? null;
         break;
       }
       case EVENTS.anchor: {
@@ -186,7 +208,7 @@ function corrupt(entry, message) {
  *   appendEntry?: (customType: string, data: unknown) => void,
  *   readBranch?: () => object[],
  *   readEntries?: () => object[],
- *   openSession?: (file: string) => object,
+ *   openSession?: (file: string, cwd?: string) => object,
  * }} options
  */
 export function createSubagentStore(options = {}) {
@@ -198,9 +220,6 @@ export function createSubagentStore(options = {}) {
     typeof readBranch === "function" &&
     typeof readEntries === "function" &&
     typeof openSession === "function";
-
-  /** Small LRU of read-only native sessions, invalidated by size and mtime. */
-  const readCache = new Map();
 
   function requireDurable() {
     if (!durable) {
@@ -263,21 +282,12 @@ export function createSubagentStore(options = {}) {
   function read(file) {
     requireDurable();
     if (!existsSync(file)) return null;
-    const stat = statSync(file);
-    const cached = readCache.get(file);
-    if (cached !== undefined && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
-      readCache.delete(file);
-      readCache.set(file, cached);
-      return cached.manager;
-    }
     let manager;
     try {
       manager = openSession(file);
     } catch (error) {
       throw new SubagentStoreError("storage_corrupt", `${file} is not a readable Pi session: ${messageOf(error)}`, { file });
     }
-    readCache.set(file, { manager, size: stat.size, mtimeMs: stat.mtimeMs });
-    while (readCache.size > READ_CACHE_SIZE) readCache.delete(readCache.keys().next().value);
     return manager;
   }
 
@@ -313,30 +323,34 @@ export function createSubagentStore(options = {}) {
    *
    * @returns {{ manager: object, file: string, relocated: boolean }}
    */
-  function openForAppend(agentId, file, anchor) {
+  function openForAppend(agentId, file, anchor, cwd) {
     const own = childFile(agentId);
     let target = typeof file === "string" && file !== "" ? resolve(file) : own;
     let relocated = false;
-    if (target !== own && !ownsFile(target)) {
-      const source = read(target);
-      if (source !== null) {
-        if (existsSync(own)) {
-          throw new SubagentStoreError("storage_seed_conflict", `Actor ${agentId} already has a session file; refusing to overwrite ${own}.`, {
-            agentId,
-            file: own,
+    if (target !== own) {
+      if (existsSync(own)) {
+        // A rewound root may again record the foreign path after an earlier
+        // branch already materialized our copy. Reuse that tree, not overwrite it.
+        const existing = read(own);
+        if (existing.getHeader()?.parentSession !== target || (anchor !== null && existing.getEntry(anchor) === undefined)) {
+          throw new SubagentStoreError("storage_seed_conflict", `Actor ${agentId} already has a different session file; refusing to overwrite ${own}.`, {
+            agentId, file: own,
           });
         }
-        const path = anchor === null ? source.getBranch() : branchTo(source, anchor, agentId);
-        const header = { ...source.getHeader(), id: randomUUID(), timestamp: new Date().toISOString(), parentSession: target };
-        writeSessionFile(own, header, path);
+      } else {
+        const source = read(target);
+        if (source !== null) {
+          const path = anchor === null ? source.getBranch() : branchTo(source, anchor, agentId);
+          const header = { ...source.getHeader(), id: randomUUID(), timestamp: new Date().toISOString(), parentSession: target };
+          writeSessionFile(own, header, path);
+        }
       }
       target = own;
       relocated = true;
     }
-    readCache.delete(target);
     let manager;
     try {
-      manager = openSession(target);
+      manager = openSession(target, cwd);
     } catch (error) {
       throw new SubagentStoreError("storage_corrupt", `${target} is not a readable Pi session: ${messageOf(error)}`, { file: target });
     }
@@ -356,8 +370,7 @@ export function createSubagentStore(options = {}) {
    * Entries of one Job: the path ending at `endEntryId` (the leaf when null),
    * strictly after `startEntryId`.
    */
-  function readSlice(file, startEntryId, endEntryId) {
-    const manager = read(file);
+  function readSlice(file, startEntryId, endEntryId, manager = read(file)) {
     if (manager === null) {
       throw new SubagentStoreError("storage_history_unavailable", `The session file ${file} is missing.`, { file });
     }

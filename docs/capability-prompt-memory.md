@@ -24,10 +24,11 @@ to the session branch:
 ## Contents
 
 - Tools and MCP groups: refs, names, descriptions, exposure, shared instructions,
-  and selected group members. Argument schemas stay in native tool declarations
-  or codemode inspection; schemas are not duplicated into memory records.
-- Skills: refs, names, descriptions, absolute entry paths, caveats, and associations.
-  The model reads the Skill body on demand.
+  and selected group members. Native declarations or selected result metadata
+  provide argument schemas; branch records do not duplicate schemas.
+- Skills: absolute entry paths, names, descriptions, caveats, and associations.
+  A Skill ref is its entry path. The model uses native file read on that path.
+  No resource protocol router or read/write override is installed.
 - Shared guidance: retained across discoveries, even when a selection adds no tools.
 - Remote coverage: remote search is disabled until an approval receiver exists (D4).
   Coverage explicitly marks remote search as `not_searched`. Remote candidates

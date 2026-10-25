@@ -87,7 +87,6 @@ test("already-active builtin and SDK additional tools are omitted from search, n
   for (const query of ["bash", "tool://bash", "sdk_tool"]) {
     assert.deepEqual((await broker.search({ query, src: "local" })).tools, []);
   }
-  assert.equal(JSON.parse(await broker.read("tool://bash")).name, "bash");
 });
 
 const ENGLISH_QUERY = "list pages in the connected Firefox and run shell commands";
@@ -256,10 +255,6 @@ test("a namespace returns all visible members as one candidate, including on mem
     assert.equal(hit.instructions, namespace.instructions);
     if (query === "agens") assert.equal(hit.match, "fuzzy");
   }
-  const metadata = JSON.parse(await broker.read("namespace://agents"));
-  assert.equal(metadata.tools.length, 19);
-  assert.ok(metadata.tools.every((tool) => tool.parameters.type === "object"));
-  await assert.rejects(broker.read("namespace://missing"), /unknown namespace/);
   assert.deepEqual(members, before);
 });
 
@@ -292,7 +287,6 @@ test("an ordinary namespace groups MCP-sourced and ordinary tools together", asy
   assert.deepEqual(result.mcp, []);
   assert.equal(result.tools[0].ref, "namespace://mixed");
   assert.deepEqual(result.tools[0].tools.map((tool) => tool.name), tools.map((tool) => tool.name));
-  assert.equal(JSON.parse(await broker.read(result.tools[0].ref)).tools.length, 2);
 });
 
 test("MCP candidate identity follows native namespaces, not inferred backend server names", async () => {
@@ -308,7 +302,6 @@ test("MCP candidate identity follows native namespaces, not inferred backend ser
     assert.equal(result.mcp[0].ref, "namespace://mcp__bundle");
     assert.deepEqual(result.mcp[0].tools.map((tool) => tool.name), [first.name, second.name]);
   }
-  assert.equal(JSON.parse(await broker.read("namespace://mcp__bundle")).tools.length, 2);
   const split = createCapabilityBroker({
     listTools: () => [
       { ...first, namespace: { name: "mcp__one" }, description: "SplitNamespaceNeedle" },
@@ -394,7 +387,7 @@ test("falls back to fuzzy skills when every local group is otherwise empty", asy
   assert.deepEqual(result.missingCapabilities, [], "a fuzzy hit still covers its query token");
 });
 
-test("excludes hidden tools from search and rejects them in protocol reads", async () => {
+test("excludes hidden tools from search", async () => {
   const broker = createCapabilityBroker(plainProviders());
   const result = await broker.search({ query: "navigate the firefox page", src: "local", cwd: "/tmp" });
   assert.ok(
@@ -405,8 +398,6 @@ test("excludes hidden tools from search and rejects them in protocol reads", asy
     result.mcp.every((hit) => hit.ref !== "mcp://firefox_devtools/withdrawn_navigate"),
     "a hidden MCP tool must never be discovered",
   );
-  await assert.rejects(broker.read(`tool://${WITHDRAWN.name}`, { cwd: "/tmp" }), /unknown tool/);
-  await assert.rejects(broker.read("mcp://firefox_devtools/withdrawn_navigate", { cwd: "/tmp" }), /unknown MCP tool/);
 });
 
 test("reads MCP identity from namespace, minted name and explicit provenance path", async () => {
@@ -497,7 +488,7 @@ test("binds skills to matched refs and extracts their caveats", async () => {
 
   const result = await broker.search({ query: CHINESE_QUERY, src: "local", cwd: "/tmp" });
   assert.equal(result.status, "ok");
-  const skill = result.skills.find((hit) => hit.ref === "skill://firefox-existing-profile");
+  const skill = result.skills.find((hit) => hit.filePath === FIREFOX_SKILL.filePath);
   assert.ok(skill, "the firefox skill must be recalled");
   assert.match(skill.reason, /body/);
   assert.deepEqual(skill.bindsTo, ["namespace://mcp__firefox_devtools"]);
@@ -507,7 +498,7 @@ test("binds skills to matched refs and extracts their caveats", async () => {
   assert.equal(prohibition.failureVisibility, "silent");
   assert.deepEqual(prohibition.targets, ["namespace://mcp__firefox_devtools"]);
   assert.deepEqual(prohibition.sources, [
-    { skill: "skill://firefox-existing-profile", filePath: FIREFOX_SKILL.filePath, section: "限制", where: "body" },
+    { skill: FIREFOX_SKILL.filePath, filePath: FIREFOX_SKILL.filePath, section: "限制", where: "body" },
   ]);
   assert.ok(skill.caveats.some((caveat) => caveat.kind === "precondition" && caveat.targets.includes("namespace://mcp__firefox_devtools")));
   assert.ok(
@@ -529,7 +520,7 @@ test("extracts a caveat from a skill description that names a hit", async () => 
     }),
   );
   const result = await broker.search({ query: "list pages", src: "local", cwd: "/tmp" });
-  const skill = result.skills.find((hit) => hit.ref === "skill://desc-caveat");
+  const skill = result.skills.find((hit) => hit.filePath === "/x/SKILL.md");
   assert.ok(skill);
   const caveat = skill.caveats.find((entry) => entry.sources.some((source) => source.where === "description"));
   assert.ok(caveat, "a description-named anchor must still produce a caveat");
@@ -545,7 +536,7 @@ test("reads skill bodies through the bounded default file reader", async () => {
       listTools: () => [],
       listActiveTools: () => [],
       discoverSkills: () => ({
-        skills: [{ name: "temp-skill", description: "List pages workflow.", filePath }],
+        skills: [{ name: "temp-skill", description: "List pages workflow.", filePath: "SKILL.md" }],
         diagnostics: [],
       }),
     });
@@ -556,8 +547,9 @@ test("reads skill bodies through the bounded default file reader", async () => {
     assert.match(result.skills[0].reason, /body/);
     assert.deepEqual(result.warnings, []);
 
-    const body = await broker.read("skill://temp-skill", { cwd: directory });
-    assert.match(body, /Use list_pages before acting\./);
+    assert.equal(result.skills[0].ref, filePath);
+    assert.equal(result.skills[0].filePath, filePath);
+    assert.equal(result.skills[0].body, undefined, 'return an entry path, not the Skill body');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -589,7 +581,7 @@ test("keeps recall hits when a single skill body cannot be read and normalizes d
   assert.ok(result.warnings.includes('skill "broken-firefox" body unreadable: ENOENT'));
   assert.ok(result.warnings.includes("skill discovery error: frontmatter invalid (/side/SKILL.md)"));
 
-  const exact = await broker.search({ query: "skill://broken-firefox", src: "local", cwd: "/tmp" });
+  const exact = await broker.search({ query: "/missing/SKILL.md", src: "local", cwd: "/tmp" });
   assert.equal(exact.status, "ok");
   assert.equal(exact.skills.length, 1);
   assert.equal(exact.skills[0].match, "ref");
@@ -620,9 +612,6 @@ test("reports an MCP namespace once, with all visible members under its namespac
     `ref "tool://${LIST_PAGES.name}" names an MCP tool; MCP tools are addressed by their mcp://<server>/<tool> ref`,
   ]);
 
-  // The read-only protocol path is unchanged: exact metadata stays readable.
-  const metadata = JSON.parse(await broker.read(`tool://${LIST_PAGES.name}`, { cwd: "/tmp" }));
-  assert.equal(metadata.name, LIST_PAGES.name);
 });
 
 test("returns the same result for the same query and providers", async () => {
@@ -653,50 +642,6 @@ test("rejects a blank query without searching anything and an invalid src", asyn
 
   await assert.rejects(broker.search({ query: "firefox", src: "somewhere", cwd: "/tmp" }), /src must be/);
 });
-
-test("read resolves exact visible resources and rejects unknown, hidden and alien refs", async () => {
-  const broker = createCapabilityBroker(plainProviders());
-
-  const tool = JSON.parse(await broker.read("tool://bash", { cwd: "/tmp" }));
-  assert.equal(tool.kind, "tool");
-  assert.equal(tool.name, "bash");
-  assert.equal(tool.exposure, "direct");
-  assert.deepEqual(tool.parameters.required, ["command"]);
-
-  const mcpTool = JSON.parse(await broker.read("mcp://firefox_devtools/list_pages", { cwd: "/tmp" }));
-  assert.equal(mcpTool.kind, "mcp");
-  assert.equal(mcpTool.server, "firefox_devtools");
-  assert.equal(mcpTool.tool, "list_pages");
-
-  const server = JSON.parse(await broker.read("mcp://firefox_devtools", { cwd: "/tmp" }));
-  assert.equal(server.kind, "mcp");
-  assert.ok(server.tools.some((entry) => entry.ref === "mcp://firefox_devtools/list_pages"));
-
-  const body = await broker.read("skill://firefox-existing-profile", { cwd: "/tmp" });
-  assert.match(body, /restart_firefox/);
-
-  await assert.rejects(broker.read("tool://ghost", { cwd: "/tmp" }), /unknown tool/);
-  await assert.rejects(broker.read("mcp://ghost", { cwd: "/tmp" }), /unknown MCP server/);
-  await assert.rejects(broker.read("mcp://firefox_devtools/ghost", { cwd: "/tmp" }), /unknown MCP tool/);
-  await assert.rejects(broker.read("skill://ghost", { cwd: "/tmp" }), /unknown skill/);
-  await assert.rejects(broker.read("https://example.com", { cwd: "/tmp" }), /unsupported capability protocol/);
-  await assert.rejects(broker.read("tool:bash", { cwd: "/tmp" }), /must be a URI/);
-  await assert.rejects(broker.read("npm://pi-tools@1.0.0", { cwd: "/tmp" }), /remote marketplace helper is not configured/);
-  await assert.rejects(broker.read("%%%", { cwd: "/tmp" }), /must be a URI/);
-});
-
-test("read surfaces an unreadable skill body as an error, not an empty string", async () => {
-  const broker = createCapabilityBroker(
-    plainProviders({
-      readSkillFile: async () => {
-        throw new Error("ENOENT");
-      },
-    }),
-  );
-  await assert.rejects(broker.read("skill://firefox-existing-profile", { cwd: "/tmp" }), /body unreadable: ENOENT/);
-});
-
-
 
 test("exposes the no-argument public schema and the internal retrieval schemas", () => {
   assert.equal(CAPABILITY_TOOL_NAME, "capability");

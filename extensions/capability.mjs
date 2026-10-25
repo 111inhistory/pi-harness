@@ -53,6 +53,10 @@ import {
   capabilityFailureResult,
   createCapabilityDiscovery,
 } from "../src/capability-agent.mjs";
+import { promptText } from "../src/prompt-text.mjs";
+
+const toolsPrompt = JSON.parse(promptText("capability-tools.json"));
+const policyPrompt = JSON.parse(promptText("capability-policy.json"));
 import { installModelCallBudget } from "../src/pi-job-budget.mjs";
 import { captureInheritedContext } from "../src/inherited-context.mjs";
 import { discoverSessionSkills } from "../src/capability-skills.mjs";
@@ -107,16 +111,8 @@ export default function capabilityExtension(pi, { discovery = true } = {}) {
     name: CAPABILITY_TOOL_NAME,
     label: "Capability",
     description: CAPABILITY_TOOL_DESCRIPTION,
-    promptSnippet: "Find reusable guidance and capabilities for the current task",
-    promptGuidelines: [
-      "Use capability to find missing capabilities or reuse established guidance and specialized tools before inventing a workflow or building a replacement, for example for Word editing or PPT creation.",
-      "Use capability for resource discovery. Native tool_search and global MCP resource listing are disabled. Codemode can execute enabled tools but provides no searchTools. Use selected tool declarations or the returned interfaces for arguments. Read Skill entry files by their returned absolute paths.",
-      "Discover Skills through capability. Unless the user explicitly requests filesystem or web searches for Skills, do not search local directories, installed repositories, other agent profiles, or the web for them. A general request to find Skills does not authorize bypassing Capability's configured selection; report gaps or ask about configuration instead. Reading a returned Skill file or its linked instructions is not a new discovery search.",
-      "Skills may contain workflows, rules, preferences, fixed background, or descriptions. Read relevant guidance and use it alongside tool interfaces; a generic tool description may not fit the current task.",
-      "Reuse relevant findings throughout the task. Search again when requirements change or a new capability gap appears, not before every tool call.",
-      "A needs_approval result is a candidate, not permission to install or execute it.",
-      "Remote package search is disabled until a user approval receiver exists. A result reporting that remote was not searched does not mean remote resources do not exist.",
-    ],
+    promptSnippet: toolsPrompt.capability.snippet,
+    promptGuidelines: [...toolsPrompt.capability.guidelines],
     parameters: CAPABILITY_PARAMETERS,
     reachesTools: () => "all",
     async execute(toolCallId, _params, signal, _onUpdate, ctx) {
@@ -385,7 +381,7 @@ async function openInternalSession(pi, service, ctx, request, snapshot, toolCall
         allowsTool: (name) => available.has(name),
       });
       return additive ? [...additiveToolTranscript(remembered), {
-        role: "system", content: "Capability discovery may execute only capability_search and submit_result. All other retained tool declarations are unavailable; execution is blocked.", timestamp: 0,
+        role: "system", content: policyPrompt.additiveExecutionBlocked, timestamp: 0,
       }] : remembered;
     };
     const cleanupBudget = installModelCallBudget(session, request.budget, {
