@@ -1,6 +1,6 @@
 # Subagent 存储 v2 与离线迁移
 
-状态：存储 v2、旧历史迁移和提示词正文外置已落地。默认离线回归与基础真实模型续跑通过；Linux 长时间压力、多用户和 Windows 实机验收未完成。实施记录见[插件内存收敛](reviews/subagent-memory-review.md)和[批量迁移](reviews/subagent-migration-batch.md)。
+存储 v2 与旧历史迁移已落地。当前 TS 调用链通过真实 SDK 的本地模型回归；此前在线续跑属于迁移阶段样本，不代表新调用链的在线验收。长时间压力、多用户与 Windows 实机仍未完成。历史记录见[插件内存收敛](reviews/subagent-memory-review.md)和[批量迁移](reviews/subagent-migration-batch.md)。
 
 ## 1. 目标与问题边界
 
@@ -37,12 +37,14 @@ Pi 原生 `SessionManager` 仍保留其解析的历史。插件不重写 Pi 的�
 | `subagent-job` | 注册一个 Job | `jobId`、`agentId`、`index`、`createdBy`、`continuedFromJobId`、`spec`、`origin`；首次 Job 另带 `actor: {name, parentAgentId, depth}`，建立 Actor 拓扑 |
 | `subagent-actor` | 身份建立或变化 | `agentId` 与身份补丁：`sessionFile`、`cwd`、`trusted`、`allowInherited`、`systemPrompt`、`roleId`、`roleInstructions`、`model`、`thinkingLevel`、`tools`、`excludedTools`、`assignment`、`routed`；可带 `anchor` |
 | `subagent-job-start` | 原生 Job 起点建立后 | `jobId`、`startEntryId` |
-| `subagent-job-end` | 终态冻结后 | `jobId`、`status`、`result`、`error`、`history: {startEntryId, endEntryId}`、`budget` |
+| `subagent-job-end` | 视图收尾后统一发布一次 | `jobId`、`status`、`result`、`error`、`history: {startEntryId, endEntryId}`、`budget`；可带 `historyState`、`historyError`，不改写模型结果 |
 | `subagent-anchor` | Job 终态以外的锚点移动 | `agentId`、`anchor` |
 
 `subagent-actor` 不单独创建拓扑。写时复制通过身份补丁记录新 `sessionFile`，不另设 relocate 事件。身份没有变化的字段不重复写入；模型仅保存 provider/id。
 
-恢复按当前分支顺序折叠事件，再校验拓扑、Job 所有者和续跑关系。默认流程不写周期快照，也不在每次模型回复后写用量事件。
+恢复按当前分支顺序折叠事件，再由 Runtime 统一校验拓扑、Job 所有者、续跑关系和中断裁决。Actor 层只提供原生文件与区间信息，不预先发布终态。默认流程不写周期快照，也不在每次模型回复后写用量事件。
+
+根追加由 `root-service.ts` 持有。正常导航在 SDK BEFORE 钩子内等待原 Job 终态写入；代次失效后禁止写入新分支。写盘错误锁存并阻止导航被报告为成功。超时或强制退出仍可能需要中断恢复，不承诺跨文件事务。
 
 ### 4.2 B 层：子会话文件
 
@@ -92,7 +94,7 @@ subagent-sessions/<rootId>/views/<jobId>/transcript.jsonl
 
 一个 Job 一份视图，不按 Actor 跨轮追加。`summary.md` 保存任务、状态、用量、结果和续跑关系；`transcript.jsonl` 保存该 Job 的清洗区间。
 
-视图不参与恢复。缺失时在当前根目录重建，再通过 `history.summary`、`history.cleanJsonl` 返回路径。Fork 不为生成视图写父目录。当前分支不可见的 Job 不进入列表。
+视图不参与恢复。缺失时由 Root 列表层在当前根目录重建，再通过 `history.summary`、`history.cleanJsonl` 返回路径。每项分别捕获错误；一份损坏历史不阻断其余 Actor 状态。Runtime 的列表投影和终态通知本身不执行视图写入。Fork 不为生成视图写父目录。当前分支不可见的 Job 不进入列表。
 
 旧 `src/subagent-history.mjs` 和跨轮追加实现已删除。旧项目目录 `.pi/subagents/` 不参与恢复，转换脚本也不处理该目录。
 
@@ -100,7 +102,7 @@ subagent-sessions/<rootId>/views/<jobId>/transcript.jsonl
 
 - Fresh：注册 Job 及首次拓扑 → 路由并保存身份 → 打开子会话 → 写起点 → 原生执行。
 - Inherited：捕获并过滤父分支 → 写种子 → 注册 Job 并保存身份 → 写起点 → 原生执行。
-- 结束：冻结终态 → 写结果和区间 → 生成 Job 视图 → 清理执行句柄并释放持久化 manager。
+- 结束：原生退出与清理 → 冻结候选终态 → 生成视图并记录历史写入状态 → Runtime 统一发布一次根终态 → 通知父节点。
 - 续跑：注册新的 continuation Job → 必要时写时复制 → 定位锚点 → 写新起点 → 原生执行。
 
 每轮由 Runtime 独立通知父节点。普通消息和终态不合并，不为迁移或恢复重新执行已经结束的任务。

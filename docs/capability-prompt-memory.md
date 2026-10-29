@@ -30,7 +30,7 @@ to the session branch:
   A Skill ref is its entry path. The model uses native file read on that path.
   No resource protocol router or read/write override is installed.
 - Shared guidance: retained across discoveries, even when a selection adds no tools.
-- Remote coverage: remote search is disabled until an approval receiver exists (D4).
+- Remote coverage: discovery searches local resources only.
   Coverage explicitly marks remote search as `not_searched`. Remote candidates
   never enter branch records, system sections, or summaries.
 

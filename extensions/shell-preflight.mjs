@@ -1,5 +1,6 @@
 import {
   SettingsManager,
+  createLocalPowerShellOperations,
   getAgentDir,
   getPowerShellConfig,
   getShellConfig,
@@ -81,8 +82,9 @@ export default function shellPreflightExtension(pi) {
   });
 
   pi.on("user_bash", async (event, ctx) => {
-    const result = await preflight("bash", event.command, ctx, configurationCache);
-    if (result.ok) return undefined;
+    const windows = process.platform === "win32";
+    const result = await preflight(windows ? "powershell" : "bash", event.command, ctx, configurationCache);
+    if (result.ok) return windows ? { operations: createLocalPowerShellOperations() } : undefined;
 
     return {
       result: {

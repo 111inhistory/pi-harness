@@ -7,7 +7,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import { discoveryRecords } from './discovery-record.ts';
 import { installCapabilityCodemode } from './codemode.ts';
-import { capabilityAllowsTool } from '../capability-scope.mjs';
+import { createCapabilityScopeView } from './scope.ts';
 import { promptText } from '../prompt-text.mjs';
 
 const text = JSON.parse(promptText('native-discovery.json'));
@@ -57,8 +57,9 @@ function selectedServer(pi: ExtensionAPI, ctx: ExtensionContext, server: unknown
   if (typeof server !== 'string') return false;
   const selected = selectedNames(ctx);
   const active = new Set(pi.getActiveTools());
+  const view = createCapabilityScopeView(pi);
   return pi.getAllTools().some((tool) => selected.has(tool.name) && active.has(tool.name) &&
-    tool.exposure !== 'hidden' && tool.exposure !== 'model-only' && capabilityAllowsTool(pi, tool.name) && tool.name.startsWith('mcp__') &&
+    tool.exposure !== 'hidden' && tool.exposure !== 'model-only' && view.allows(tool.name) && tool.name.startsWith('mcp__') &&
     tool.namespace?.name.startsWith('mcp__') && tool.namespace.aliases?.includes(server));
 }
 
@@ -81,7 +82,8 @@ export function installNativeDiscoveryBoundary(pi: ExtensionAPI): void {
     });
   }
 
-  const permits = (ctx: ExtensionContext, name: string) => !isNativeDiscoveryTool(name) && capabilityAllowsTool(pi, name) &&
+  const permits = (ctx: ExtensionContext, name: string) => !isNativeDiscoveryTool(name) &&
+    createCapabilityScopeView(pi).allows(name) &&
     (!isMcpExecutionTool(name) || selectedNames(ctx).has(name));
   installCapabilityCodemode(pi, permits, (name) => currentContext
     ? permits(currentContext, name)

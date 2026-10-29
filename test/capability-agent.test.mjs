@@ -115,9 +115,9 @@ test("discovery supplies guidance-aware instructions and returns selected skill 
     async behavior({ request, text }) {
       assert.match(request.instructions, /rules, preferences, fixed background/);
       assert.match(request.instructions, /Generic tool descriptions do not replace/);
-      assert.match(request.instructions, /Search local resources\. Remote package search is disabled/);
+      assert.match(request.instructions, /Search local resources\./);
       assert.match(text, /guidance and tool refs together/);
-      assert.match(text, /Remote search is disabled in this run/);
+      assert.match(text, /Search local resources/);
       const search = request.customTools.find((tool) => tool.name === CAPABILITY_SEARCH_TOOL_NAME);
       const submit = request.customTools.find((tool) => tool.name === SUBMIT_RESULT_TOOL_NAME);
       assert.match(search.description, /reusable guidance and missing operations/);
@@ -276,12 +276,11 @@ test("remote search is disabled, never reaches the broker, and is reported as no
   const { result, state } = await runDiscovery({
     broker,
     async behavior({ state, request }) {
-      assert.match(request.instructions, /Remote package search is disabled/);
+      assert.doesNotMatch(request.instructions, /approval receiver|npm marketplace/);
       const search = toolOf(state, CAPABILITY_SEARCH_TOOL_NAME);
       const remote = await search.execute("call-1", { query: "firefox", src: "remote" });
       assert.equal(remote.isError, true);
-      assert.match(remote.content[0].text, /disabled until a user approval receiver exists/);
-      assert.match(remote.content[0].text, /not evidence that no remote resource exists/);
+      assert.equal(remote.content[0].text, 'capability_search requires src to be "local".');
       const all = await search.execute("call-2", { query: "firefox", src: "all" });
       assert.equal(all.isError, true);
       await search.execute("call-3", { query: "firefox", src: "local" });

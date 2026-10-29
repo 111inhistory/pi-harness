@@ -9,9 +9,8 @@
  * actually returned, validates the submission against those refs, and maps the
  * run outcome to the broker's grouped result shape.
  *
- * Search is local-only: remote installation candidates stay out of the
- * discovery result, Main's tool content and the branch memory until a user
- * approval receiver exists (rewrite plan D4). Every result therefore carries an
+ * Search is local-only. Remote candidates stay out of discovery results,
+ * Main's tool content and branch memory. Every result carries an
  * explicit `coverage` object saying local was (or was not) searched and remote
  * was not searched, so an empty result cannot be read as "no remote resources".
  *
@@ -29,6 +28,7 @@ import {
   SUBMIT_RESULT_TOOL_NAME,
 } from "./capability-broker.mjs";
 import { promptText } from "./prompt-text.mjs";
+import { watchCapabilityBudget } from "./subagent/budget-watch.ts";
 
 const toolsPrompt = JSON.parse(promptText("capability-tools.json"));
 const policyPrompt = JSON.parse(promptText("capability-policy.json"));
@@ -63,9 +63,6 @@ export const CAPABILITY_DISCOVERY_SYSTEM_PROMPT = promptText("capability-discove
  * internal session receives; there is no planning turn after the submission.
  */
 export const CAPABILITY_DISCOVERY_PROMPT = promptText("capability-discovery-user.md");
-
-/** Remote search stays off until a user approval receiver exists (D4). */
-export const CAPABILITY_REMOTE_SEARCH_DISABLED = policyPrompt.remoteSearchDisabled;
 
 /**
  * What this run actually covered. `local` counts completed local searches, so a
@@ -138,8 +135,7 @@ function recordHits(run, result) {
     for (const hit of ensureArray(result?.[arrayKey])) {
       if (!hit || typeof hit.ref !== "string" || hit.ref === "") continue;
       const group = GROUP_BY_KIND[hit.kind] ?? fallbackGroup;
-      // Remote candidates are never selectable or returned until an approval
-      // receiver exists (D4); a remote ref is not a valid submission.
+      // Only local refs are valid submissions.
       if (group === "remote") continue;
       returned += 1;
       run.hits.set(hit.ref, { group, hit });
@@ -175,7 +171,6 @@ function capabilitySearchTool(run) {
       if (query === "") return errorToolResult("capability_search requires a non-empty query string.");
       const src = params?.src;
       if (src !== "local") {
-        if (src === "remote" || src === "all") return errorToolResult(CAPABILITY_REMOTE_SEARCH_DISABLED);
         return errorToolResult('capability_search requires src to be "local".');
       }
       let result;
@@ -287,37 +282,6 @@ function beforeModelRequest(run) {
  */
 export function capabilityBudgetWarning(warning) {
   return `${warning}\n\n${policyPrompt.budgetWrapUp}`;
-}
-
-/**
- * Abort the run when Active Time or the lifetime lease expires. Model Calls are
- * charged by the shared budget hook; these bounds are wall-clock, so they need
- * their own deadline timer.
- */
-function watchBudget(budget, onExpire) {
-  let timer = null;
-  let stopped = false;
-  const schedule = () => {
-    if (stopped) return;
-    const state = budget.check();
-    if (state.terminal) {
-      if (state.terminal.status === "failed") onExpire(state.terminal);
-      return;
-    }
-    const detail = budget.snapshot({ detail: true });
-    const lifetimeRemaining = detail.profile.lifetimeMs - detail.elapsedMs;
-    const activeRemaining = detail.running
-      ? detail.profile.activeTimeMs.hard - detail.activeTimeMs
-      : Number.POSITIVE_INFINITY;
-    const delay = Math.max(1, Math.min(lifetimeRemaining, activeRemaining));
-    timer = setTimeout(schedule, delay);
-    timer.unref?.();
-  };
-  schedule();
-  return () => {
-    stopped = true;
-    if (timer !== null) clearTimeout(timer);
-  };
 }
 
 function submissionResult(run) {
@@ -440,7 +404,9 @@ export function createCapabilityDiscovery({ broker, openSession } = {}) {
           return settleRun(run, null, budget);
         }
         budget.startActive();
-        stopWatch = watchBudget(budget, (terminal) => {
+        // The shared watcher owns deadline scheduling and cleanup; this run's
+        // policy aborts the internal session only on a failed terminal.
+        stopWatch = watchCapabilityBudget(budget, (terminal) => {
           if (run.stop === null) run.stop = { code: "budget", message: budgetStopMessage(terminal) };
           abortRunSession(run);
         });

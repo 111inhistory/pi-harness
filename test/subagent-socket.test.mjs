@@ -189,7 +189,7 @@ test("broadcast rejects a malformed frame but still delivers the following valid
     deliverMessage: async (id, msg) => delivered.resolve({ id, msg }),
   });
   await server.ready;
-  await writeSocketOneWay(server.socketPath, 'invalid-json\n{"content":"valid after error"}\n');
+  await assert.rejects(writeSocketOneWay(server.socketPath, 'invalid-json\n{"content":"valid after error"}\n'), /failed to parse NDJSON/);
   assert.deepEqual(await delivered.promise, { id: "sub_01", msg: { content: "valid after error" } });
   assert.equal(errors.length, 1);
   assert.match(errors[0].message, /failed to parse NDJSON/);
@@ -198,6 +198,7 @@ test("broadcast rejects a malformed frame but still delivers the following valid
 test("broadcast invokes deliveries concurrently and reports a partial failure without skipping siblings", options, async (t) => {
   const fixture = await sockets(t);
   const pending = deferred();
+  const started = deferred();
   const failure = deferred();
   const calls = [];
   const server = fixture.broadcast({
@@ -206,15 +207,18 @@ test("broadcast invokes deliveries concurrently and reports a partial failure wi
       calls.push(childId);
       if (childId === "sub_01") return pending.promise;
       if (childId === "sub_02") return Promise.reject(new Error("agent_stopping"));
+      started.resolve();
       return Promise.resolve();
     },
     onError: failure.resolve,
   });
   await server.ready;
-  await writeSocketOneWay(getBroadcastSocketPath("main", fixture.socketDir), { content: "broadcast" });
-  assert.match((await failure.promise).message, /agent_stopping/);
+  const result = assert.rejects(writeSocketOneWay(getBroadcastSocketPath("main", fixture.socketDir), { content: "broadcast" }), /agent_stopping/);
+  await started.promise;
   assert.deepEqual(calls, ["sub_01", "sub_02", "sub_03"]);
   pending.resolve();
+  await result;
+  assert.match((await failure.promise).message, /agent_stopping/);
 });
 
 test("write operations deliver to sockets while delegating normal files and mkdir unchanged", options, async (t) => {

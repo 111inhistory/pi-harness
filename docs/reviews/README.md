@@ -6,6 +6,7 @@
 
 | 资料 | 内容 | 证据边界 |
 | --- | --- | --- |
+| [架构边界与代码实现 Review（2026-10-25）](architecture-implementation-review-2026-10-25.md) | 消息回执、非受管 Socket 回归、职责与状态重复、持久化与提示词不一致 | 静态代码阅读，`npm run check` 通过；未编写复现脚本；作者决定本轮保留 Socket |
 | [旧历史批量迁移记录](subagent-migration-batch.md) | 10 个非当前根会话原地迁移、当前主会话与 Fork 迁移至新会话，4.2 GB 全局备份留存 | 真实 SessionManager 加载、v2 状态折叠与历史区间读取；不修改生产代码识别 v1 |
 | [单个旧历史迁移：人工验收](subagent-migration-smoke.md) | 离线迁移后的单样本真实 Gemini 续跑，定位临时进程的 undici 代理问题 | 真实 SessionManager 恢复、subagent_list 读取与真实 msg_write 唤醒续跑通过；OAuth 正常刷新由 SDK 自行处理 |
 | [Subagent 插件内存收敛](subagent-memory-review.md) | v2 适配层接入、引用释放及撤回消息合并 | 2026-10-25 全仓离线检查通过：317 项测试（315 通过、0 失败、2 环境跳过）；不代表真实提供方或 Windows 验收 |

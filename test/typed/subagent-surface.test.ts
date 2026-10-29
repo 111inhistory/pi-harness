@@ -1,0 +1,602 @@
+/**
+ * Contract tests for the Subagent session surface.
+ *
+ * The surface factory is the real production builder; the fakes implement only
+ * the declared host/api ports. The managed write pair is the real shared
+ * factory, so a managed send is verified to return the runtime receipt and an
+ * ordinary file write still uses the SDK path. The single SDK assertion is the
+ * tool-context fixture, which provides exactly the members the surface and the
+ * inherited-context capture read (same pattern as managed-message-write.test).
+ */
+
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ExtensionToolContext,
+  ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
+
+import { DEFAULT_SOCKET_DIR } from "../../src/ipc/socket.ts";
+import type { EndpointResolverResult } from "../../src/ipc/socket.ts";
+import {
+  captureContextForChild,
+  createSurfaceTools,
+  droppedInheritedTools,
+  harnessToolsForDepth,
+  inheritedToolNames,
+  inheritedToolsWarning,
+  installSessionSurface,
+  transplantableToolNames,
+} from "../../src/subagent/surface.ts";
+import type {
+  SubagentSurfaceApi,
+  SubagentSurfaceCreateOptions,
+  SubagentSurfaceHost,
+  SubagentSurfaceScope,
+  SubagentSurfaceToolInfo,
+} from "../../src/subagent/surface.ts";
+import type {
+  BroadcastReceipt,
+  CreatedAgents,
+  DetailedAgentItem,
+  MessageReceipt,
+  StopResult,
+} from "../../src/subagent/runtime.ts";
+import { MAX_AGENT_DEPTH } from "../../src/subagent/runtime.ts";
+
+const ROOT_SCOPE: SubagentSurfaceScope = {
+  callerId: "Main",
+  depth: 0,
+  allowInherited: true,
+  cwd: "/tmp/project",
+};
+
+/** Derived from the exported context type: the SDK entry point does not export it. */
+type SurfaceMode = ExtensionContext["mode"];
+type SurfaceSessionManager = Pick<
+  ExtensionContext["sessionManager"],
+  "getSessionId" | "getHeader" | "getBranch"
+>;
+
+interface ContextFixture {
+  cwd: string;
+  sessionId?: string;
+  trusted?: boolean;
+  systemPrompt?: string;
+  mode?: SurfaceMode;
+}
+
+/**
+ * The subset of the SDK tool context this surface reads. Every property is
+ * typed exactly like `ExtensionToolContext`, so the one assertion at the SDK
+ * boundary is legal without `unknown`: the real interface is assignable to this
+ * subset. `model` and `thinkingLevel` are intentionally absent, so the capture
+ * sees the SDK's own "not provided" value (undefined).
+ */
+interface SurfaceContextSubset {
+  cwd: string;
+  mode: SurfaceMode;
+  sessionManager: SurfaceSessionManager;
+  isProjectTrusted(): boolean;
+  getSystemPrompt(): string;
+}
+
+/** The SDK tool context is a large interface; this fixture fills the subset. */
+function sdkContext(fixture: ContextFixture): ExtensionToolContext {
+  const context: SurfaceContextSubset = {
+    cwd: fixture.cwd,
+    mode: fixture.mode ?? "tui",
+    sessionManager: {
+      getSessionId: () => fixture.sessionId ?? "session-1",
+      getHeader: () => null,
+      getBranch: () => [],
+    },
+    isProjectTrusted: () => fixture.trusted ?? true,
+    getSystemPrompt: () => fixture.systemPrompt ?? "SYSTEM PROMPT",
+  };
+  return context as ExtensionToolContext;
+}
+
+class FakeSurfaceApi implements SubagentSurfaceApi {
+  catalog: SubagentSurfaceToolInfo[] = [];
+  active: string[] = [];
+
+  getAllTools(): readonly SubagentSurfaceToolInfo[] {
+    return this.catalog;
+  }
+
+  getActiveTools(): readonly string[] {
+    return this.active;
+  }
+}
+
+interface RecordedCreate {
+  readonly batch: unknown;
+  readonly options: SubagentSurfaceCreateOptions;
+  readonly ctx: ExtensionContext;
+}
+
+class RecordingHost implements SubagentSurfaceHost {
+  readonly creates: RecordedCreate[] = [];
+  readonly lists: Array<{ filter: unknown; callerId: string }> = [];
+  readonly stops: unknown[] = [];
+  readonly sends: unknown[] = [];
+  readonly receipts: MessageReceipt[] = [];
+  endpoint: EndpointResolverResult = { isManaged: true, targetId: "sub_02" };
+  reserved = false;
+
+  async resolveEndpoint(): Promise<EndpointResolverResult> {
+    return this.endpoint;
+  }
+
+  async isReservedPath(): Promise<boolean> {
+    return this.reserved;
+  }
+
+  async sendMessage(command: Parameters<SubagentSurfaceHost["sendMessage"]>[0]): Promise<MessageReceipt | BroadcastReceipt> {
+    this.sends.push(command);
+    const receipt: MessageReceipt = { ok: true, to: command.to, jobId: null };
+    this.receipts.push(receipt);
+    return receipt;
+  }
+
+  async create(batch: unknown, options: SubagentSurfaceCreateOptions, ctx: ExtensionContext): Promise<CreatedAgents> {
+    this.creates.push({ batch, options, ctx });
+    return { items: [{ id: "sub_02", status: "running", socket: "/tmp/project/.pi/sub_02.sock" }] };
+  }
+
+  async list(filter: unknown, callerId: string): Promise<{ items: DetailedAgentItem[] }> {
+    this.lists.push({ filter, callerId });
+    return { items: [] };
+  }
+
+  stop(target: unknown): StopResult {
+    this.stops.push(target);
+    return { ok: true, id: String(target), status: "stopping" };
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function schemaOf(tool: ToolDefinition): Record<string, unknown> {
+  const parameters: unknown = tool.parameters;
+  assert.ok(isRecord(parameters));
+  return parameters;
+}
+
+function propertyOf(schema: Record<string, unknown>, key: string): Record<string, unknown> {
+  const properties = schema["properties"];
+  assert.ok(isRecord(properties));
+  const value = properties[key];
+  assert.ok(isRecord(value));
+  return value;
+}
+
+function resolveWith(host: SubagentSurfaceHost, seen: ExtensionContext[]): (ctx: ExtensionContext) => Promise<SubagentSurfaceHost> {
+  return async (ctx) => {
+    seen.push(ctx);
+    return host;
+  };
+}
+
+test("the root surface registers the legacy tool order and keeps parameter contracts", () => {
+  const registered: ToolDefinition[] = [];
+  // Registration-only subset of ExtensionAPI; the assembly below is the SDK
+  // boundary this test crosses.
+  interface SurfaceApiSubset {
+    registerTool(tool: ToolDefinition): void;
+    getAllTools(): ExtensionAPI["getAllTools"] extends () => infer T ? T : never;
+    getActiveTools(): string[];
+  }
+  const api: SurfaceApiSubset = {
+    registerTool: (tool) => { registered.push(tool); },
+    getAllTools: () => [],
+    getActiveTools: () => [],
+  };
+  installSessionSurface(api as ExtensionAPI, async () => new RecordingHost(), ROOT_SCOPE);
+
+  assert.deepEqual(registered.map((tool) => tool.name), [
+    "subagent_create",
+    "subagent_list",
+    "subagent_stop",
+    "msg_write",
+    "write",
+  ]);
+  for (const tool of registered.slice(0, 3)) {
+    assert.equal(tool.namespace?.name, "subagent");
+    assert.ok((tool.namespace?.description ?? "") !== "");
+    assert.ok((tool.namespace?.instructions ?? "") !== "");
+    assert.equal(tool.defaultActive, false);
+    assert.ok((tool.promptSnippet ?? "") !== "");
+    assert.ok((tool.promptGuidelines?.length ?? 0) > 0);
+  }
+  // msg_write stays inactive by default; the native write tool stays active.
+  assert.equal(registered[3]?.defaultActive, false);
+  assert.equal(registered[4]?.defaultActive, undefined);
+
+  const create = schemaOf(registered[0] as ToolDefinition);
+  assert.deepEqual(create["required"], ["tasks"]);
+  assert.equal(create["additionalProperties"], false);
+  const tasks = propertyOf(create, "tasks");
+  assert.equal(tasks["minItems"], 1);
+  const taskItem = tasks["items"] as Record<string, unknown>;
+  assert.deepEqual(taskItem["required"], ["task"]);
+  assert.equal(taskItem["additionalProperties"], false);
+
+  const list = schemaOf(registered[1] as ToolDefinition);
+  assert.equal(list["required"], undefined);
+  assert.ok(propertyOf(list, "all"));
+  assert.ok(propertyOf(list, "id"));
+
+  const stop = schemaOf(registered[2] as ToolDefinition);
+  assert.deepEqual(stop["required"], ["id"]);
+});
+
+test("the leaf surface keeps list and the write pair but no create/stop", () => {
+  const api = new FakeSurfaceApi();
+  const tools = createSurfaceTools({
+    api,
+    resolveHost: async () => new RecordingHost(),
+    scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: MAX_AGENT_DEPTH },
+  });
+
+  assert.equal(tools.create, null);
+  assert.equal(tools.stop, null);
+  assert.equal(tools.list.name, "subagent_list");
+  assert.equal(tools.message.name, "msg_write");
+  assert.equal(tools.write.name, "write");
+});
+
+test("the root create tool maps Main to no parent and passes origin and lazy capture", async () => {
+  const api = new FakeSurfaceApi();
+  api.catalog = [{ name: "read", sourceInfo: { source: "builtin" } }];
+  api.active = ["read", "subagent_create"];
+  const host = new RecordingHost();
+  const seen: ExtensionContext[] = [];
+  const tools = createSurfaceTools({ api, resolveHost: resolveWith(host, seen), scope: ROOT_SCOPE });
+  assert.ok(tools.create !== null);
+  const ctx = sdkContext({ cwd: "/tmp/project", sessionId: "session-7", trusted: true, mode: "tui" });
+
+  const result = await tools.create.execute("call-1", {
+    context: "batch context",
+    tasks: [{ task: "do the task" }],
+  }, undefined, undefined, ctx);
+
+  assert.deepEqual(seen, [ctx]);
+  assert.equal(host.creates.length, 1);
+  const call = host.creates[0];
+  assert.ok(call !== undefined);
+  assert.equal(call.ctx, ctx);
+  assert.deepEqual(call.batch, { context: "batch context", tasks: [{ task: "do the task" }] });
+  assert.equal(call.options.parentAgentId, null);
+  assert.equal(call.options.allowInherited, true);
+  assert.deepEqual(call.options.origin, {
+    cwd: "/tmp/project",
+    trusted: true,
+    sessionId: "session-7",
+    agentId: null,
+    mode: "tui",
+  });
+  assert.deepEqual(result.details, {
+    items: [{ id: "sub_02", status: "running", socket: "/tmp/project/.pi/sub_02.sock" }],
+  });
+  assert.match(JSON.stringify(result.content), /sub_02/);
+
+  // The capture is lazy and validated when the runtime asks for it.
+  const snapshot = call.options.captureInheritedContext();
+  assert.ok(isRecord(snapshot));
+  const record = snapshot;
+  assert.deepEqual(record["tools"], ["read", "subagent_create"]);
+  assert.equal(record["cwd"], "/tmp/project");
+  assert.equal(record["warnings"], undefined);
+});
+
+test("a child surface reports its own actor id as the parent, never its parent's id", async () => {
+  const api = new FakeSurfaceApi();
+  const host = new RecordingHost();
+  const tools = createSurfaceTools({
+    api,
+    resolveHost: async () => host,
+    scope: { callerId: "sub_01", depth: 1, allowInherited: false, cwd: "/tmp/project" },
+  });
+  assert.ok(tools.create !== null);
+  const ctx = sdkContext({ cwd: "/tmp/child" });
+
+  await tools.create.execute("call-2", { tasks: [{ task: "nested" }] }, undefined, undefined, ctx);
+  const call = host.creates[0];
+  assert.ok(call !== undefined);
+  assert.equal(call.options.parentAgentId, "sub_01");
+  assert.equal(call.options.allowInherited, false);
+  assert.equal(call.options.origin.agentId, "sub_01");
+
+  await tools.list.execute("call-3", {}, undefined, undefined, ctx);
+  assert.deepEqual(host.lists, [{ filter: {}, callerId: "sub_01" }]);
+});
+
+test("list and stop resolve the host with the current execute context", async () => {
+  const api = new FakeSurfaceApi();
+  const first = new RecordingHost();
+  const second = new RecordingHost();
+  const seen: ExtensionContext[] = [];
+  const ctxA = sdkContext({ cwd: "/tmp/a" });
+  const ctxB = sdkContext({ cwd: "/tmp/b" });
+  const tools = createSurfaceTools({
+    api,
+    resolveHost: async (ctx) => {
+      seen.push(ctx);
+      return ctx === ctxB ? second : first;
+    },
+    scope: ROOT_SCOPE,
+  });
+
+  await tools.list.execute("l1", { all: true }, undefined, undefined, ctxA);
+  await tools.list.execute("l2", { id: "sub_02" }, undefined, undefined, ctxB);
+  assert.deepEqual(seen, [ctxA, ctxB]);
+  assert.deepEqual(first.lists, [{ filter: { all: true }, callerId: "Main" }]);
+  assert.deepEqual(second.lists, [{ filter: { id: "sub_02" }, callerId: "Main" }]);
+
+  assert.ok(tools.stop !== null);
+  await tools.stop.execute("s1", { id: "sub_02" }, undefined, undefined, ctxA);
+  assert.deepEqual(first.stops, ["sub_02"]);
+});
+
+test("managed msg_write returns the runtime receipt instead of filesystem success", async () => {
+  const api = new FakeSurfaceApi();
+  const host = new RecordingHost();
+  const seen: ExtensionContext[] = [];
+  const tools = createSurfaceTools({ api, resolveHost: resolveWith(host, seen), scope: ROOT_SCOPE });
+  const ctx = sdkContext({ cwd: "/tmp/project" });
+
+  const result = await tools.message.execute(
+    "m1",
+    { path: "/tmp/project/.pi/sub_02.sock", content: "hello agent" },
+    undefined,
+    undefined,
+    ctx,
+  );
+
+  // Endpoint ownership and the send share one resolution for this execution.
+  assert.deepEqual(seen, [ctx]);
+  assert.deepEqual(host.sends, [{ from: "Main", to: "sub_02", content: "hello agent" }]);
+  assert.deepEqual(result.details, { ok: true, to: "sub_02", jobId: null });
+  assert.doesNotMatch(JSON.stringify(result.content), /Successfully wrote/);
+});
+
+test("msg_write still rejects a non-IPC path without resolving the host", async () => {
+  const api = new FakeSurfaceApi();
+  const seen: ExtensionContext[] = [];
+  const tools = createSurfaceTools({
+    api,
+    resolveHost: async (ctx) => {
+      seen.push(ctx);
+      throw new Error("the host must not be resolved for a non-IPC path");
+    },
+    scope: ROOT_SCOPE,
+  });
+  const ctx = sdkContext({ cwd: "/tmp/project" });
+
+  await assert.rejects(
+    tools.message.execute("m2", { path: "notes.txt", content: "x" }, undefined, undefined, ctx),
+    /requires an IPC endpoint address/,
+  );
+  assert.deepEqual(seen, []);
+});
+
+test("a plain file write keeps SDK behavior even when the host cannot resolve", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "subagent-surface-"));
+  try {
+    const api = new FakeSurfaceApi();
+    const seen: ExtensionContext[] = [];
+    const tools = createSurfaceTools({
+      api,
+      resolveHost: async (ctx) => {
+        seen.push(ctx);
+        throw new Error("Subagent runtime is unavailable");
+      },
+      scope: { ...ROOT_SCOPE, cwd },
+    });
+    const ctx = sdkContext({ cwd });
+
+    const result = await tools.write.execute(
+      "w1",
+      { path: "nested/note.txt", content: "file body" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    assert.equal(await readFile(path.join(cwd, "nested/note.txt"), "utf8"), "file body");
+    // The native file path never needed an operational Subagent host.
+    assert.deepEqual(seen, []);
+    assert.equal(result.details, undefined);
+    assert.match(JSON.stringify(result.content), /Successfully wrote/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("the reserved directory is rejected from the pure guard, not the host", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "subagent-surface-"));
+  try {
+    const api = new FakeSurfaceApi();
+    const seen: ExtensionContext[] = [];
+    const tools = createSurfaceTools({
+      api,
+      resolveHost: async (ctx) => {
+        seen.push(ctx);
+        throw new Error("the host must not be resolved for the reserved path guard");
+      },
+      scope: { ...ROOT_SCOPE, cwd },
+    });
+    const ctx = sdkContext({ cwd });
+    const reservedFile = path.join(path.resolve(cwd, DEFAULT_SOCKET_DIR), "note.txt");
+
+    await assert.rejects(
+      tools.write.execute("w2", { path: reservedFile, content: "x" }, undefined, undefined, ctx),
+      /IPC directories cannot contain files written by write/,
+    );
+    assert.deepEqual(seen, []);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("endpoint ownership and send share one cached resolution per execute", async () => {
+  const api = new FakeSurfaceApi();
+  const first = new RecordingHost();
+  const second = new RecordingHost();
+  let resolutions = 0;
+  const tools = createSurfaceTools({
+    api,
+    resolveHost: async () => {
+      resolutions += 1;
+      // A root switch mid-call must not be consulted again by this execute.
+      return resolutions === 1 ? first : second;
+    },
+    scope: ROOT_SCOPE,
+  });
+  const ctx = sdkContext({ cwd: "/tmp/project" });
+
+  const result = await tools.message.execute(
+    "m3",
+    { path: "/tmp/project/.pi/sub_02.sock", content: "once" },
+    undefined,
+    undefined,
+    ctx,
+  );
+
+  assert.equal(resolutions, 1);
+  assert.deepEqual(first.sends, [{ from: "Main", to: "sub_02", content: "once" }]);
+  assert.deepEqual(second.sends, []);
+  assert.deepEqual(result.details, { ok: true, to: "sub_02", jobId: null });
+});
+
+test("a managed path rejects a stale host while ordinary files still write", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "subagent-surface-"));
+  try {
+    const api = new FakeSurfaceApi();
+    const stale = new Error("runtime_closed: stale context");
+    let resolutions = 0;
+    const tools = createSurfaceTools({
+      api,
+      resolveHost: async () => {
+        resolutions += 1;
+        throw stale;
+      },
+      scope: { ...ROOT_SCOPE, cwd },
+    });
+    const ctx = sdkContext({ cwd });
+
+    await assert.rejects(
+      tools.write.execute("w3", { path: path.join(cwd, "sub_02.sock"), content: "x" }, undefined, undefined, ctx),
+      /stale context/,
+    );
+    assert.equal(resolutions, 1);
+
+    // The same execution path still writes ordinary files with no host.
+    await tools.write.execute("w4", { path: "after-failure.txt", content: "ok" }, undefined, undefined, ctx);
+    assert.equal(await readFile(path.join(cwd, "after-failure.txt"), "utf8"), "ok");
+    assert.equal(resolutions, 1);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("concurrent managed sends keep per-execution hosts and receipts", async () => {
+  const api = new FakeSurfaceApi();
+  const first = new RecordingHost();
+  first.endpoint = { isManaged: true, targetId: "sub_02" };
+  const second = new RecordingHost();
+  second.endpoint = { isManaged: true, targetId: "sub_03" };
+  const ctxA = sdkContext({ cwd: "/tmp/project" });
+  const ctxB = sdkContext({ cwd: "/tmp/project" });
+  const tools = createSurfaceTools({
+    api,
+    resolveHost: async (ctx) => (ctx === ctxA ? first : second),
+    scope: ROOT_SCOPE,
+  });
+
+  const [a, b] = await Promise.all([
+    tools.message.execute("c1", { path: "/tmp/project/.pi/sub_02.sock", content: "first" }, undefined, undefined, ctxA),
+    tools.message.execute("c2", { path: "/tmp/project/.pi/sub_03.sock", content: "second" }, undefined, undefined, ctxB),
+  ]);
+
+  assert.deepEqual(first.sends, [{ from: "Main", to: "sub_02", content: "first" }]);
+  assert.deepEqual(second.sends, [{ from: "Main", to: "sub_03", content: "second" }]);
+  assert.deepEqual(a.details, { ok: true, to: "sub_02", jobId: null });
+  assert.deepEqual(b.details, { ok: true, to: "sub_03", jobId: null });
+});
+
+test("inherited capture warns about non-transplantable parent tools", async () => {
+  const api = new FakeSurfaceApi();
+  api.catalog = [
+    { name: "read", sourceInfo: { source: "builtin" } },
+    { name: "extension_tool", sourceInfo: { source: "extension" } },
+  ];
+  api.active = ["read", "extension_tool", "subagent_create"];
+  const host = new RecordingHost();
+  const tools = createSurfaceTools({ api, resolveHost: async () => host, scope: ROOT_SCOPE });
+  assert.ok(tools.create !== null);
+  const ctx = sdkContext({ cwd: "/tmp/project", systemPrompt: "PARENT PROMPT" });
+
+  await tools.create.execute("c1", { tasks: [{ task: "inherit me" }] }, undefined, undefined, ctx);
+  const call = host.creates[0];
+  assert.ok(call !== undefined);
+  const snapshot = call.options.captureInheritedContext();
+  assert.ok(isRecord(snapshot));
+  const record = snapshot;
+  assert.deepEqual(record["tools"], ["read", "extension_tool", "subagent_create"]);
+  assert.equal(record["systemPrompt"], "PARENT PROMPT");
+  assert.deepEqual(record["warnings"], [
+    inheritedToolsWarning(["extension_tool"]),
+  ]);
+});
+
+test("transplantability filters built-in and harness tools only", () => {
+  const api = new FakeSurfaceApi();
+  api.catalog = [
+    { name: "read", sourceInfo: { source: "builtin" } },
+    { name: "write", sourceInfo: { source: "builtin" } },
+    { name: "extension_tool", sourceInfo: { source: "extension" } },
+  ];
+
+  assert.deepEqual(
+    [...transplantableToolNames(api.getAllTools(), 0)].sort(),
+    ["capability", "msg_write", "read", "subagent_create", "subagent_list", "subagent_stop", "write"],
+  );
+  assert.deepEqual(droppedInheritedTools(api.getAllTools(), ["read", "extension_tool", "extension_tool"], 0), ["extension_tool"]);
+  assert.deepEqual(
+    inheritedToolNames(api.getAllTools(), ["read", "extension_tool", "write"], 0),
+    ["read", "write", "subagent_create", "subagent_list", "subagent_stop", "capability"],
+  );
+  assert.deepEqual(harnessToolsForDepth(MAX_AGENT_DEPTH), ["subagent_list"]);
+  assert.deepEqual(harnessToolsForDepth(MAX_AGENT_DEPTH - 1), [
+    "subagent_create",
+    "subagent_list",
+    "subagent_stop",
+    "capability",
+  ]);
+});
+
+test("capture of an empty session adds no warnings and no fabricated fields", () => {
+  // The capture helper is production code; this verifies the exported wrapper
+  // passes the captured snapshot through unchanged when nothing was dropped.
+  const api = new FakeSurfaceApi();
+  api.catalog = [];
+  api.active = [];
+  const ctx = sdkContext({ cwd: "/tmp/project" });
+  const snapshot = captureContextForChild(api, ctx, 1);
+  assert.ok(isRecord(snapshot));
+  const record = snapshot;
+  assert.deepEqual(record["tools"], []);
+  assert.deepEqual(record["entries"], []);
+  assert.equal(record["warnings"], undefined);
+});

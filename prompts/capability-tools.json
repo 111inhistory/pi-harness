@@ -1,22 +1,20 @@
 {
   "capability": {
-    "description": "Find reusable skills and task guidance alongside tools and MCP capabilities for the current task. Uses this conversation; no arguments. Returns relevant local refs and availability and reports that remote was not searched; remote package search is disabled until a user approval receiver exists. A namespace is one candidate with its tools and shared instructions. May activate selected tools already registered in this session, but never installs packages or executes capabilities. For Skill discovery, use capability rather than manual filesystem or web searches unless the user explicitly requests those search methods.",
+    "description": "Find reusable skills and task guidance alongside tools and MCP capabilities for the current task. Uses this conversation; no arguments. Searches local resources and returns relevant refs and availability. A namespace is one candidate with its tools and shared instructions. May activate selected tools already registered in this session, but never installs packages or executes capabilities. For Skill discovery, use capability rather than manual filesystem or web searches unless the user explicitly requests those search methods.",
     "snippet": "Find reusable guidance and capabilities for the current task",
     "guidelines": [
       "Use capability to find missing capabilities or reuse established guidance and specialized tools before inventing a workflow or building a replacement, for example for Word editing or PPT creation.",
       "Use capability for resource discovery. Native tool_search and global MCP resource listing are disabled. Codemode can execute enabled tools but provides no searchTools. Use selected tool declarations or the returned interfaces for arguments. Read Skill entry files by their returned absolute paths.",
       "Discover Skills through capability. Unless the user explicitly requests filesystem or web searches for Skills, do not search local directories, installed repositories, other agent profiles, or the web for them. A general request to find Skills does not authorize bypassing Capability's configured selection; report gaps or ask about configuration instead. Reading a returned Skill file or its linked instructions is not a new discovery search.",
       "Skills may contain workflows, rules, preferences, fixed background, or descriptions. Read relevant guidance and use it alongside tool interfaces; a generic tool description may not fit the current task.",
-      "Reuse relevant findings throughout the task. Search again when requirements change or a new capability gap appears, not before every tool call.",
-      "A needs_approval result is a candidate, not permission to install or execute it.",
-      "Remote package search is disabled until a user approval receiver exists. A result reporting that remote was not searched does not mean remote resources do not exist."
+      "Reuse relevant findings throughout the task. Search again when requirements change or a new capability gap appears, not before every tool call."
     ]
   },
   "search": {
-    "description": "Search registered tools, MCP capabilities, and local skills for reusable guidance and missing operations. Skills may cover workflows, rules, preferences, or background. Only local resources are searched: Remote search is disabled until a user approval receiver exists. Call capability_search with src \"local\"; this run does not search the npm marketplace, which is not evidence that no remote resource exists. A namespace is one candidate with all its visible tools and shared instructions. Submit its top-level ref. Returns candidate refs with metadata; only refs returned here can be submitted with submit_result.",
+    "description": "Search registered tools, MCP capabilities, and local skills for reusable guidance and missing operations. Skills may cover workflows, rules, preferences, or background. Search local resources with src \"local\". A namespace is one candidate with all its visible tools and shared instructions. Submit its top-level ref. Returns candidate refs with metadata; only refs returned here can be submitted with submit_result.",
     "parameters": {
       "query": "Keywords for relevant guidance (workflows, rules, preferences, or background) or tools, or a ref from an earlier result (tool://read, namespace://subagent, mcp://firefox_devtools, or an absolute Skill entry path) for an exact lookup.",
-      "src": "local: session tools, MCP servers and local skills. remote: uninstalled npm marketplace packages, returned as installation requests. all: both, local hits first."
+      "src": "local: session tools, MCP servers and local skills."
     }
   },
   "submit": {

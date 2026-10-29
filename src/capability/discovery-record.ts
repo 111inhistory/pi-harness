@@ -29,7 +29,7 @@ export type SearchCoverage = "searched" | "not_searched";
 /** Model-facing statement of what this run covered. */
 export interface CapabilitySearchCoverage {
   readonly local: SearchCoverage;
-  /** Remote search has no approval receiver yet, so it is never searched. */
+  /** Discovery searches local resources only. */
   readonly remote: "not_searched";
 }
 

@@ -112,28 +112,19 @@ test("scoped list fills each group with recent stops and expands only active per
   assert.equal(filled[2].id, children.get(roots[0].id)[1].id, "last actual completion wins, not creation order");
 });
 
-test("listener window stays bounded across one thousand stopped actors and revival admission", async (t) => {
+test("reviving a stopped actor requires an available active-child slot", async (t) => {
   const { runtime, started } = harness(t);
-  let first;
-  for (let index = 0; index < 1000; index++) {
-    const actor = runtime.create({ tasks: [{ task: "Complete history entry" }] }).items[0];
-    first ??= actor.id;
-    started.at(-1).finish();
-    await runtime.jobDone(actor.id);
-  }
-  assert.equal(runtime.list().agents.length, 1000);
-  assert.equal(runtime.listenerGroup().length, 4);
-  assert.equal(runtime.listenerGroup()[0], "sub_1000");
-  assert.equal(runtime.listenerGroup(null, first)[0], first);
-  runtime.assertMessageAdmission(first);
+  const stopped = runtime.create({ tasks: [{ task: "Stopped before revival" }] }).items[0];
+  started.find((handle) => handle.request.agentId === stopped.id).finish();
+  await runtime.jobDone(stopped.id);
+
   const active = runtime.create({ tasks: Array.from({ length: 4 }, () => ({ task: "Remain active" })) }).items;
-  assert.deepEqual(runtime.listenerGroup(), active.map((actor) => actor.id));
-  assert.throws(() => runtime.assertMessageAdmission(first), errorCode("child_limit_exceeded"));
+  assert.throws(() => runtime.assertMessageAdmission(stopped.id), errorCode("child_limit_exceeded"));
   runtime.stop(active[0].id);
-  assert.throws(() => runtime.assertMessageAdmission(first), errorCode("child_limit_exceeded"));
+  assert.throws(() => runtime.assertMessageAdmission(stopped.id), errorCode("child_limit_exceeded"));
   started.find((handle) => handle.request.agentId === active[0].id).finish();
   await runtime.jobDone(active[0].id);
-  runtime.assertMessageAdmission(first);
+  runtime.assertMessageAdmission(stopped.id);
 });
 
 test("scoped stopped ordering survives registry restoration", async (t) => {

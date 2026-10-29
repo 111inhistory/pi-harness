@@ -654,7 +654,7 @@ test("exposes the no-argument public schema and the internal retrieval schemas",
 
   assert.equal(CAPABILITY_SEARCH_PARAMETERS.type, "object");
   assert.deepEqual([...CAPABILITY_SEARCH_PARAMETERS.required], ["query", "src"]);
-  assert.deepEqual(CAPABILITY_SEARCH_PARAMETERS.properties.src.enum, ["local", "remote", "all"]);
+  assert.deepEqual([...CAPABILITY_SEARCH_PARAMETERS.properties.src.enum], ["local"]);
   assert.equal(CAPABILITY_SEARCH_PARAMETERS.properties.query.minLength, 1);
   assert.equal(CAPABILITY_SEARCH_PARAMETERS.additionalProperties, false);
 

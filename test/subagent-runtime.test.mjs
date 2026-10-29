@@ -1478,7 +1478,7 @@ test("restores folded results and topology without replaying live work or retain
   assert.deepEqual(restored.jobRecord(first.jobId).history, { startEntryId: "e0", endEntryId: "e2" });
   for (const id of [nested.jobId, second.jobId]) {
     assert.equal(restored.jobRecord(id).status, "failed");
-    assert.equal(restored.jobRecord(id).error.code, "interrupted");
+    assert.equal(restored.jobRecord(id).error.code, "job_interrupted");
     assert.equal(restored.cancelJob(id).reason, "already_finished");
     assert.equal((await restored.jobDone(id)).status, "failed");
   }

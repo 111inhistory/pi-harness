@@ -471,9 +471,12 @@ test("a frozen terminal outcome keeps its status when history finalization fails
   const terminal = await runtime.jobDone(actor.id);
   assert.equal(terminal.status, "completed");
   assert.equal(terminal.historyState, "error");
+  assert.ok(terminal.historyError);
   assert.match(terminal.historyError.message, /history append failed/);
   assert.deepEqual(finalized, [{ jobId: actor.id, status: "completed", round: 1, result: "work done" }]);
-  assert.equal(runtime.jobs({ jobIds: [actor.id] }).jobs[0].status, "completed");
+  const completedJob = runtime.jobs({ jobIds: [actor.id] }).jobs[0];
+  assert.ok(completedJob);
+  assert.equal(completedJob.status, "completed");
 });
 
 test("execution failures keep cancellation as the frozen reason while history stays separate", async () => {
@@ -489,7 +492,9 @@ test("execution failures keep cancellation as the frozen reason while history st
   const actor = runtime.create({ tasks: [{ task: "fail" }] }).items[0] as { id: string };
   const terminal = await runtime.jobDone(actor.id);
   assert.equal(terminal.status, "failed");
+  assert.ok(terminal.error);
   assert.equal(terminal.error.code, "native_failed");
   assert.equal(terminal.historyState, "error");
+  assert.ok(terminal.historyError);
   assert.match(terminal.historyError.message, /summary write failed/);
 });

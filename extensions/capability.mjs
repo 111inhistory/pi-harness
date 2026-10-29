@@ -16,8 +16,7 @@
  * already-registered tools active in this session. It never installs, enables or
  * executes anything.
  *
- * Remote search is disabled until a user approval receiver exists (rewrite plan
- * D4): the internal agent only searches local tools, MCP servers and skills, the
+ * The internal agent only searches local tools, MCP servers and skills. The
  * result always reports that remote was not searched, and no remote candidate
  * reaches Main, the branch memory or a summary.
  *
@@ -64,8 +63,9 @@ import { capabilityPublicResult } from "../src/capability-result.mjs";
 import { capabilityPromptTranscript } from "../src/capability-prompt.mjs";
 import { appendDiscoveryRecord } from "../src/capability/discovery-record.ts";
 import { openSubagentExecution } from "../src/subagent/execution.ts";
+import { parentModelRuntime } from "../src/subagent/model-runtime.ts";
 import { installNativeDiscoveryBoundary } from "../src/capability/native-discovery.ts";
-import { capabilityAllowsTool, capabilityAvailableTools } from "../src/capability-scope.mjs";
+import { createEligibleToolCatalog, supplySelectedToolInterfaces } from "../src/capability/tool-catalog.ts";
 import {
   additiveToolTranscript, capabilityModelResult, capabilityToolDelta, retrievalToolLoadout, supportsAdditiveResponses,
 } from "../src/responses-tool-prefix.mjs";
@@ -92,16 +92,15 @@ export default function capabilityExtension(pi, { discovery = true } = {}) {
   // section updates at their original result anchors; only compaction checkpoints
   // receive the accumulated older discoveries. Exposure and execution stay separate.
   pi.on?.("context_with_system", (event, ctx) => {
-    const available = new Set(pi.getAllTools().filter((tool) => tool.exposure !== "hidden" && capabilityAllowsTool(pi, tool.name)).map((tool) => tool.name));
+    const available = createEligibleToolCatalog(pi).names;
     const messages = capabilityPromptTranscript(event.messages, ctx.sessionManager.getBranch(), {
       allowsTool: (name) => available.has(name),
     });
     return { messages: supportsAdditiveResponses(ctx.model) ? additiveToolTranscript(messages) : messages };
   });
   pi.on?.("tool_call", (event) => {
-    const tool = pi.getAllTools().find((entry) => entry.name === event.toolName);
-    if (!capabilityAllowsTool(pi, event.toolName) || !tool || tool.exposure === "hidden" ||
-        (!pi.getActiveTools().includes(event.toolName) && !["codemode", "deferred"].includes(tool.exposure))) {
+    const tool = createEligibleToolCatalog(pi).tools.find((entry) => entry.name === event.toolName);
+    if (!tool || (!pi.getActiveTools().includes(event.toolName) && !["codemode", "deferred"].includes(tool.exposure))) {
       return { block: true, reason: `Tool ${event.toolName} is unavailable in this session; retained declarations do not enable execution.` };
     }
   });
@@ -125,7 +124,7 @@ export default function capabilityExtension(pi, { discovery = true } = {}) {
         // registered or active.
         service.projectTrusted = ctx.isProjectTrusted();
         const snapshot = captureInheritedContext(pi, ctx);
-        const physicalModel = inheritedModel(snapshot, ctx, parentModelRuntime(ctx.modelRegistry), toolCallId);
+        const physicalModel = inheritedModel(snapshot, ctx, parentModelRuntime(ctx.modelRegistry, "capability discovery"), toolCallId);
         const discovery = createCapabilityDiscovery({
           broker,
           openSession: (request) => openInternalSession(pi, service, ctx, request, snapshot, toolCallId),
@@ -146,7 +145,7 @@ export default function capabilityExtension(pi, { discovery = true } = {}) {
           try {
             previouslyActive = new Set(pi.getActiveTools());
             const activation = activateSelectedTools(pi, result);
-            capabilityAvailableTools(pi);
+            createEligibleToolCatalog(pi);
             if (supportsAdditiveResponses(physicalModel) && safeSettings(pi)?.codemode?.mode !== "only") {
               compactNames = new Set(pi.getActiveTools());
             }
@@ -163,7 +162,7 @@ export default function capabilityExtension(pi, { discovery = true } = {}) {
       } catch (error) {
         result = capabilityFailureResult(`capability discovery failed: ${errorMessage(error)}.`);
       }
-      const delta = selectedInterfaces(capabilityToolDelta(result, previouslyActive), pi);
+      const delta = supplySelectedToolInterfaces(capabilityToolDelta(result, previouslyActive), pi);
       return {
         content: [{ type: "text", text: JSON.stringify(capabilityPublicResult(compactNames ? capabilityModelResult(delta, compactNames) : delta)) }],
         details: result,
@@ -189,7 +188,7 @@ function discoveryNotDurable(result, error) {
 
 function createProviders(pi, service) {
   return {
-    listTools: () => pi.getAllTools().filter((tool) => capabilityAllowsTool(pi, tool.name)),
+    listTools: () => createEligibleToolCatalog(pi, { includeHidden: true }).tools,
     listActiveTools: () => pi.getActiveTools(),
     discoverSkills: (cwd) => discoverSessionSkills(pi, { cwd, agentDir: service.agentDir, projectTrusted: service.projectTrusted }),
     readSkillFile: (filePath) => readFile(filePath, "utf8"),
@@ -225,20 +224,6 @@ function internalSettings(pi, trusted) {
     { ...base, packages: [], extensions: [], skills: [], prompts: [], themes: [] },
     { projectTrusted: trusted === true },
   );
-}
-
-/** Supply interfaces only after selection, not in the search catalog or branch records. */
-function selectedInterfaces(result, pi) {
-  const registered = new Map(pi.getAllTools().filter((tool) => tool.exposure !== "hidden" && capabilityAllowsTool(pi, tool.name)).map((tool) => [tool.name, tool]));
-  const enrich = (hit) => {
-    if (Array.isArray(hit.tools)) return { ...hit, tools: hit.tools.map(enrich) };
-    const tool = registered.get(hit.name);
-    return tool ? { ...hit, parameters: tool.parameters,
-      ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}),
-      ...(tool.promptGuidelines?.length ? { promptGuidelines: tool.promptGuidelines } : {}),
-    } : hit;
-  };
-  return { ...result, tools: result.tools.map(enrich), mcp: result.mcp.map(enrich) };
 }
 
 /**
@@ -332,7 +317,7 @@ function inheritedModel(snapshot, ctx, modelRuntime, toolCallId) {
 async function openInternalSession(pi, service, ctx, request, snapshot, toolCallId) {
   const cwd = ctx.cwd;
   const settings = internalSettings(pi, ctx.isProjectTrusted());
-  const modelRuntime = parentModelRuntime(ctx.modelRegistry);
+  const modelRuntime = parentModelRuntime(ctx.modelRegistry, "capability discovery");
   const instructions =
     typeof request.instructions === "string" && request.instructions !== ""
       ? request.instructions
@@ -374,7 +359,7 @@ async function openInternalSession(pi, service, ctx, request, snapshot, toolCall
     const session = execution.session;
     // The blocked placeholders retain interfaces only; they never call parent tools.
     const previousTransform = session.agent.transformContext;
-    const available = new Set(pi.getAllTools().filter((tool) => tool.exposure !== "hidden" && capabilityAllowsTool(pi, tool.name)).map((tool) => tool.name));
+    const available = createEligibleToolCatalog(pi).names;
     session.agent.transformContext = async (messages, signal) => {
       const transformed = previousTransform ? await previousTransform(messages, signal) : messages;
       const remembered = capabilityPromptTranscript(transformed, snapshot.entries, {
@@ -412,32 +397,6 @@ async function openInternalSession(pi, service, ctx, request, snapshot, toolCall
     }
     throw error;
   }
-}
-
-/**
- * The internal session must run on the parent session's exact ModelRuntime so
- * extension-registered providers, virtual-model routing and runtime
- * credentials stay available. Pi 0.99 builds `new ModelRegistry(<session
- * runtime>)` (agent-session.js) and the compiled facade keeps that runtime as
- * the plain property `runtime`; there is no public accessor. This is the single
- * explicit compatibility boundary of this extension: when the bridge is
- * unavailable, discovery fails with an explicit error instead of silently
- * running on a runtime that lost those registrations.
- */
-function parentModelRuntime(registry) {
-  const candidate = registry?.runtime;
-  const usable =
-    candidate !== null &&
-    typeof candidate === "object" &&
-    typeof candidate.streamSimple === "function" &&
-    typeof candidate.getAuth === "function" &&
-    typeof candidate.getRegisteredProviderIds === "function";
-  if (usable) return candidate;
-  throw new Error(
-    "this Pi build does not expose the session ModelRuntime through ModelRegistry.runtime, so capability discovery " +
-      "cannot reuse the parent session's provider registrations and virtual models; refusing to silently fall back " +
-      "to a fresh runtime",
-  );
 }
 
 function errorMessage(error) {

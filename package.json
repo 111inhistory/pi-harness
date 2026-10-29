@@ -16,7 +16,7 @@
     "test:typed": "node --import tsx scripts/test.mjs typed",
     "check": "npm run typecheck && npm test",
     "test:subagent": "node --import tsx --test test/subagent-runtime.test.mjs",
-    "test:shell-preflight": "node --import tsx --test test/shell-preflight.test.mjs"
+    "test:shell-preflight": "node --import tsx --test test/shell-preflight.test.mjs test/shell-preflight-extension.test.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "1.4.0",

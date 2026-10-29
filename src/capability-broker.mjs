@@ -63,81 +63,27 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { PI_PACKAGE_KEYWORD, packageNameFromSource } from "./capability-marketplace.mjs";
-import { promptText } from "./prompt-text.mjs";
+import {
+  CAPABILITY_LIMITS,
+  CAPABILITY_PARAMETERS,
+  CAPABILITY_SEARCH_PARAMETERS,
+  CAPABILITY_SEARCH_TOOL_NAME,
+  CAPABILITY_TOOL_DESCRIPTION,
+  CAPABILITY_TOOL_NAME,
+  SUBMIT_RESULT_PARAMETERS,
+  SUBMIT_RESULT_TOOL_NAME,
+} from "./capability/contracts.ts";
 
-const toolsPrompt = JSON.parse(promptText("capability-tools.json"));
-
-export const CAPABILITY_TOOL_NAME = "capability";
-
-export const CAPABILITY_TOOL_DESCRIPTION = toolsPrompt.capability.description;
-
-/**
- * Model-visible schema of the public tool. Empty on purpose: the request is the
- * caller's conversation, and search categories, candidate counts and budget
- * controls are fixed harness behavior that must never become model input.
- */
-export const CAPABILITY_PARAMETERS = Object.freeze({
-  type: "object",
-  properties: Object.freeze({}),
-  additionalProperties: false,
-});
-
-/** Internal retrieval tool: only the nested capability search agent sees these. */
-export const CAPABILITY_SEARCH_TOOL_NAME = "capability_search";
-
-export const CAPABILITY_SEARCH_PARAMETERS = Object.freeze({
-  type: "object",
-  properties: Object.freeze({
-    query: Object.freeze({
-      type: "string",
-      minLength: 1,
-      description: toolsPrompt.search.parameters.query,
-    }),
-    src: Object.freeze({
-      type: "string",
-      enum: Object.freeze(["local", "remote", "all"]),
-      description: toolsPrompt.search.parameters.src,
-    }),
-  }),
-  required: Object.freeze(["query", "src"]),
-  additionalProperties: false,
-});
-
-export const SUBMIT_RESULT_TOOL_NAME = "submit_result";
-
-export const SUBMIT_RESULT_PARAMETERS = Object.freeze({
-  type: "object",
-  properties: Object.freeze({
-    refs: Object.freeze({
-      type: "array",
-      items: Object.freeze({ type: "string" }),
-      description: toolsPrompt.submit.parameters.refs,
-    }),
-  }),
-  required: Object.freeze(["refs"]),
-  additionalProperties: false,
-});
-
-/** Deterministic bounds for every result list, body read and remote request. */
-export const CAPABILITY_LIMITS = Object.freeze({
-  tools: 8, // standalone tools or whole namespaces, not member count
-  mcp: 8, // whole MCP groups
-  skills: 6,
-  remote: 5,
-  skillBodies: 6,
-  caveats: 12,
-  caveatsPerSkill: 4,
-  missingCapabilities: 6,
-  warnings: 12,
-  requestTokens: 128,
-  matchTokensPerField: 4,
-  bodyMatchTokens: 6,
-  descriptionChars: 240,
-  caveatChars: 240,
-  skillBodyChars: 60_000,
-  warningChars: 200,
-  remoteTimeoutMs: 10_000,
-});
+export {
+  CAPABILITY_LIMITS,
+  CAPABILITY_PARAMETERS,
+  CAPABILITY_SEARCH_PARAMETERS,
+  CAPABILITY_SEARCH_TOOL_NAME,
+  CAPABILITY_TOOL_DESCRIPTION,
+  CAPABILITY_TOOL_NAME,
+  SUBMIT_RESULT_PARAMETERS,
+  SUBMIT_RESULT_TOOL_NAME,
+} from "./capability/contracts.ts";
 
 const CAPABILITY_SCHEMES = new Set(["tool", "namespace", "mcp", "npm"]);
 const MCP_NAME_PREFIX = "mcp__";

@@ -135,7 +135,25 @@ export interface RetirableService {
 }
 
 export interface ServiceLifecycleAdapter<TService extends RetirableService> {
+  /** Must resolve only after the native resources really stopped. */
   retire(service: TService): void | Promise<void>;
+  retirementTimeoutMs?: number;
+}
+
+export class ServiceRetirementTimeoutError extends Error {
+  readonly code = 'service_retirement_timeout';
+  readonly generation: number;
+  constructor(generation: number) {
+    super(`Service generation ${generation} did not quiesce before its retirement deadline; resources remain fenced.`);
+    this.name = 'ServiceRetirementTimeoutError';
+    this.generation = generation;
+  }
+}
+
+interface Retirement<TService> {
+  readonly service: TService;
+  readonly report: Promise<void>;
+  failure: unknown;
 }
 
 /**
@@ -148,16 +166,20 @@ export interface ServiceLifecycleAdapter<TService extends RetirableService> {
  */
 export class ServiceLifecycle<TService extends RetirableService> {
   #service: TService | null = null;
-  #retirement: Promise<void> | null = null;
-  #retirementGeneration: number | null = null;
+  #retirement: Retirement<TService> | null = null;
   #activation: Promise<TService> | null = null;
   #generation = 0;
   /** Bumped by every explicit retire; an older activation may not publish. */
   #invalidation = 0;
   readonly #adapter: ServiceLifecycleAdapter<TService>;
+  readonly #retirementTimeoutMs: number;
 
   constructor(adapter: ServiceLifecycleAdapter<TService>) {
     this.#adapter = adapter;
+    this.#retirementTimeoutMs = adapter.retirementTimeoutMs ?? 5000;
+    if (!Number.isFinite(this.#retirementTimeoutMs) || this.#retirementTimeoutMs <= 0) {
+      throw new RangeError('retirementTimeoutMs must be a positive finite number.');
+    }
   }
 
   get service(): TService | null {
@@ -170,6 +192,11 @@ export class ServiceLifecycle<TService extends RetirableService> {
 
   get retiring(): boolean {
     return this.#retirement !== null;
+  }
+
+  /** A failed/timed-out retire stays fenced until real quiescence is known. */
+  get retirementFailure(): unknown {
+    return this.#retirement?.failure ?? null;
   }
 
   /** Current service, or a new one after retiring the previous generation. */
@@ -205,7 +232,7 @@ export class ServiceLifecycle<TService extends RetirableService> {
       if (this.#invalidation !== invalidationBefore) {
         // The caller may have shut down while creation was in flight. Clean up
         // what was created and never publish it as the current service.
-        await this.#adapter.retire(service);
+        await this.#beginRetirement(service, generation);
         throw activationRetiredError();
       }
       this.#generation = generation;
@@ -232,7 +259,8 @@ export class ServiceLifecycle<TService extends RetirableService> {
    */
   retire(target?: TService): Promise<void> {
     if (target !== undefined) {
-      return target === this.#service ? this.#retireCurrent() : Promise.resolve();
+      if (target === this.#service) return this.#retireCurrent();
+      return target === this.#retirement?.service ? this.#retirement.report : Promise.resolve();
     }
 
     this.#invalidation += 1;
@@ -251,29 +279,42 @@ export class ServiceLifecycle<TService extends RetirableService> {
   }
 
   #retireCurrent(): Promise<void> {
-    const inFlight = this.#retirement;
-    if (inFlight !== null) return inFlight;
-
+    if (this.#retirement !== null) return this.#retirement.report;
     const service = this.#service;
     if (service === null) return Promise.resolve();
-
-    const generation = this.#generation;
     this.#service = null;
-    const run = (async (): Promise<void> => {
-      await this.#adapter.retire(service);
-    })();
-    let tracked: Promise<void>;
-    tracked = run.finally(() => {
-      // Clear only this generation's record. A later activation starts from a
-      // null retirement slot rather than inheriting this completed promise.
-      if (this.#retirement === tracked && this.#retirementGeneration === generation) {
-        this.#retirement = null;
-        this.#retirementGeneration = null;
-      }
+    return this.#beginRetirement(service, this.#generation);
+  }
+
+  #beginRetirement(service: TService, generation: number): Promise<void> {
+    // The public deadline is not the resource lifetime. A timeout rejects the
+    // caller but never removes the fence or disposes a still-running session.
+    let resolveReport!: () => void;
+    let rejectReport!: (error: unknown) => void;
+    const report = new Promise<void>((resolve, reject) => {
+      resolveReport = resolve;
+      rejectReport = reject;
     });
-    this.#retirement = tracked;
-    this.#retirementGeneration = generation;
-    return tracked;
+    const retirement: Retirement<TService> = { service, report, failure: null };
+    this.#retirement = retirement;
+    const timer = setTimeout(() => {
+      const error = new ServiceRetirementTimeoutError(generation);
+      retirement.failure = error;
+      rejectReport(error);
+    }, this.#retirementTimeoutMs);
+    // Deferring the adapter also captures a synchronous throw. Both completion
+    // paths are observed, even if the public report already timed out.
+    void Promise.resolve().then(() => this.#adapter.retire(service)).then(() => {
+      clearTimeout(timer);
+      if (this.#retirement === retirement) this.#retirement = null;
+      resolveReport();
+    }, (error: unknown) => {
+      clearTimeout(timer);
+      retirement.failure = error;
+      // Rejection does not prove native exit. Keep this generation fenced.
+      rejectReport(error);
+    });
+    return report;
   }
 }
 

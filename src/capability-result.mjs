@@ -1,7 +1,7 @@
 /**
  * Keep retrieval ranking and diagnostic warnings out of Main's tool content.
- * Remote candidates are never model-facing while no approval receiver exists
- * (rewrite plan D4): they are dropped even if a caller hands them in, and the
+ * Discovery is local-only: remote candidates are dropped even if a caller
+ * hands them in, and the
  * result's `coverage` says remote was not searched rather than implying the
  * marketplace had no matches.
  *

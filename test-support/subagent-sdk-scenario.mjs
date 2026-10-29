@@ -2,7 +2,6 @@
 // paths must never touch the developer's live session or workspace.
 import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
-import { once } from "node:events";
 import net from "node:net";
 import path from "node:path";
 import {
@@ -15,6 +14,13 @@ import { deriveSessionUid, getAgentSocketPath, getBroadcastSocketPath } from "..
 import { resolveTranscriptTools } from "../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js";
 import { convertResponsesMessages } from "../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 import { deferred, waitFor } from "./async.mjs";
+import {
+  isStoppingRefusal, isSubagentError, isSocketWriteError, deliverBroadcast, deliverToActor,
+} from "../test/typed/support/subagent-sdk-fixture.ts";
+import {
+  runExternalSocketScenario, runListenerCacheScenario, runPeerSenderScenario,
+  runRestoreInvalidScenario, runUpstreamParentSteerScenario,
+} from "../test/typed/support/subagent-sdk-scenarios.ts";
 
 const scenario = process.argv[2];
 const cwd = process.cwd();
@@ -64,8 +70,6 @@ let streamedFragments = 0;
 const controls = { classify: null, chat: null };
 let externalToolExecutions = 0;
 const gates = [];
-const externalServers = [];
-const externalConnections = [];
 function controlledGate() {
   const gate = deferred();
   gates.push(gate);
@@ -207,25 +211,6 @@ async function call(name, params) {
 async function listener(socketPath) {
   return waitFor(() => process._getActiveHandles().find((handle) => handle instanceof net.Server && handle.listening && handle.address() === socketPath), { label: "host listener ready" });
 }
-async function observeFrame(socketPath, marker) {
-  const received = deferred();
-  const server = await listener(socketPath);
-  server.once("connection", (socket) => {
-    let buffer = "";
-    socket.on("data", (chunk) => {
-      buffer += chunk.toString("utf8");
-      if (buffer.endsWith("\n") && buffer.includes(marker)) received.resolve();
-    });
-  });
-  return received;
-}
-async function writeForDelivery(socketPath, content) {
-  const server = await listener(socketPath);
-  const received = deferred();
-  server.once("connection", (socket) => socket.once("data", received.resolve));
-  await call("write", { path: socketPath, content });
-  await received.promise;
-}
 async function create(task, extra = {}) {
   return (await call("subagent_create", { tasks: [{ name: "LocalTask", task, ...extra }] })).details.items[0];
 }
@@ -247,44 +232,16 @@ async function events(file) {
   assert.ok(content.endsWith("\n"));
   return content.trim().split("\n").map((line) => JSON.parse(line));
 }
+const fixture = {
+  get scenario() { return scenario; },
+  cwd, agentDir, socketDir, sessionSocketDir,
+  session, sessionManager, chats, notificationChats, classifications, controls,
+  call, create, item, stopped, gate: controlledGate, textAnswer, toolAnswer,
+};
 
 try {
   if (scenario === "listener-cache") {
-    controls.chat = async (request) => {
-      if (request.text.includes("CACHE_PARENT")) {
-        const created = request.context.messages.findLast((message) => message.role === "toolResult" && message.toolName === "subagent_create");
-        if (!created) return toolAnswer("subagent_create", { tasks: [1, 2, 3, 4].map(() => ({ task: "CACHE_CHILD complete promptly" })) });
-        const children = JSON.parse(created.content.find((part) => part.type === "text").text).items;
-        await Promise.all(children.map((child) => stopped(child.id)));
-      }
-      return textAnswer("Cache actor complete");
-    };
-    const parent = await create("CACHE_PARENT create four children and finish");
-    await stopped(parent.id);
-    for (let index = 0; index < 11; index++) await stopped((await create("Cache history entry")).id);
-    const addresses = () => process._getActiveHandles().filter((handle) => handle instanceof net.Server && handle.listening).map((handle) => handle.address());
-    assert.equal(addresses().length, 6, "Main, root broadcast and four recent roots only");
-    assert.equal(addresses().includes(parent.socket), false);
-    const child = await item(parent.id + "_01");
-    assert.equal(addresses().includes(child.socket), false, "eviction also removes stopped descendant listeners");
-    const before = chats.length;
-    await call("write", { path: parent.socket, content: "Resume historical parent" });
-    await waitFor(() => chats.length > before, { label: "historical fallback revival" });
-    await stopped(parent.id);
-    await listener(child.socket);
-    assert.equal(addresses().length, 11, "four roots and the revived parent's four children and broadcast");
-    await assert.rejects(call("write", { path: path.join(sessionSocketDir, "forbidden", "file.txt"), content: "must not exist" }), (error) => error.code === "ipc_directory_reserved");
-    await assert.rejects(fsp.stat(path.join(sessionSocketDir, "forbidden")), { code: "ENOENT" });
-    if (process.platform !== "win32") await assert.rejects(call("write", { path: path.join(sessionSocketDir, "ghost.sock"), content: '{"content":"unknown"}' }), (error) => error.code === "unknown_endpoint");
-    await session.reload();
-    assert.equal(addresses().length, 6, "entry restores only the recent depth-1 window");
-    assert.equal(addresses().includes(child.socket), false, "depth-2 listeners are not restored on entry");
-    const afterReload = chats.length;
-    await call("write", { path: parent.socket, content: "Restore next layer" });
-    await waitFor(() => chats.length > afterReload, { label: "revival restores child window" });
-    await stopped(parent.id);
-    await listener(child.socket);
-    assert.equal(addresses().length, 11);
+    await runListenerCacheScenario(fixture);
   } else if (scenario === "reviewer-sol") {
     controls.classify = (context) => {
       assert.deepEqual(Object.keys(context.questions), ["role"], "singleton reviewer pool must not ask for model selection");
@@ -504,7 +461,7 @@ try {
     controls.classify = (_, options) => abortable(gate, options.signal);
     controls.chat = () => textAnswer("Namespace child done");
     const actor = await create("Namespace task");
-    await writeForDelivery(actor.socket, "Namespace buffered message");
+    await deliverToActor(fixture, actor, "Namespace buffered message");
     gate.resolve();
     await stopped(actor.id);
     assert.match(chats.at(-1).text, /Namespace buffered message/);
@@ -537,7 +494,7 @@ try {
     assert.deepEqual((await call("subagent_list", {})).details.items.map((agent) => agent.id), ["Main"]);
     await listener(getAgentSocketPath("Main", sessionSocketDir));
     if (process.platform !== "win32") assert.deepEqual((await fsp.readdir(sessionSocketDir)).sort(), ["Main.sock", "main"], "invalid batches must not publish any child endpoint");
-    else assert.deepEqual(process._getActiveHandles().filter((handle) => handle instanceof net.Server && handle.listening).map((handle) => handle.address()), [getAgentSocketPath("Main", sessionSocketDir)]);
+    else assert.deepEqual(process._getActiveHandles().filter((handle) => handle instanceof net.Server && handle.listening).map((handle) => handle.address()).sort(), [getAgentSocketPath("Main", sessionSocketDir), getBroadcastSocketPath("Main", sessionSocketDir)].sort());
     const gate = controlledGate();
     controls.classify = (_, options) => abortable(gate, options.signal);
     const result = await call("subagent_create", { context: "Explicit batch context", tasks: [{ task: "Initial assignment" }, { task: "Stopped during routing" }] });
@@ -550,7 +507,7 @@ try {
     await listener(getBroadcastSocketPath("Main", sessionSocketDir));
     await call("write", { path: "ordinary.txt", content: "Native filesystem write" });
     assert.equal(await fsp.readFile(path.join(cwd, "ordinary.txt"), "utf8"), "Native filesystem write");
-    await writeForDelivery(first.socket, "Buffered during routing");
+    await deliverToActor(fixture, first, "Buffered during routing");
     assert.equal((await call("subagent_stop", { id: second.id })).details.status, "stopping");
     gate.resolve();
     await stopped(first.id);
@@ -564,47 +521,7 @@ try {
     assert.match(childPrompt, /host binds the sender/i);
     assert.equal("budget" in (await stopped(first.id)), false);
   } else if (scenario === "external-socket") {
-    const exit = controlledGate();
-    controls.chat = async (request) => {
-      await exit.promise;
-      if (request.options.signal.aborted) throw new Error("cancelled local request");
-      return textAnswer("native actor output");
-    };
-    const actor = await create("Actor with a same-named external socket");
-    await waitFor(() => chats.length === 1, { label: "native actor request" });
-    await call("subagent_stop", { id: actor.id });
-    assert.equal((await item(actor.id)).status, "stopping");
-    const dir = path.join(cwd, "external");
-    await fsp.mkdir(dir);
-    // Same basename as a stopping Agent, but NOT one of the registered endpoints.
-    const externalPath = getAgentSocketPath(actor.id, dir);
-    const received = deferred();
-    const server = net.createServer((socket) => {
-      externalConnections.push(socket);
-      let buffer = "";
-      socket.on("error", () => {}); // A writer is allowed to close without reading our reply.
-      socket.on("data", (chunk) => {
-        buffer += chunk.toString("utf8");
-        if (buffer.endsWith("\n")) {
-          received.resolve(buffer);
-          socket.end('{"external_reply":"not an Agent result"}\n');
-        }
-      });
-    });
-    externalServers.push(server);
-    const listening = once(server, "listening");
-    server.listen(externalPath);
-    await listening;
-    const payload = '{"from":"external-client","content":"Own protocol payload","sequence":7}';
-    const result = await call("msg_write", { path: externalPath, content: payload });
-    assert.ok(result.content.some((block) => block.type === "text" && /Successfully wrote/i.test(block.text)));
-    assert.equal(await received.promise, payload + "\n", "external payload must not acquire Subagent identity fields");
-    assert.equal((await call("subagent_list", {})).details.items.length, 2, "only Main and the existing actor are listed");
-    assert.equal((await item(actor.id)).status, "stopping", "an external socket must not revive a same-named actor");
-    assert.equal(chats.length, 1);
-    assert.equal(sessionManager.getBranch().filter((entry) => entry.type === "custom_message").length, 0, "external responses must not become Agent messages");
-    exit.resolve();
-    await stopped(actor.id);
+    await runExternalSocketScenario(fixture);
   } else if (["upstream-main-clear", "upstream-main-clear-terminal", "upstream-main-esc"].includes(scenario)) {
     const clearTerminal = scenario === "upstream-main-clear-terminal";
     const escaping = scenario === "upstream-main-esc";
@@ -732,68 +649,7 @@ try {
     // distinct actor. Sending Main -> Main here would instead be a forbidden
     // self-send, irrespective of the literal text.
   } else if (scenario === "upstream-parent-steer") {
-    const send = controlledGate();
-    const parentWaiting = controlledGate();
-    const parentExit = controlledGate();
-    let progressReceived;
-    let parent;
-    let parentRequests = 0;
-    let progressSeen = false;
-    let terminalSeen = false;
-    controls.chat = async (request) => {
-      if (request.text.includes("PARENT_MERGE_LEAF")) {
-        await send.promise;
-        const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
-        if (!wrote) return toolAnswer("msg_write", { path: parent.socket, content: "PARENT_MERGE_PROGRESS" }, "parent-merge-write");
-        // OS write completion is not host receipt. Hold the leaf until the
-        // parent's actual frame reader has queued the ordinary progress.
-        await progressReceived.promise;
-        return textAnswer("Leaf completed");
-      }
-      assert.ok(request.text.includes("PARENT_MERGE_OWNER"));
-      parentRequests++;
-      const created = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent_create");
-      if (!created) return toolAnswer("subagent_create", { tasks: [{ task: "PARENT_MERGE_LEAF: send progress to your direct parent" }] }, "parent-merge-create");
-      if (!request.text.includes("PARENT_MERGE_PROGRESS")) {
-        parentWaiting.resolve();
-        await parentExit.promise;
-        return textAnswer("Parent finishes its held model turn");
-      }
-      // Pi may consume the separate messages together or on successive turns.
-      // The plugin never rewrites the ordinary message with the terminal.
-      const deliveries = request.context.messages.filter((message) =>
-        message.role !== "system" && JSON.stringify(message.content).includes("PARENT_MERGE_PROGRESS"));
-      assert.equal(deliveries.length, 1);
-      assert.doesNotMatch(JSON.stringify(deliveries[0].content), /\[Subagent .* completed/);
-      progressSeen = true;
-      terminalSeen = request.text.includes(`[Subagent ${parent.id}_01 completed`);
-      return textAnswer("Parent received independent progress and terminal events");
-    };
-    parent = await create("PARENT_MERGE_OWNER: delegate one leaf and consume its result");
-    await parentWaiting.promise;
-    const leaf = (await call("subagent_list", { all: true })).details.items.find((entry) => entry.id !== "Main" && entry.id !== parent.id);
-    assert.ok(leaf);
-    progressReceived = await observeFrame(parent.socket, "PARENT_MERGE_PROGRESS");
-    send.resolve();
-    await stopped(leaf.id);
-    parentExit.resolve();
-    await waitFor(() => progressSeen && terminalSeen, { label: "busy Subagent parent consumes both independent events" });
-    await stopped(parent.id);
-    await session.waitForIdle();
-    assert.ok(parentRequests === 3 || parentRequests === 4, "Pi chooses whether separate queued messages need one or two turns");
-    assert.equal(classifications.length, 4, "notification does not route another parent assignment");
-    const stored = (await events((await item(parent.id)).history.cleanJsonl)).filter((event) =>
-      event.role === "custom" && JSON.stringify(event.content).includes("PARENT_MERGE_PROGRESS"));
-    assert.equal(stored.length, 1);
-    assert.equal(stored[0].customType, "agent-delivery");
-    assert.equal(stored[0].details.source, "agent");
-    assert.equal(stored[0].details.sourceId, leaf.id);
-    assert.equal(stored[0].details.status, "running");
-    const terminals = (await events((await item(parent.id)).history.cleanJsonl)).filter((event) =>
-      event.role === "custom" && event.details?.sourceId === leaf.id && event.details?.source === "host");
-    assert.equal(terminals.length, 1);
-    assert.equal(terminals[0].details.status, "completed");
-    assert.equal(JSON.stringify(terminals[0].content).includes("PARENT_MERGE_PROGRESS"), false);
+    await runUpstreamParentSteerScenario(fixture);
   } else if (scenario === "upstream-parent") {
     const send = controlledGate();
     const received = controlledGate();
@@ -838,46 +694,7 @@ try {
     assert.equal(classifications.length, 4, "only the original parent and leaf assignments are routed; notification continuation reuses their identities");
     assert.equal(session.messages.some((message) => message.role === "custom" && message.customType === "agent-message"), false);
   } else if (scenario === "sender-wire" || scenario === "sender-context") {
-    // The model of sub_01 executes native write to sub_02, rather than the root
-    // impersonating a child with a dummy execution context.
-    const routing = controlledGate();
-    const receiverExit = controlledGate();
-    controls.classify = (_, options) => abortable(routing, options.signal);
-    controls.chat = async (request) => {
-      const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
-      if (request.text.includes("SOCKET_SENDER_ACTOR") && !wrote) {
-        return toolAnswer("write", { path: getAgentSocketPath("sub_02", sessionSocketDir), content: "PEER_SOURCE_MARKER" }, "peer-write");
-      }
-      if (request.text.includes("SOCKET_RECEIVER_ACTOR")) await receiverExit.promise;
-      return textAnswer("actor done");
-    };
-    const [sender, receiver] = (await call("subagent_create", { tasks: [
-      { task: "SOCKET_SENDER_ACTOR send to peer" }, { task: "SOCKET_RECEIVER_ACTOR receive from peer" },
-    ] })).details.items;
-    const endpoint = process._getActiveHandles().find((handle) => handle instanceof net.Server && handle.address() === receiver.socket);
-    assert.ok(endpoint);
-    const received = deferred();
-    endpoint.once("connection", (socket) => {
-      let buffer = "";
-      socket.on("data", (chunk) => {
-        buffer += chunk.toString("utf8");
-        if (buffer.includes("\n")) received.resolve(JSON.parse(buffer.split("\n")[0]));
-      });
-    });
-    routing.resolve();
-    const frame = await received.promise;
-    receiverExit.resolve();
-    await Promise.all([stopped(sender.id), stopped(receiver.id)]);
-    if (scenario === "sender-wire") {
-      assert.equal(frame.content, "PEER_SOURCE_MARKER");
-      assert.equal(frame.from, sender.id, "the outbound NDJSON must identify the actual native write owner");
-    } else {
-      const receiverRequests = chats.filter((request) => request.text.includes("SOCKET_RECEIVER_ACTOR"));
-      const text = receiverRequests.at(-1).text;
-      assert.match(text, /PEER_SOURCE_MARKER/);
-      assert.ok(text.includes(`[Message from ${sender.id}]`), "the listener must not relabel a child sender as Main");
-      assert.equal(text.includes("[Message from Main]"), false);
-    }
+    await runPeerSenderScenario(fixture);
   } else if (scenario === "sender-reserved") {
     controls.chat = () => textAnswer("done");
     const actor = await create("Managed endpoint treats JSON as message text");
@@ -947,7 +764,7 @@ try {
     };
     const first = await create("One original assignment");
     await waitFor(() => chats.length === 1, { label: "first native stream" });
-    await writeForDelivery(first.socket, "Steering marker exactly once");
+    await deliverToActor(fixture, first, "Steering marker exactly once");
     exit.resolve();
     await waitFor(() => chats.length === 2, { label: "steered native stream" });
     const terminal = await stopped(first.id);
@@ -1022,8 +839,8 @@ try {
         chats.filter((request) => request.text.includes("Child assignment")).length === 2 && found;
     }, { label: "depth-2 children run alongside four active parents" });
     assert.deepEqual(children.map((child) => child.id), ["sub_01_01", "sub_01_02"]);
-    await assert.rejects(call("msg_write", { path: getBroadcastSocketPath("sub_01", sessionSocketDir), content: "OVERSTEP" }), (err) => err.message.includes("invalid_target"));
-    await writeForDelivery(getBroadcastSocketPath("Main", sessionSocketDir), "ROOT_BROADCAST_ONLY");
+    await assert.rejects(call("msg_write", { path: getBroadcastSocketPath("sub_01", sessionSocketDir), content: "OVERSTEP" }), (err) => isSocketWriteError(err, "invalid_target"));
+    await deliverBroadcast(fixture, getBroadcastSocketPath("Main", sessionSocketDir), "ROOT_BROADCAST_ONLY", 4);
     exit.resolve();
     await Promise.all([...roots, ...children].map((actor) => stopped(actor.id)));
     const childRequests = chats.filter((request) => request.text.includes("Child assignment"));
@@ -1071,7 +888,7 @@ try {
     assert.equal((await item(first.id)).status, "stopping");
     try {
       if (scenario === "stopping") {
-        await assert.rejects(call("msg_write", { path: first.socket, content: "must not be accepted" }), (err) => err.code === "agent_stopping");
+        await assert.rejects(call("msg_write", { path: first.socket, content: "must not be accepted" }), (err) => isStoppingRefusal(first.id, err));
       }
     } finally {
       exit.resolve();
@@ -1131,15 +948,7 @@ try {
     for (let i = 0; i < 5; i++) { await new Promise((resolve) => setImmediate(resolve)); globalThis.gc(); }
     assert.ok(childManagers.every((reference) => reference.deref() === undefined), "reopened and temporary reader managers must be collectible too");
   } else if (scenario === "restore-invalid") {
-    sessionManager.appendCustomEntry("subagent-job", { v: 2, jobId: "sub_99", agentId: "sub_99",
-      actor: { name: "corrupt", parentAgentId: null, depth: 1 }, createdBy: "unknown-sender",
-      spec: { task: "Must not execute" }, continuedFromJobId: null });
-    await session.reload();
-    await assert.rejects(call("subagent_list", {}), { code: "storage_read_failed" });
-    assert.equal(sessionManager.getBranch().filter((entry) => entry.customType === "subagent-job-end" && entry.data.jobId === "sub_99").length, 0,
-      "a rejected registry must not append recovery events");
-    assert.equal(chats.length, 0);
-    assert.equal(classifications.length, 0);
+    await runRestoreInvalidScenario(fixture);
   } else if (scenario === "memory-only") {
     assert.equal(durable, false);
     const actor = await create("PURE_MEMORY_ASSIGNMENT");
@@ -1174,8 +983,6 @@ try {
   for (const gate of gates) gate.resolve();
   await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
   session.dispose();
-  for (const socket of externalConnections) socket.destroy();
-  await Promise.all(externalServers.map((server) => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))));
   assert.deepEqual(extensionErrors, [], "shutdown errors must not be silently swallowed by the test");
   assert.deepEqual(networkAttempts, [], "the entire integration scenario must be offline");
   const sockets = await fsp.readdir(socketDir, { recursive: true }).catch((err) => {
