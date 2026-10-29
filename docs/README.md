@@ -2,7 +2,7 @@
 
 当前目标、接口要求与架构说明留在本目录。代码审查、测试审查和问题调查放在 `reviews/`。过时设计放在 `archive/`。
 
-当前 Subagent 调用链由 TS 应用模块装配，MJS 入口仅重导出；不是全仓 TS 迁移。宿主消息直接返回 Runtime 回执，外部 Socket 保留。存储 v2、旧历史迁移、备份和迁移工具按既定决定保留。提示词文件见 [`prompts/`](../prompts/README.md)。默认回归使用真实 SDK 与本地模拟模型；此前真实在线样本不代替新调用链的提供方验收。未验证项见[已知问题](known-issues.md)。
+当前 Subagent 调用链由 TS 应用模块装配，旧 MJS 重导出入口已删除；不是全仓 TS 迁移。宿主消息直接返回 Runtime 回执，外部 Socket 保留。存储 v2、旧历史迁移、备份和迁移工具按既定决定保留。提示词文件见 [`prompts/`](../prompts/README.md)。默认回归使用真实 SDK 与本地模拟模型；此前真实在线样本不代替新调用链的提供方验收。未验证项见[已知问题](known-issues.md)。
 
 ## 当前入口
 
@@ -13,7 +13,7 @@
 | [当前架构](architecture.md) | 状态所有权、依赖方向、模块职责与已确认行为 |
 | [存储 v2 与离线迁移](subagent-storage.md) | 当前事件字段、文件归属、历史视图、恢复和迁移边界 |
 | [提示词正文](../prompts/README.md) | 提示词文件清单、数据装配与修改生效方式 |
-| [能力提示词记忆规范](capability-prompt-memory.md) | 分支规范条目持久化、嵌套调用保留、旧记录回退与动态权限过滤 |
+| [能力提示词记忆规范](capability-prompt-memory.md) | 分支规范条目持久化、嵌套调用保留与动态权限过滤 |
 | [已知问题与待定事项](known-issues.md) | 问题状态与调查记录入口 |
 | [文档写作约定](writing-guide.md) | 语言规则、事实分类和术语 |
 
@@ -21,6 +21,7 @@
 
 - 运行环境：Node.js `>=22.19.0`。
 - SDK 依赖：`@earendil-works/pi-agent-core`、`@earendil-works/pi-ai`、`@earendil-works/pi-codemode` 和 `@earendil-works/pi-coding-agent` 均锁定为 `1.4.0`。`undici` 单独覆盖为 `8.12.2`，修复锁定 SDK 的传递依赖告警，不升级或降级 SDK。
+- 本地能力检索：复用 `minisearch@7.2.0` 做 BM25 排序，使用库默认切词；精确引用独立查找，不做手写语义分类。详见[当前架构](architecture.md#capability)。
 - 安装与校验：使用 `npm ci` 安装固定依赖，使用 `npm run check` 执行类型检查（`tsc --noEmit`）与测试套件；已有 Windows / PowerShell 平台用例在 Linux 跳过。
 - 扩展装配：`extensions/harness.ts` 配套注册 Subagent、Capability 和原生 MCP 适配器。该入口禁止原生目录发现，保留选中工具的执行；Shell Preflight（`extensions/shell-preflight.mjs`）保持独立配置与使用。
 
@@ -47,7 +48,7 @@ Work 的代码、测试、演示和设计集中在 [`experiments/work/`](../expe
 
 ## 能力发现记忆说明
 
-`capability-prompt-memory.md` 规范当前能力提示词记忆机制。该机制以分支上的 `capability-discovery` 自定义条目为规范记录（通过 `pi.appendEntry` 写入）。它保留嵌套工具调用结果，对缺少规范记录的历史会话回退到 `toolResult`，并在每次请求时动态校验工具权限。
+`capability-prompt-memory.md` 规范当前能力提示词记忆机制。该机制以分支上的 `capability-discovery` 自定义条目为规范记录（通过 `pi.appendEntry` 写入）。规范条目是唯一记忆来源。它保留嵌套工具调用结果，并在每次请求时动态校验工具权限，不读取 `toolResult.details` 作为回退。
 
 ## 归档规则
 

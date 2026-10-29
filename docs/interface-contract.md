@@ -80,9 +80,9 @@ Capability 应避免让 Main 接触与当前工作无关的资源目录和检索
 
 **Capability 在当前会话分支内只增不减。** 后续发现补充已有能力，不自动移除先前选中的资源或停用已加载工具。
 
-成功发现的资源通过 `pi.appendEntry` 写入会话分支规范记录（`src/capability/discovery-record.ts` 中的 `capability-discovery` 条目）。嵌套工具调用（如 `ctx.executeTool("capability", ...)`）同样写入规范条目，解决外层工具丢弃内部 `details` 导致记忆丢失的问题。对无同调用规范记录的旧会话保留 `toolResult` 回退。
+成功发现的资源通过 `pi.appendEntry` 写入会话分支规范记录（`src/capability/discovery-record.ts` 中的 `capability-discovery` 条目）。嵌套工具调用（如 `ctx.executeTool("capability", ...)`）同样写入规范条目，解决外层工具丢弃内部 `details` 导致记忆丢失的问题。规范条目是唯一记忆来源，不从 `toolResult.details` 恢复发现记忆。
 
-发现记录不重复保存参数 schema。每次请求投影时（`src/capability-prompt.mjs`）依据当前工具注册表动态校验权限，已注册但未允许的工具不暴露。
+发现记录不重复保存参数 schema。每次请求投影时（`src/capability/prompt.ts`）依据当前工具注册表动态校验权限，已注册但未允许的工具不暴露。
 
 `compact` 压缩对话，不应丢失已发现资源、已加载工具及其可调用接口。分支规范条目持久保存在会话历史中，提示词投影在请求前自动重建 `<capabilities>` 系统段落，恢复已有能力不要求重新调用 Capability。原生压缩插件问题交由外部处理，但分支上的自定义条目投影不受会话压缩影响。
 
@@ -98,7 +98,8 @@ API 协调应同时保证资源指引、工具状态与供应商接口声明一�
 - 调用等待内部检索结束，再返回结果。
 - 本地结果可包含资源引用、用途说明、可用状态和共同指引。
 - 选中的已注册工具可被激活；接口通过返回值或原生声明提供，不通过资源 URI 读取。
-- Skill 返回绝对入口路径；Main 使用原生 `read` 按需读取文件，不提供 `skill://` 读取协议。
+- Skill 返回元数据和绝对入口路径；Main 使用原生 `read` 按需读取文件，不提供 `skill://` 读取协议。宿主不自动提取约束、绑定或执行步骤。
+- 内部本地检索使用 MiniSearch 的 BM25 排序和默认切词，精确引用独立查找；不提供手写模糊兜底或语言语义推断。实现边界见[当前架构](architecture.md#capability)。
 - 当前不搜索远端，也不返回远端候选。
 - Capability 与 Subagent 配套装配，内部检索不检查公开 Subagent 工具是否已注册或激活。
 

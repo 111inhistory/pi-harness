@@ -98,13 +98,19 @@ Capability 通过共享执行句柄创建内部 SDK 会话，不要求公开 Sub
 
 内部搜索 schema、参数说明和执行都只允许 `local`。远端审批未实现前不搜索远端、不安装候选、不把远端未搜索解释成不存在资源。
 
+本地检索由 `src/capability/broker.ts` 实现，复用 `minisearch@7.2.0`。排序使用标准 BM25（设置 MiniSearch 的 `d=0`），不自行实现评分公式。切词和小写处理使用库默认行为；不附加 CJK 分词、停用词、前缀匹配或模糊兜底。连续中文不做语言分词，不保证中文子片段、同义词或跨语言召回。
+
+精确工具／命名空间／MCP 引用和 Skill 入口路径独立查找，不参与 BM25 排序。工具按成员建索引，按完整命名空间或 MCP 组返回，组分数取成员最高分；候选上限按组计数。Skill 先按名称和描述召回，最多打开 6 个候选文件，将每篇正文的前 60,000 字符加入索引后用同一检索库重排，不扫描整个 Skill 目录的正文。字符截断限制索引文本，不是文件读取的字节上限。
+
+宿主不从 Skill 文本猜测禁止事项、前置条件、静默失败、绑定关系或执行优先级，也不按未命中词项推断能力缺口。Skill 返回元数据和绝对入口路径，由 Agent 使用原生 `read` 阅读并理解正文。`src/capability/result.ts` 移除模型可见结果中的排序诊断；`src/capability/prompt.ts` 投影分支发现记忆。
+
 工具资格按设计只增不减，角色排除仍优先。每次同步目录投影只解析一次资格视图；不把快照跨请求或工具调用缓存。资格、注册和激活是三件不同的事。
 
 发现记录按当前分支保存，不重复存储参数 schema；请求投影依据当前声明提供接口。外部压缩插件的兼容逻辑尚未删减，不能把共享声明投影和执行隔离一并当作无用兼容删除。
 
 ## 代码与未迁移边界
 
-`extensions/subagent.mjs` 及原 Runtime／Socket／平台 MJS 入口只重导出 TS 实现。当前 Subagent 装配在 `src/subagent/extension.ts`，业务模块见上表。
+原 Subagent／Runtime／Socket／平台 MJS 重导出入口已删除。`extensions/harness.ts` 直接装配 `src/subagent/extension.ts`，业务模块见上表。
 
 `subagent-storage.mjs`、`subagent-routing.mjs`、`subagent-view.mjs`、`job-budget.mjs`、继承捕获及部分 Capability 实现仍是 JavaScript。它们不因调用方改为 TS 就自动获得严格类型保证；跨边界输入在 TS 消费端校验。不是全仓 TS 迁移。
 

@@ -3,12 +3,12 @@
 Capability discovery is lazy, but selected capabilities must survive session
 compaction and nested tool calls.
 
-`src/capability-prompt.mjs` projects a native `<capabilities>` system
+`src/capability/prompt.ts` projects a native `<capabilities>` system
 section on the current session branch. The primary source of truth is the
 canonical `capability-discovery` custom entry appended to the branch through
 `pi.appendEntry` (defined in `src/capability/discovery-record.ts`).
 
-## Durable branch storage and fallback
+## Durable branch storage
 
 Every successful or partial discovery writes one `capability-discovery` entry
 to the session branch:
@@ -16,18 +16,19 @@ to the session branch:
 - Nested calls: When an outer tool calls `ctx.executeTool("capability", ...)`,
   the inner discovery record writes directly to the branch. The record survives
   even when the calling outer tool drops or summarizes the inner `details`.
-- Legacy fallback: For older sessions recorded before canonical entries existed,
-  the projection falls back to `toolResult` message `details`.
-- Deduplication: A canonical record supersedes its matching `toolCallId`. The
-  coordinator never counts the same discovery twice.
+- Canonical entries are the only memory source. The projection does not read
+  `toolResult.details` or reconstruct memory from older result messages.
+- Visible results anchor updates by `toolCallId`. Discoveries outside visible
+  context fold into the leading checkpoint.
 
 ## Contents
 
 - Tools and MCP groups: refs, names, descriptions, exposure, shared instructions,
   and selected group members. Native declarations or selected result metadata
   provide argument schemas; branch records do not duplicate schemas.
-- Skills: absolute entry paths, names, descriptions, caveats, and associations.
-  A Skill ref is its entry path. The model uses native file read on that path.
+- Skills: absolute entry paths, names, and descriptions. The host does not infer
+  constraints or associations from Skill prose. A Skill ref is its entry path;
+  the model uses native file read to understand the guidance.
   No resource protocol router or read/write override is installed.
 - Shared guidance: retained across discoveries, even when a selection adds no tools.
 - Remote coverage: discovery searches local resources only.
