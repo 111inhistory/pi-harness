@@ -42,7 +42,6 @@ import type {
   NativeHandoffResult,
   NativeJobRunnerDeps,
   NativeListenerPort,
-  NativeListenerRequest,
   NativeOpenedSession,
   NativeQueueAgent,
   NativeRetainedActor,
@@ -485,11 +484,7 @@ class RecordingRouting implements NativeRoutingPort {
 }
 
 class RecordingListeners implements NativeListenerPort {
-  readonly calls: NativeListenerRequest[] = [];
-
-  async restore(input: NativeListenerRequest): Promise<void> {
-    this.calls.push(input);
-  }
+  async sync(): Promise<void> {}
 }
 
 class RecordingSessionFactory implements NativeSessionFactory {
@@ -907,7 +902,6 @@ test("buffered input becomes one more turn of the same Job without a second loop
   // The ended Job refuses further input instead of accepting it into a disposed session.
   const late = await h.runner.handoff("sub_01", { from: "sub_02", content: "too late" });
   assert.deepEqual(late, { accepted: false, reason: "job_closed" });
-  assert.equal(h.runner.done("sub_01"), null);
 });
 
 test("independent peer events stay one native entry each and share one control turn", async () => {
@@ -1043,8 +1037,8 @@ test("cancelling aborts the owned session, refuses late input and disposes once"
   const session = h.factory.sessions[0];
   assert.ok(session !== undefined);
 
-  assert.equal(h.runner.cancel("sub_01"), true);
-  assert.equal(h.runner.cancel("sub_01"), true);
+  started.cancel();
+  started.cancel();
   assert.deepEqual(
     await h.runner.handoff("sub_01", { from: "sub_02", content: "late" }),
     { accepted: false, reason: "job_closed" },

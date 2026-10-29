@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createSubagentRuntime, SubagentError } from "../src/subagent-runtime.mjs";
+import { createSubagentRuntime, SubagentError } from "../src/subagent/runtime.ts";
 import { foldEvents } from "../src/subagent-storage.mjs";
-import { createSocketAwareWriteOperations, getAgentSocketPath, deriveSessionUid } from "../src/subagent-socket.mjs";
+import { deriveSessionUid } from "../src/ipc/socket.ts";
 import { deferred } from "../test-support/async.mjs";
 
 function harness(t, options = {}) {
@@ -44,30 +44,31 @@ const errorCode = (code) => (err) => err instanceof SubagentError && err.code ==
 test("public list filters actors without exposing Budget or redundant identity fields", async (t) => {
   const { runtime, started } = harness(t);
   const [first, second] = runtime.create({ tasks: [task("running"), task("sibling")] }).items;
-  const before = runtime.listDetailed();
-  assert.deepEqual(before.items.map((item) => item.status), ["running", "running"]);
-  const item = before.items[0];
+  const before = runtime.listDetailed({}, { callerId: "Main" });
+  assert.deepEqual(before.items.map((item) => item.status), ["running", "running", "running"]);
+  assert.equal(before.items[0].id, "Main");
+  const item = before.items[1];
   assert.equal("depth" in item, false);
   assert.equal("name" in item, false);
   assert.equal("parentSocket" in item, false);
   assert.equal("budget" in item, false);
   assert.equal(item.parentId, "Main");
   assert.equal(started[0].request.budget.snapshot().modelCalls, 0);
-  const filtered = runtime.listDetailed({ id: first.id }).items;
+  const filtered = runtime.listDetailed({ id: first.id }, { callerId: "Main" }).items;
   assert.equal(filtered.length, 1);
   assert.equal(filtered[0].id, first.id);
   assert.equal(filtered[0].socket, item.socket);
   assert.deepEqual(filtered[0].history, item.history);
   assert.equal("budget" in filtered[0], false);
-  assert.deepEqual(runtime.listDetailed({ id: "missing" }), { items: [] });
+  assert.deepEqual(runtime.listDetailed({ id: "missing" }, { callerId: "Main" }), { items: [] });
   assert.equal(runtime.stop(second.id).status, "stopping");
   started[1].finish();
   await runtime.jobDone(second.id);
   assert.equal(runtime.stop(first.id).status, "stopping");
-  assert.equal(runtime.listDetailed({ id: first.id }).items[0].status, "stopping");
+  assert.equal(runtime.listDetailed({ id: first.id }, { callerId: "Main" }).items[0].status, "stopping");
   started[0].finish();
   await runtime.jobDone(first.id);
-  const final = runtime.listDetailed({ id: first.id }).items[0];
+  const final = runtime.listDetailed({ id: first.id }, { callerId: "Main" }).items[0];
   assert.equal(final.status, "stopped");
   assert.equal(final.socket, first.socket);
   assert.deepEqual(final.history, first.history);
@@ -119,12 +120,21 @@ test("reviving a stopped actor requires an available active-child slot", async (
   await runtime.jobDone(stopped.id);
 
   const active = runtime.create({ tasks: Array.from({ length: 4 }, () => ({ task: "Remain active" })) }).items;
-  assert.throws(() => runtime.assertMessageAdmission(stopped.id), errorCode("child_limit_exceeded"));
+  await assert.rejects(
+    runtime.sendMessage({ from: "Main", to: stopped.id, content: "Resume now" }),
+    errorCode("child_limit_exceeded"),
+  );
   runtime.stop(active[0].id);
-  assert.throws(() => runtime.assertMessageAdmission(stopped.id), errorCode("child_limit_exceeded"));
+  // A stopping Actor still holds its slot until its native run exits.
+  await assert.rejects(
+    runtime.sendMessage({ from: "Main", to: stopped.id, content: "Resume now" }),
+    errorCode("child_limit_exceeded"),
+  );
   started.find((handle) => handle.request.agentId === active[0].id).finish();
   await runtime.jobDone(active[0].id);
-  runtime.assertMessageAdmission(stopped.id);
+  const receipt = await runtime.sendMessage({ from: "Main", to: stopped.id, content: "Resume now" });
+  assert.equal(receipt.ok, true);
+  assert.equal(receipt.to, stopped.id);
 });
 
 test("scoped stopped ordering survives registry restoration", async (t) => {
@@ -144,50 +154,6 @@ test("scoped stopped ordering survives registry restoration", async (t) => {
   const { runtime: interrupted } = harness(t);
   interrupted.restoreState(state());
   assert.deepEqual(interrupted.listDetailed({}, { callerId: "Main" }).items.map((item) => item.id), ["Main", first[3].id, fifth.id, first[0].id, first[1].id]);
-});
-
-test("socket write preflight rejects stopping before attempting to connect", async (t) => {
-  const { runtime } = harness(t);
-  const { id } = runtime.create({ tasks: [task("stopping")] }).items[0];
-  runtime.stop(id);
-  const checked = [];
-  const operations = createSocketAwareWriteOperations({ resolveEndpoint: async () => ({ isManaged: true, targetId: id }), onCheckStatus(target) {
-    checked.push(target);
-    return runtime.listDetailed({ id: target }).items[0].status;
-  } });
-  await assert.rejects(operations.writeFile(getAgentSocketPath(id, "/not-a-real-socket-dir"), '{"content":"too early"}'), (err) => err.code === "agent_stopping");
-  assert.deepEqual(checked, [id]);
-});
-
-test("terminal notifications are emitted once for completion, cancellation and failure", async (t) => {
-  const delivered = [];
-  const { runtime, started } = harness(t, { deliverToMain: (msg) => delivered.push(msg) });
-  const [normal, stopped] = runtime.create({ tasks: [task("normal"), task("stopped")] }).items;
-  runtime.stop(stopped.id);
-  started[0].finish("success");
-  started[1].finish("cancelled");
-  await Promise.all([runtime.jobDone(normal.id), runtime.jobDone(stopped.id)]);
-  assert.deepEqual(delivered.map((entry) => entry.status), ["completed", "cancelled"]);
-  assert.deepEqual(delivered.map((entry) => entry.jobId), [normal.id, stopped.id]);
-  assert.deepEqual(delivered.map((entry) => entry.round), [1, 1]);
-  assert.deepEqual(delivered.map((entry) => entry.from), [normal.id, stopped.id]);
-  assert.equal(delivered[0].type, "notification");
-  assert.equal(delivered[0].error, null);
-  const failed = runtime.create({ tasks: [task("failure")] }).items[0];
-  started[2].fail(new Error("provider failed"));
-  assert.equal((await runtime.jobDone(failed.id)).status, "failed");
-  assert.equal(delivered.length, 3);
-  assert.equal(delivered[2].type, "notification");
-  assert.equal(delivered[2].subagentId, failed.id);
-  assert.equal(delivered[2].status, "failed");
-  assert.equal(delivered[2].jobId, failed.id);
-  assert.equal(delivered[2].round, 1);
-  assert.equal(delivered[2].history, null, "a memory-only host has no derived history files");
-  assert.match(delivered[2].content, /provider failed/);
-  runtime.stop(failed.id);
-  runtime.listDetailed();
-  await runtime.jobDone(failed.id);
-  assert.equal(delivered.length, 3, "polls and repeated stop must not resend a terminal notification");
 });
 
 test("session namespaces remain stable on reload and distinct between sessions", () => {

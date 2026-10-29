@@ -1,4 +1,4 @@
-import { promptText } from '../prompt-text.mjs';
+import { promptString, promptText } from '../prompt-text.mjs';
 
 const parsed: unknown = JSON.parse(promptText('subagent-turns.json'));
 if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new TypeError('subagent-turns.json must contain an object.');
@@ -10,7 +10,7 @@ function field(name: string): string {
 }
 const turns = { batchContext: field('batchContext'), task: field('task'), messageFrom: field('messageFrom'),
   originalAssignment: field('originalAssignment'), restatement: field('restatement'), control: field('control') };
-const context: string = promptText('subagent-context.md');
+const context: string = promptString('subagent-turns.json', 'context');
 
 /** Insert protocol values literally, not as replacement patterns. */
 export function childContext(agentId: string, parentId: string, parentSocket: string): string {

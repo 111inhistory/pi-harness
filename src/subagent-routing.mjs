@@ -19,7 +19,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { composeAssignment } from "./subagent-prompt.mjs";
+import { composeAssignment } from "./subagent/prompt.ts";
 import { isRetryableAssistantError, retryDelayMs } from "@earendil-works/pi-ai";
 import {
   RoutingConfigError,
@@ -53,8 +53,7 @@ function invalidConfigError(message) {
 
 /**
  * Validate the parsed routing config inline. Unknown fields are ignored, but
- * each candidate carries its final thinking level directly. Legacy
- * role.thinking is tolerated but never used to choose or clamp it.
+ * each candidate carries its final thinking level directly.
  */
 function validateConfig(value) {
   try {

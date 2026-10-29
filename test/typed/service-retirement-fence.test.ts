@@ -19,11 +19,10 @@ test('retirement deadline reports failure but does not release native resource f
   const first = await lifecycle.activate(async () => ({ active: true }));
   await assert.rejects(lifecycle.retire(), ServiceRetirementTimeoutError);
   assert.equal(lifecycle.retiring, true);
-  assert.ok(lifecycle.retirementFailure instanceof ServiceRetirementTimeoutError);
   let created = false;
   await assert.rejects(lifecycle.activate(async () => { created = true; return { active: true }; }), ServiceRetirementTimeoutError);
   assert.equal(created, false, 'replacement cannot reopen a still-owned child file');
-  await assert.rejects(lifecycle.retire(first), ServiceRetirementTimeoutError);
+  await assert.rejects(lifecycle.retire(), ServiceRetirementTimeoutError);
   nativeExit.resolve();
   await drain();
   assert.equal(lifecycle.retiring, false);

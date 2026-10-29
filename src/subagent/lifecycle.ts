@@ -109,9 +109,8 @@ export interface TerminalNotification {
 /**
  * Build the host-owned terminal envelope.
  *
- * `from`, `jobId` and `round` are what let one delivery coordinator merge an
- * undelivered message with the terminal event of the same sender and execution
- * round, without inventing a second wake or cancel state.
+ * `from`, `jobId` and `round` identify the sender and execution round of this
+ * independent notification.
  */
 export function terminalNotification(input: TerminalNotificationInput): TerminalNotification {
   const notification: TerminalNotification = {
@@ -129,12 +128,7 @@ export function terminalNotification(input: TerminalNotificationInput): Terminal
   return notification;
 }
 
-export interface RetirableService {
-  active?: boolean;
-  closed?: boolean;
-}
-
-export interface ServiceLifecycleAdapter<TService extends RetirableService> {
+export interface ServiceLifecycleAdapter<TService> {
   /** Must resolve only after the native resources really stopped. */
   retire(service: TService): void | Promise<void>;
   retirementTimeoutMs?: number;
@@ -150,10 +144,8 @@ export class ServiceRetirementTimeoutError extends Error {
   }
 }
 
-interface Retirement<TService> {
-  readonly service: TService;
+interface Retirement {
   readonly report: Promise<void>;
-  failure: unknown;
 }
 
 /**
@@ -164,9 +156,9 @@ interface Retirement<TService> {
  * flight, but identity checks keep a stale generation from clearing a newer
  * retirement record.
  */
-export class ServiceLifecycle<TService extends RetirableService> {
+export class ServiceLifecycle<TService> {
   #service: TService | null = null;
-  #retirement: Retirement<TService> | null = null;
+  #retirement: Retirement | null = null;
   #activation: Promise<TService> | null = null;
   #generation = 0;
   /** Bumped by every explicit retire; an older activation may not publish. */
@@ -186,24 +178,8 @@ export class ServiceLifecycle<TService extends RetirableService> {
     return this.#service;
   }
 
-  get generation(): number {
-    return this.#generation;
-  }
-
   get retiring(): boolean {
     return this.#retirement !== null;
-  }
-
-  /** A failed/timed-out retire stays fenced until real quiescence is known. */
-  get retirementFailure(): unknown {
-    return this.#retirement?.failure ?? null;
-  }
-
-  /** Current service, or a new one after retiring the previous generation. */
-  async current(create: (generation: number) => Promise<TService>): Promise<TService> {
-    const service = this.#service;
-    if (service !== null && service.active !== false) return service;
-    return this.activate(create);
   }
 
   /**
@@ -247,22 +223,8 @@ export class ServiceLifecycle<TService extends RetirableService> {
     return tracked;
   }
 
-  /**
-   * Retire the current generation, or only `target` when it is still current.
-   *
-   * Passing a service is how a callback proves it speaks for the generation it
-   * captured: a stale callback cannot retire its successor.
-   *
-   * A retirement without a target invalidates any in-flight activation and
-   * waits for its creation cleanup, then retires a service that was published
-   * just before the call. A later activation is allowed to build a new service.
-   */
-  retire(target?: TService): Promise<void> {
-    if (target !== undefined) {
-      if (target === this.#service) return this.#retireCurrent();
-      return target === this.#retirement?.service ? this.#retirement.report : Promise.resolve();
-    }
-
+  /** Invalidate pending activation, then retire the current service and its resources. */
+  retire(): Promise<void> {
     this.#invalidation += 1;
     const activation = this.#activation;
     if (activation !== null) {
@@ -295,11 +257,10 @@ export class ServiceLifecycle<TService extends RetirableService> {
       resolveReport = resolve;
       rejectReport = reject;
     });
-    const retirement: Retirement<TService> = { service, report, failure: null };
+    const retirement: Retirement = { report };
     this.#retirement = retirement;
     const timer = setTimeout(() => {
       const error = new ServiceRetirementTimeoutError(generation);
-      retirement.failure = error;
       rejectReport(error);
     }, this.#retirementTimeoutMs);
     // Deferring the adapter also captures a synchronous throw. Both completion
@@ -310,7 +271,6 @@ export class ServiceLifecycle<TService extends RetirableService> {
       resolveReport();
     }, (error: unknown) => {
       clearTimeout(timer);
-      retirement.failure = error;
       // Rejection does not prove native exit. Keep this generation fenced.
       rejectReport(error);
     });

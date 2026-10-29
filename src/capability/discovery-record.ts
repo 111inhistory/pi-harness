@@ -5,20 +5,20 @@
  * That entry is the only persistent source of truth for discovered resources,
  * so a nested `ctx.executeTool("capability", ...)` call keeps its memory even
  * when the outer tool drops the inner result details. Pi custom entries are not
- * part of the model context; the request projection in `../capability-prompt.mjs`
+ * part of the model context; the request projection in `./prompt.ts`
  * turns these records into native `<capabilities>` system sections on every
  * request, after checking the *current* tool permissions.
  *
  * The record never grants execution authority and never stores remote
- * installation candidates: remote search stays disabled until an approval
- * receiver exists (D4), so `remote` is always empty and the stored coverage says
- * remote was not searched. Diagnostics (ranking, warnings) are not persisted.
+ * installation candidates: discovery is local-only, so `remote` is always empty
+ * and the stored coverage says remote was not searched. Diagnostics (ranking,
+ * warnings) are not persisted.
  */
 
 /** `customType` of the branch entry holding one successful discovery. */
 export const CAPABILITY_DISCOVERY_RECORD = "capability-discovery";
 
-/** Bump only together with a reader that still understands older entries. */
+/** Only this record version is read. */
 export const CAPABILITY_DISCOVERY_RECORD_VERSION = 1;
 
 export type DiscoveryStatus = "ok" | "partial";
@@ -40,8 +40,6 @@ export interface CapabilityHit {
   readonly description?: string;
   readonly instructions?: string;
   readonly filePath?: string;
-  readonly caveats?: readonly unknown[];
-  readonly bindsTo?: readonly string[];
   readonly exposure?: string;
   readonly kind?: string;
   readonly status?: string;
@@ -92,8 +90,6 @@ const HIT_FIELDS = [
   "description",
   "instructions",
   "filePath",
-  "caveats",
-  "bindsTo",
   "exposure",
   "kind",
   "status",

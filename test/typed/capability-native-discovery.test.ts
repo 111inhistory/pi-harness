@@ -15,7 +15,7 @@ type McpTransport = ReturnType<McpTransportFactory>;
 type JsonRpcMessage = Parameters<Parameters<McpTransport['onMessage']>[0]>[0];
 import capabilityExtension from '../../extensions/capability.mjs';
 import { installCapabilityMcp } from '../../src/capability/native-discovery.ts';
-import { setCapabilityParent } from '../../src/capability-scope.mjs';
+import { setCapabilityParent } from '../../src/capability/scope.ts';
 import { waitFor } from '../../test-support/async.mjs';
 
 for (const nativeFirst of [false, true]) {

@@ -5,7 +5,7 @@
  * important properties are: one ancestor resolution per operation, O(1) name
  * checks afterwards, append-only learned qualification, denials that always
  * win (including after an earlier grant), fresh views after mid-turn growth,
- * detached snapshots, and the root/no-parent behavior of the compatibility
+ * detached snapshots, and the root/no-parent behavior of the single-name
  * predicate.
  */
 
@@ -135,7 +135,7 @@ test("eligibility growth is visible only to a fresh view, never to a retained on
   assert.equal(createCapabilityScopeView(leaf).allows("other"), true, "the resolver is re-read per operation");
 });
 
-test("one view enumerates each ancestor once; per-tool compatibility repeats the ancestor chain", () => {
+test("one view enumerates each ancestor once; single-name checks repeat the ancestor chain", () => {
   const names = Array.from({ length: 40 }, (_, index) => `tool_${index}`);
   const tools = names.map((name) => tool(name));
   const root = catalog(...tools);
@@ -163,9 +163,9 @@ test("one view enumerates each ancestor once; per-tool compatibility repeats the
   leaf.calls.count = 0;
   for (const name of names) assert.equal(capabilityAllowsTool(leaf, name), true);
   const perToolCalls = root.calls.count + middle.calls.count + leaf.calls.count;
-  assert.equal(perToolCalls, names.length * 2, "the compatibility path repeats the parent chain per name");
+  assert.equal(perToolCalls, names.length * 2, "the single-name path repeats the parent chain per name");
   assert.ok(perToolCalls > viewCalls);
-  assert.equal(leaf.calls.count, 0, "the compatibility path does not enumerate the queried scope");
+  assert.equal(leaf.calls.count, 0, "the single-name path does not enumerate the queried scope");
 });
 
 test("views and available sets are detached snapshots; retaining them cannot change authority", () => {

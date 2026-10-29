@@ -9,7 +9,7 @@ import test from "node:test";
 import {
   getAgentSocketPath,
   getBroadcastSocketPath,
-  writeSocketOneWay,
+  writeSocket,
 } from "../../src/ipc/socket.ts";
 import { AgentListeners } from "../../src/subagent/listeners.ts";
 import {
@@ -128,7 +128,7 @@ test("missing or invalid senders are rejected with onError and never reach runti
     JSON.stringify({ from: "   ", content: "blank sender" }),
     JSON.stringify({ from: "not-an-actor", content: "invalid sender" }),
   ].join("\n") + "\n";
-  await assert.rejects(writeSocketOneWay(getAgentSocketPath("sub_01", root), frames), { code: 'invalid_message' });
+  await assert.rejects(writeSocket(getAgentSocketPath("sub_01", root), frames), { code: 'invalid_message' });
   await waitFor(() => errors.length === 3, "invalid sender reports");
 
   assert.deepEqual(errors.map((error) => errorCode(error)), [
@@ -165,7 +165,7 @@ test("one broadcast frame invokes the domain broadcast once and reports partial 
   t.after(() => listeners.close());
   await listeners.sync();
 
-  await assert.rejects(writeSocketOneWay(
+  await assert.rejects(writeSocket(
     getBroadcastSocketPath("Main", root),
     JSON.stringify({ from: "Main", content: "family status" }),
   ), { code: 'broadcast_partial_failure' });
@@ -200,7 +200,7 @@ test("close rejects new traffic and releases every registered socket", { skip: !
   for (const address of [agent, broadcast]) {
     await assert.rejects(fsp.stat(address), { code: "ENOENT" });
     await assert.rejects(
-      writeSocketOneWay(address, { from: "Main", content: "after close" }),
+      writeSocket(address, { from: "Main", content: "after close" }),
       (error: unknown) => ["ENOENT", "ECONNREFUSED"].includes(errorCode(error) ?? ""),
     );
   }

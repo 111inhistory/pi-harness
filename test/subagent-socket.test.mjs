@@ -7,40 +7,33 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  createAgentSocketServer,
-  createBroadcastSocketServer,
+  createOwnedNdjsonServer,
   createSocketAwareWriteOperations,
   getAgentSocketPath,
-  getBroadcastSocketPath,
-  writeSocketOneWay,
-  isWindowsPipe,
   isInSocketDirectory,
-} from "../src/subagent-socket.mjs";
+  isWindowsPipe,
+  writeSocket,
+} from "../src/ipc/socket.ts";
 import { deferred } from "../test-support/async.mjs";
 
 async function sockets(t) {
-  const socketDir = await fsp.mkdtemp(path.join(tmpdir(), "pi-sock-"));
+  const root = await fsp.mkdtemp(path.join(tmpdir(), "pi-sock-"));
   const servers = [];
   const clients = [];
   t.after(async () => {
     for (const client of clients) client.destroy();
     await Promise.all(servers.map((server) => server.close()));
-    await fsp.rm(socketDir, { recursive: true, force: true });
+    await fsp.rm(root, { recursive: true, force: true });
   });
   return {
-    socketDir,
-    agent(options) {
-      const server = createAgentSocketServer({ ...options, socketDir });
+    root,
+    server(address, options) {
+      const server = createOwnedNdjsonServer({ address, root, ...options });
       servers.push(server);
       return server;
     },
-    broadcast(options) {
-      const server = createBroadcastSocketServer({ ...options, socketDir });
-      servers.push(server);
-      return server;
-    },
-    async connect(socketPath) {
-      const client = net.connect(socketPath);
+    async connect(address) {
+      const client = net.connect(address);
       clients.push(client);
       await once(client, "connect");
       return client;
@@ -50,41 +43,42 @@ async function sockets(t) {
 
 const options = { timeout: 3000 };
 
-test("agent socket delivers ordered NDJSON records without a response and retains its endpoint", options, async (t) => {
+test("owned endpoints deliver ordered NDJSON records without a response and retain their path", options, async (t) => {
   const fixture = await sockets(t);
   const received = [];
   const delivered = deferred();
-  const server = fixture.agent({ id: "sub_01", onMessage(msg) {
+  const address = getAgentSocketPath("sub_01", fixture.root);
+  const server = fixture.server(address, { onMessage(msg) {
     received.push(msg);
     if (received.length === 2) delivered.resolve();
   } });
   await server.ready;
-  const socketPath = getAgentSocketPath("sub_01", fixture.socketDir);
   if (!server.server.listening) await once(server.server, "listening");
-  const before = isWindowsPipe(socketPath) ? null : await fsp.stat(socketPath);
+  const before = isWindowsPipe(address) ? null : await fsp.stat(address);
   if (before) assert.ok(before.isSocket());
-  assert.equal(server.server.address(), socketPath);
-  await writeSocketOneWay(socketPath, '{"content":"hello"}\n{"content":"中文\\nnext"}\n');
+  assert.equal(server.server.address(), address);
+  await writeSocket(address, '{"content":"hello"}\n{"content":"中文\\nnext"}\n');
   await delivered.promise;
   assert.deepEqual(received, [{ content: "hello" }, { content: "中文\nnext" }]);
-  if (before) assert.equal((await fsp.stat(socketPath)).ino, before.ino);
-  assert.equal(server.server.address(), socketPath);
+  if (before) assert.equal((await fsp.stat(address)).ino, before.ino);
+  assert.equal(server.server.address(), address);
   await server.close();
-  if (before) await assert.rejects(fsp.stat(socketPath), { code: "ENOENT" });
-  else await assert.rejects(writeSocketOneWay(socketPath, { content: "closed" }));
+  if (before) await assert.rejects(fsp.stat(address), { code: "ENOENT" });
+  else await assert.rejects(writeSocket(address, { content: "closed" }));
 });
 
-test("agent socket buffers an incomplete frame across actual data events", options, async (t) => {
+test("owned endpoint buffers an incomplete frame across actual data events", options, async (t) => {
   const fixture = await sockets(t);
   const received = [];
   const delivered = deferred();
-  const server = fixture.agent({ id: "sub_02", onMessage(msg) {
+  const address = getAgentSocketPath("sub_02", fixture.root);
+  const server = fixture.server(address, { onMessage(msg) {
     received.push(msg);
     if (received.length === 2) delivered.resolve();
   } });
   await server.ready;
   const connection = once(server.server, "connection");
-  const client = await fixture.connect(server.socketPath);
+  const client = await fixture.connect(server.address);
   const [accepted] = await connection;
   const firstChunk = once(accepted, "data");
   client.write('{"content":"par');
@@ -98,10 +92,11 @@ test("agent socket buffers an incomplete frame across actual data events", optio
 test("UTF-8 characters split across data events are decoded without corruption", options, async (t) => {
   const fixture = await sockets(t);
   const delivered = deferred();
-  const server = fixture.agent({ id: "sub_01", onMessage: delivered.resolve });
+  const address = getAgentSocketPath("sub_01", fixture.root);
+  const server = fixture.server(address, { onMessage: delivered.resolve });
   await server.ready;
   const connection = once(server.server, "connection");
-  const client = await fixture.connect(server.socketPath);
+  const client = await fixture.connect(server.address);
   const [accepted] = await connection;
   const payload = Buffer.from('{"content":"你好🙂"}\n');
   const split = payload.indexOf(Buffer.from("你")) + 1;
@@ -117,18 +112,19 @@ test("connection buffers are independent and invalid frames do not block subsequ
   const received = [];
   const errors = [];
   const complete = deferred();
-  const server = fixture.agent({ id: "sub_01", onError(err) { errors.push(err); }, onMessage(msg) {
+  const address = getAgentSocketPath("sub_01", fixture.root);
+  const server = fixture.server(address, { onError(err) { errors.push(err); }, onMessage(msg) {
     received.push(msg);
     if (received.length === 2) complete.resolve();
   } });
   await server.ready;
   const firstConnection = once(server.server, "connection");
-  const first = await fixture.connect(server.socketPath);
+  const first = await fixture.connect(server.address);
   const [accepted] = await firstConnection;
   const partialReceived = once(accepted, "data");
   first.write('{"first":');
   await partialReceived;
-  const second = await fixture.connect(server.socketPath);
+  const second = await fixture.connect(server.address);
   second.end('not-json\n\n{"second":2}\n');
   // The first connection is completed independently, even if the second batch is coalesced.
   first.end('1}\n');
@@ -141,10 +137,11 @@ test("connection buffers are independent and invalid frames do not block subsequ
 test("unterminated NDJSON is not delivered", options, async (t) => {
   const fixture = await sockets(t);
   const received = [];
-  const server = fixture.agent({ id: "sub_01", onMessage: (msg) => received.push(msg) });
+  const address = getAgentSocketPath("sub_01", fixture.root);
+  const server = fixture.server(address, { onMessage: (msg) => received.push(msg) });
   await server.ready;
   const connection = once(server.server, "connection");
-  const client = await fixture.connect(server.socketPath);
+  const client = await fixture.connect(server.address);
   const [accepted] = await connection;
   const ended = once(accepted, "end");
   client.end('{"missing":"newline"}');
@@ -152,90 +149,23 @@ test("unterminated NDJSON is not delivered", options, async (t) => {
   assert.deepEqual(received, []);
 });
 
-test("hierarchical endpoints fan out only their direct-child snapshots and accept an empty snapshot", options, async (t) => {
-  const fixture = await sockets(t);
-  const delivered = [];
-  const done = deferred();
-  const children = new Map([["main", ["sub_01", "sub_02"]], ["sub_01", ["sub_01_01", "sub_01_02"]], ["sub_02", []]]);
-  const servers = new Map();
-  for (const parentId of children.keys()) {
-    servers.set(parentId, fixture.broadcast({
-      parentId, getDirectChildren: () => [...children.get(parentId)],
-      async deliverMessage(childId, msg) {
-        delivered.push({ childId, msg });
-        if (delivered.length === 4) done.resolve();
-      },
-    }));
-  }
-  assert.equal(getBroadcastSocketPath("Main", fixture.socketDir), getBroadcastSocketPath("main", fixture.socketDir));
-  await Promise.all([...servers.values()].map((server) => server.ready));
-  await writeSocketOneWay(servers.get("main").socketPath, { source: "main" });
-  await writeSocketOneWay(servers.get("sub_01").socketPath, { source: "sub_01" });
-  await done.promise;
-  assert.deepEqual(delivered.filter((d) => d.msg.source === "main").map((d) => d.childId), ["sub_01", "sub_02"]);
-  assert.deepEqual(delivered.filter((d) => d.msg.source === "sub_01").map((d) => d.childId), ["sub_01_01", "sub_01_02"]);
-  await writeSocketOneWay(servers.get("sub_02").socketPath, { source: "empty" });
-  await servers.get("sub_02").close();
-  assert.equal(delivered.length, 4);
-});
-
-test("broadcast rejects a malformed frame but still delivers the following valid frame", options, async (t) => {
-  const fixture = await sockets(t);
-  const errors = [];
-  const delivered = deferred();
-  const server = fixture.broadcast({
-    parentId: "main", getDirectChildren: () => ["sub_01"],
-    onError: (err) => errors.push(err),
-    deliverMessage: async (id, msg) => delivered.resolve({ id, msg }),
-  });
-  await server.ready;
-  await assert.rejects(writeSocketOneWay(server.socketPath, 'invalid-json\n{"content":"valid after error"}\n'), /failed to parse NDJSON/);
-  assert.deepEqual(await delivered.promise, { id: "sub_01", msg: { content: "valid after error" } });
-  assert.equal(errors.length, 1);
-  assert.match(errors[0].message, /failed to parse NDJSON/);
-});
-
-test("broadcast invokes deliveries concurrently and reports a partial failure without skipping siblings", options, async (t) => {
-  const fixture = await sockets(t);
-  const pending = deferred();
-  const started = deferred();
-  const failure = deferred();
-  const calls = [];
-  const server = fixture.broadcast({
-    parentId: "main", getDirectChildren: () => ["sub_01", "sub_02", "sub_03"],
-    deliverMessage(childId) {
-      calls.push(childId);
-      if (childId === "sub_01") return pending.promise;
-      if (childId === "sub_02") return Promise.reject(new Error("agent_stopping"));
-      started.resolve();
-      return Promise.resolve();
-    },
-    onError: failure.resolve,
-  });
-  await server.ready;
-  const result = assert.rejects(writeSocketOneWay(getBroadcastSocketPath("main", fixture.socketDir), { content: "broadcast" }), /agent_stopping/);
-  await started.promise;
-  assert.deepEqual(calls, ["sub_01", "sub_02", "sub_03"]);
-  pending.resolve();
-  await result;
-  assert.match((await failure.promise).message, /agent_stopping/);
-});
-
-test("write operations deliver to sockets while delegating normal files and mkdir unchanged", options, async (t) => {
+test("write operations deliver to owned endpoints while delegating normal files and mkdir unchanged", options, async (t) => {
   const fixture = await sockets(t);
   const delivered = deferred();
-  const server = fixture.agent({ id: "sub_03", onMessage: delivered.resolve });
+  const address = getAgentSocketPath("sub_03", fixture.root);
+  const server = fixture.server(address, { onMessage: delivered.resolve });
   await server.ready;
   const calls = [];
   const operations = createSocketAwareWriteOperations({
+    senderId: "Main",
     mkdir: async (dir) => { calls.push(["mkdir", dir]); await fsp.mkdir(dir, { recursive: true }); },
     writeFile: async (file, content) => { calls.push(["write", file, content]); await fsp.writeFile(file, content); },
-    resolveEndpoint: async (address) => address === server.socketPath ? { isManaged: true, targetId: "sub_03" } : null,
+    resolveEndpoint: async (candidate) => candidate === server.address ? { isManaged: true, targetId: "sub_03" } : null,
   });
-  await operations.writeFile(server.socketPath, "backend");
-  assert.deepEqual(await delivered.promise, { from: "main", content: "backend" });
+  await operations.writeFile(server.address, "backend");
+  assert.deepEqual(await delivered.promise, { from: "Main", content: "backend" });
   assert.deepEqual(calls, [], "a socket must never be passed to the filesystem writer");
-  const dir = path.join(fixture.socketDir, "nested");
+  const dir = path.join(fixture.root, "nested");
   const file = path.join(dir, "regular.txt");
   await operations.mkdir(dir);
   await operations.writeFile(file, "regular content");
@@ -262,80 +192,7 @@ test("reserved IPC directories reject files and skip mkdir, including directory 
   assert.equal(await fsp.readFile(ordinary, "utf8"), "good");
 });
 
-test("agent server teardown force-closes held-open half-frame clients and repeated close removes only its endpoint", options, async (t) => {
-  const fixture = await sockets(t);
-  let acceptedSocket = null;
-  const server = fixture.agent({ id: "sub_04", onMessage() {} });
-  server.server.on("connection", (socket) => { acceptedSocket = socket; socket.on("error", () => {}); });
-  await server.ready;
-  const client = await fixture.connect(server.socketPath);
-  client.on("error", () => {});
-  client.write('{"content":"half');
-  while (acceptedSocket === null) await new Promise((resolve) => setTimeout(resolve, 5));
-  assert.equal(server.clients.size, 1);
-
-  const clientClosed = new Promise((resolve) => client.once("close", resolve));
-  const first = server.close();
-  const second = server.close();
-  assert.equal(first, second);
-  const result = await first;
-  assert.equal(result.startupError, null);
-  assert.equal(result.release?.removed, true);
-  await clientClosed;
-  await assert.rejects(fsp.stat(server.socketPath), { code: "ENOENT" });
-});
-
-test("agent server refuses an active endpoint without deleting the live listener", options, async (t) => {
-  const fixture = await sockets(t);
-  const first = fixture.agent({ id: "sub_05", onMessage() {} });
-  await first.ready;
-  const before = await fsp.lstat(first.socketPath);
-  const second = fixture.agent({ id: "sub_05", onMessage() {} });
-  await assert.rejects(second.ready, (error) => error?.code === "ipc_endpoint_in_use");
-  await second.close();
-  const after = await fsp.lstat(first.socketPath);
-  assert.equal(after.ino, before.ino, "the live endpoint is not replaced or removed");
-  await first.close();
-  await assert.rejects(fsp.stat(first.socketPath), { code: "ENOENT" });
-});
-
-test("agent server preserves ordinary files and symlinks at the endpoint", options, async (t) => {
-  const fixture = await sockets(t);
-  const filePath = getAgentSocketPath("file_target", fixture.socketDir);
-  await fsp.writeFile(filePath, "ordinary file");
-  const fileServer = fixture.agent({ id: "file_target", onMessage() {} });
-  await assert.rejects(fileServer.ready, (error) => error?.code === "ipc_endpoint_not_socket");
-  await fileServer.close();
-  assert.equal(await fsp.readFile(filePath, "utf8"), "ordinary file");
-
-  const target = path.join(fixture.socketDir, "symlink-target.txt");
-  await fsp.writeFile(target, "target content");
-  const linkPath = getAgentSocketPath("link_target", fixture.socketDir);
-  await fsp.symlink(target, linkPath);
-  const linkServer = fixture.agent({ id: "link_target", onMessage() {} });
-  await assert.rejects(linkServer.ready, (error) => error?.code === "ipc_endpoint_symlink");
-  await linkServer.close();
-  assert.ok((await fsp.lstat(linkPath)).isSymbolicLink());
-  assert.equal(await fsp.readFile(target, "utf8"), "target content");
-});
-
-test("agent server validates an explicit managed root before creating session directories", options, async (t) => {
-  const parent = await fsp.mkdtemp(path.join(tmpdir(), "pi-root-"));
-  const target = path.join(parent, "attacker");
-  const root = path.join(parent, "managed-root");
-  const socketDir = path.join(root, "abcdef");
-  await fsp.mkdir(target, { mode: 0o700 });
-  await fsp.symlink(target, root);
-  t.after(() => fsp.rm(parent, { recursive: true, force: true }));
-
-  const server = createAgentSocketServer({ id: "Main", socketDir, root, onMessage() {} });
-  await assert.rejects(server.ready, (error) => error?.code === "ipc_root_symlink");
-  await server.close();
-  await assert.rejects(fsp.stat(path.join(target, "abcdef")), { code: "ENOENT" });
-  assert.ok((await fsp.lstat(root)).isSymbolicLink());
-});
-
 test("missing socket rejects delivery with ENOENT", options, async (t) => {
   const fixture = await sockets(t);
-  await assert.rejects(writeSocketOneWay(getAgentSocketPath("missing", fixture.socketDir), { content: "test" }), { code: "ENOENT" });
+  await assert.rejects(writeSocket(getAgentSocketPath("missing", fixture.root), { content: "test" }), { code: "ENOENT" });
 });

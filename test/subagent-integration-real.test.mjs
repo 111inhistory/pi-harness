@@ -54,7 +54,6 @@ for (const [name, description] of [
   ["upstream-parent", "Depth 2 write reaches and revives only its direct parent, preserving the leaf sender"],
   ["upstream-parent-steer", "a busy Subagent parent receives independent progress and terminal events through native steering"],
   ["sender-wire", "plain-text child write returns a runtime receipt and reaches the peer with the actual sender attributed by the host"],
-  ["sender-context", "the receiver preserves a native child sender rather than relabeling it as Main"],
   ["sender-reserved", "JSON literal message text cannot impersonate another sender"],
   ["revive", "explicit revival retains the listener, appends both histories and does not reroute"],
   ["history", "real native tool execution retains complete clean history and the final summary"],

@@ -15,8 +15,8 @@
  * persistent authority state; they are monotonic and never used as a negative
  * cache. They also cannot add a name that an ancestor currently denies.
  *
- * `allows` is the exact qualification answer of the previous per-call
- * `capabilityAllowsTool`, including its root behavior: without a parent, every
+ * `allows` is the exact qualification answer of `capabilityAllowsTool`,
+ * including its root behavior: without a parent, every
  * non-denied name is qualified, even when it is not registered. That is why
  * `available` is not a replacement for `allows`: `available` is the registry
  * intersection snapshot for filtering, while `allows` also answers for names
@@ -184,20 +184,20 @@ export function setCapabilityParent(
 /**
  * Read-only snapshot of the currently effective available tools for this scope.
  *
- * This keeps the previous return semantics for callers while detaching the
- * result: retaining the set no longer exposes the mutable authority state.
+ * The result is detached: retaining the set never exposes mutable authority
+ * state.
  */
 export function capabilityAvailableTools(pi: CapabilityToolCatalog): ReadonlySet<string> {
   return createCapabilityScopeView(pi).available;
 }
 
 /**
- * Single-name compatibility check. New filter loops should create one
+ * Single-name qualification check. Filter loops should create one
  * {@link createCapabilityScopeView} per operation instead of repeating this.
  *
- * It reproduces the previous lazy behavior: a root scope answers from its own
- * denial set without enumerating the catalog, and a child asks its parent's
- * effective qualification. An ancestor denial always wins.
+ * A root scope answers from its own denial set without enumerating the catalog,
+ * and a child asks its parent's effective qualification. An ancestor denial
+ * always wins.
  */
 export function capabilityAllowsTool(pi: CapabilityToolCatalog, name: string): boolean {
   const state = stateFor(pi);

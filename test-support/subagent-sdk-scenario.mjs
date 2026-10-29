@@ -8,9 +8,9 @@ import {
   createAgentSession, createCodemodeExtension, createWriteToolDefinition, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { AssistantMessageEventStream, getSystemMessageText, getCurrentTools } from "@earendil-works/pi-ai";
-import subagentExtension from "../extensions/subagent.mjs";
+import subagentExtension from "../src/subagent/extension.ts";
 import capabilityExtension from "../extensions/capability.mjs";
-import { deriveSessionUid, getAgentSocketPath, getBroadcastSocketPath } from "../src/subagent-socket.mjs";
+import { deriveSessionUid, getAgentSocketPath, getBroadcastSocketPath } from "../src/ipc/socket.ts";
 import { resolveTranscriptTools } from "../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js";
 import { convertResponsesMessages } from "../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 import { deferred, waitFor } from "./async.mjs";
@@ -693,7 +693,7 @@ try {
     assert.ok(parentRuns >= 3 && parentRuns <= 4, "parent consumes the leaf message and terminal notice without rerouting its original assignment");
     assert.equal(classifications.length, 4, "only the original parent and leaf assignments are routed; notification continuation reuses their identities");
     assert.equal(session.messages.some((message) => message.role === "custom" && message.customType === "agent-message"), false);
-  } else if (scenario === "sender-wire" || scenario === "sender-context") {
+  } else if (scenario === "sender-wire") {
     await runPeerSenderScenario(fixture);
   } else if (scenario === "sender-reserved") {
     controls.chat = () => textAnswer("done");

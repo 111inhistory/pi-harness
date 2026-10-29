@@ -2,7 +2,7 @@
  * Exact behavior pins for the shared tool-loadout policy.
  *
  * The surface (capture warnings) and the native Job runner (Inherited loadout)
- * both execute this one implementation, so these cases lock the legacy ordering
+ * both execute this one implementation, so these cases verify the ordering
  * and depth rules that both call sites depend on. `subagent-surface.test.ts`
  * still covers the capture side end to end, and `native-job-runner.test.ts`
  * covers the execution side; this file pins the shared core itself.
@@ -12,16 +12,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { MAX_AGENT_DEPTH } from "../../src/subagent/runtime.ts";
-import * as policy from "../../src/subagent/tool-policy.ts";
 import {
   droppedInheritedTools,
   harnessToolsForDepth,
   inheritedToolNames,
-  inheritedToolsWarning,
   transplantableToolNames,
 } from "../../src/subagent/tool-policy.ts";
 import type { ToolPolicyTool } from "../../src/subagent/tool-policy.ts";
-import * as surface from "../../src/subagent/surface.ts";
 
 const HARNESS: readonly string[] = [
   "subagent_create",
@@ -36,15 +33,6 @@ function tools(catalog: ReadonlyArray<{ name: string; source?: string }>): ToolP
     tool.source === undefined ? { name: tool.name } : { name: tool.name, sourceInfo: { source: tool.source } }
   ));
 }
-
-test("the surface re-exports the one policy implementation", () => {
-  // Identity, not just equal output: the surface keeps no second copy.
-  assert.equal(surface.harnessToolsForDepth, policy.harnessToolsForDepth);
-  assert.equal(surface.transplantableToolNames, policy.transplantableToolNames);
-  assert.equal(surface.droppedInheritedTools, policy.droppedInheritedTools);
-  assert.equal(surface.inheritedToolsWarning, policy.inheritedToolsWarning);
-  assert.equal(surface.inheritedToolNames, policy.inheritedToolNames);
-});
 
 test("harness tools follow the depth boundary in declared order", () => {
   assert.deepEqual(harnessToolsForDepth(-1), HARNESS);
@@ -102,17 +90,6 @@ test("dropped tools keep capture order, dedupe, and ignore non-names", () => {
   assert.deepEqual(droppedInheritedTools(catalog, undefined, 0), []);
   assert.deepEqual(droppedInheritedTools(catalog, "read", 0), []);
   assert.deepEqual(droppedInheritedTools(catalog, ["", 7, null, "extension_tool"], 0), ["extension_tool"]);
-});
-
-test("the warning text is the legacy sentence", () => {
-  assert.equal(
-    inheritedToolsWarning(["extension_tool", "other_extension"]),
-    "Not transplantable through Pi's public API, so the inherited child does not have them: extension_tool, other_extension.",
-  );
-  assert.equal(
-    inheritedToolsWarning([]),
-    "Not transplantable through Pi's public API, so the inherited child does not have them: .",
-  );
 });
 
 test("the inherited allowlist keeps capture order, then appends harness tools", () => {

@@ -94,7 +94,7 @@ test("Capability emits only new tool interfaces, preserving existing namespace g
 test("compact only actually declared interfaces; retain guidance, deferred refs and errors", () => {
   const group = { ref: "namespace://subagent", name: "subagent", kind: "namespace", status: "available", description: "generic", instructions: "Task guidance", toolCount: 2, tools: [tool("create"), tool("list")] };
   const deferred = { ...group, ref: "namespace://deferred", tools: [tool("deferred")] };
-  const result = { status: "partial", tools: [group, deferred], mcp: [], skills: [{ ref: "skill://rules", caveats: ["preference"] }], remote: [{ status: "needs_approval" }], warnings: ["warning"], missingCapabilities: ["gap"] };
+  const result = { status: "partial", tools: [group, deferred], mcp: [], skills: [{ ref: "/skills/rules/SKILL.md", filePath: "/skills/rules/SKILL.md" }], warnings: ["warning"], missingCapabilities: ["gap"] };
   const original = structuredClone(result);
   const compact = capabilityModelResult(result, new Set(["create", "list"]));
   assert.equal(compact.tools[0].tools, undefined);
@@ -102,6 +102,6 @@ test("compact only actually declared interfaces; retain guidance, deferred refs 
   assert.equal(compact.tools[0].instructions, "Task guidance");
   assert.match(compact.tools[0].interface, /tool loadout/);
   assert.deepEqual(compact.tools[1], deferred);
-  for (const field of ["skills", "remote", "warnings", "missingCapabilities", "status"]) assert.deepEqual(compact[field], result[field]);
+  for (const field of ["skills", "warnings", "missingCapabilities", "status"]) assert.deepEqual(compact[field], result[field]);
   assert.deepEqual(result, original);
 });

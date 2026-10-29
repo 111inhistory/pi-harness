@@ -1,9 +1,7 @@
 /**
  * Tool contracts for capability discovery.
  *
- * The broker (`../capability-broker.mjs`) imports and re-exports these values,
- * so the public module API is unchanged while the schemas themselves live in
- * strict TypeScript with literal types. Descriptions still come from
+ * Discovery tools share these schemas. Descriptions come from
  * `prompts/capability-tools.json`; no schema text is duplicated in code.
  *
  * The internal `capability_search` tool is local-only. The schema must
@@ -127,43 +125,27 @@ export const SUBMIT_RESULT_PARAMETERS: SubmitResultParametersSchema = Object.fre
   additionalProperties: false,
 });
 
-/** Deterministic bounds for every result list, body read and remote request. */
+/** Deterministic bounds for every result list and body read. */
 export interface CapabilityLimits {
   readonly tools: number;
   readonly mcp: number;
   readonly skills: number;
-  readonly remote: number;
   readonly skillBodies: number;
-  readonly caveats: number;
-  readonly caveatsPerSkill: number;
-  readonly missingCapabilities: number;
   readonly warnings: number;
   readonly requestTokens: number;
-  readonly matchTokensPerField: number;
-  readonly bodyMatchTokens: number;
   readonly descriptionChars: number;
-  readonly caveatChars: number;
   readonly skillBodyChars: number;
   readonly warningChars: number;
-  readonly remoteTimeoutMs: number;
 }
 
 export const CAPABILITY_LIMITS = Object.freeze({
   tools: 8, // standalone tools or whole namespaces, not member count
   mcp: 8, // whole MCP groups
   skills: 6,
-  remote: 5,
   skillBodies: 6,
-  caveats: 12,
-  caveatsPerSkill: 4,
-  missingCapabilities: 6,
   warnings: 12,
   requestTokens: 128,
-  matchTokensPerField: 4,
-  bodyMatchTokens: 6,
   descriptionChars: 240,
-  caveatChars: 240,
   skillBodyChars: 60_000,
   warningChars: 200,
-  remoteTimeoutMs: 10_000,
 } as const) satisfies CapabilityLimits;

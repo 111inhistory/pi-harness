@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { capabilityAllowsTool, capabilityAvailableTools, setCapabilityParent } from '../src/capability-scope.mjs';
+import { capabilityAllowsTool, capabilityAvailableTools, setCapabilityParent } from '../src/capability/scope.ts';
 
 const api = (names) => ({
   names,

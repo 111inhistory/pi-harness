@@ -250,21 +250,6 @@ export interface RuntimeOptions {
   agentSocketPath?: (id: string, socketDir?: string) => string;
 }
 
-export interface RuntimeTaskItem {
-  name: string | null;
-  agentId: string;
-  jobId: string;
-  status: JobStatus;
-  historyState?: HistoryState;
-  historyError?: LifecycleError;
-  warnings?: string[];
-}
-
-export interface RuntimeTaskResult {
-  items: RuntimeTaskItem[];
-  warnings?: string[];
-}
-
 export interface CreatedAgentItem {
   id: string;
   status: JobStatus;
@@ -416,7 +401,6 @@ interface PlannedEntry {
 
 interface HistoryFilter {
   id?: string;
-  agentId?: string;
   status?: string;
   all?: boolean;
 }
@@ -920,44 +904,11 @@ export class SubagentRuntime {
     this.#agentSocketPath = agentSocketPath ?? formatAgentSocketPath;
   }
 
-  /** Create a subagent batch according to the public contract (id, status, socket). */
+  /** Validate, atomically register and start a batch; return the public Agent view. */
   create(batch: unknown, options: TaskOptions = {}): CreatedAgents {
-    const res = this.task(batch, options);
-    const result: CreatedAgents = {
-      items: res.items.map((item): CreatedAgentItem => {
-        const mapped: CreatedAgentItem = {
-          id: item.agentId,
-          status: item.status,
-          socket: this.#agentSocketPath(item.agentId, this.#socketDir),
-        };
-        if (item.warnings !== undefined) {
-          mapped.warnings = item.warnings;
-        }
-        return mapped;
-      }),
-    };
-    if (res.warnings !== undefined) {
-      result.warnings = res.warnings;
-    }
-    return result;
-  }
-
-  /**
-   * Validate, atomically register and schedule a task batch.
-   *
-   * @param {{ context?: string, tasks: unknown[] }} batch
-   * @param {{
-   *   parentAgentId?: string | null,
-   *   origin?: unknown,
-   *   allowInherited?: boolean,
-   *   captureInheritedContext?: () => unknown,
-   * }} [options]
-   * @returns {{ items: object[] }}
-   */
-  task(batch: unknown, options: TaskOptions = {}): RuntimeTaskResult {
     const rawOptions: unknown = options;
     if (!isPlainObject(rawOptions)) {
-      throw new SubagentError("invalid_options", "task options must be an object.");
+      throw new SubagentError("invalid_options", "create options must be an object.");
     }
     return this.#withTransition(() => {
       const { entries, snapshot } = this.#planBatch(batch, options);
@@ -1024,7 +975,15 @@ export class SubagentRuntime {
 
       // Register the complete batch before any adapter can observe or start it.
       for (const job of registered) this.#start(job);
-      return { items: registered.map((job) => this.#itemView(job)) };
+      return { items: registered.map((job): CreatedAgentItem => {
+        const warnings = inheritedWarnings(job.spec);
+        return {
+          id: job.agentId,
+          status: job.status,
+          socket: this.#agentSocketPath(job.agentId, this.#socketDir),
+          ...(warnings.length > 0 ? { warnings } : {}),
+        };
+      }) };
     });
   }
 
@@ -1102,7 +1061,7 @@ export class SubagentRuntime {
 
   /** Agent-level snapshot; job status is reported by jobs(), not here. */
   list(filter: HistoryFilter | null = null): { agents: AgentView[] } {
-    const targetId = filter?.id || filter?.agentId;
+    const targetId = filter?.id;
     const agents: AgentView[] = [];
     for (const agent of this.#agents.values()) {
       if (targetId && agent.agentId !== targetId) continue;
@@ -1120,52 +1079,47 @@ export class SubagentRuntime {
 
   /** Public contract view for list tool, including unified ID, socket and history paths. */
   listDetailed(
-    filter: HistoryFilter | null = null,
-    { callerId }: { callerId?: string } = {},
+    filter: HistoryFilter | null,
+    { callerId }: { callerId: string },
   ): { items: DetailedAgentItem[] } {
-    const targetId = filter?.id || filter?.agentId;
+    const targetId = filter?.id;
     const agents = [...this.#agents.values()];
     const visible = new Set<string>();
-    const scoped = callerId !== undefined;
     const main: DetailedAgentItem = {
       id: MAIN_ACTOR_ID,
       parentId: null,
       status: "running",
       socket: this.#agentSocketPath(MAIN_ACTOR_ID, this.#socketDir),
     };
-    if (scoped) {
-      if (filter?.all === true) {
+    if (filter?.all === true) {
+      visible.add(MAIN_ACTOR_ID);
+      for (const agent of agents) visible.add(agent.agentId);
+    } else {
+      const group = (parentId: string | null, selfId?: string) => this.#visibleGroup(parentId, selfId);
+      const addChildren = (agent: Agent): void => {
+        if (agent.status !== "running") return;
+        for (const child of group(agent.agentId)) visible.add(child.agentId);
+      };
+      if (callerId === MAIN_ACTOR_ID) {
         visible.add(MAIN_ACTOR_ID);
-        for (const agent of agents) visible.add(agent.agentId);
-      } else {
-        const group = (parentId: string | null, selfId?: string) => this.#visibleGroup(parentId, selfId);
-        const addChildren = (agent: Agent): void => {
-          if (agent.status !== "running") return;
-          for (const child of group(agent.agentId)) visible.add(child.agentId);
-        };
-        if (callerId === MAIN_ACTOR_ID) {
-          visible.add(MAIN_ACTOR_ID);
-          for (const child of group(null)) {
-            visible.add(child.agentId);
-            addChildren(child);
-          }
-        } else {
-          const caller = this.#agents.get(callerId);
-          if (!caller) throw new SubagentError("unknown_agent", `No subagent registered as ${callerId}.`);
-          visible.add(caller.parentAgentId ?? MAIN_ACTOR_ID);
-          for (const peer of group(caller.parentAgentId, callerId)) visible.add(peer.agentId);
-          addChildren(caller);
+        for (const child of group(null)) {
+          visible.add(child.agentId);
+          addChildren(child);
         }
+      } else {
+        const caller = this.#agents.get(callerId);
+        if (!caller) throw new SubagentError("unknown_agent", `No subagent registered as ${callerId}.`);
+        visible.add(caller.parentAgentId ?? MAIN_ACTOR_ID);
+        for (const peer of group(caller.parentAgentId, callerId)) visible.add(peer.agentId);
+        addChildren(caller);
       }
     }
     const items: DetailedAgentItem[] = [];
     if (visible.has(MAIN_ACTOR_ID) && (!targetId || targetId === MAIN_ACTOR_ID) && (!filter?.status || filter.status === main.status)) items.push(main);
-    const listed: Agent[] = scoped
-      ? [...visible]
-          .filter((id) => id !== MAIN_ACTOR_ID)
-          .map((id) => this.#agents.get(id))
-          .filter((agent): agent is Agent => agent !== undefined)
-      : agents;
+    const listed = [...visible]
+      .filter((id) => id !== MAIN_ACTOR_ID)
+      .map((id) => this.#agents.get(id))
+      .filter((agent): agent is Agent => agent !== undefined);
     for (const agent of listed) {
       if (targetId && agent.agentId !== targetId) continue;
       const liveJob = this.#liveJobOf(agent);
@@ -1194,18 +1148,6 @@ export class SubagentRuntime {
       items.push(item);
     }
     return { items };
-  }
-
-  assertMessageAdmission(id: string): void {
-    if (id === MAIN_ACTOR_ID) return;
-    const agent = this.#agents.get(id);
-    if (!agent) throw new SubagentError("unknown_agent", `No subagent registered as ${id}.`);
-    const live = this.#liveJobOf(agent);
-    if (live && live.status !== "running") throw new SubagentError("agent_stopping", `Agent ${id} is ${live.status}.`);
-    if (!live) {
-      const refusal = this.#reviveRefusal(agent);
-      if (refusal) throw refusal;
-    }
   }
 
   #visibleGroup(parentId: string | null, selfId?: string): Agent[] {
@@ -1319,22 +1261,12 @@ export class SubagentRuntime {
    * Stop one subagent by id gracefully.
    * Stops native execution, or finalizes immediately if no adapter has started.
    */
-  stop(target: unknown): StopResult {
-    const id = typeof target === "string"
-      ? target
-      : isPlainObject(target) ? (target.id || target.jobId || target.agentId) : undefined;
+  stop(id: unknown): StopResult {
     if (typeof id !== "string" || id === "") {
       throw new SubagentError("invalid_request", "stop requires an id.");
     }
     const agent = this.#agents.get(id);
-    if (!agent) {
-      const job = this.#jobs.get(id);
-      if (job) {
-        const res = this.cancelJob(job.jobId);
-        return { ok: res.ok, id, status: res.job?.status ?? "stopping" };
-      }
-      throw new SubagentError("unknown_agent", `No subagent found with id "${id}".`);
-    }
+    if (!agent) throw new SubagentError("unknown_agent", `No subagent found with id "${id}".`);
     const liveJob = this.#liveJobOf(agent);
     if (liveJob) {
       const res = this.cancelJob(liveJob.jobId);
@@ -2143,22 +2075,6 @@ export class SubagentRuntime {
   #budgetView(job: Job): BudgetSnapshot | null {
     if (job.budget !== null) return publicBudgetSnapshot(job.budget);
     return job.budgetSnapshot === null ? null : cloneValue(job.budgetSnapshot);
-  }
-
-  #itemView(job: Job): RuntimeTaskItem {
-    const item: RuntimeTaskItem = {
-      name: job.spec.name,
-      agentId: job.agentId,
-      jobId: job.jobId,
-      status: job.status,
-    };
-    if (TERMINAL_STATUSES.has(job.status)) {
-      if (job.historyState !== undefined) item.historyState = job.historyState;
-      if (job.historyError !== undefined && job.historyError !== null) item.historyError = job.historyError;
-    }
-    const warnings = inheritedWarnings(job.spec);
-    if (warnings.length > 0) item.warnings = warnings;
-    return item;
   }
 
   #jobView(job: Job): JobView {

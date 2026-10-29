@@ -21,7 +21,7 @@ import type {
   RuntimeEvent,
 } from "../../src/subagent/runtime.ts";
 import { formatAgentSocketPath } from "../../src/subagent/address.ts";
-import { getAgentSocketPath } from "../../src/subagent-socket.mjs";
+import { getAgentSocketPath } from "../../src/ipc/socket.ts";
 
 interface Handle {
   request: JobRequest;
@@ -147,7 +147,7 @@ test("address formatting is an injectable pure port and matches the transport pa
   assert.ok(created);
   assert.equal(created.socket, formatAgentSocketPath(created.id, socketDir));
   assert.equal(created.socket, getAgentSocketPath(created.id, socketDir));
-  assert.equal(runtime.listDetailed({ id: created.id }).items[0]?.socket, created.socket);
+  assert.equal(runtime.listDetailed({ id: created.id }, { callerId: "Main" }).items[0]?.socket, created.socket);
 
   const custom = createSubagentRuntime({
     startJob: fake.startJob,

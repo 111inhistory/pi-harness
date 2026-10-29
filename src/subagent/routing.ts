@@ -31,8 +31,6 @@ export interface RoutingRole {
   excludeTools: string[];
   enableTools?: string[];
   candidates: RoutingCandidate[];
-  /** Legacy field: accepted but not used to choose or clamp thinking. */
-  thinking?: unknown;
 }
 
 export interface RoutingModel {
@@ -80,9 +78,7 @@ export function isRoutingThinkingLevel(value: unknown): value is RoutingThinking
 }
 
 /**
- * Validate the parsed routing config. Unknown top-level/role fields remain
- * ignored, but a candidate must carry its own direct thinking level. Legacy
- * role.thinking is tolerated and deliberately not used.
+ * Validate routing configuration with thinking defined only by each candidate.
  */
 export function validateRoutingConfig(value: unknown): RoutingConfig {
   const config = record(value);
@@ -153,7 +149,6 @@ export function validateRoutingConfig(value: unknown): RoutingConfig {
       candidates,
     };
     if (role.enableTools !== undefined) validated.enableTools = [...role.enableTools];
-    if (Object.hasOwn(role, "thinking")) validated.thinking = role.thinking;
     roles.push(validated);
   }
 

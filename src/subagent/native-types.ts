@@ -284,15 +284,9 @@ export interface NativeSessionFactory {
   open(request: NativeSessionRequest): Promise<NativeOpenedSession>;
 }
 
-/** Socket-listener restoration of the actor group this Job belongs to. */
-export interface NativeListenerRequest {
-  readonly agentId: string;
-  readonly depth: number;
-  readonly continuation: boolean;
-}
-
+/** Synchronize the root's registered Actor endpoints before execution. */
 export interface NativeListenerPort {
-  restore(input: NativeListenerRequest): Promise<void>;
+  sync(): Promise<void>;
 }
 
 /** One peer message handed to a live run. */

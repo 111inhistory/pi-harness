@@ -6,9 +6,9 @@ import { randomUUID } from "node:crypto";
 import { createWriteToolDefinition } from "@earendil-works/pi-coding-agent";
 import { deferred } from "../test-support/async.mjs";
 import test from "node:test";
-import { windowsIpc, isWindowsPipe } from "../src/subagent-ipc-windows.mjs";
-import { unixIpc } from "../src/subagent-ipc-unix.mjs";
-import { createSocketAwareWriteOperations } from "../src/subagent-socket.mjs";
+import { windowsIpc, isWindowsPipe } from "../src/ipc/platform-windows.ts";
+import { unixIpc } from "../src/ipc/platform-unix.ts";
+import { createSocketAwareWriteOperations } from "../src/ipc/socket.ts";
 
 const root = String.raw`C:\Users\测试 用户\Temp\pi-subagents\abcdef`;
 

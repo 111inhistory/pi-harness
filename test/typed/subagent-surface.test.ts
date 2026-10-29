@@ -27,13 +27,15 @@ import type { EndpointResolverResult } from "../../src/ipc/socket.ts";
 import {
   captureContextForChild,
   createSurfaceTools,
+  installSessionSurface,
+} from "../../src/subagent/surface.ts";
+import {
   droppedInheritedTools,
   harnessToolsForDepth,
   inheritedToolNames,
   inheritedToolsWarning,
-  installSessionSurface,
   transplantableToolNames,
-} from "../../src/subagent/surface.ts";
+} from "../../src/subagent/tool-policy.ts";
 import type {
   SubagentSurfaceApi,
   SubagentSurfaceCreateOptions,

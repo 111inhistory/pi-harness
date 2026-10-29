@@ -3,8 +3,8 @@
  *
  * The tests instrument `getAllTools` on both a child and its parent. A whole
  * filter/name-set/map operation must read each catalog a fixed number of times,
- * independent of how many tools it inspects; the previous per-tool
- * `capabilityAllowsTool` pattern re-read the parent once per tool.
+ * independent of how many tools it inspects; a per-tool
+ * `capabilityAllowsTool` loop re-reads the parent once per tool.
  */
 
 import assert from "node:assert/strict";
@@ -12,6 +12,7 @@ import test from "node:test";
 
 import capabilityExtension from "../../extensions/capability.mjs";
 import { installNativeDiscoveryBoundary } from "../../src/capability/native-discovery.ts";
+import { CAPABILITY_DISCOVERY_RECORD } from "../../src/capability/discovery-record.ts";
 import { capabilityAllowsTool, setCapabilityParent } from "../../src/capability/scope.ts";
 import {
   createEligibleToolCatalog,
@@ -151,16 +152,16 @@ function handlerFor(fixtureValue: CatalogFixture, event: string): (input: unknow
 
 function selectedBranch(...names: readonly string[]): unknown[] {
   return [{
-    type: "message",
-    message: {
-      role: "toolResult",
-      toolName: "capability",
-      toolCallId: "capability-call",
-      isError: false,
-      details: {
+    type: "custom",
+    customType: CAPABILITY_DISCOVERY_RECORD,
+    data: {
+      version: 1,
+      result: {
         status: "ok",
-        tools: names.map((name) => ({ name, status: "available" })),
+        tools: names.map((name) => ({ ref: `tool://${name}`, name, status: "available" })),
         mcp: [],
+        skills: [],
+        coverage: { local: "searched", remote: "not_searched" },
       },
     },
   }];
@@ -185,18 +186,8 @@ test("eligible catalog reads each catalog once per operation and keeps full meta
   assert.equal(visible.tools[0]?.description, "read full description");
   assert.equal(visible.tools[0]?.parameters, OBJECT_SCHEMA);
 
-  child.calls.count = 0;
-  root.calls.count = 0;
-  const brokerTools = createEligibleToolCatalog(child.catalog, { includeHidden: true });
-  assert.equal(child.calls.count + root.calls.count, 3);
-  const legacyBrokerTools = child.catalog.getAllTools().filter((entry) =>
-    capabilityAllowsTool(child.catalog, entry.name));
-  assert.deepEqual(brokerTools.tools, legacyBrokerTools, "broker listTools keeps its historical filter");
-
   const rootVisible = createEligibleToolCatalog(root.catalog);
-  const rootBroker = createEligibleToolCatalog(root.catalog, { includeHidden: true });
-  assert.equal(rootVisible.byName.has("hidden"), false);
-  assert.equal(rootBroker.byName.has("hidden"), true, "only the broker path opts into hidden tools");
+  assert.equal(rootVisible.byName.has("hidden"), false, "hidden tools never enter an eligible catalog");
 });
 
 test("one operation's catalog reads stay linear as the tool count grows", () => {
@@ -219,7 +210,7 @@ test("one operation's catalog reads stay linear as the tool count grows", () => 
     assert.equal(
       child.calls.count + root.calls.count,
       1 + count,
-      `the compatibility path repeats the parent lookup once per tool for size ${count}`,
+      `the single-name path repeats the parent lookup once per tool for size ${count}`,
     );
   }
 });

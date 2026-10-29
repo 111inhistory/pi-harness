@@ -14,7 +14,7 @@ import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
 import { createOwnedServer, type OwnedServer } from "./endpoint.ts";
-import { managedFrame } from "./message.ts";
+import { assertSender, managedFrame } from "./message.ts";
 import {
   DEFAULT_SOCKET_DIR,
   endpointKey,
@@ -68,7 +68,6 @@ export function getBroadcastSocketPath(parentId: string, socketDir: string = DEF
 interface NdjsonReaderOptions {
   onFrame: (frame: unknown) => unknown;
   onError?: ((error: Error) => void) | undefined;
-  parseErrorPrefix: string;
   validateFrame?: ((input: unknown) => unknown) | undefined;
 }
 
@@ -81,7 +80,7 @@ interface NdjsonReaderOptions {
  * response is sent only after the callback settles; responses preserve order.
  */
 function readNdjson(socket: net.Socket, options: NdjsonReaderOptions): void {
-  const { onFrame, onError, parseErrorPrefix, validateFrame } = options;
+  const { onFrame, onError, validateFrame } = options;
   const decoder = new StringDecoder("utf8");
   let buffer = "";
   let pending = Promise.resolve();
@@ -100,7 +99,7 @@ function readNdjson(socket: net.Socket, options: NdjsonReaderOptions): void {
         try {
           let parsed: unknown;
           try { parsed = JSON.parse(trimmed) as unknown; }
-          catch (error) { throw new Error(`${parseErrorPrefix}: ${trimmed}; error: ${asError(error).message}`); }
+          catch (error) { throw new Error(`Failed to parse NDJSON line: ${trimmed}; error: ${asError(error).message}`); }
           const frame = validateFrame === undefined ? parsed : validateFrame(parsed);
           await onFrame(frame);
           if (!socket.destroyed) socket.write("\n");
@@ -137,19 +136,19 @@ export interface OwnedNdjsonServerOptions {
 
 export type OwnedNdjsonServer = OwnedServer & { address: string };
 
-interface OwnedNdjsonEndpointOptions extends OwnedNdjsonServerOptions {
-  parseErrorPrefix: string;
-}
-
-function createOwnedNdjsonEndpoint(options: OwnedNdjsonEndpointOptions): OwnedNdjsonServer {
-  const { address, root, onMessage, onError, validateFrame, parseErrorPrefix } = options;
+/**
+ * Start one owned NDJSON endpoint at an explicit address. Binding, frame
+ * reading, callback error reporting and inode-bound cleanup live here; domain
+ * validation and recipient routing stay with the caller.
+ */
+export function createOwnedNdjsonServer(options: OwnedNdjsonServerOptions): OwnedNdjsonServer {
+  const { address, root, onMessage, onError, validateFrame } = options;
   const owned = createOwnedServer({
     address,
     isNamespace: ipc.isNamespace(address),
     root,
     onConnection(socket) {
       readNdjson(socket, {
-        parseErrorPrefix,
         ...(onError === undefined ? {} : { onError }),
         ...(validateFrame === undefined ? {} : { validateFrame }),
         onFrame(frame: unknown) {
@@ -163,109 +162,6 @@ function createOwnedNdjsonEndpoint(options: OwnedNdjsonEndpointOptions): OwnedNd
 
   return {
     address,
-    server: owned.server,
-    ready: owned.ready,
-    clients: owned.clients,
-    close: owned.close,
-  };
-}
-
-/**
- * Start one owned NDJSON endpoint at an explicit address. Binding, frame
- * reading, callback error reporting and inode-bound cleanup live here; domain
- * validation and recipient routing stay with the caller.
- */
-export function createOwnedNdjsonServer(options: OwnedNdjsonServerOptions): OwnedNdjsonServer {
-  return createOwnedNdjsonEndpoint({
-    ...options,
-    parseErrorPrefix: "Failed to parse NDJSON line",
-  });
-}
-
-export interface AgentSocketServerOptions {
-  id: string;
-  socketDir?: string | undefined;
-  root?: string | undefined;
-  /** Receives the raw parsed frame, or the validator's output when supplied. */
-  onMessage?: ((message: unknown) => unknown) | undefined;
-  onError?: ((error: Error) => void) | undefined;
-  validateFrame?: ((input: unknown) => unknown) | undefined;
-}
-
-export type AgentSocketServer = OwnedServer & { id: string; socketPath: string };
-
-/**
- * Start a local IPC server for an individual Subagent (Unix Socket / Named Pipe).
- * The returned `ready` rejects for an active, foreign, insecure or non-socket
- * endpoint; `close` is idempotent and force-closes accepted clients.
- */
-export function createAgentSocketServer(options: AgentSocketServerOptions): AgentSocketServer {
-  const { id, socketDir = DEFAULT_SOCKET_DIR, root, onMessage, onError, validateFrame } = options;
-  const socketPath = getAgentSocketPath(id, socketDir);
-  const owned = createOwnedNdjsonEndpoint({
-    address: socketPath,
-    root: root ?? path.resolve(DEFAULT_SOCKET_DIR),
-    parseErrorPrefix: "Failed to parse NDJSON line",
-    ...(onMessage === undefined ? {} : { onMessage }),
-    ...(onError === undefined ? {} : { onError }),
-    ...(validateFrame === undefined ? {} : { validateFrame }),
-  });
-
-  return {
-    id,
-    socketPath,
-    server: owned.server,
-    ready: owned.ready,
-    clients: owned.clients,
-    close: owned.close,
-  };
-}
-
-export interface BroadcastSocketServerOptions {
-  parentId: string;
-  socketDir?: string | undefined;
-  root?: string | undefined;
-  getDirectChildren?: (() => readonly string[]) | undefined;
-  /** Receives the raw parsed frame, or the validator's output when supplied. */
-  deliverMessage?: ((childId: string, message: unknown) => unknown) | undefined;
-  onError?: ((error: Error) => void) | undefined;
-  validateFrame?: ((input: unknown) => unknown) | undefined;
-}
-
-export type BroadcastSocketServer = OwnedServer & { parentId: string; socketPath: string };
-
-/**
- * Start a hierarchical direct-child broadcast IPC server.
- * When written to, fans out the message to all current direct children.
- */
-export function createBroadcastSocketServer(options: BroadcastSocketServerOptions): BroadcastSocketServer {
-  const {
-    parentId,
-    socketDir = DEFAULT_SOCKET_DIR,
-    root,
-    getDirectChildren,
-    deliverMessage,
-    onError,
-    validateFrame,
-  } = options;
-  const socketPath = getBroadcastSocketPath(parentId, socketDir);
-  const owned = createOwnedNdjsonEndpoint({
-    address: socketPath,
-    root: root ?? path.resolve(DEFAULT_SOCKET_DIR),
-    parseErrorPrefix: "Broadcast failed to parse NDJSON line",
-    ...(onError === undefined ? {} : { onError }),
-    ...(validateFrame === undefined ? {} : { validateFrame }),
-    async onMessage(frame: unknown) {
-      const children = typeof getDirectChildren === "function" ? getDirectChildren() : [];
-      const results = await Promise.allSettled(children.map(async (childId) => deliverMessage?.(childId, frame)));
-      const failure = results.find((result) => result.status === "rejected");
-      if (failure?.status === "rejected") throw failure.reason;
-    },
-  });
-
-  return {
-    parentId,
-    socketPath,
     server: owned.server,
     ready: owned.ready,
     clients: owned.clients,
@@ -332,9 +228,6 @@ export function writeSocket(
   });
 }
 
-// Retain the old import name for callers; it now waits for the result too.
-export { writeSocket as writeSocketOneWay };
-
 /** Check reserved IPC directories without creating a root service. */
 export async function isInSocketDirectory(address: string, root: string): Promise<boolean> {
   if (ipc.isNamespace(address)) return false;
@@ -389,7 +282,6 @@ export interface SocketTransport {
 export interface SocketWriteOperationOptions {
   writeFile?: ((absolutePath: string, content: unknown) => MaybePromise<unknown>) | undefined;
   mkdir?: ((directory: string) => MaybePromise<unknown>) | undefined;
-  onCheckStatus?: ((agentId: string) => MaybePromise<string | null | undefined>) | undefined;
   senderId?: string | undefined;
   resolveEndpoint?: ResolveEndpoint | undefined;
   isReservedPath?: ((address: string) => MaybePromise<boolean>) | undefined;
@@ -424,8 +316,7 @@ export function createSocketAwareWriteOperations(
     ));
   const mkdir = baseOperations.mkdir ||
     ((directory: string) => fsp.mkdir(directory, { recursive: true }));
-  const onCheckStatus = baseOperations.onCheckStatus;
-  const senderId = baseOperations.senderId || "main";
+  const senderId = baseOperations.senderId;
   const resolveEndpoint = baseOperations.resolveEndpoint;
   const isReservedPath = baseOperations.isReservedPath;
   const sendManaged = baseOperations.sendManaged;
@@ -445,23 +336,15 @@ export function createSocketAwareWriteOperations(
           );
         }
 
-        const targetId = resolved.targetId || path.basename(absolutePath, ".sock");
+        assertSender(senderId);
         if (resolved.isBroadcast) {
-          const expectedParent = resolved.parentId || "main";
+          const expectedParent = resolved.parentId;
           const normExpected = (expectedParent === "Main" || expectedParent === "main") ? "main" : expectedParent;
           const normSender = (senderId === "Main" || senderId === "main") ? "main" : senderId;
           if (normSender !== normExpected) {
             throw new SocketWriteError(
               "invalid_target",
               "invalid_target: Sender is not the parent of this broadcast endpoint.",
-            );
-          }
-        } else if (typeof onCheckStatus === "function" && targetId && targetId !== "children") {
-          const status = await onCheckStatus(targetId);
-          if (status === "stopping") {
-            throw new SocketWriteError(
-              "agent_stopping",
-              `agent_stopping: Subagent ${targetId} is currently stopping. Cannot accept messages until fully stopped.`,
             );
           }
         }

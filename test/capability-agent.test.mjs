@@ -6,7 +6,7 @@ import {
   createCapabilityDiscovery,
   providerErrorDetail,
 } from "../src/capability-agent.mjs";
-import { CAPABILITY_SEARCH_TOOL_NAME, SUBMIT_RESULT_TOOL_NAME } from "../src/capability-broker.mjs";
+import { CAPABILITY_SEARCH_TOOL_NAME, SUBMIT_RESULT_TOOL_NAME } from "../src/capability/contracts.ts";
 
 const TOOL_HIT = {
   ref: "tool://read",
@@ -39,23 +39,10 @@ const SKILL_HIT = {
   score: 3,
   filePath: "/skills/firefox-existing-profile/SKILL.md",
 };
-const REMOTE_HIT = {
-  ref: "npm:@example/pi-tools@1.2.3",
-  name: "@example/pi-tools",
-  description: "Navigation helpers for Pi.",
-  kind: "package",
-  status: "needs_approval",
-  match: "name",
-  score: 2,
-  source: "npm",
-  version: "1.2.3",
-};
 
 function groupedResult(hits = []) {
   const groups = { tools: [], mcp: [], skills: [], remote: [] };
-  for (const hit of hits) {
-    groups[hit.kind === "tool" ? "tools" : hit.kind === "mcp" ? "mcp" : hit.kind === "skill" ? "skills" : "remote"].push(hit);
-  }
+  for (const hit of hits) groups[hit.kind === "tool" ? "tools" : hit.kind === "mcp" ? "mcp" : "skills"].push(hit);
   return { status: "ok", ...groups, missingCapabilities: [], warnings: [] };
 }
 
@@ -109,7 +96,7 @@ function toolOf(state, name) {
 }
 
 test("discovery supplies guidance-aware instructions and returns selected skill and tool refs together", async () => {
-  const broker = createFakeBroker({ results: { firefox: groupedResult([TOOL_HIT, SKILL_HIT, REMOTE_HIT]) } });
+  const broker = createFakeBroker({ results: { firefox: groupedResult([TOOL_HIT, SKILL_HIT]) } });
   const { result, state } = await runDiscovery({
     broker,
     async behavior({ request, text }) {
@@ -159,7 +146,7 @@ test("a namespace is submitted by its group ref and retains all member metadata"
 });
 
 test("invented refs are rejected and accepted refs return their real metadata", async () => {
-  const broker = createFakeBroker({ results: { firefox: groupedResult([TOOL_HIT, MCP_HIT, SKILL_HIT, REMOTE_HIT]) } });
+  const broker = createFakeBroker({ results: { firefox: groupedResult([TOOL_HIT, MCP_HIT, SKILL_HIT]) } });
   const { result, state } = await runDiscovery({
     broker,
     behavior: async ({ state, request }) => {
@@ -171,10 +158,6 @@ test("invented refs are rejected and accepted refs return their real metadata", 
       const rejected = await submit.execute("call-2", { refs: ["/missing/SKILL.md", TOOL_HIT.ref] });
       assert.equal(rejected.isError, true);
       assert.match(rejected.content[0].text, /\/missing\/SKILL.md/);
-
-      const remoteRejected = await submit.execute("call-2b", { refs: [TOOL_HIT.ref, REMOTE_HIT.ref] });
-      assert.equal(remoteRejected.isError, true, "remote candidates are not selectable while approval is unsupported");
-      assert.match(remoteRejected.content[0].text, /npm:@example\/pi-tools@1\.2\.3/);
 
       const accepted = await submit.execute("call-3", {
         refs: [SKILL_HIT.ref, ` ${TOOL_HIT.ref} `, TOOL_HIT.ref],
@@ -203,7 +186,7 @@ test("invented refs are rejected and accepted refs return their real metadata", 
     result.skills.map((hit) => hit.ref),
     [SKILL_HIT.ref],
   );
-  assert.deepEqual(result.remote, [], "remote candidates never enter the selected result");
+  assert.deepEqual(result.remote, []);
   assert.deepEqual(result.coverage, { local: "searched", remote: "not_searched" });
   assert.deepEqual(result.mcp, []);
   assert.equal(result.tools[0].source, "builtin");
@@ -283,6 +266,11 @@ test("remote search is disabled, never reaches the broker, and is reported as no
       assert.equal(remote.content[0].text, 'capability_search requires src to be "local".');
       const all = await search.execute("call-2", { query: "firefox", src: "all" });
       assert.equal(all.isError, true);
+      for (const src of ["web", undefined]) {
+        const rejected = await search.execute("call-2b", src === undefined ? { query: "firefox" } : { query: "firefox", src });
+        assert.equal(rejected.isError, true);
+        assert.match(rejected.content[0].text, /capability_search requires src to be "local"/);
+      }
       await search.execute("call-3", { query: "firefox", src: "local" });
       await toolOf(state, SUBMIT_RESULT_TOOL_NAME).execute("call-4", { refs: [TOOL_HIT.ref] });
     },

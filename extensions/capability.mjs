@@ -44,8 +44,8 @@ import {
   CAPABILITY_PARAMETERS,
   CAPABILITY_TOOL_DESCRIPTION,
   CAPABILITY_TOOL_NAME,
-  createCapabilityBroker,
-} from "../src/capability-broker.mjs";
+} from "../src/capability/contracts.ts";
+import { createCapabilityBroker } from "../src/capability/broker.ts";
 import {
   CAPABILITY_DISCOVERY_SYSTEM_PROMPT,
   capabilityBudgetWarning,
@@ -59,8 +59,8 @@ const policyPrompt = JSON.parse(promptText("capability-policy.json"));
 import { installModelCallBudget } from "../src/pi-job-budget.mjs";
 import { captureInheritedContext } from "../src/inherited-context.mjs";
 import { discoverSessionSkills } from "../src/capability-skills.mjs";
-import { capabilityPublicResult } from "../src/capability-result.mjs";
-import { capabilityPromptTranscript } from "../src/capability-prompt.mjs";
+import { capabilityPublicResult } from "../src/capability/result.ts";
+import { capabilityPromptTranscript } from "../src/capability/prompt.ts";
 import { appendDiscoveryRecord } from "../src/capability/discovery-record.ts";
 import { openSubagentExecution } from "../src/subagent/execution.ts";
 import { parentModelRuntime } from "../src/subagent/model-runtime.ts";
@@ -188,11 +188,10 @@ function discoveryNotDurable(result, error) {
 
 function createProviders(pi, service) {
   return {
-    listTools: () => createEligibleToolCatalog(pi, { includeHidden: true }).tools,
+    listTools: () => createEligibleToolCatalog(pi).tools,
     listActiveTools: () => pi.getActiveTools(),
     discoverSkills: (cwd) => discoverSessionSkills(pi, { cwd, agentDir: service.agentDir, projectTrusted: service.projectTrusted }),
     readSkillFile: (filePath) => readFile(filePath, "utf8"),
-    // No remote provider: approval is not implemented.
   };
 }
 

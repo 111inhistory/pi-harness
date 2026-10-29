@@ -26,8 +26,8 @@ import {
   CAPABILITY_SEARCH_TOOL_NAME,
   SUBMIT_RESULT_PARAMETERS,
   SUBMIT_RESULT_TOOL_NAME,
-} from "./capability-broker.mjs";
-import { promptText } from "./prompt-text.mjs";
+} from "./capability/contracts.ts";
+import { promptString, promptText } from "./prompt-text.mjs";
 import { watchCapabilityBudget } from "./subagent/budget-watch.ts";
 
 const toolsPrompt = JSON.parse(promptText("capability-tools.json"));
@@ -56,13 +56,13 @@ const MISSING_QUERIES = 5;
  * while its own tool set and rules stay fixed. It is also the whole system
  * prompt in the degenerate case where the caller captured none.
  */
-export const CAPABILITY_DISCOVERY_SYSTEM_PROMPT = promptText("capability-discovery-system.md");
+export const CAPABILITY_DISCOVERY_SYSTEM_PROMPT = promptString("capability-discovery.json", "system");
 
 /**
  * The user turn that starts one discovery run. It is the only prompt the
  * internal session receives; there is no planning turn after the submission.
  */
-export const CAPABILITY_DISCOVERY_PROMPT = promptText("capability-discovery-user.md");
+export const CAPABILITY_DISCOVERY_PROMPT = promptString("capability-discovery.json", "user");
 
 /**
  * What this run actually covered. `local` counts completed local searches, so a
@@ -75,8 +75,8 @@ export function capabilityCoverage(run) {
   };
 }
 
-const GROUP_BY_ARRAY = Object.freeze({ tools: "tools", mcp: "mcp", skills: "skills", remote: "remote" });
-const GROUP_BY_KIND = Object.freeze({ tool: "tools", mcp: "mcp", skill: "skills", package: "remote" });
+const GROUP_BY_ARRAY = Object.freeze({ tools: "tools", mcp: "mcp", skills: "skills" });
+const GROUP_BY_KIND = Object.freeze({ tool: "tools", mcp: "mcp", skill: "skills" });
 
 /**
  * The broker's grouped result shape in its explicit failure form. Used for
@@ -134,11 +134,8 @@ function recordHits(run, result) {
   for (const [arrayKey, fallbackGroup] of Object.entries(GROUP_BY_ARRAY)) {
     for (const hit of ensureArray(result?.[arrayKey])) {
       if (!hit || typeof hit.ref !== "string" || hit.ref === "") continue;
-      const group = GROUP_BY_KIND[hit.kind] ?? fallbackGroup;
-      // Only local refs are valid submissions.
-      if (group === "remote") continue;
       returned += 1;
-      run.hits.set(hit.ref, { group, hit });
+      run.hits.set(hit.ref, { group: GROUP_BY_KIND[hit.kind] ?? fallbackGroup, hit });
     }
   }
   return returned;
@@ -285,7 +282,7 @@ export function capabilityBudgetWarning(warning) {
 }
 
 function submissionResult(run) {
-  const groups = { tools: [], mcp: [], skills: [], remote: [] };
+  const groups = { tools: [], mcp: [], skills: [] };
   for (const ref of run.submission.refs) {
     const record = run.hits.get(ref);
     if (!record) continue;

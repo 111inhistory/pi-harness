@@ -37,7 +37,7 @@ import type { Static } from "@earendil-works/pi-ai";
 import path from "node:path";
 
 import { captureInheritedContext } from "../inherited-context.mjs";
-import { promptText } from "../prompt-text.mjs";
+import { promptString, promptText } from "../prompt-text.mjs";
 import { DEFAULT_SOCKET_DIR, isInSocketDirectory } from "../ipc/socket.ts";
 import {
   createManagedWriteTools,
@@ -103,23 +103,10 @@ export interface SubagentSurfaceApi {
 }
 
 /**
- * The loadout policy is pure and shared with the native Job runner. These names
- * stay exported from the surface for compatibility; the implementation lives in
- * `tool-policy.ts` and takes the tool list, not an extension API.
- */
-export {
-  droppedInheritedTools,
-  harnessToolsForDepth,
-  inheritedToolNames,
-  inheritedToolsWarning,
-  transplantableToolNames,
-} from "./tool-policy.ts";
-
-/**
  * Capture one inherited-context snapshot for a child at `childDepth`, adding
  * the host-generated warning for whatever the child cannot inherit.
  *
- * The capture helper is a legacy JS boundary, so its result enters here as
+ * The capture helper is a JavaScript boundary, so its result enters here as
  * `unknown` and is validated before any field is read. A malformed capture
  * throws; the runtime that invokes this lazily reports it as
  * `inherited_snapshot_failed`.
@@ -246,7 +233,6 @@ export function installSessionSurface(
     resolveHost,
     scope,
   });
-  // Legacy registration order: create, list, stop, msg_write, write.
   if (tools.create !== null) api.registerTool(tools.create);
   api.registerTool(tools.list);
   if (tools.stop !== null) api.registerTool(tools.stop);
@@ -271,7 +257,7 @@ function managedWriteTools(
   const template = createManagedWriteTools({ cwd, senderId, host: UNRESOLVED_HOST });
   // The reserved-directory guard is a pure platform fact, not a service: an
   // ordinary file write must work even when the Subagent root cannot resolve
-  // (legacy native-file behavior).
+  // Ordinary file writes remain independent of managed messaging.
   const socketRoot = path.resolve(cwd, DEFAULT_SOCKET_DIR);
 
   /**
@@ -347,12 +333,9 @@ const TOOL_TEXT = parseToolText();
 export const SUBAGENT_NAMESPACE: ToolNamespace = Object.freeze({
   name: "subagent",
   description: TOOL_TEXT.namespace,
-  instructions: promptText("subagent-instructions.md"),
+  instructions: promptString("subagent-tools.json", "instructions"),
 });
 
-// Parameter contracts are unchanged from the legacy declaration: a task batch
-// with one required non-empty `tasks` array, an optional list filter and a
-// required stop id. Only the schemas are typed now.
 const taskParameters = Type.Object({
   context: Type.Optional(Type.String({ description: TOOL_TEXT.parameters.context })),
   tasks: Type.Array(

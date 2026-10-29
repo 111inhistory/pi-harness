@@ -222,18 +222,11 @@ export async function runPeerSenderScenario(fixture: ScenarioFixture): Promise<v
   const text = receiverRequest.text;
   assert.match(text, /PEER_SOURCE_MARKER/);
   assert.equal(text.includes("[Message from Main]"), false, "the listener must not relabel a child sender as Main");
-  if (fixture.scenario === "sender-wire") {
-    assert.equal(
-      occurrences(text, `[Message from ${sender.id}]`),
-      1,
-      "the host frames the actual native write owner exactly once",
-    );
-  } else {
-    assert.ok(
-      text.includes(`[Message from ${sender.id}]`),
-      "the receiver must preserve the native child sender",
-    );
-  }
+  assert.equal(
+    occurrences(text, `[Message from ${sender.id}]`),
+    1,
+    "the host frames the actual native write owner exactly once",
+  );
 }
 
 /**

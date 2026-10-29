@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { discoverSessionSkills } from "../src/capability-skills.mjs";
-import { createCapabilityBroker } from "../src/capability-broker.mjs";
+import { createCapabilityBroker } from "../src/capability/broker.ts";
 
 async function workspace(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-capability-skills-"));

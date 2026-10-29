@@ -6,7 +6,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 import { sendDelivery, DELIVERY_CUSTOM_TYPE } from "../../src/subagent/delivery.ts";
 
-import { createSubagentRuntime, SubagentError } from "../../src/subagent-runtime.mjs";
+import { createSubagentRuntime, SubagentError } from "../../src/subagent/runtime.ts";
 import {
   ServiceLifecycle,
   adjudicateTerminal,
@@ -16,12 +16,11 @@ import {
 } from "../../src/subagent/lifecycle.ts";
 import type {
   LifecycleError,
-  RetirableService,
   StoppingReason,
   TerminalNotification,
 } from "../../src/subagent/lifecycle.ts";
 
-interface FakeService extends RetirableService {
+interface FakeService {
   id: number;
   closed: boolean;
 }
@@ -130,6 +129,7 @@ test("terminal notifications cover completion, cancellation and failure with sen
     ],
   );
   assert.equal(fake.mainMessages[0].error, null);
+  assert.equal(fake.mainMessages[0].history, null, "a memory-only host has no derived history files");
   assert.match(fake.mainMessages[2].content, /provider failed/);
 
   // A continuation is a new execution round of the same sender; its terminal
@@ -142,6 +142,12 @@ test("terminal notifications cover completion, cancellation and failure with sen
   assert.equal(continuation.jobId, revived.jobId);
   assert.equal(continuation.round, 2);
   assert.equal(continuation.status, "completed");
+
+  // Read-only polls and repeated stops never resend a terminal notice.
+  runtime.stop(completed.id);
+  runtime.listDetailed({}, { callerId: "Main" });
+  await runtime.jobDone(revived.jobId);
+  assert.equal(fake.mainMessages.length, 4);
 });
 
 test("a terminal notification wakes an idle parent through an ordinary continuation Job", async () => {
@@ -352,11 +358,10 @@ test("service retirement is idempotent in flight and forgets a completed generat
       retired.push(service.id);
       if (service.id === 1) await gate;
       service.closed = true;
-      service.active = false;
     },
   });
 
-  const first = await lifecycle.activate(async () => ({ id: 1, closed: false, active: true }));
+  const first = await lifecycle.activate(async () => ({ id: 1, closed: false }));
   assert.equal(lifecycle.service, first);
   const firstRetirement = lifecycle.retire();
   assert.equal(lifecycle.retire(), firstRetirement, "concurrent retirement shares one operation");
@@ -365,13 +370,13 @@ test("service retirement is idempotent in flight and forgets a completed generat
   assert.equal(lifecycle.service, null);
   assert.equal(lifecycle.retiring, false);
 
-  const second = await lifecycle.activate(async () => ({ id: 2, closed: false, active: true }));
-  await lifecycle.activate(async () => ({ id: 3, closed: false, active: true }));
-  // A stale callback carrying generation two cannot retire generation three.
-  await lifecycle.retire(second);
+  // A replacement generation retires the previous one before it is published.
+  await lifecycle.activate(async () => ({ id: 2, closed: false }));
+  await lifecycle.activate(async () => ({ id: 3, closed: false }));
   assert.equal((lifecycle.service as FakeService | null)?.id, 3);
   await lifecycle.retire();
   assert.deepEqual(retired, [1, 2, 3]);
+  assert.equal(lifecycle.service, null);
   assert.equal(lifecycle.retiring, false);
 });
 
@@ -388,7 +393,6 @@ test("retirement during activation cleans up creation and allows a later activat
   const lifecycle = new ServiceLifecycle<FakeService>({
     async retire(service) {
       retired.push(service.id);
-      service.active = false;
       service.closed = true;
     },
   });
@@ -396,7 +400,7 @@ test("retirement during activation cleans up creation and allows a later activat
   const activation = lifecycle.activate(async () => {
     creationStarted();
     await creationGate;
-    return { id: 10, closed: false, active: true };
+    return { id: 10, closed: false };
   });
   await started;
   const retirement = lifecycle.retire();
@@ -410,7 +414,7 @@ test("retirement during activation cleans up creation and allows a later activat
   assert.equal(lifecycle.retiring, false);
   assert.deepEqual(retired, [10], "the invalidated creation is cleaned up exactly once");
 
-  const next = await lifecycle.activate(async () => ({ id: 11, closed: false, active: true }));
+  const next = await lifecycle.activate(async () => ({ id: 11, closed: false }));
   assert.equal(next.id, 11);
   assert.equal((lifecycle.service as FakeService | null)?.id, 11);
   await lifecycle.retire();
@@ -423,25 +427,24 @@ test("concurrent activation builds one service after retiring the previous gener
   const lifecycle = new ServiceLifecycle<FakeService>({
     retire(service) {
       retired.push(service.id);
-      service.active = false;
       service.closed = true;
     },
   });
-  await lifecycle.activate(async () => ({ id: 1, closed: false, active: true }));
+  await lifecycle.activate(async () => ({ id: 1, closed: false }));
   const [a, b] = await Promise.all([
     lifecycle.activate(async () => {
       builds += 1;
-      return { id: 2, closed: false, active: true };
+      return { id: 2, closed: false };
     }),
     lifecycle.activate(async () => {
       builds += 1;
-      return { id: 3, closed: false, active: true };
+      return { id: 3, closed: false };
     }),
   ]);
   assert.equal(a, b);
   assert.equal(builds, 1);
   assert.deepEqual(retired, [1]);
-  assert.equal(lifecycle.generation, 2);
+  assert.equal((lifecycle.service as FakeService | null)?.id, 2);
 });
 
 test("a frozen terminal outcome keeps its status when history finalization fails", async () => {

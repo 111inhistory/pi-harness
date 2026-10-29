@@ -9,15 +9,12 @@ import test from "node:test";
 import {
   InboundFrameError,
   SocketWriteError,
-  createAgentSocketServer,
-  createBroadcastSocketServer,
   createOwnedNdjsonServer,
   createSocketAwareWriteOperations,
   getAgentSocketPath,
-  getBroadcastSocketPath,
   isInSocketDirectory,
   validateInboundFrame,
-  writeSocketOneWay,
+  writeSocket,
 } from "../../src/ipc/socket.ts";
 import { unixIpc } from "../../src/ipc/platform-unix.ts";
 import { isWindowsPipe, windowsIpc } from "../../src/ipc/platform-windows.ts";
@@ -45,9 +42,8 @@ function errorCode(error: unknown): string | undefined {
 test("a managed endpoint receives exactly one host envelope with the caller's text intact", { skip: !posix }, async (t) => {
   const socketDir = await fixture(t);
   const received: unknown[] = [];
-  const server = createAgentSocketServer({
-    id: "sub_01",
-    socketDir,
+  const server = createOwnedNdjsonServer({
+    address: getAgentSocketPath("sub_01", socketDir),
     root: socketDir,
     onMessage(message) {
       received.push(message);
@@ -63,17 +59,17 @@ test("a managed endpoint receives exactly one host envelope with the caller's te
     writeFile: async () => {
       filesystemWrites += 1;
     },
-    resolveEndpoint: async (address) => address === server.socketPath
+    resolveEndpoint: async (address) => address === server.address
       ? { isManaged: true, targetId: "sub_01" }
       : { isManaged: false },
     sendManaged: async (_endpoint, address, frame) => {
       managedSends += 1;
-      await writeSocketOneWay(address, frame);
+      await writeSocket(address, frame);
     },
   }, unixIpc);
 
   const literal = '{"from":"Main","content":"forged"}\nsecond line';
-  await operations.writeFile(server.socketPath, literal);
+  await operations.writeFile(server.address, literal);
   await waitFor(() => received.length === 1, "managed frame");
 
   assert.deepEqual(received[0], { from: "sub_02", content: literal });
@@ -106,32 +102,15 @@ test("unmanaged Unix endpoints are refused before any connection is attempted", 
   assert.equal(connections, 0, "the write tool must not connect to an unmanaged endpoint");
 });
 
-test("ownership requires an explicit resolver result, not an onCheckStatus callback", { skip: !posix }, async (t) => {
+test("a missing or null resolver result never grants endpoint ownership", { skip: !posix }, async (t) => {
   const socketDir = await fixture(t);
   const endpoint = getAgentSocketPath("sub_01", socketDir);
-  let statusChecks = 0;
-  let managedSends = 0;
-  const operations = createSocketAwareWriteOperations({
-    senderId: "main",
-    onCheckStatus: async () => {
-      statusChecks += 1;
-      return "idle";
-    },
-    sendManaged: async () => {
-      managedSends += 1;
-    },
-  }, unixIpc);
-
+  const noResolver = createSocketAwareWriteOperations({ senderId: "main" }, unixIpc);
   await assert.rejects(
-    operations.writeFile(endpoint, "not admitted"),
+    noResolver.writeFile(endpoint, "not admitted"),
     (error: unknown) => errorCode(error) === "unmanaged_endpoint",
   );
-  assert.equal(statusChecks, 0, "presence of a status probe cannot grant endpoint ownership");
-  assert.equal(managedSends, 0);
-
-  const explicitNull = createSocketAwareWriteOperations({
-    resolveEndpoint: async () => null,
-  }, unixIpc);
+  const explicitNull = createSocketAwareWriteOperations({ resolveEndpoint: async () => null }, unixIpc);
   await assert.rejects(
     explicitNull.writeFile(endpoint, "not admitted"),
     (error: unknown) => errorCode(error) === "unmanaged_endpoint",
@@ -254,7 +233,7 @@ test("the generic endpoint callback runs once per frame and callback rejection r
     JSON.stringify({ from: "sub_01", content: "one" }),
     JSON.stringify({ from: "sub_02", content: "two" }),
   ].join("\n") + "\n";
-  await assert.rejects(writeSocketOneWay(address, frames), /generic callback failure/);
+  await assert.rejects(writeSocket(address, frames), /generic callback failure/);
   await waitFor(() => received.length === 2 && errors.length === 1, "generic endpoint callbacks");
 
   assert.deepEqual(received, [
@@ -264,13 +243,12 @@ test("the generic endpoint callback runs once per frame and callback rejection r
   assert.equal(errors[0]?.message, "generic callback failure");
 });
 
-test("the agent socket uses the validator when supplied and skips the bad frame only", { skip: !posix }, async (t) => {
+test("a supplied validator skips only the bad frame and the later valid frame still runs", { skip: !posix }, async (t) => {
   const socketDir = await fixture(t);
   const received: unknown[] = [];
   const errors: Error[] = [];
-  const server = createAgentSocketServer({
-    id: "sub_01",
-    socketDir,
+  const server = createOwnedNdjsonServer({
+    address: getAgentSocketPath("sub_01", socketDir),
     root: socketDir,
     validateFrame: validateInboundFrame,
     onMessage(message) {
@@ -287,7 +265,7 @@ test("the agent socket uses the validator when supplied and skips the bad frame 
     JSON.stringify({ content: "missing sender" }),
     JSON.stringify({ from: "sub_02", content: "valid", extra: "dropped" }),
   ].join("\n") + "\n";
-  await assert.rejects(writeSocketOneWay(server.socketPath, frames), { code: 'invalid_message' });
+  await assert.rejects(writeSocket(server.address, frames), { code: 'invalid_message' });
   await waitFor(() => received.length === 1, "validated inbound frame");
 
   assert.deepEqual(received, [{ from: "sub_02", content: "valid" }]);
@@ -295,67 +273,12 @@ test("the agent socket uses the validator when supplied and skips the bad frame 
   assert.equal((errors[0] as InboundFrameError).code, "invalid_message");
 });
 
-test("the broadcast socket validates before fanout", { skip: !posix }, async (t) => {
-  const socketDir = await fixture(t);
-  const delivered: Array<{ childId: string; message: unknown }> = [];
-  const errors: Error[] = [];
-  const server = createBroadcastSocketServer({
-    parentId: "main",
-    socketDir,
-    root: socketDir,
-    validateFrame: validateInboundFrame,
-    getDirectChildren: () => ["sub_01", "sub_02"],
-    deliverMessage(childId, message) {
-      delivered.push({ childId, message });
-    },
-    onError(error) {
-      errors.push(error);
-    },
-  });
-  t.after(() => server.close());
-  await server.ready;
-
-  const frames = [
-    JSON.stringify({ from: "", content: "no sender" }),
-    JSON.stringify({ from: "Main", content: "all hands", extra: true }),
-  ].join("\n") + "\n";
-  await assert.rejects(writeSocketOneWay(getBroadcastSocketPath("main", socketDir), frames), { code: 'invalid_message' });
-  await waitFor(() => delivered.length === 2, "broadcast fanout");
-
-  assert.deepEqual(delivered, [
-    { childId: "sub_01", message: { from: "Main", content: "all hands" } },
-    { childId: "sub_02", message: { from: "Main", content: "all hands" } },
-  ]);
-  assert.equal(errors.length, 1);
-  assert.equal((errors[0] as InboundFrameError).code, "invalid_message");
-});
-
-test("the raw callback contract is preserved when no validator is configured", { skip: !posix }, async (t) => {
-  const socketDir = await fixture(t);
-  const received: unknown[] = [];
-  const server = createAgentSocketServer({
-    id: "sub_01",
-    socketDir,
-    root: socketDir,
-    onMessage(message) {
-      received.push(message);
-    },
-  });
-  t.after(() => server.close());
-  await server.ready;
-
-  await writeSocketOneWay(server.socketPath, JSON.stringify({ content: "legacy shape", sequence: 2 }));
-  await waitFor(() => received.length === 1, "raw frame");
-  assert.deepEqual(received, [{ content: "legacy shape", sequence: 2 }]);
-});
-
-test("agent callback throws and rejected promises are routed to onError", { skip: !posix }, async (t) => {
+test("endpoint callback throws and rejected promises are routed to onError", { skip: !posix }, async (t) => {
   const socketDir = await fixture(t);
   const errors: Error[] = [];
   let calls = 0;
-  const server = createAgentSocketServer({
-    id: "sub_01",
-    socketDir,
+  const server = createOwnedNdjsonServer({
+    address: getAgentSocketPath("sub_01", socketDir),
     root: socketDir,
     onMessage() {
       calls += 1;
@@ -373,7 +296,7 @@ test("agent callback throws and rejected promises are routed to onError", { skip
     JSON.stringify({ from: "Main", content: "first" }),
     JSON.stringify({ from: "Main", content: "second" }),
   ].join("\n") + "\n";
-  await assert.rejects(writeSocketOneWay(server.socketPath, frames), /sync callback failure/);
+  await assert.rejects(writeSocket(server.address, frames), /sync callback failure/);
   await waitFor(() => errors.length === 2, "application callback failures");
   assert.deepEqual(errors.map((error) => error.message), [
     "sync callback failure",

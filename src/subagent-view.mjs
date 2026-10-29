@@ -56,26 +56,6 @@ function renderSummary(viewsDir, view) {
   return `${lines.join("\n")}\n`;
 }
 
-function textOf(content) {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((part) => part?.type === "text" && typeof part.text === "string")
-    .map((part) => part.text)
-    .join("\n");
-}
-
-/** Final assistant text inside exactly these messages. */
-export function readFinalText(messages) {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role !== "assistant") continue;
-    const text = textOf(message.content);
-    if (text !== "") return text;
-  }
-  return "";
-}
-
 function serializePart(part) {
   if (!part || typeof part !== "object") return { type: "unknown" };
   if (part.type === "text") return { type: "text", text: String(part.text ?? "") };

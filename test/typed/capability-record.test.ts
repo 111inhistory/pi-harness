@@ -7,7 +7,7 @@ import {
   discoveryRecords,
   normalizeDiscoveryMemory,
 } from "../../src/capability/discovery-record.ts";
-import { CAPABILITY_SECTION, capabilityPromptTranscript } from "../../src/capability-prompt.mjs";
+import { CAPABILITY_SECTION, capabilityPromptTranscript } from "../../src/capability/prompt.ts";
 
 const coverage = { local: "searched", remote: "not_searched" };
 const tool = {
@@ -50,7 +50,7 @@ test("the persisted memory keeps canonical local hits and excludes remote artifa
     status: "partial",
     tools: [tool, group],
     mcp: [],
-    skills: [{ ref: "skill://rules", name: "rules", instructions: "Prefer short decks", caveats: [{ summary: "Needs a template" }] }],
+    skills: [{ ref: "/skills/rules/SKILL.md", name: "rules", filePath: "/skills/rules/SKILL.md" }],
     guidance: [{ ref: group.ref, name: group.name, instructions: "Updated guidance" }],
     remote: [remote],
     warnings: ["skill body read failed"],
@@ -61,7 +61,7 @@ test("the persisted memory keeps canonical local hits and excludes remote artifa
   assert.deepEqual(memory.tools.map((hit) => hit.ref), [tool.ref, group.ref]);
   assert.deepEqual(memory.tools[1]?.tools?.map((hit) => hit.name), ["deck_pages"]);
   assert.equal(memory.tools[1]?.tools?.[0]?.description, "List pages");
-  assert.equal(memory.skills[0]?.caveats?.length, 1);
+  assert.equal(memory.skills[0]?.filePath, "/skills/rules/SKILL.md");
   assert.deepEqual(memory.guidance?.map((hit) => hit.ref), [group.ref]);
   assert.deepEqual(memory.coverage, coverage);
   assert.equal("remote" in memory, false, "no remote candidate is ever persisted");
@@ -127,9 +127,9 @@ test("the record does not decide execution: projection filters by current permis
   const branch = [{ type: "custom", customType: CAPABILITY_DISCOVERY_RECORD, data: { version: 1, result: memory } }];
   const head = [{ role: "system", content: "base", sections: { preamble: "Base" }, timestamp: 0 }];
   const allowed = capabilityPromptTranscript(head, branch, { allowsTool: () => true });
-  const denied = capabilityPromptTranscript(head, branch, { allowsTool: (() => false) as unknown as () => true });
-  assert.match(allowed[0].sections[CAPABILITY_SECTION], /tool:\/\/slides/);
-  assert.doesNotMatch(denied[0].sections[CAPABILITY_SECTION] ?? "", /tool:\/\/slides|namespace:\/\/deck/);
+  const denied = capabilityPromptTranscript(head, branch, { allowsTool: () => false });
+  assert.match(allowed[0]?.sections?.[CAPABILITY_SECTION] ?? "", /tool:\/\/slides/);
+  assert.doesNotMatch(denied[0]?.sections?.[CAPABILITY_SECTION] ?? "", /tool:\/\/slides|namespace:\/\/deck/);
 });
 
 
@@ -153,45 +153,7 @@ function projectedSection(messages: Sectioned[]): string | undefined {
   return section;
 }
 
-test("legacy tool-result details still restore memory when no record exists", () => {
-  const branch = [
-    { type: "message", id: "m1", message: { role: "user", content: "task", timestamp: 1 } },
-    {
-      type: "message",
-      id: "m2",
-      message: {
-        role: "toolResult",
-        toolName: "capability",
-        toolCallId: "legacy-call",
-        content: [],
-        details: {
-          status: "ok",
-          tools: [tool],
-          mcp: [],
-          skills: [],
-          remote: [remote],
-          warnings: ["old diag"],
-        },
-        timestamp: 2,
-      },
-    },
-  ];
-  assert.deepEqual(discoveryRecords(branch), [], "the old branch has no custom record");
-  const projected = capabilityPromptTranscript(
-    [
-      { role: "system", content: "base", sections: { preamble: "Base" }, timestamp: 0 },
-      { role: "user", content: "task", timestamp: 1 },
-      { role: "toolResult", toolName: "capability", toolCallId: "legacy-call", content: [], details: { status: "ok" }, timestamp: 2 },
-    ],
-    branch,
-  ) as unknown as Sectioned[];
-  const section = projectedSection(projected);
-  assert.ok(section, "an upgraded session keeps its previously discovered capability");
-  assert.match(section, /tool:\/\/slides/);
-  assert.doesNotMatch(section, /npm:|"needs_approval"/);
-});
-
-test("a custom record supersedes the tool-result details of the same call", () => {
+test("tool-result details never supply memory; records anchor visible and nested calls", () => {
   const memory = normalizeDiscoveryMemory({ status: "ok", tools: [tool], mcp: [], skills: [] }, coverage);
   const visibleMessage = {
     role: "toolResult",
@@ -202,7 +164,7 @@ test("a custom record supersedes the tool-result details of the same call", () =
       status: "ok",
       tools: [],
       mcp: [],
-      skills: [{ ref: "skill://stale-legacy", name: "stale-legacy", description: "Must not be used" }],
+      skills: [{ ref: "skill://stale-details", name: "stale-details", description: "Must not be used" }],
     },
     timestamp: 2,
   };
@@ -220,7 +182,7 @@ test("a custom record supersedes the tool-result details of the same call", () =
   const section = projectedSection(projected);
   assert.ok(section);
   assert.match(section, /tool:\/\/slides/);
-  assert.doesNotMatch(section, /skill:\/\/stale-legacy/, "the record wins for its own tool call id");
+  assert.doesNotMatch(section, /skill:\/\/stale-details/, "tool-result details are never read");
   assert.equal(section.match(/tool:\/\/slides/g)?.length, 1, "the same discovery is not counted twice");
 
   // Nested canonical record only (no visible result) also projects.

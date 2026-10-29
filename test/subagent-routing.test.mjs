@@ -19,9 +19,9 @@ const CONFIG = {
     model: "Select the model for delegated_assignment under selected_role.",
   },
   roles: [
-    { id: "researcher", instructions: "RESEARCH INSTRUCTIONS", thinking: "medium", excludeTools: ["edit", "write", "grep", "find", "ls"], enableTools: ["msg_write"] },
-    { id: "executor", instructions: "EXECUTOR INSTRUCTIONS", thinking: "high", excludeTools: ["grep", "find", "ls"], enableTools: [] },
-    { id: "reviewer", instructions: "REVIEWER INSTRUCTIONS", thinking: "high", excludeTools: ["bash", "edit", "write", "grep", "find", "ls"], enableTools: ["msg_write"] },
+    { id: "researcher", instructions: "RESEARCH INSTRUCTIONS", excludeTools: ["edit", "write", "grep", "find", "ls"], enableTools: ["msg_write"] },
+    { id: "executor", instructions: "EXECUTOR INSTRUCTIONS", excludeTools: ["grep", "find", "ls"], enableTools: [] },
+    { id: "reviewer", instructions: "REVIEWER INSTRUCTIONS", excludeTools: ["bash", "edit", "write", "grep", "find", "ls"], enableTools: ["msg_write"] },
   ].map((role) => ({
     ...role,
     candidates: [
@@ -160,7 +160,7 @@ test("selects the probability argmax and keeps ties in the configured criteria o
   assert.equal(registry.calls[3].context.state.selected_role.id, "researcher");
 });
 
-test("uses the selected candidate thinking directly without a role clamp", async () => {
+test("uses the selected candidate's direct thinking level", async () => {
   const registry = createRegistry({
     responses: [
       stopped({ role: choice("executor", { researcher: 0.1, executor: 0.8, reviewer: 0.1 }) }),
@@ -169,7 +169,7 @@ test("uses the selected candidate thinking directly without a role clamp", async
   });
   const result = await routeSubagent({ registry, budget: createBudget(), task: "TASK", config: CONFIG });
   assert.equal(result.model, GEMINI);
-  assert.equal(result.thinkingLevel, "medium", "the executor role's legacy thinking must not clamp the candidate");
+  assert.equal(result.thinkingLevel, "medium", "the selected candidate's direct level is authoritative");
 });
 
 test("the chosen candidate's direct level decides thinking for a multi-model pool", async () => {
@@ -412,20 +412,16 @@ test("Pi user routing config is re-read and never falls back to the bundled temp
   assert.throws(() => loadSubagentRoutingConfig(configPath), (error) => error.code === "routing_invalid_config");
 });
 
-test("reviewer has only Sol; its direct high thinking survives legacy role defaults and skips model classification", async () => {
-  const template = loadSubagentRoutingConfig(fileURLToPath(new URL("../config/subagent-routing.json", import.meta.url)));
+test("reviewer has only Sol; its direct high thinking skips model classification", async () => {
+  const config = loadSubagentRoutingConfig(fileURLToPath(new URL("../config/subagent-routing.json", import.meta.url)));
   const sol = { type: "chat", provider: "openai-codex", id: "gpt-6.1-sol" };
-  for (const desired of ["low", "medium", "high"]) {
-    const config = structuredClone(template);
-    config.roles.find((role) => role.id === "reviewer").thinking = desired;
-    const registry = createRegistry({ models: new Map([[sol.id, sol]]), responses: [stopped({ role: choice("reviewer", { researcher: 0.1, executor: 0.1, reviewer: 0.8 }) })] });
-    const budget = createBudget();
-    const result = await routeSubagent({ registry, budget, task: "Independently review", config });
-    assert.equal(result.model, sol);
-    assert.equal(result.thinkingLevel, "high", `candidate thinking must stay high regardless of legacy role thinking ${desired}`);
-    assert.equal(registry.calls.length, 1);
-    assert.deepEqual(budget.debits, [1]);
-  }
+  const registry = createRegistry({ models: new Map([[sol.id, sol]]), responses: [stopped({ role: choice("reviewer", { researcher: 0.1, executor: 0.1, reviewer: 0.8 }) })] });
+  const budget = createBudget();
+  const result = await routeSubagent({ registry, budget, task: "Independently review", config });
+  assert.equal(result.model, sol);
+  assert.equal(result.thinkingLevel, "high");
+  assert.equal(registry.calls.length, 1);
+  assert.deepEqual(budget.debits, [1]);
 });
 
 test("role pools share global Preferences and constrain model classification", async () => {

@@ -7,10 +7,8 @@
  * depth plus the catalog size; it never re-resolves the scope once per tool and
  * never keeps a view beyond the synchronous call.
  *
- * Hidden filtering stays a caller decision. `createEligibleToolCatalog`
- * excludes hidden tools by default (request projections and interface supply),
- * while the broker's tool search deliberately keeps the legacy behavior of
- * listing every qualified registered tool, including hidden ones.
+ * Hidden tools never enter an eligible catalog. The broker also drops them at
+ * its own boundary, so an unreachable registration cannot become a candidate.
  *
  * Tools are returned as their original generic records. Nothing is reduced to a
  * name-only shape, so description, parameters, output schema, guidelines and
@@ -25,12 +23,6 @@ import {
 /** A catalog whose tool records keep their concrete metadata type. */
 export interface TypedToolCatalog<T extends CapabilityScopedTool> {
   getAllTools(): readonly T[];
-}
-
-/** Options that preserve each caller's historical hidden-tool behavior. */
-export interface EligibleToolOptions {
-  /** Keep hidden registered tools, as the broker tool search always has. */
-  readonly includeHidden?: boolean;
 }
 
 /** One operation's qualified tools, names and lookup map. */
@@ -48,12 +40,9 @@ export interface EligibleToolCatalog<T extends CapabilityScopedTool> {
  */
 export function createEligibleToolCatalog<T extends CapabilityScopedTool>(
   catalog: TypedToolCatalog<T>,
-  options: EligibleToolOptions = {},
 ): EligibleToolCatalog<T> {
   const view = createCapabilityScopeView(catalog);
-  const includeHidden = options.includeHidden === true;
-  const tools = catalog.getAllTools().filter((tool) =>
-    (includeHidden || tool.exposure !== "hidden") && view.allows(tool.name));
+  const tools = catalog.getAllTools().filter((tool) => tool.exposure !== "hidden" && view.allows(tool.name));
   const names = new Set<string>();
   const byName = new Map<string, T>();
   for (const tool of tools) {

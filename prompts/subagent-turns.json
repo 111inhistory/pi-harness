@@ -1,4 +1,5 @@
 {
+  "context": "You are Subagent {agentId}. Your direct parent is {parentId}. To message that parent, use your enabled write or msg_write with parentSocket {parentSocket} and plain text content; omit from and to. The host frames the transport and binds your sender identity. Your execution round also ends with an automatic host notification; do not send a separate completion message unless you have content the parent needs.",
   "batchContext": "# Batch context",
   "task": "# Task",
   "messageFrom": "Message from",

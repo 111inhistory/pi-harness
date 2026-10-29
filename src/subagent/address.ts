@@ -4,7 +4,7 @@
  * The lifecycle only needs the address string of an actor; it must not load
  * the Socket transport (or its filesystem ownership code) to print a path.
  * The transport remains the owner of binding, permission checks and cleanup.
- * `src/subagent-runtime.mjs` therefore keeps the transport-free default, and a
+ * `src/subagent/runtime.ts` therefore keeps the transport-free default, and a
  * host may inject its own formatter through `RuntimeOptions.agentSocketPath`.
  */
 

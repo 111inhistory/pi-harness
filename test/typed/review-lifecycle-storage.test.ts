@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createSubagentRuntime, SubagentError } from "../../src/subagent-runtime.mjs";
+import { createSubagentRuntime, SubagentError } from "../../src/subagent/runtime.ts";
 import { ServiceLifecycle } from "../../src/subagent/lifecycle.ts";
-import type { RetirableService } from "../../src/subagent/lifecycle.ts";
 
 interface StartedJobHandle {
   done: Promise<{ result?: unknown; status?: string }>;
@@ -40,9 +39,8 @@ interface JobsQueryResult {
   jobs: JobRecordView[];
 }
 
-interface DummyService extends RetirableService {
+interface DummyService {
   id: number;
-  active: boolean;
   closed: boolean;
 }
 
@@ -88,7 +86,7 @@ test("A7 regression: listDetailed isolates history lookup failure to its own ite
 
   await Promise.all([runtime.jobDone(id1), runtime.jobDone(id2)]);
 
-  const detailed = runtime.listDetailed() as DetailedListResult;
+  const detailed = runtime.listDetailed({}, { callerId: "Main" }) as DetailedListResult;
   const healthy = detailed.items.find((item) => item.id === id1);
   const broken = detailed.items.find((item) => item.id === id2);
   assert.ok(healthy, "Healthy item is returned even when a sibling history lookup fails");
@@ -196,7 +194,6 @@ test("A6 regression: failed retirement cannot publish a replacement generation",
 
   const lifecycle = new ServiceLifecycle<DummyService>({
     async retire(service) {
-      service.active = false;
       // Simulate retirement failure (e.g. native SDK execution failed to idle within timeout)
       if (nativeExecutionAlive) {
         throw new Error("Native SDK execution did not idle within timeout");
@@ -205,8 +202,8 @@ test("A6 regression: failed retirement cannot publish a replacement generation",
     },
   });
 
-  await lifecycle.activate(async (gen) => ({ id: gen, active: true, closed: false }));
-  assert.equal(lifecycle.generation, 1);
+  const first = await lifecycle.activate(async (gen) => ({ id: gen, closed: false }));
+  assert.equal(lifecycle.service, first);
 
   // Retirement fails
   await assert.rejects(lifecycle.retire(), /Native SDK execution did not idle/);
@@ -216,8 +213,9 @@ test("A6 regression: failed retirement cannot publish a replacement generation",
   let created = false;
   await assert.rejects(lifecycle.activate(async (gen) => {
     created = true;
-    return { id: gen, active: true, closed: false };
+    return { id: gen, closed: false };
   }), /Native SDK execution did not idle/);
   assert.equal(created, false);
-  assert.equal(lifecycle.generation, 1);
+  assert.equal(lifecycle.service, null, "the failed retirement keeps the published service fenced");
+  assert.equal(lifecycle.retiring, true);
 });

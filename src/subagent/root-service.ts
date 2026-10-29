@@ -153,7 +153,7 @@ export class RootService implements ManagedWriteHost {
       models: { inherited: (model) => capturedModel(model, this.#registry) },
       routing: { route: (input) => this.#route(input) },
       tools: { catalog: () => options.api.getAllTools() },
-      listeners: { restore: async () => { await this.listeners.sync(); } },
+      listeners: { sync: () => this.listeners.sync() },
       notify: (message) => this.#report(new Error(message)),
     });
     this.runtime = createSubagentRuntime({

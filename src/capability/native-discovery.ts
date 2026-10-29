@@ -22,30 +22,15 @@ function isMcpExecutionTool(name: string): boolean {
   return name.startsWith('mcp__') || name === 'read_mcp_resource';
 }
 
-/** Read selection from the current branch, never from a process-wide allowlist. */
+/** Read selection from canonical branch records, never from a process-wide allowlist. */
 function selectedNames(ctx: ExtensionContext): Set<string> {
-  const branch = ctx.sessionManager.getBranch();
-  const records = discoveryRecords(branch);
-  const canonicalCalls = new Set(records.flatMap((record) => record.toolCallId ? [record.toolCallId] : []));
-  const results: unknown[] = records.map((record) => record.result);
-  for (const entry of branch) {
-    if (entry.type !== 'message' || entry.message.role !== 'toolResult') continue;
-    const message = entry.message;
-    if (message.toolName !== 'capability' || message.isError || canonicalCalls.has(message.toolCallId)) continue;
-    results.push(message.details);
-  }
   const names = new Set<string>();
-  for (const result of results) {
-    if (!result || typeof result !== 'object') continue;
-    const value = result as Record<string, unknown>;
-    if (value['status'] !== 'ok' && value['status'] !== 'partial') continue;
-    for (const category of ['tools', 'mcp']) {
-      const hits = value[category];
-      if (!Array.isArray(hits)) continue;
-      for (const hit of hits) {
-        if (!hit || typeof hit !== 'object' || (hit.status && hit.status !== 'available')) continue;
-        for (const member of Array.isArray(hit.tools) ? hit.tools : [hit]) {
-          if (typeof member?.name === 'string') names.add(member.name);
+  for (const result of discoveryRecords(ctx.sessionManager.getBranch()).map((record) => record.result)) {
+    for (const category of ['tools', 'mcp'] as const) {
+      for (const hit of result[category]) {
+        if (hit.status && hit.status !== 'available') continue;
+        for (const member of hit.tools ?? [hit]) {
+          if (typeof member.name === 'string') names.add(member.name);
         }
       }
     }

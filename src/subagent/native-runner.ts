@@ -82,7 +82,6 @@ class LiveJob {
   child: NativeChildApi | null = null;
   closed = false;
   cancelled = false;
-  done: Promise<NativeJobOutcome> | null = null;
 
   constructor(request: JobRequest) {
     this.jobId = request.jobId;
@@ -125,30 +124,7 @@ export class NativeJobRunner {
     // Register before the async body runs: a hand-over racing startup must find
     // this Job and be buffered, never be answered as an unknown Job.
     this.#jobs.set(request.jobId, live);
-    const done = this.#run(request, live);
-    live.done = done;
-    return { done, cancel: () => { live.cancel(); } };
-  }
-
-  /** Cancel one live run; false when it already closed. */
-  cancel(jobId: string): boolean {
-    const live = this.#jobs.get(jobId);
-    if (live === undefined) return false;
-    live.cancel();
-    return true;
-  }
-
-  /** The pending outcome of one live run, or null when it is not live. */
-  done(jobId: string): Promise<NativeJobOutcome> | null {
-    return this.#jobs.get(jobId)?.done ?? null;
-  }
-
-  /** The live Job of an actor, for the root's delivery routing. */
-  liveJobId(agentId: string): string | null {
-    for (const [jobId, live] of this.#jobs) {
-      if (live.agentId === agentId && !live.closed) return jobId;
-    }
-    return null;
+    return { done: this.#run(request, live), cancel: () => { live.cancel(); } };
   }
 
   /** The installed child surface of an actor's live run (capability parent scope). */
@@ -485,7 +461,7 @@ export class NativeJobRunner {
       // instead of rewriting or dropping them.
       const jobMessages = (): unknown[] => messagesAfter(manager, boundary);
 
-      await deps.listeners.restore({ agentId: request.agentId, depth, continuation: isContinuation });
+      await deps.listeners.sync();
 
       let jobErr: unknown = null;
 

@@ -8,7 +8,7 @@ import { AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import capabilityExtension from "../extensions/capability.mjs";
 import { getCurrentSystemMessage } from "../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js";
 import { convertResponsesMessages } from "../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
-import { CAPABILITY_SECTION, capabilityPromptTranscript } from "../src/capability-prompt.mjs";
+import { CAPABILITY_SECTION, capabilityPromptTranscript } from "../src/capability/prompt.ts";
 import { CAPABILITY_DISCOVERY_RECORD, appendDiscoveryRecord } from "../src/capability/discovery-record.ts";
 
 const head = { role: "system", content: "", sections: { preamble: "Unchanging base" }, timestamp: 0 };

@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import subagentExtension from './subagent.mjs';
+import subagentExtension from '../src/subagent/extension.ts';
 import capabilityExtension from './capability.mjs';
 import { installCapabilityMcp } from '../src/capability/native-discovery.ts';
 

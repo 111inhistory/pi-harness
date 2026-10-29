@@ -18,7 +18,7 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 
 import capabilityExtension from "../../extensions/capability.mjs";
 import { CAPABILITY_DISCOVERY_RECORD } from "../../src/capability/discovery-record.ts";
-import { CAPABILITY_SECTION } from "../../src/capability-prompt.mjs";
+import { CAPABILITY_SECTION } from "../../src/capability/prompt.ts";
 
 /** A request as the fake runtime observes it (the projection is request-only). */
 type ObservedRequest = {
