@@ -5,5 +5,6 @@
   "messageFrom": "Message from",
   "originalAssignment": "# Original assignment",
   "restatement": "This agent's first Job was stopped before its conversation recorded anything, so its assignment is restated here.",
-  "control": "The messages above were just added to this conversation; continue with the original task now."
+  "control": "The messages above were just added to this conversation; continue with the original task now.",
+  "inheritedContext": ""
 }

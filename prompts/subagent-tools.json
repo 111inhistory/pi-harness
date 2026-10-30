@@ -1,34 +1,47 @@
 {
-  "namespace": "Delegate independent background tasks, exchange messages, and collect their results.",
-  "instructions": "Where available, use subagent_create to delegate independent tasks. Fresh agents need self-contained task/context; inheritContext copies this session's snapshot. Agents share the working directory; avoid simultaneous edits to the same files.\nEach parent can have four active children, with two child levels. Each execution round ends with a host terminal notification carrying its status, job and round; use subagent_list and read history.summary for the outcome or history.cleanJsonl for full messages.\nrunning includes initialization; stopping waits for execution exit; finalizing writes history; stopped means ended, not necessarily succeeded. Use subagent_stop only to cancel unwanted work.\nTo send a message, use write if enabled, otherwise msg_write, with the returned socket path and plain text content. The host binds the sender, frames the transport and omits from/to; do not write your own Socket client.\nTo contact your direct parent, use your enabled write or msg_write with the parent socket stated in your agent context. Main's receiving socket is distinct from main/children.sock; the latter only broadcasts downward.\nA successful write is not a task result. Writing to a stopped agent starts a new run; wait for stopped before messaging an agent that is stopping or finalizing.\nYour children.sock endpoint broadcasts only to your direct children, never recursively. Query progress when needed, not in a tight loop.",
-  "parameters": {
-    "context": "Background, constraints, and source material shared by every task in this batch.",
-    "tasks": "Independent tasks. Order is preserved in the result, but it does not create execution dependencies.",
-    "name": "Caller-facing label; defaults to none.",
-    "task": "Self-contained assignment: deliverable, scope, and how to verify completion.",
-    "inheritContext": "Copy this session's conversation, system prompt, model, and thinking at creation time. Default false: start without this session's chat history.",
-    "all": "Show every agent, including Main and stopped agents, without group limits. Default false.",
-    "filterId": "Optional agent id to filter the visible list. Use all: true to query outside the default view.",
-    "stopId": "The subagent id to stop.",
-    "messagePath": "Returned Unix Socket or Windows Named Pipe address.",
-    "messageContent": "Plain-text message body. The host frames the transport and binds the sender."
-  },
+  "namespace": "Orchestrate independent background subagents for concurrent execution.",
+  "instructions": "Offload parallel, self-contained work to subagents while continuing your own work. A subagent can handle internally coupled steps, but subagents must remain independent of each other. Keep shared coupling in the current agent, or isolate potential conflicts in git worktrees for the main agent to merge. Use subagent_list to check child or parent status. Use write or msg_write to the agent address to send messages without opening custom socket connections. Messaging a stopped agent revives it and starts a new round. Use the parent address to reach your parent, or children.sock to broadcast to all direct children.",
+
   "create": {
-    "description": "Create independent background agents. Returns each agent's id, status, socket, and history paths; does not wait for results.",
+    "description": "Create independent background agents. Waits until every child has dispatched its first model call through the SDK, then returns id and socket, without status. Does not wait for model output or task completion. Startup failure reports the failed IDs; registered agents remain and must not be blindly recreated.",
     "snippet": "Delegate independent tasks to background agents",
-    "guideline": "Write requirements for subagents primarily in English."
+    "guideline": "Write requirements for subagents primarily in English.",
+    "parameters": {
+      "context": "Background, constraints, and source material shared by every task in this batch.",
+      "tasks": {
+        "description": "Independent tasks. Order is preserved in the result, but it does not create execution dependencies.",
+        "items": {
+          "name": "Caller-facing label; defaults to none.",
+          "task": "Self-contained assignment: deliverable, scope, and how to verify completion.",
+          "inheritContext": "Copy this session's conversation, system prompt, model, and thinking at creation time. Default false: start without this session's chat history."
+        }
+      }
+    }
   },
   "list": {
-    "description": "List the parent, peers (including self), and own children. Each group is capped at the per-parent concurrency limit: active first, then most recently stopped. Main also expands visible active children; stopped nodes and peers are not expanded. Set all: true for every agent. Main has no subagent history paths. Does not wait for completion.",
-    "snippet": "Check background agent progress and history paths"
+    "description": "Return a children tree: Main roots its view at Main; a child roots its view at its direct parent, with peers (including self) and its own children. Each group is capped at four: active first, then most recently stopped. Main expands visible active children; stopped nodes and peers are not expanded. all: true returns the full tree. id selects a visible subtree, or null if absent. When durable storage is enabled, the root carries historyDir containing per-Job <jobId>/summary.md and transcript.jsonl across all rounds; agents carry their latest history paths. Use read to inspect summary.md for outcomes or transcript.jsonl for full messages. Main has no per-Job history paths. Does not wait for completion.",
+    "snippet": "Check background agent progress and history paths",
+    "parameters": {
+      "all": "Show every agent, including Main and stopped agents, without group limits. Default false.",
+      "id": "Optional agent id selecting a visible subtree. Returns null if absent; use all: true to query outside the default view."
+    }
   },
   "stop": {
     "description": "Request cancellation of an agent by id. May return stopping or finalizing while execution or history writes finish; does not wait for shutdown.",
-    "snippet": "Cancel a background agent's current run"
+    "snippet": "Cancel a background agent's current run",
+    "parameters": {
+      "id": "The subagent id to stop."
+    }
   },
-  "message": {
+  "msg_write": {
     "description": "Send a plain-text message to a managed Agent IPC endpoint: Unix Socket or Windows Named Pipe. The host binds the sender and transport framing. Omit from/to, JSON or NDJSON envelopes, and trailing newlines. Cannot write files.",
     "snippet": "Send plain-text messages to agents through their Socket paths",
-    "guidelines": ["Provide the message body as plain text content; do not add from/to, JSON/NDJSON framing, a trailing newline, or a custom Socket client."]
+    "guidelines": [
+      "Provide the message body as plain text content; do not add from/to, JSON/NDJSON framing, a trailing newline, or a custom Socket client."
+    ],
+    "parameters": {
+      "path": "Returned Unix Socket or Windows Named Pipe address.",
+      "content": "Plain-text message body. The host frames the transport and binds the sender."
+    }
   }
 }
