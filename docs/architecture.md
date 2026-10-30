@@ -16,11 +16,15 @@
 | `listeners.ts`、`ipc/` | 端点目录、监听、报文结构和平台资源归属 | 用显示窗口决定可达性、另写广播状态机 |
 | `native-delivery.ts`、`delivery.ts` | 独立通知封装、检查原生交接结果、明确拒收后的保留会话追加 | 模型已读回执、自动重发或消息合并 |
 
+`subagent_create` 的公开返回由 Root 等待本批各 Runner 的首次 SDK 模型流分发后给出，不把 `running` 当作启动成功证明。Runner 在预算和 SDK 请求准备之后观察流调用；流句柄返回只证明分发，不证明 HTTP 接受或响应成功。注册后的启动失败不会撤销同批其他节点，也不自动重试。运行时 Job 注册和执行状态仍由 Runtime 独立管理。
+
 Runtime 的 `job.status` 是领域事实。Runner 的输入准入栅栏表示原生句柄是否还能接收消息，不表示 Job 已停止。取消后，Job 仍占用 Actor 与名额，直到原生执行退出并完成收尾。
 
 ## 创建、执行与恢复
 
-Fresh 在自己的 Job Budget 内路由；Inherited 保留捕获的模型、thinking、系统提示词与可移植工具。路由完成的 Actor 在续跑时沿用已记录身份，不重新选择角色。
+Fresh 在自己的 Job Budget 内路由。初始工具使用 Pi 默认工具与已配置扩展，并合并路由角色的 `enableTools`；`excludeTools` 始终排除，不另设内置工具白名单。Fresh 加载 MCP 后端并运行扩展的启动与关闭钩子，仅排除 Root 装配入口，由子会话自己的 surface 替代。子会话的资源过滤保留用户与项目设置各自的路径作用域，不写回配置文件。
+
+Inherited 保留捕获的模型、thinking、系统提示词与可移植工具，其继承路径不受 Fresh 默认加载改变影响。路由完成的 Actor 在续跑时沿用已记录身份，不重新选择角色。
 
 Runner 通过 `openSubagentExecution` 获得 SDK Session。共享执行句柄负责 abort 和 cleanup；Root 不用超时竞争强制 dispose 一个仍在执行的 Session。
 
@@ -36,15 +40,15 @@ Runner 通过 `openSubagentExecution` 获得 SDK Session。共享执行句柄负
 write / msg_write
   → 当前调用方的受管端点解析
   → Runtime.sendMessage
-  → 单个接收回执，或广播 sent / errors
-  → 工具结果
+  → 检查单点交接或广播结果
+  → SDK write 成功结果，或工具错误
 ```
 
-宿主消息不再绕本进程 Socket 回环。SDK `WriteOperations.writeFile` 没有回执返回值，因此工具执行层单独捕获并返回 Runtime 结果；每次执行有独立捕获，不共享并发回执。
+宿主消息不再绕本进程 Socket 回环。Runtime 交接结果只在内部检查，不作为工具回执返回。消息成功沿用 SDK 文件写入的正文、`details: undefined` 和渲染器，不增加 ACK、`to` 或 `jobId`。拒收、超时或广播部分失败使工具失败，不自动重发；失败不保证消息尚未送达。
 
 普通文件仍由 SDK 处理路径展开、写入和逐路径变更队列，不要求 Subagent 服务可用。IPC 保留目录不能作为普通文件目录。非受管 Unix Socket 与 Windows Named Pipe 被拒绝，不能借 `write` 连接任意服务。
 
-广播只面向发送者的全部直接子节点。每个接收者沿用普通发送的准入和续跑规则。部分失败逐项返回，不重发已成功的接收者。
+广播只面向发送者的全部直接子节点。每个接收者沿用普通发送的准入和续跑规则。任一接收者失败，工具即报错并指出失败接收者，不返回成功的写入结果，也不重发已成功的接收者。
 
 ### 外部 Socket
 
@@ -56,7 +60,7 @@ write / msg_write
 
 每个 NDJSON 请求处理结束后，成功返回空行，失败只返回错误的 `code`（如有）和 `message`。`writeSocket` 等待结果再返回；超时或断连表示结果未知，不自动重发。正常返回不表示模型已读或任务完成。
 
-监听由当前根注册表决定，覆盖已停止但可续跑的 Actor，不复用 `subagent_list` 的每组四项显示窗口。大量累计 Actor 会增加监听资源占用；系统资源不足会报告错误，不把它解释成 Actor 不存在。
+`subagent_list` 将筛选后的拓扑投影为 `children` 树，省去 `parentId` 和外层 `items`；窗口和展开规则见[接口契约](interface-contract.md#当前调用形态-1)。监听由当前根注册表决定，覆盖已停止但可续跑的 Actor，不复用 `subagent_list` 的每组四项显示窗口。大量累计 Actor 会增加监听资源占用；系统资源不足会报告错误，不把它解释成 Actor 不存在。
 
 ### 原生交接
 
@@ -102,6 +106,8 @@ Capability 通过共享执行句柄创建内部 SDK 会话，不要求公开 Sub
 
 精确工具／命名空间／MCP 引用和 Skill 入口路径独立查找，不参与 BM25 排序。工具按成员建索引，按完整命名空间或 MCP 组返回，组分数取成员最高分；候选上限按组计数。Skill 先按名称和描述召回，最多打开 6 个候选文件，将每篇正文的前 60,000 字符加入索引后用同一检索库重排，不扫描整个 Skill 目录的正文。字符截断限制索引文本，不是文件读取的字节上限。
 
+Capability 没有自定义结果渲染器。Pi 默认 GUI 展示模型可见的 `content`，不展示完整 `details`。仅当物理模型使用 Responses API、同时声明支持会话中途系统消息和增量工具声明时，已声明接口才在工具正文中压缩为 `interface` 提示；其他路径返回带参数结构的接口。是否已声明依据原生 Codemode `prepareLoadout` 返回的逐工具隐藏列表判断，不按全局 `codemode.mode` 排除整批结果。`codemode`／`deferred` exposure 的工具经 Capability 选中并激活后可以直接声明和调用；确实被原生 loadout 隐藏的接口仍在结果中提供参数结构。再次选中已激活工具时，正文只返回新增接口及共同指引。真实 SDK 和交互组件回归分别验证这两条路径，不等于验证用户当前加载的扩展实例。
+
 宿主不从 Skill 文本猜测禁止事项、前置条件、静默失败、绑定关系或执行优先级，也不按未命中词项推断能力缺口。Skill 返回元数据和绝对入口路径，由 Agent 使用原生 `read` 阅读并理解正文。`src/capability/result.ts` 移除模型可见结果中的排序诊断；`src/capability/prompt.ts` 投影分支发现记忆。
 
 工具资格按设计只增不减，角色排除仍优先。每次同步目录投影只解析一次资格视图；不把快照跨请求或工具调用缓存。资格、注册和激活是三件不同的事。
@@ -114,6 +120,6 @@ Capability 通过共享执行句柄创建内部 SDK 会话，不要求公开 Sub
 
 `subagent-storage.mjs`、`subagent-routing.mjs`、`subagent-view.mjs`、`job-budget.mjs`、继承捕获及部分 Capability 实现仍是 JavaScript。它们不因调用方改为 TS 就自动获得严格类型保证；跨边界输入在 TS 消费端校验。不是全仓 TS 迁移。
 
-提示词正文在 `prompts/`；代码保留参数结构、动态装配、权限和生命周期判断。正文在模块初始化时读取，修改后应重启 Pi，不承诺 `/reload` 刷新全部 ESM 依赖。
+提示词正文在 `prompts/`；代码保留参数结构、动态装配、权限和生命周期判断。运行时只读取原命名的 `subagent-tools.json` 与 `subagent-turns.json`，不读取 `.new.json` 讨论稿。共同 namespace 指引随工具提供，`create.guideline` 仅挂到 create；所有子会话注入 turns 的 `context`，Fresh 添加路由角色，Inherited 添加非空的 `inheritedContext`。`native-runner.ts` 按已保留的路由身份识别模式，续跑不因当前 Job 是 continuation 而丢失 Inherited 定位。`prompt.ts` 负责原样拼装，参数说明按工具及数组项嵌套读取。字段与状态见[提示词装配](interface-contract.md#subagent-提示词装配)。正文在模块初始化时读取，修改后应重启 Pi，不承诺 `/reload` 刷新全部 ESM 依赖。
 
 Windows 11 虚拟机已验证 Shell Preflight、Named Pipe 和 36 项离线 SDK 场景。用户查看界面、远端审批、完整 Windows 场景和多用户验证仍未交付。默认回归、局部 SDK 场景和单次真实模型调用都不能替代完整边界审计或长时间压力验收。

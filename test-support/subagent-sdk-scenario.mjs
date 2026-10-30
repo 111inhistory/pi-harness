@@ -14,6 +14,8 @@ import { deriveSessionUid, getAgentSocketPath, getBroadcastSocketPath } from "..
 import { resolveTranscriptTools } from "../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js";
 import { convertResponsesMessages } from "../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 import { deferred, waitFor } from "./async.mjs";
+import { treeNodes } from "../test/typed/support/agent-tree.ts";
+import { capabilityGuiText } from "../test/typed/support/capability-gui.ts";
 import {
   isStoppingRefusal, isSubagentError, isSocketWriteError, deliverBroadcast, deliverToActor,
 } from "../test/typed/support/subagent-sdk-fixture.ts";
@@ -215,7 +217,7 @@ async function create(task, extra = {}) {
   return (await call("subagent_create", { tasks: [{ name: "LocalTask", task, ...extra }] })).details.items[0];
 }
 async function item(id) {
-  return (await call("subagent_list", { id, all: true })).details.items[0];
+  return (await call("subagent_list", { id, all: true })).details;
 }
 async function stopped(id) {
   return waitFor(async () => {
@@ -351,9 +353,13 @@ try {
     assert.equal(discovery.isError, false, JSON.stringify(discovery.details));
     assert.equal(internalCalls, 4);
     const compact = JSON.parse(discovery.content[0].text);
+    const compactGui = capabilityGuiText(fixture, discovery);
+    assert.match(compactGui, /"interface":/);
+    assert.doesNotMatch(compactGui, /"parameters":/);
     assert.equal(compact.tools[0].tools, undefined);
     assert.equal(compact.tools[0].description, undefined);
-    assert.match(compact.tools[0].instructions, /plain text/);
+    assert.equal(compact.tools[0].instructions, session.getToolDefinition(members[0]).namespace.instructions,
+      "compaction preserves the namespace's shared guidance");
     assert.deepEqual(discovery.details.tools[0].tools.map((tool) => tool.name), members);
     assert.ok(members.every((name) => session.getActiveToolNames().includes(name)));
     const repeated = await call("capability", {});
@@ -362,6 +368,7 @@ try {
     assert.deepEqual(repeatedText.tools, [], "already active tools must not be reported as new interfaces");
     assert.deepEqual(repeatedText.mcp, []);
     assert.equal(repeatedText.guidance[0].ref, "namespace://subagent");
+    assert.match(capabilityGuiText(fixture, repeated), /"guidance":/);
     assert.equal(repeated.details.tools[0].tools.length, 3, "full selection remains in details, not model text");
     assert.equal(internalCalls, 8);
     await assert.rejects(fsp.stat(path.join(cwd, "forbidden.txt")), { code: "ENOENT" });
@@ -447,19 +454,23 @@ try {
       assert.deepEqual(namespaces[0].tools.map((tool) => tool.name), members);
       return toolAnswer("submit_result", { refs: [namespaces[0].ref] });
     };
-    const discovery = (await call("capability", {})).details;
+    const discoveryResult = await call("capability", {});
+    const discovery = discoveryResult.details;
+    const expandedGui = capabilityGuiText(fixture, discoveryResult);
+    assert.match(expandedGui, /"parameters":/);
+    assert.doesNotMatch(expandedGui, /"interface":/);
     assert.equal(discovery.tools.length, 1, JSON.stringify(discovery));
     assert.equal(discovery.tools[0].kind, "namespace");
     assert.equal(discovery.tools[0].namespace, "subagent");
     assert.deepEqual(discovery.tools[0].tools.map((tool) => tool.name), members);
-    assert.match(discovery.tools[0].instructions, /plain text/);
+    assert.equal(discovery.tools[0].instructions, session.getToolDefinition(members[0]).namespace.instructions,
+      "namespace discovery preserves the registered shared guidance");
     assert.ok(members.every((name) => session.getActiveToolNames().includes(name)));
     assert.equal(session.getToolDefinition("write").description, nativeWrite.description);
     assert.ok(discovery.tools[0].tools.some((tool) => tool.name === "subagent_stop"));
     assert.ok(discovery.tools[0].description.length > 0);
     const gate = deferred();
-    controls.classify = (_, options) => abortable(gate, options.signal);
-    controls.chat = () => textAnswer("Namespace child done");
+    controls.chat = async () => { await gate.promise; return textAnswer("Namespace child done"); };
     const actor = await create("Namespace task");
     await deliverToActor(fixture, actor, "Namespace buffered message");
     gate.resolve();
@@ -484,22 +495,26 @@ try {
     }
     session.setActiveToolsByName([...names, ...subagents]);
     const modelPrompt = session.systemPrompt;
-    assert.match(modelPrompt, /Fresh agents need self-contained task\/context/);
-    assert.match(modelPrompt, /host binds the sender/i);
-    assert.match(modelPrompt, /stopped means ended, not necessarily succeeded/);
-    assert.match(modelPrompt, /host terminal notification/i);
-    assert.match(session.getToolDefinition("subagent_stop").description, /does not wait for shutdown/);
+    for (const name of subagents) {
+      for (const guideline of session.getToolDefinition(name).promptGuidelines) {
+        assert.ok(modelPrompt.includes(guideline), `${name}'s registered guidance reaches the model after activation`);
+      }
+    }
     for (const name of ["create", "list", "stop", "task", "hub", "wait"]) assert.equal(names.includes(name), false);
     await assert.rejects(call("subagent_create", { tasks: [{ task: "valid" }, { task: "invalid", model: "override" }] }));
-    assert.deepEqual((await call("subagent_list", {})).details.items.map((agent) => agent.id), ["Main"]);
+    assert.deepEqual(treeNodes((await call("subagent_list", {})).details).map((agent) => agent.id), ["Main"]);
     await listener(getAgentSocketPath("Main", sessionSocketDir));
     if (process.platform !== "win32") assert.deepEqual((await fsp.readdir(sessionSocketDir)).sort(), ["Main.sock", "main"], "invalid batches must not publish any child endpoint");
     else assert.deepEqual(process._getActiveHandles().filter((handle) => handle instanceof net.Server && handle.listening).map((handle) => handle.address()).sort(), [getAgentSocketPath("Main", sessionSocketDir), getBroadcastSocketPath("Main", sessionSocketDir)].sort());
     const gate = controlledGate();
     controls.classify = (_, options) => abortable(gate, options.signal);
-    const result = await call("subagent_create", { context: "Explicit batch context", tasks: [{ task: "Initial assignment" }, { task: "Stopped during routing" }] });
-    const [first, second] = result.details.items;
-    assert.deepEqual(result.details.items.map((r) => r.id), ["sub_01", "sub_02"]);
+    let returned = false;
+    const creating = call("subagent_create", { context: "Explicit batch context", tasks: [{ task: "Initial assignment" }, { task: "Stopped during routing" }] });
+    const outcome = creating.then((result) => { returned = true; return result; }, (error) => { returned = true; return error; });
+    await waitFor(() => classifications.length > 0, { label: "create waits for initial routing" });
+    const [first, second] = (await call("subagent_list", {})).details.children;
+    assert.equal(returned, false, "registration cannot resolve create before the first model dispatch");
+    assert.deepEqual([first.id, second.id], ["sub_01", "sub_02"]);
     for (const actor of [first, second]) {
       assert.equal(actor.socket, getAgentSocketPath(actor.id, sessionSocketDir));
       await listener(actor.socket);
@@ -510,6 +525,9 @@ try {
     await deliverToActor(fixture, first, "Buffered during routing");
     assert.equal((await call("subagent_stop", { id: second.id })).details.status, "stopping");
     gate.resolve();
+    const failedCreation = await outcome;
+    assert.equal(failedCreation.code, "start_failed");
+    assert.match(failedCreation.message, /sub_02/);
     await stopped(first.id);
     await stopped(second.id);
     assert.equal(chats.length, 1, "the stopped actor must not dispatch a chat request");
@@ -517,8 +535,8 @@ try {
     assert.match(chats[0].text, /Initial assignment/);
     assert.match(chats[0].text, /Buffered during routing/);
     const childPrompt = chats[0].context.messages.filter((message) => message.role === "system").map(getSystemMessageText).join("\n");
-    assert.match(childPrompt, /host terminal notification/i);
-    assert.match(childPrompt, /host binds the sender/i);
+    assert.ok(childPrompt.includes(first.id), "the child receives its actual actor identity");
+    assert.ok(childPrompt.includes(getAgentSocketPath("Main", sessionSocketDir)), "the child receives its real parent endpoint");
     assert.equal("budget" in (await stopped(first.id)), false);
   } else if (scenario === "external-socket") {
     await runExternalSocketScenario(fixture);
@@ -790,25 +808,23 @@ try {
         if (!listed) return toolAnswer("subagent_list", {});
         const parse = (message) => JSON.parse(message.content.find((part) => part.type === "text").text);
         const ownId = parse(resultOf("subagent_create")).items[0].id.replace(/_\d+$/, "");
-        const view = parse(listed).items;
-        assert.equal(view.length, 9, "Main, four peers including self, four own children");
-        assert.ok(view.some((agent) => agent.id === ownId));
-        assert.equal(view.filter((agent) => agent.parentId === ownId).length, 4);
-        assert.equal(view.some((agent) => agent.parentId !== null && agent.parentId !== "Main" && agent.parentId !== ownId), false);
+        const view = parse(listed);
+        assert.equal(treeNodes(view).length, 9, "Main, four peers including self, four own children");
+        assert.equal(view.children.find((agent) => agent.id === ownId).children.length, 4);
+        assert.ok(view.children.filter((agent) => agent.id !== ownId).every((agent) => agent.children.length === 0));
       }
       await exit.promise;
       return textAnswer("Parallel actor finished");
     };
     const roots = (await call("subagent_create", { tasks: [1, 2, 3, 4].map((index) => ({ task: `PARALLEL_PARENT ${index}` })) })).details.items;
     const actors = await waitFor(async () => {
-      const all = (await call("subagent_list", {})).details.items.filter((agent) => agent.id !== "Main");
+      const all = treeNodes((await call("subagent_list", {})).details).filter((agent) => agent.id !== "Main");
       return all.length === 20 && all.every((actor) => actor.status === "running") && chats.length === 28 && all;
     }, { label: "four parents and sixteen native children running together" });
-    assert.equal(actors.filter((actor) => actor.parentId === "Main").length, 4);
-    assert.equal(actors.filter((actor) => actor.parentId !== "Main").length, 16);
-    for (const parent of roots) {
-      assert.equal(actors.filter((actor) => actor.parentId === parent.id).length, 4);
-    }
+    const tree = (await call("subagent_list", {})).details;
+    assert.equal(tree.children.length, 4);
+    assert.equal(tree.children.flatMap((actor) => actor.children).length, 16);
+    for (const parent of roots) assert.equal(tree.children.find((actor) => actor.id === parent.id).children.length, 4);
     for (const actor of actors) await listener(actor.socket);
     exit.resolve();
     await Promise.all(actors.map((actor) => stopped(actor.id)));
@@ -833,14 +849,14 @@ try {
       { task: "Sibling assignment three" }, { task: "Sibling assignment four" },
     ] })).details.items;
     const children = await waitFor(async () => {
-      const all = (await call("subagent_list", {})).details.items.filter((agent) => agent.id !== "Main");
-      const found = all.filter((actor) => actor.parentId !== "Main");
+      const tree = (await call("subagent_list", {})).details;
+      const found = tree.children.flatMap((actor) => actor.children);
       return found.length === 2 && found.every((actor) => actor.status === "running") &&
         chats.filter((request) => request.text.includes("Child assignment")).length === 2 && found;
     }, { label: "depth-2 children run alongside four active parents" });
     assert.deepEqual(children.map((child) => child.id), ["sub_01_01", "sub_01_02"]);
     await assert.rejects(call("msg_write", { path: getBroadcastSocketPath("sub_01", sessionSocketDir), content: "OVERSTEP" }), (err) => isSocketWriteError(err, "invalid_target"));
-    await deliverBroadcast(fixture, getBroadcastSocketPath("Main", sessionSocketDir), "ROOT_BROADCAST_ONLY", 4);
+    await deliverBroadcast(fixture, getBroadcastSocketPath("Main", sessionSocketDir), "ROOT_BROADCAST_ONLY");
     exit.resolve();
     await Promise.all([...roots, ...children].map((actor) => stopped(actor.id)));
     const childRequests = chats.filter((request) => request.text.includes("Child assignment"));

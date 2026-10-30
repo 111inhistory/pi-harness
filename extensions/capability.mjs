@@ -74,7 +74,7 @@ import {
 const VIRTUAL_MODEL_API = "pi-virtual";
 
 export default function capabilityExtension(pi, { discovery = true } = {}) {
-  installNativeDiscoveryBoundary(pi);
+  const declaredTools = installNativeDiscoveryBoundary(pi);
   const service = {
     agentDir: getAgentDir(),
     projectTrusted: false,
@@ -146,8 +146,8 @@ export default function capabilityExtension(pi, { discovery = true } = {}) {
             previouslyActive = new Set(pi.getActiveTools());
             const activation = activateSelectedTools(pi, result);
             createEligibleToolCatalog(pi);
-            if (supportsAdditiveResponses(physicalModel) && safeSettings(pi)?.codemode?.mode !== "only") {
-              compactNames = new Set(pi.getActiveTools());
+            if (supportsAdditiveResponses(physicalModel)) {
+              compactNames = declaredTools();
             }
             if (activation.warnings.length > 0) {
               result = { ...result, warnings: [...result.warnings, ...activation.warnings] };

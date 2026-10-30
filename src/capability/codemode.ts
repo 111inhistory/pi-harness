@@ -157,7 +157,8 @@ export function installCapabilityCodemode(
   pi: ExtensionAPI,
   permits: (ctx: ExtensionToolContext, name: string) => boolean,
   permitsDeclaration: (name: string) => boolean,
-): void {
+): () => ReadonlySet<string> {
+  let hiddenDeclarations = new Set<string>();
   createCodemodeExtension()({
     ...pi,
     registerTool(definition) {
@@ -168,9 +169,10 @@ export function installCapabilityCodemode(
         ...native,
         description: scopeDescription(native.description),
         prepareLoadout(loadout) {
-          const active = new Set(pi.getActiveTools());
+          const active = new Set(loadout.declared.map((tool) => tool.name));
           const scoped = { ...loadout, callable: loadout.callable.filter((tool) => active.has(tool.name) && permitsDeclaration(tool.name)) };
           const changes = native.prepareLoadout?.(scoped);
+          hiddenDeclarations = new Set(changes?.hiddenDeclarations ?? []);
           if (!changes?.descriptions?.['codemode']) return changes;
           const description = scopeDescription(changes.descriptions['codemode']);
           return { ...changes, descriptions: { ...changes.descriptions, codemode: description } };
@@ -273,4 +275,10 @@ export function installCapabilityCodemode(
       });
     },
   });
+  // An active codemode/deferred tool can still have a direct declaration.
+  // Reuse the native loadout's actual mask, not the global mode setting.
+  return () => {
+    const active = pi.getActiveTools();
+    return new Set(active.filter((name) => !active.includes('codemode') || !hiddenDeclarations.has(name)));
+  };
 }

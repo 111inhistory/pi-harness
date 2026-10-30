@@ -17,16 +17,12 @@ interface BatchCreationResult {
 
 interface DetailedListItem {
   id: string;
-  parentId: string;
   status: string;
   socket: string;
   history?: { jobId: string; summary: string; cleanJsonl: string };
   historyError?: { code: string; message: string };
 }
 
-interface DetailedListResult {
-  items: DetailedListItem[];
-}
 
 interface JobRecordView {
   jobId: string;
@@ -86,9 +82,10 @@ test("A7 regression: listDetailed isolates history lookup failure to its own ite
 
   await Promise.all([runtime.jobDone(id1), runtime.jobDone(id2)]);
 
-  const detailed = runtime.listDetailed({}, { callerId: "Main" }) as DetailedListResult;
-  const healthy = detailed.items.find((item) => item.id === id1);
-  const broken = detailed.items.find((item) => item.id === id2);
+  const detailed = runtime.listDetailed({}, { callerId: "Main" });
+  assert.ok(detailed);
+  const healthy = detailed.children.find((item) => item.id === id1);
+  const broken = detailed.children.find((item) => item.id === id2);
   assert.ok(healthy, "Healthy item is returned even when a sibling history lookup fails");
   assert.ok(broken, "Broken item remains visible instead of collapsing the list");
   assert.deepEqual(healthy.history, {

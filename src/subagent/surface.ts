@@ -83,7 +83,7 @@ export interface SubagentSurfaceCreateOptions {
  */
 export interface SubagentSurfaceHost extends ManagedWriteHost {
   create(batch: unknown, options: SubagentSurfaceCreateOptions, ctx: ExtensionContext): Promise<CreatedAgents>;
-  list(filter: unknown, callerId: string): Promise<{ items: DetailedAgentItem[] }>;
+  list(filter: unknown, callerId: string): Promise<DetailedAgentItem | null>;
   stop(target: unknown): StopResult;
 }
 
@@ -125,11 +125,11 @@ export function captureContextForChild(
 /** The tools one surface installs, already typed for their own parameters. */
 export interface SubagentSurfaceTools {
   /** null at the leaf depth, where a child may not create further subagents. */
-  readonly create: ToolDefinition<typeof taskParameters, CreatedAgents> | null;
-  readonly list: ToolDefinition<typeof listParameters, { items: DetailedAgentItem[] }>;
+  readonly create: ToolDefinition<typeof createParameters, CreatedAgents> | null;
+  readonly list: ToolDefinition<typeof listParameters, DetailedAgentItem | null>;
   /** null at the leaf depth, where a child may not stop other agents. */
   readonly stop: ToolDefinition<typeof stopParameters, StopResult> | null;
-  readonly message: ManagedWriteTool;
+  readonly msg_write: ManagedWriteTool;
   readonly write: ManagedWriteTool;
 }
 
@@ -158,7 +158,7 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
         description: TOOL_TEXT.create.description,
         promptSnippet: TOOL_TEXT.create.snippet,
         promptGuidelines: [...SUBAGENT_NAMESPACE.instructions?.split("\n") ?? [], TOOL_TEXT.create.guideline],
-        parameters: taskParameters,
+        parameters: createParameters,
         async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
           const host = await resolveHost(ctx);
           return respond(await host.create(params, {
@@ -209,7 +209,7 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
       }
     : null;
 
-  return { create, list, stop, message: tools.message, write: tools.write };
+  return { create, list, stop, msg_write: tools.msg_write, write: tools.write };
 }
 
 /**
@@ -236,7 +236,7 @@ export function installSessionSurface(
   if (tools.create !== null) api.registerTool(tools.create);
   api.registerTool(tools.list);
   if (tools.stop !== null) api.registerTool(tools.stop);
-  api.registerTool(tools.message);
+  api.registerTool(tools.msg_write);
   api.registerTool(tools.write);
 }
 
@@ -250,7 +250,7 @@ function managedWriteTools(
   cwd: string,
   senderId: string,
   resolveHost: (ctx: ExtensionContext) => Promise<SubagentSurfaceHost>,
-): { message: ManagedWriteTool; write: ManagedWriteTool } {
+): { msg_write: ManagedWriteTool; write: ManagedWriteTool } {
   // Metadata (parameters, labels, prompt text) is host-independent; only the
   // execute path needs a host, and only when the call actually reaches the
   // managed transport. The template's host is unreachable.
@@ -286,14 +286,14 @@ function managedWriteTools(
         .write.execute(toolCallId, params, signal, onUpdate, ctx);
     },
   };
-  const message: ManagedWriteTool = {
-    ...template.message,
+  const msg_write: ManagedWriteTool = {
+    ...template.msg_write,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       return createManagedWriteTools({ cwd, senderId, host: lazyHost(ctx) })
-        .message.execute(toolCallId, params, signal, onUpdate, ctx);
+        .msg_write.execute(toolCallId, params, signal, onUpdate, ctx);
     },
   };
-  return { message, write };
+  return { msg_write, write };
 }
 
 /** Unreachable host of the metadata template: execute is always replaced. */
@@ -336,76 +336,87 @@ export const SUBAGENT_NAMESPACE: ToolNamespace = Object.freeze({
   instructions: promptString("subagent-tools.json", "instructions"),
 });
 
-const taskParameters = Type.Object({
-  context: Type.Optional(Type.String({ description: TOOL_TEXT.parameters.context })),
+const createParameters = Type.Object({
+  context: Type.Optional(Type.String({ description: TOOL_TEXT.create.parameters.context })),
   tasks: Type.Array(
     Type.Object({
-      name: Type.Optional(Type.String({ description: TOOL_TEXT.parameters.name })),
-      task: Type.String({ description: TOOL_TEXT.parameters.task }),
-      inheritContext: Type.Optional(Type.Boolean({ description: TOOL_TEXT.parameters.inheritContext })),
+      name: Type.Optional(Type.String({ description: TOOL_TEXT.create.parameters.tasks.items.name })),
+      task: Type.String({ description: TOOL_TEXT.create.parameters.tasks.items.task }),
+      inheritContext: Type.Optional(Type.Boolean({ description: TOOL_TEXT.create.parameters.tasks.items.inheritContext })),
     }, { additionalProperties: false }),
-    { minItems: 1, description: TOOL_TEXT.parameters.tasks },
+    { minItems: 1, description: TOOL_TEXT.create.parameters.tasks.description },
   ),
 }, { additionalProperties: false });
 
 const listParameters = Type.Object({
-  all: Type.Optional(Type.Boolean({ description: TOOL_TEXT.parameters.all })),
-  id: Type.Optional(Type.String({ description: TOOL_TEXT.parameters.filterId })),
+  all: Type.Optional(Type.Boolean({ description: TOOL_TEXT.list.parameters.all })),
+  id: Type.Optional(Type.String({ description: TOOL_TEXT.list.parameters.id })),
 });
 
 const stopParameters = Type.Object({
-  id: Type.String({ description: TOOL_TEXT.parameters.stopId }),
+  id: Type.String({ description: TOOL_TEXT.stop.parameters.id }),
 });
 
 /** The parts of `prompts/subagent-tools.json` this module renders. */
 interface SurfaceToolText {
   readonly namespace: string;
-  readonly parameters: {
-    readonly context: string;
-    readonly tasks: string;
-    readonly name: string;
-    readonly task: string;
-    readonly inheritContext: string;
-    readonly all: string;
-    readonly filterId: string;
-    readonly stopId: string;
+  readonly create: {
+    readonly description: string;
+    readonly snippet: string;
+    readonly guideline: string;
+    readonly parameters: {
+      readonly context: string;
+      readonly tasks: {
+        readonly description: string;
+        readonly items: { readonly name: string; readonly task: string; readonly inheritContext: string };
+      };
+    };
   };
-  readonly create: { readonly description: string; readonly snippet: string; readonly guideline: string };
-  readonly list: { readonly description: string; readonly snippet: string };
-  readonly stop: { readonly description: string; readonly snippet: string };
+  readonly list: { readonly description: string; readonly snippet: string; readonly parameters: { readonly all: string; readonly id: string } };
+  readonly stop: { readonly description: string; readonly snippet: string; readonly parameters: { readonly id: string } };
 }
 
 function parseToolText(): SurfaceToolText {
   const value: unknown = JSON.parse(promptText("subagent-tools.json"));
   const root = requireRecord(value, "the tool text");
-  const parameters = requireRecord(root["parameters"], "parameters");
   const create = requireRecord(root["create"], "create");
   const list = requireRecord(root["list"], "list");
   const stop = requireRecord(root["stop"], "stop");
+  const createParams = requireRecord(create["parameters"], "create.parameters");
+  const tasks = requireRecord(createParams["tasks"], "create.parameters.tasks");
+  const items = requireRecord(tasks["items"], "create.parameters.tasks.items");
+  const listParams = requireRecord(list["parameters"], "list.parameters");
+  const stopParams = requireRecord(stop["parameters"], "stop.parameters");
   return {
     namespace: requireText(root["namespace"], "namespace"),
-    parameters: {
-      context: requireText(parameters["context"], "parameters.context"),
-      tasks: requireText(parameters["tasks"], "parameters.tasks"),
-      name: requireText(parameters["name"], "parameters.name"),
-      task: requireText(parameters["task"], "parameters.task"),
-      inheritContext: requireText(parameters["inheritContext"], "parameters.inheritContext"),
-      all: requireText(parameters["all"], "parameters.all"),
-      filterId: requireText(parameters["filterId"], "parameters.filterId"),
-      stopId: requireText(parameters["stopId"], "parameters.stopId"),
-    },
     create: {
       description: requireText(create["description"], "create.description"),
       snippet: requireText(create["snippet"], "create.snippet"),
       guideline: requireText(create["guideline"], "create.guideline"),
+      parameters: {
+        context: requireText(createParams["context"], "create.parameters.context"),
+        tasks: {
+          description: requireText(tasks["description"], "create.parameters.tasks.description"),
+          items: {
+            name: requireText(items["name"], "create.parameters.tasks.items.name"),
+            task: requireText(items["task"], "create.parameters.tasks.items.task"),
+            inheritContext: requireText(items["inheritContext"], "create.parameters.tasks.items.inheritContext"),
+          },
+        },
+      },
     },
     list: {
       description: requireText(list["description"], "list.description"),
       snippet: requireText(list["snippet"], "list.snippet"),
+      parameters: {
+        all: requireText(listParams["all"], "list.parameters.all"),
+        id: requireText(listParams["id"], "list.parameters.id"),
+      },
     },
     stop: {
       description: requireText(stop["description"], "stop.description"),
       snippet: requireText(stop["snippet"], "stop.snippet"),
+      parameters: { id: requireText(stopParams["id"], "stop.parameters.id") },
     },
   };
 }
@@ -423,6 +434,6 @@ function requireText(value: unknown, label: string): string {
 }
 
 // The declared tool parameter types, exported so callers can name a batch.
-export type SubagentTaskBatch = Static<typeof taskParameters>;
+export type SubagentTaskBatch = Static<typeof createParameters>;
 export type SubagentListFilter = Static<typeof listParameters>;
 export type SubagentStopTarget = Static<typeof stopParameters>;

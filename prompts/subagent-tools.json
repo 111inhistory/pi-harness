@@ -1,29 +1,28 @@
 {
   "namespace": "Orchestrate independent background subagents for concurrent execution.",
-  "instructions": "Offload parallel, self-contained work to subagents while continuing your own work. A subagent can handle internally coupled steps, but subagents must remain independent of each other. Keep shared coupling in the current agent, or isolate potential conflicts in git worktrees for the main agent to merge. Use subagent_list to check child or parent status. Use write or msg_write to the agent address to send messages without opening custom socket connections. Messaging a stopped agent revives it and starts a new round. Use the parent address to reach your parent, or children.sock to broadcast to all direct children.",
-
+  "instructions": "Use subagent_list to inspect status and historyDir paths. Use write or msg_write to agent addresses, or your children.sock to broadcast to direct active agents without opening custom socket connections. Messaging a stopped agent revives it for a new round.",
   "create": {
-    "description": "Create independent background agents. Waits until every child has dispatched its first model call through the SDK, then returns id and socket, without status. Does not wait for model output or task completion. Startup failure reports the failed IDs; registered agents remain and must not be blindly recreated.",
-    "snippet": "Delegate independent tasks to background agents",
-    "guideline": "Write requirements for subagents primarily in English.",
+    "description": "Create background subagents for concurrent execution. Returns agent IDs and socket addresses; does not wait for task completion.",
+    "snippet": "Delegate parallel workloads to direct subagents",
+    "guideline": "Write requirements primarily in English. Delegate parallel work while continuing your own tasks, or conclude your turn to wait for completion notifications (do not poll). Use inheritContext: true for branching work or parallel exploration off this session. Keep coupled workflows local, or isolate potential conflicts in git worktrees for you to merge; subagents must not depend on each other.",
     "parameters": {
       "context": "Background, constraints, and source material shared by every task in this batch.",
       "tasks": {
-        "description": "Independent tasks. Order is preserved in the result, but it does not create execution dependencies.",
+        "description": "Independent workloads. Order is preserved in the result, but it does not create execution dependencies.",
         "items": {
           "name": "Caller-facing label; defaults to none.",
-          "task": "Self-contained assignment: deliverable, scope, and how to verify completion.",
-          "inheritContext": "Copy this session's conversation, system prompt, model, and thinking at creation time. Default false: start without this session's chat history."
+          "task": "Self-contained assignment: scope, deliverables, and how to verify completion.",
+          "inheritContext": "Inherit this session's conversation and capabilities. Default false: start with clean context."
         }
       }
     }
   },
   "list": {
-    "description": "Return a children tree: Main roots its view at Main; a child roots its view at its direct parent, with peers (including self) and its own children. Each group is capped at four: active first, then most recently stopped. Main expands visible active children; stopped nodes and peers are not expanded. all: true returns the full tree. id selects a visible subtree, or null if absent. When durable storage is enabled, the root carries historyDir containing per-Job <jobId>/summary.md and transcript.jsonl across all rounds; agents carry their latest history paths. Use read to inspect summary.md for outcomes or transcript.jsonl for full messages. Main has no per-Job history paths. Does not wait for completion.",
+    "description": "Returns a scoped tree of related agents (parent, peers, and direct children; capped at 4 per group, active first). Active direct children are expanded; stopped nodes are folded. Nodes carry latest history paths, and durable roots include historyDir (<jobId>/summary.md for outcomes, transcript.jsonl for logs; inspect via read). Does not wait for completion.",
     "snippet": "Check background agent progress and history paths",
     "parameters": {
-      "all": "Show every agent, including Main and stopped agents, without group limits. Default false.",
-      "id": "Optional agent id selecting a visible subtree. Returns null if absent; use all: true to query outside the default view."
+      "all": "Show every agent without group limits or folding. Default false.",
+      "id": "Filter to a specific agent's visible subtree. Returns null if absent."
     }
   },
   "stop": {

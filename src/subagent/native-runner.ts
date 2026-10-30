@@ -28,7 +28,7 @@ import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-age
 import { capabilityAllowsTool, capabilityAvailableTools } from "../capability/scope.ts";
 import { getAgentSocketPath } from "../ipc/socket.ts";
 import { installModelCallBudget } from "../pi-job-budget.mjs";
-import { childContext, composeAssignment, continuationControlPrompt } from './prompt.ts';
+import { childContext, childPromptBlocks, composeAssignment, continuationControlPrompt, inheritedContextInstruction } from './prompt.ts';
 import { readTranscript } from "../subagent-view.mjs";
 import { watchSubagentBudget } from "./budget-watch.ts";
 import { deliveryEntryFor, deliveryMessage, peerDeliveryEntry } from "./delivery.ts";
@@ -82,10 +82,19 @@ class LiveJob {
   child: NativeChildApi | null = null;
   closed = false;
   cancelled = false;
+  readonly firstModelCall: Promise<void>;
+  modelCallStarted!: () => void;
+  modelCallFailed!: (error: unknown) => void;
 
   constructor(request: JobRequest) {
     this.jobId = request.jobId;
     this.agentId = request.agentId;
+    this.firstModelCall = new Promise<void>((resolve, reject) => {
+      this.modelCallStarted = resolve;
+      this.modelCallFailed = reject;
+    });
+    // Runtime-only users may observe done without awaiting creation readiness.
+    void this.firstModelCall.catch(() => {});
     for (const delivery of request.pendingMessages) this.pending.push(pendingInputOf(delivery));
   }
 
@@ -124,7 +133,10 @@ export class NativeJobRunner {
     // Register before the async body runs: a hand-over racing startup must find
     // this Job and be buffered, never be answered as an unknown Job.
     this.#jobs.set(request.jobId, live);
-    return { done: this.#run(request, live), cancel: () => { live.cancel(); } };
+    const done = this.#run(request, live);
+    void done.then((outcome) => live.modelCallFailed(outcome.error ?? new Error(`Agent ${request.agentId} ended before its first model call.`)),
+      (error: unknown) => live.modelCallFailed(error));
+    return { done, firstModelCall: live.firstModelCall, cancel: () => { live.cancel(); } };
   }
 
   /** The installed child surface of an actor's live run (capability parent scope). */
@@ -388,15 +400,19 @@ export class NativeJobRunner {
       if (snapshot !== null) delete snapshot["entries"];
 
       const opened = await deps.sessions.open({
+        loadDefaultExtensions: roleId !== null,
         agentId: request.agentId,
         cwd,
         trusted,
         systemPrompt,
-        appendSystemPrompt: [
-          ...(roleInstructions !== null ? [roleInstructions] : []),
-          childContext(request.agentId, origin.agentId ?? MAIN_AGENT_ID,
+        appendSystemPrompt: childPromptBlocks({
+          context: childContext(request.agentId, origin.agentId ?? MAIN_AGENT_ID,
             getAgentSocketPath(origin.agentId ?? MAIN_AGENT_ID, deps.config.socketDir)),
-        ],
+          roleInstructions,
+          // A routed role identifies Fresh actors, including their continuations.
+          inherited: roleId === null,
+          inheritedContext: inheritedContextInstruction,
+        }),
         model,
         thinkingLevel,
         excludedTools: finalExcludedTools,
@@ -455,6 +471,24 @@ export class NativeJobRunner {
         },
         request.budget,
       );
+
+      // Observe dispatch AFTER auth/projection, the budget guard and the SDK
+      // stream function have accepted the request, not at registration time.
+      // This confirms SDK dispatch, not HTTP acceptance or model completion.
+      const agent = native.session.agent;
+      if (!agent || !('streamFunction' in agent) || typeof agent.streamFunction !== 'function') {
+        throw new Error('The child session has no model stream boundary.');
+      }
+      const previousStream = agent.streamFunction;
+      const observeStream = async (...args: unknown[]): Promise<unknown> => {
+        const stream: unknown = await previousStream.apply(agent, args);
+        live.modelCallStarted();
+        return stream;
+      };
+      agent.streamFunction = observeStream;
+      native.addCleanup(() => {
+        if (agent.streamFunction === observeStream) agent.streamFunction = previousStream;
+      });
 
       // This Job's history is scoped by the append-only SessionManager tree: the
       // boundary is the leaf at start, and native compaction appends entries

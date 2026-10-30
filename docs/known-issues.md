@@ -28,6 +28,10 @@ Socket 请求等待接收处理结果，成功正常返回，失败返回错误�
 
 D2 沿用原生 steer 和空闲唤醒。普通消息可触发 Main 执行；多个子节点先后结束，也可能分别触发父节点的 continuation Job 和新 Budget。本项目不做跨事件成本合并。
 
+### TODO / Not Migrated：本轮结果直接交付
+
+当前终态通知返回状态、错误与历史路径，尚不直接携带最终输出。计划参照 `read` 返回有长度上限的本轮结果，截断时附本轮完整结果路径；不返回此前轮次、累计会话或继承背景。详见[本轮结果直接交付](interface-contract.md#本轮结果直接交付todo--not-migrated)。
+
 ## Socket 资源与平台验证
 
 `src/ipc/endpoint.ts` 使用按系统用户隔离的私有目录、属主与 inode 校验、原子硬链接发布、活跃端点保护和自有资源清理。不能通过放宽权限共享端点。
@@ -52,7 +56,14 @@ Subagent 应用入口、Runtime、SDK 执行器、会话工厂、身份保留、
 - 工具资格按用户决定只增不减，角色排除仍优先。目录资格视图按同步操作重建，不跨工具调用缓存。
 - 只有资源、没有工具的 MCP 服务器仍无独立发现项。
 - 分支上的 `capability-discovery` 记录用于恢复已选能力。其前提是自定义记录仍在当前分支；不能概括为任意压缩都不会丢能力。
-- 外部 `pi-better-compaction` 的已观察缺陷及兼容逻辑见[压缩调查](reviews/native-compaction-review.md)。本轮未删除这些兼容代码，未改全局插件设置，也未修改 Pi 本身。停用插件后的删减范围仍需独立核实。
+- 用户已移除 `pi-better-compaction`，当前用户包配置中也没有该插件，以避免破坏 Responses 的 `additional_tools`。历史问题见[压缩调查](reviews/native-compaction-review.md)；后续适配不以恢复该插件为前提。
+
+### TODO：Inherited 的 Responses 工具继承适配
+
+- [ ] 核查 Inherited 的工具注册、执行与 Responses 原生 `additional_tools` 声明链，区分工具可移植性过滤与 API 声明保留的问题。
+- [ ] 验证父会话动态激活工具后，Inherited 分支能实际调用这些工具，并覆盖续跑和原生压缩后的调用；不只验证声明仍在请求中。
+
+当前可用路径继续使用，专项适配另行完成。
 
 ## 提示词与模型行为
 

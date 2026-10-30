@@ -245,6 +245,8 @@ export interface NativeExecution {
 
 /** Everything the child session factory needs for one Job. */
 export interface NativeSessionRequest {
+  /** Fresh actors load normal Pi extensions; inherited actors keep their captured loadout. */
+  readonly loadDefaultExtensions: boolean;
   readonly agentId: string;
   readonly cwd: string;
   readonly trusted: boolean;
@@ -329,6 +331,8 @@ export interface NativeJobOutcome {
 
 /** The physical handle the runtime receives from the runner. */
 export interface NativeStartedJob extends StartedJobHandle {
+  /** Resolves after the child's first stream call is handed to the SDK runtime. */
+  readonly firstModelCall: Promise<void>;
   readonly done: Promise<NativeJobOutcome>;
   readonly cancel: () => void;
 }

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
-  createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
+  AgentSession, createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
 } from '@earendil-works/pi-coding-agent';
 import { fauxProvider, InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
@@ -17,7 +17,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function runBoundary(rejectWrite: boolean, unlistedModel = false): Promise<void> {
+async function runBoundary(rejectWrite: boolean, unlistedModel = false, children = 1): Promise<void> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'root-boundary-'));
   const agentDir = path.join(cwd, 'agent');
   await mkdir(agentDir);
@@ -33,10 +33,15 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false): Promise
   const model = faux.models[0];
   assert.ok(model);
   runtime.getAuth = async () => ({ auth: { apiKey: 'offline-fixture' }, env: {} });
+  const secondPromptRequested = deferred();
+  const releaseSecondPrompt = deferred();
+  const originalPrompt = AgentSession.prototype.prompt;
   runtime.hasConfiguredAuth = () => true;
   const started = deferred();
   const finish = deferred();
+  let dispatchedCalls = 0;
   runtime.streamSimple = () => {
+    dispatchedCalls += 1;
     const stream = new AssistantMessageEventStream();
     started.resolve();
     void finish.promise.then(() => {
@@ -87,8 +92,31 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false): Promise
     // A programmatic SDK model need not be discoverable in the registry. The
     // original captured chat model is still valid for this initial Inherited Job.
     if (unlistedModel) context.modelRegistry.find = () => undefined;
-    await create.execute('create', { tasks: [{ task: 'Wait for navigation', inheritContext: true }] },
+    if (children > 1) {
+      let childPrompts = 0;
+      AgentSession.prototype.prompt = async function(this: AgentSession, ...args: Parameters<AgentSession['prompt']>) {
+        if (++childPrompts === 2) {
+          secondPromptRequested.resolve();
+          await releaseSecondPrompt.promise;
+        }
+        return originalPrompt.apply(this, args);
+      };
+    }
+    let returned = false;
+    const creation = create.execute('create', { tasks: Array.from({ length: children }, () => ({ task: 'Wait for navigation', inheritContext: true })) },
       undefined, undefined, context);
+    void creation.then(() => { returned = true; }, () => { returned = true; });
+    if (children > 1) {
+      await Promise.all([started.promise, secondPromptRequested.promise]);
+      assert.equal(dispatchedCalls, 1);
+      assert.equal(returned, false, 'one dispatched child cannot resolve batch creation while another is still preparing');
+      releaseSecondPrompt.resolve();
+    }
+    const created = await creation;
+    assert.equal(dispatchedCalls, children, 'create must await every first dispatch without waiting for the held responses');
+    const registration = created.details as { items: Record<string, unknown>[] };
+    assert.ok(registration.items[0]);
+    assert.equal('status' in registration.items[0], false);
     await started.promise;
     rejectTerminal = rejectWrite;
     const navigation = session.extensionRunner.emit({
@@ -98,7 +126,7 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false): Promise
     await new Promise<void>((resolve) => setImmediate(resolve));
     finish.resolve();
     const result = await navigation;
-    assert.equal(terminalAttempts, 1, 'one terminal owner attempts one append during quiescence');
+    assert.equal(terminalAttempts, children, 'one terminal owner per child attempts one append during quiescence');
     assert.deepEqual(extensionErrors, []);
     if (rejectWrite) {
       assert.equal(result?.cancel, true, 'a failed terminal append must reach the before-hook cancellation result');
@@ -106,9 +134,11 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false): Promise
       assert.equal(result, undefined);
       const terminal = session.sessionManager.getBranch().filter((entry) =>
         entry.type === 'custom' && entry.customType === 'subagent-job-end');
-      assert.equal(terminal.length, 1, 'the old root owns the terminal append until its before-hook settles');
+      assert.equal(terminal.length, children, 'the old root owns terminal appends until its before-hook settles');
     }
   } finally {
+    releaseSecondPrompt.resolve();
+    AgentSession.prototype.prompt = originalPrompt;
     finish.resolve();
     await session?.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
     session?.dispose();
@@ -130,4 +160,8 @@ test('actual extension cancels navigation when quiescing terminal metadata canno
 
 test('initial Inherited Job retains SDK custom model even when absent from catalog', { timeout: 15000 }, async () => {
   await runBoundary(false, true);
+});
+
+test('batch create waits for every first SDK dispatch, not merely the first child or completed output', { timeout: 15000 }, async () => {
+  await runBoundary(false, false, 2);
 });

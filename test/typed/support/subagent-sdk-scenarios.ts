@@ -2,9 +2,8 @@
  * Changed real-SDK Subagent scenarios.
  *
  * These bodies replace fixture logic that observed host-owned socket writes:
- * Runtime now answers a managed write with a receipt and owns delivery, so the
- * scenarios assert that receipt plus the peer's actual native transcript
- * instead of waiting for bytes the host no longer writes.
+ * Runtime owns managed delivery. The public tool uses the native write result;
+ * scenarios verify delivery in the peer's actual native transcript.
  */
 
 import assert from "node:assert/strict";
@@ -14,7 +13,6 @@ import net from "node:net";
 import path from "node:path";
 
 import { getAgentSocketPath } from "../../../src/ipc/socket.ts";
-import type { MessageReceipt } from "../../../src/subagent/runtime.ts";
 import {
   abortableGate,
   assertEndpointReachable,
@@ -23,11 +21,12 @@ import {
   isSocketWriteError,
   isSubagentError,
   lastToolResult,
-  messageReceiptFromMessage,
+  assertWriteSuccessFromMessage,
   occurrences,
   readTranscriptEvents,
-  toolItems,
-  toolItemsFromMessage,
+  createdItems,
+  createdItemsFromMessage,
+  listedActors,
   waitForCondition,
 } from "./subagent-sdk-fixture.ts";
 import type { FixtureActor, ScenarioFixture } from "./subagent-sdk-fixture.ts";
@@ -46,7 +45,7 @@ export async function runListenerCacheScenario(fixture: ScenarioFixture): Promis
           tasks: [1, 2, 3, 4].map(() => ({ task: "CACHE_CHILD complete promptly" })),
         });
       }
-      const children = toolItemsFromMessage(created);
+      const children = createdItemsFromMessage(created);
       await Promise.all(children.map((child) => fixture.stopped(child.id)));
     }
     return fixture.textAnswer("Cache actor complete");
@@ -56,7 +55,7 @@ export async function runListenerCacheScenario(fixture: ScenarioFixture): Promis
   for (let index = 0; index < 11; index += 1) {
     await fixture.stopped((await fixture.create("Cache history entry")).id);
   }
-  const registered = (await toolItems(await fixture.call("subagent_list", { all: true }))).filter(
+  const registered = (await listedActors(await fixture.call("subagent_list", { all: true }))).filter(
     (actor) => actor.id !== "Main",
   );
   assert.equal(registered.length, 16, "every created Actor stays registered");
@@ -77,7 +76,7 @@ export async function runListenerCacheScenario(fixture: ScenarioFixture): Promis
     );
   }
   await fixture.session.reload();
-  const restored = (await toolItems(await fixture.call("subagent_list", { all: true }))).filter(
+  const restored = (await listedActors(await fixture.call("subagent_list", { all: true }))).filter(
     (actor) => actor.id !== "Main",
   );
   assert.equal(restored.length, 16, "a durable reload restores every registered Actor, not only the visible window");
@@ -140,7 +139,7 @@ export async function runExternalSocketScenario(fixture: ScenarioFixture): Promi
     assert.deepEqual(frames, [payload + "\n"], "the external client owns its payload without Subagent framing");
     assert.equal(connections.length, 1, "only the genuine external client connects");
     assert.equal(
-      (await toolItems(await fixture.call("subagent_list", { all: true }))).length,
+      (await listedActors(await fixture.call("subagent_list", { all: true }))).length,
       2,
       "only Main and the existing actor are listed",
     );
@@ -173,7 +172,7 @@ async function writeExternalFrame(address: string, payload: string): Promise<voi
 
 /**
  * A child model's native `write` to a peer endpoint must produce a managed
- * receipt for the peer's Job, and the peer's actual provider request must keep
+ * file-write success result, and the peer's actual provider request must keep
  * the host-attributed child sender.
  */
 export async function runPeerSenderScenario(fixture: ScenarioFixture): Promise<void> {
@@ -181,7 +180,7 @@ export async function runPeerSenderScenario(fixture: ScenarioFixture): Promise<v
   const receiverExit = fixture.gate();
   let sender: FixtureActor | undefined;
   let receiver: FixtureActor | undefined;
-  let peerReceipt: MessageReceipt | undefined;
+  let peerWriteCompleted = false;
   fixture.controls.classify = (_context, options) => abortableGate(routing, options?.signal);
   fixture.controls.chat = async (request) => {
     if (receiver === undefined) throw new Error("the peer receiver must exist before any model call");
@@ -190,32 +189,31 @@ export async function runPeerSenderScenario(fixture: ScenarioFixture): Promise<v
       if (writeResult === undefined) {
         return fixture.toolAnswer("write", { path: receiver.socket, content: "PEER_SOURCE_MARKER" }, "peer-write");
       }
-      peerReceipt = messageReceiptFromMessage(writeResult);
+      assertWriteSuccessFromMessage(writeResult);
+      peerWriteCompleted = true;
       return fixture.textAnswer("actor done");
     }
     if (request.text.includes("SOCKET_RECEIVER_ACTOR")) await receiverExit.promise;
     return fixture.textAnswer("actor done");
   };
-  const created = toolItems(
-    await fixture.call("subagent_create", {
+  const creation = fixture.call("subagent_create", {
       tasks: [
         { task: "SOCKET_SENDER_ACTOR send to peer" },
         { task: "SOCKET_RECEIVER_ACTOR receive from peer" },
       ],
-    }),
-  );
-  sender = created[0];
-  receiver = created[1];
+    });
+  await waitForCondition(() => fixture.classifications.length > 0, "creation waits for routing");
+  const registered = listedActors(await fixture.call("subagent_list", { all: true })).filter((actor) => actor.id !== "Main");
+  sender = registered[0];
+  receiver = registered[1];
   assert.ok(sender, "the sender Actor must be created");
   assert.ok(receiver, "the receiver Actor must be created");
   routing.resolve();
-  await waitForCondition(() => peerReceipt !== undefined, "native peer write receipt");
+  const created = createdItems(await creation);
+  assert.deepEqual(created.map((actor) => actor.id), [sender.id, receiver.id]);
+  await waitForCondition(() => peerWriteCompleted, "native peer write completion");
   receiverExit.resolve();
   await Promise.all([fixture.stopped(sender.id), fixture.stopped(receiver.id)]);
-  const receipt = peerReceipt;
-  if (receipt === undefined) throw new Error("the peer write produced no receipt.");
-  assert.equal(receipt.to, receiver.id, "the receipt must name the addressed peer");
-  assert.equal(typeof receipt.jobId, "string", "the receipt must name the peer Job that accepted delivery");
   const receiverRequests = fixture.chats.filter((request) => request.text.includes("SOCKET_RECEIVER_ACTOR"));
   const receiverRequest = receiverRequests.at(-1);
   assert.ok(receiverRequest, "the receiver must dispatch a native request");
@@ -239,7 +237,7 @@ export async function runUpstreamParentSteerScenario(fixture: ScenarioFixture): 
   const parentWaiting = fixture.gate();
   const parentExit = fixture.gate();
   let parent: FixtureActor | undefined;
-  let progressReceipt: MessageReceipt | undefined;
+  let progressWriteCompleted = false;
   let parentRequests = 0;
   let progressSeen = false;
   let terminalSeen = false;
@@ -254,7 +252,8 @@ export async function runUpstreamParentSteerScenario(fixture: ScenarioFixture): 
         await send.promise;
         return fixture.toolAnswer("msg_write", { path: parentOwner().socket, content: "PARENT_MERGE_PROGRESS" }, "parent-merge-write");
       }
-      progressReceipt = messageReceiptFromMessage(wrote);
+      assertWriteSuccessFromMessage(wrote);
+      progressWriteCompleted = true;
       return fixture.textAnswer("Leaf completed");
     }
     assert.ok(request.text.includes("PARENT_MERGE_OWNER"));
@@ -285,16 +284,12 @@ export async function runUpstreamParentSteerScenario(fixture: ScenarioFixture): 
   };
   parent = await fixture.create("PARENT_MERGE_OWNER: delegate one leaf and consume its result");
   await parentWaiting.promise;
-  const leaf = toolItems(await fixture.call("subagent_list", { all: true })).find(
+  const leaf = listedActors(await fixture.call("subagent_list", { all: true })).find(
     (entry) => entry.id !== "Main" && entry.id !== parentOwner().id,
   );
   assert.ok(leaf, "the parent must have created exactly one leaf");
   send.resolve();
-  await waitForCondition(() => progressReceipt !== undefined, "leaf progress receipt");
-  const receipt = progressReceipt;
-  if (receipt === undefined) throw new Error("the leaf progress write produced no receipt.");
-  assert.equal(receipt.to, parentOwner().id, "the progress receipt must name the direct parent");
-  assert.equal(typeof receipt.jobId, "string", "the progress receipt must name the parent Job that accepted delivery");
+  await waitForCondition(() => progressWriteCompleted, "leaf progress write completion");
   await fixture.stopped(leaf.id);
   parentExit.resolve();
   await waitForCondition(() => progressSeen && terminalSeen, "busy Subagent parent consumes both independent events");

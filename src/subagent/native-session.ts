@@ -15,11 +15,12 @@
  *   `model-runtime.ts` resolves the root registry's exact runtime, so extension
  *   providers and runtime credentials stay available; an unavailable bridge is
  *   an explicit failure, never a fresh fallback.
- * - Child extension contents are a host callback. This factory only installs
- *   the capability parent and the capability extension, then hands the child
- *   Pi and its scope to the host so the adapter can install this depth's tools.
+ * - The host installs this depth's child surface. Fresh actors also load normal
+ *   Pi extension defaults and the MCP backend; Inherited setup stays on its
+ *   captured-loadout path.
  */
 
+import { fileURLToPath } from "node:url";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
 import {
@@ -30,6 +31,7 @@ import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-ag
 
 import capabilityExtension from "../../extensions/capability.mjs";
 import { setCapabilityParent } from "../capability/scope.ts";
+import { installCapabilityMcp } from "../capability/native-discovery.ts";
 import type { CapabilityToolCatalog } from "../capability/scope.ts";
 import { openSubagentExecution } from "./execution.ts";
 import { parentModelRuntime } from "./model-runtime.ts";
@@ -40,6 +42,8 @@ import type {
   NativeSessionFactory,
   NativeSessionRequest,
 } from "./native-types.ts";
+
+const ROOT_EXTENSION = fileURLToPath(new URL("../../extensions/harness.ts", import.meta.url));
 
 /**
  * Everything the concrete factory needs. All four dependencies have one owner
@@ -82,7 +86,7 @@ function narrowThinkingLevel(value: string | null): ThinkingLevel | undefined {
 
 class ConcreteNativeSessionFactory implements NativeSessionFactory {
   readonly #deps: NativeSessionFactoryDeps;
-  /** One settings layer per (cwd, project trust) pair, like the host adapter. */
+  /** One settings layer per cwd, project trust and Fresh/Inherited resource mode. */
   readonly #settings = new Map<string, SettingsManager>();
 
   constructor(deps: NativeSessionFactoryDeps) {
@@ -99,7 +103,7 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
     // to createAgentSession through openSubagentExecution.
     const modelRuntime = this.#modelRuntime();
     const thinkingLevel = narrowThinkingLevel(request.thinkingLevel);
-    const settings = this.#settingsFor(request.cwd, request.trusted);
+    const settings = this.#settingsFor(request.cwd, request.trusted, request.loadDefaultExtensions);
 
     // The child Pi exists while the resource loader runs; the host callback
     // installs this depth's tool surface into it. Only the first child is
@@ -119,6 +123,7 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
         );
         capabilityExtension(childPi, { discovery: surface.depth < MAX_AGENT_DEPTH });
         this.#deps.installChildSurface(childPi, surface);
+        if (request.loadDefaultExtensions) installCapabilityMcp(childPi);
       },
     };
 
@@ -126,7 +131,7 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
       cwd: request.cwd,
       agentDir: this.#deps.agentDir,
       settingsManager: settings,
-      noExtensions: true,
+      noExtensions: !request.loadDefaultExtensions,
       extensionFactories: [childFactory],
       // An Inherited child keeps the parent's system prompt; a Fresh child keeps
       // Pi's own prompt and appends the routed role instructions supplied by
@@ -172,6 +177,17 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
       },
       { signal: request.signal },
     );
+    if (request.loadDefaultExtensions) {
+      execution.addCleanup(async () => {
+        await execution.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+      });
+      try {
+        await execution.session.bindExtensions({});
+      } catch (error) {
+        await execution.dispose();
+        throw error;
+      }
+    }
     return { execution, capabilityScope: childPi };
   }
 
@@ -179,11 +195,26 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
     return parentModelRuntime(this.#deps.modelRegistry(), "subagent sessions");
   }
 
-  #settingsFor(cwd: string, trusted: boolean): SettingsManager {
-    const key = `${cwd}\u0000${trusted}`;
+  #settingsFor(cwd: string, trusted: boolean, loadDefaultExtensions: boolean): SettingsManager {
+    const key = `${cwd}\u0000${trusted}\u0000${loadDefaultExtensions}`;
     const cached = this.#settings.get(key);
     if (cached !== undefined) return cached;
-    const settings = SettingsManager.create(cwd, this.#deps.agentDir, { projectTrusted: trusted });
+    let settings = SettingsManager.create(cwd, this.#deps.agentDir, { projectTrusted: trusted });
+    if (loadDefaultExtensions) {
+      // Resource discovery reads the individual settings layers, not applyOverrides.
+      // Keep their relative paths and package filters; replace only our root entry.
+      const layers = { global: settings.getGlobalSettings(), project: settings.getProjectSettings() };
+      for (const layer of Object.values(layers)) {
+        layer.extensions = [...(layer.extensions ?? []), `-${ROOT_EXTENSION}`];
+      }
+      const contents = { global: JSON.stringify(layers.global), project: JSON.stringify(layers.project) };
+      settings = SettingsManager.fromStorage({
+        withLock(scope, update) {
+          const next = update(contents[scope]);
+          if (next !== undefined) contents[scope] = next;
+        },
+      }, { projectTrusted: trusted });
+    }
     this.#settings.set(key, settings);
     return settings;
   }

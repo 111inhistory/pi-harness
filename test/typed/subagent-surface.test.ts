@@ -3,8 +3,8 @@
  *
  * The surface factory is the real production builder; the fakes implement only
  * the declared host/api ports. The managed write pair is the real shared
- * factory, so a managed send is verified to return the runtime receipt and an
- * ordinary file write still uses the SDK path. The single SDK assertion is the
+ * factory, so messages and ordinary files are verified to use the SDK write
+ * result while managed delivery still goes through the host. The single SDK assertion is the
  * tool-context fixture, which provides exactly the members the surface and the
  * inherited-context capture read (same pattern as managed-message-write.test).
  */
@@ -22,6 +22,7 @@ import type {
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
+import { promptText } from "../../src/prompt-text.mjs";
 import { DEFAULT_SOCKET_DIR } from "../../src/ipc/socket.ts";
 import type { EndpointResolverResult } from "../../src/ipc/socket.ts";
 import {
@@ -150,12 +151,12 @@ class RecordingHost implements SubagentSurfaceHost {
 
   async create(batch: unknown, options: SubagentSurfaceCreateOptions, ctx: ExtensionContext): Promise<CreatedAgents> {
     this.creates.push({ batch, options, ctx });
-    return { items: [{ id: "sub_02", status: "running", socket: "/tmp/project/.pi/sub_02.sock" }] };
+    return { items: [{ id: "sub_02", socket: "/tmp/project/.pi/sub_02.sock" }] };
   }
 
-  async list(filter: unknown, callerId: string): Promise<{ items: DetailedAgentItem[] }> {
+  async list(filter: unknown, callerId: string): Promise<DetailedAgentItem | null> {
     this.lists.push({ filter, callerId });
-    return { items: [] };
+    return null;
   }
 
   stop(target: unknown): StopResult {
@@ -168,7 +169,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function schemaOf(tool: ToolDefinition): Record<string, unknown> {
+function schemaOf(tool: { readonly parameters: unknown }): Record<string, unknown> {
   const parameters: unknown = tool.parameters;
   assert.ok(isRecord(parameters));
   return parameters;
@@ -253,8 +254,39 @@ test("the leaf surface keeps list and the write pair but no create/stop", () => 
   assert.equal(tools.create, null);
   assert.equal(tools.stop, null);
   assert.equal(tools.list.name, "subagent_list");
-  assert.equal(tools.message.name, "msg_write");
+  assert.equal(tools.msg_write.name, "msg_write");
+  assert.equal("message" in tools, false);
   assert.equal(tools.write.name, "write");
+});
+
+test("tool-owned parameter labels and create-only guidance follow the assets", () => {
+  const asset = JSON.parse(promptText("subagent-tools.json"));
+  const tools = createSurfaceTools({ api: new FakeSurfaceApi(), resolveHost: async () => new RecordingHost(), scope: ROOT_SCOPE });
+  assert.ok(tools.create && tools.stop);
+  const common = asset.instructions.split("\n");
+  assert.deepEqual(tools.create.promptGuidelines, [...common, asset.create.guideline]);
+  assert.deepEqual(tools.list.promptGuidelines, common);
+  assert.deepEqual(tools.stop.promptGuidelines, common);
+  assert.equal("parameters" in asset, false, "parameter labels belong to their tools, not a flat shared map");
+  const create = schemaOf(tools.create);
+  assert.equal(propertyOf(create, "context")["description"], asset.create.parameters.context);
+  const tasks = propertyOf(create, "tasks");
+  assert.equal(tasks["description"], asset.create.parameters.tasks.description);
+  const item = tasks["items"] as Record<string, unknown>;
+  for (const key of ["name", "task", "inheritContext"]) {
+    assert.equal(propertyOf(item, key)["description"], asset.create.parameters.tasks.items[key]);
+  }
+  for (const key of ["all", "id"]) {
+    assert.equal(propertyOf(schemaOf(tools.list), key)["description"], asset.list.parameters[key]);
+  }
+  assert.equal(propertyOf(schemaOf(tools.stop), "id")["description"], asset.stop.parameters.id);
+  for (const key of ["path", "content"]) {
+    assert.equal(propertyOf(schemaOf(tools.msg_write), key)["description"], asset.msg_write.parameters[key]);
+  }
+  const leaf = createSurfaceTools({ api: new FakeSurfaceApi(), resolveHost: async () => new RecordingHost(),
+    scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: MAX_AGENT_DEPTH } });
+  assert.equal(leaf.create, null);
+  assert.deepEqual(leaf.list.promptGuidelines, common);
 });
 
 test("the root create tool maps Main to no parent and passes origin and lazy capture", async () => {
@@ -288,7 +320,7 @@ test("the root create tool maps Main to no parent and passes origin and lazy cap
     mode: "tui",
   });
   assert.deepEqual(result.details, {
-    items: [{ id: "sub_02", status: "running", socket: "/tmp/project/.pi/sub_02.sock" }],
+    items: [{ id: "sub_02", socket: "/tmp/project/.pi/sub_02.sock" }],
   });
   assert.match(JSON.stringify(result.content), /sub_02/);
 
@@ -350,14 +382,14 @@ test("list and stop resolve the host with the current execute context", async ()
   assert.deepEqual(first.stops, ["sub_02"]);
 });
 
-test("managed msg_write returns the runtime receipt instead of filesystem success", async () => {
+test("managed msg_write retains native write success and keeps routing metadata internal", async () => {
   const api = new FakeSurfaceApi();
   const host = new RecordingHost();
   const seen: ExtensionContext[] = [];
   const tools = createSurfaceTools({ api, resolveHost: resolveWith(host, seen), scope: ROOT_SCOPE });
   const ctx = sdkContext({ cwd: "/tmp/project" });
 
-  const result = await tools.message.execute(
+  const result = await tools.msg_write.execute(
     "m1",
     { path: "/tmp/project/.pi/sub_02.sock", content: "hello agent" },
     undefined,
@@ -368,8 +400,8 @@ test("managed msg_write returns the runtime receipt instead of filesystem succes
   // Endpoint ownership and the send share one resolution for this execution.
   assert.deepEqual(seen, [ctx]);
   assert.deepEqual(host.sends, [{ from: "Main", to: "sub_02", content: "hello agent" }]);
-  assert.deepEqual(result.details, { ok: true, to: "sub_02", jobId: null });
-  assert.doesNotMatch(JSON.stringify(result.content), /Successfully wrote/);
+  assert.equal(result.details, undefined);
+  assert.match(JSON.stringify(result.content), /Successfully wrote/);
 });
 
 test("msg_write still rejects a non-IPC path without resolving the host", async () => {
@@ -386,7 +418,7 @@ test("msg_write still rejects a non-IPC path without resolving the host", async 
   const ctx = sdkContext({ cwd: "/tmp/project" });
 
   await assert.rejects(
-    tools.message.execute("m2", { path: "notes.txt", content: "x" }, undefined, undefined, ctx),
+    tools.msg_write.execute("m2", { path: "notes.txt", content: "x" }, undefined, undefined, ctx),
     /requires an IPC endpoint address/,
   );
   assert.deepEqual(seen, []);
@@ -467,7 +499,7 @@ test("endpoint ownership and send share one cached resolution per execute", asyn
   });
   const ctx = sdkContext({ cwd: "/tmp/project" });
 
-  const result = await tools.message.execute(
+  const result = await tools.msg_write.execute(
     "m3",
     { path: "/tmp/project/.pi/sub_02.sock", content: "once" },
     undefined,
@@ -478,7 +510,7 @@ test("endpoint ownership and send share one cached resolution per execute", asyn
   assert.equal(resolutions, 1);
   assert.deepEqual(first.sends, [{ from: "Main", to: "sub_02", content: "once" }]);
   assert.deepEqual(second.sends, []);
-  assert.deepEqual(result.details, { ok: true, to: "sub_02", jobId: null });
+  assert.equal(result.details, undefined);
 });
 
 test("a managed path rejects a stale host while ordinary files still write", async () => {
@@ -512,7 +544,7 @@ test("a managed path rejects a stale host while ordinary files still write", asy
   }
 });
 
-test("concurrent managed sends keep per-execution hosts and receipts", async () => {
+test("concurrent managed sends keep per-execution hosts isolated", async () => {
   const api = new FakeSurfaceApi();
   const first = new RecordingHost();
   first.endpoint = { isManaged: true, targetId: "sub_02" };
@@ -527,14 +559,14 @@ test("concurrent managed sends keep per-execution hosts and receipts", async () 
   });
 
   const [a, b] = await Promise.all([
-    tools.message.execute("c1", { path: "/tmp/project/.pi/sub_02.sock", content: "first" }, undefined, undefined, ctxA),
-    tools.message.execute("c2", { path: "/tmp/project/.pi/sub_03.sock", content: "second" }, undefined, undefined, ctxB),
+    tools.msg_write.execute("c1", { path: "/tmp/project/.pi/sub_02.sock", content: "first" }, undefined, undefined, ctxA),
+    tools.msg_write.execute("c2", { path: "/tmp/project/.pi/sub_03.sock", content: "second" }, undefined, undefined, ctxB),
   ]);
 
   assert.deepEqual(first.sends, [{ from: "Main", to: "sub_02", content: "first" }]);
   assert.deepEqual(second.sends, [{ from: "Main", to: "sub_03", content: "second" }]);
-  assert.deepEqual(a.details, { ok: true, to: "sub_02", jobId: null });
-  assert.deepEqual(b.details, { ok: true, to: "sub_03", jobId: null });
+  assert.equal(a.details, undefined);
+  assert.equal(b.details, undefined);
 });
 
 test("inherited capture warns about non-transplantable parent tools", async () => {

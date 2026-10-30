@@ -19,7 +19,7 @@ import { setCapabilityParent } from '../../src/capability/scope.ts';
 import { waitFor } from '../../test-support/async.mjs';
 
 for (const nativeFirst of [false, true]) {
-  test(`native discovery is disabled while selected MCP execution survives (${nativeFirst ? 'native-first' : 'harness-first'})`, async () => {
+  test(`selected ${nativeFirst ? 'codemode' : 'deferred'} MCP tools remain directly callable in only mode (${nativeFirst ? 'native-first' : 'harness-first'})`, async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), 'pi-native-discovery-'));
     const oldAgentDir = process.env['PI_CODING_AGENT_DIR'];
     process.env['PI_CODING_AGENT_DIR'] = path.join(cwd, 'agent');
@@ -114,7 +114,12 @@ for (const nativeFirst of [false, true]) {
             store('selection-survives', true);
             return 'SCOPED_SCRIPT_EXECUTED';
           ` });
-          else if (rootStep === 7) message = tool('codemode', { code: `${checkGlobals}
+          else if (rootStep === 6) {
+            assert.ok(getCurrentTools(context.messages).some((entry) => entry.name === 'mcp__selected_fixture__inspect'),
+              'Capability activation must directly declare this MCP tool even in only mode');
+            message = tool('mcp__selected_fixture__inspect', {});
+          }
+          else if (rootStep === 8) message = tool('codemode', { code: `${checkGlobals}
             if (ALL_TOOLS.some(t => t.name.includes('late_unselected'))) throw Error('late catalog leaked');
             if (await describeNamespace('mcp__late_unselected')) throw Error('late namespace leaked');
             if (await describeTool('mcp__selected_fixture__inspect')) throw Error('role-denied interface leaked');
@@ -168,7 +173,7 @@ for (const nativeFirst of [false, true]) {
         };
       };
       const settingsManager = SettingsManager.inMemory({
-        retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: 'off',
+        retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: 'off', codemode: { mode: 'only' },
         defaultTools: nativeFirst ? ['+codemode', '+tool_search'] : ['+tool_search'],
       });
       const controlled = {
@@ -178,7 +183,7 @@ for (const nativeFirst of [false, true]) {
           capabilityExtension(api);
           installCapabilityMcp(api, {
             loadConfig: () => ({ errors: [], autoEnableCodemode: true, servers: [
-              { name: 'selected_fixture', source: 'test', config: { command: 'unused', exposure: 'direct' } },
+              { name: 'selected_fixture', source: 'test', config: { command: 'unused', exposure: nativeFirst ? 'codemode' : 'deferred' } },
               { name: 'unselected_fixture', source: 'test', config: { command: 'unused', exposure: 'deferred' } },
               { name: 'no_resources_fixture', source: 'test', config: { command: 'unused', exposure: 'deferred' } },
             ] }),
@@ -235,7 +240,13 @@ for (const nativeFirst of [false, true]) {
       const executed = session.messages.findLast((message) => message.role === 'toolResult' && message.toolName === 'codemode');
       assert.ok(executed?.role === 'toolResult');
       assert.equal(executed.isError, false, JSON.stringify(executed.content));
-      assert.deepEqual(calls, ['selected_fixture']);
+      assert.deepEqual(calls, ['selected_fixture', 'selected_fixture'], 'selected MCP works through scripts and as a direct tool');
+      const selectedBody = selected.content.find((part) => part.type === 'text');
+      assert.ok(selectedBody?.type === 'text');
+      const publicSelection = JSON.parse(selectedBody.text) as { mcp: { interface?: string; tools?: unknown[] }[] };
+      const selectedGroup = publicSelection.mcp[0];
+      assert.ok(selectedGroup?.interface, 'only mode must not disable compaction of a directly declared MCP interface');
+      assert.equal(selectedGroup.tools, undefined);
       assert.deepEqual(resourceReads, ['selected_fixture'], 'only the selected, resource-enabled server is read');
       assert.equal(classifications, 1, 'non-LLM model execution is retained');
       setCapabilityParent(pi, null, ['mcp__selected_fixture__inspect']);
@@ -243,7 +254,7 @@ for (const nativeFirst of [false, true]) {
       await waitFor(() => pi!.getAllTools().some((entry) => entry.name === 'mcp__late_unselected__unrelated'));
       await session.prompt('Continue after a server registers late');
       assert.ok(!pi.getActiveTools().includes('tool_search'), 'late servers cannot restore native search');
-      assert.deepEqual(calls, ['selected_fixture']);
+      assert.deepEqual(calls, ['selected_fixture', 'selected_fixture']);
       assert.deepEqual(resourceReads, ['selected_fixture'], 'role denial closes resource reads without replacing branch selection');
       assert.ok(pi.getActiveTools().includes('mcp__selected_fixture__inspect'));
       assert.ok(!pi.getActiveTools().includes('mcp__unselected_fixture__unrelated'));

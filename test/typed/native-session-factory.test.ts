@@ -9,7 +9,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -121,6 +121,7 @@ async function harness(): Promise<Harness> {
 }
 
 interface RequestOptions {
+  readonly loadDefaultExtensions?: boolean;
   readonly agentId?: string;
   readonly cwd?: string;
   readonly trusted?: boolean;
@@ -138,6 +139,7 @@ function request(h: Harness, options: RequestOptions = {}): NativeSessionRequest
   const cwd = options.cwd ?? h.cwd;
   const excludedTools = options.excludedTools ?? ["bash"];
   return {
+    loadDefaultExtensions: options.loadDefaultExtensions ?? false,
     agentId,
     cwd,
     trusted: options.trusted ?? true,
@@ -280,6 +282,85 @@ test("settings are cached per cwd and project trust", async () => {
     await first.execution.dispose();
     await second.execution.dispose();
     await untrusted.execution.dispose();
+    await close(h);
+  }
+});
+
+test("Fresh uses default extensions minus exclusions without installing the root harness twice", async () => {
+  const h = await harness();
+  const extensionPath = path.join(h.cwd, ".pi", "extensions", "default-tools.ts");
+  const previousAgentDir = process.env["PI_CODING_AGENT_DIR"];
+  process.env["PI_CODING_AGENT_DIR"] = path.join(h.root, "agent");
+  const lifecycle: unknown[] = [];
+  h.mutable.surfaceHook = (api) => { api.events.on("fresh_defaults_lifecycle", (event) => lifecycle.push(event)); };
+  await mkdir(path.dirname(extensionPath), { recursive: true });
+  await writeFile(extensionPath, `export default function(pi) {
+    for (const name of ["default_extension", "denied_extension", "optional_extension"]) {
+      pi.registerTool({ name, label: name, description: name,
+        parameters: { type: "object", properties: {} },
+        defaultActive: name !== "optional_extension",
+        execute: async () => ({ content: [{ type: "text", text: "child extension executed" }], details: {} }),
+      });
+    }
+    pi.on("session_start", () => {
+      pi.events.emit("fresh_defaults_lifecycle", "started");
+      pi.setActiveTools([...pi.getActiveTools(), "denied_extension"]);
+    });
+    pi.on("session_shutdown", () => pi.events.emit("fresh_defaults_lifecycle", "stopped"));
+  }`, "utf8");
+  await writeFile(path.join(h.root, "agent", "settings.json"), JSON.stringify({
+    extensions: [new URL("../../extensions/harness.ts", import.meta.url).pathname],
+    defaultTools: ["+codemode"],
+  }), "utf8");
+  h.parentTools.push({ name: "default_extension" }, { name: "denied_extension" }, { name: "optional_extension" });
+  const opened = await h.factory.open(request(h, {
+    loadDefaultExtensions: true, systemPrompt: null,
+    excludedTools: ["write", "denied_extension"],
+  }));
+  try {
+    const session = opened.execution.session;
+    const active = session.getActiveToolNames();
+    assert.ok(active.includes("read"));
+    assert.ok(active.includes("bash"));
+    assert.ok(active.includes("default_extension"), "extension defaults are retained, not replaced with a builtin allowlist");
+    assert.ok(active.includes("codemode"), "defaultTools additions are honored");
+    assert.ok(!active.includes("optional_extension"), "registered does not mean enabled by default");
+    assert.ok(!active.includes("denied_extension"), "excludeTools wins even over extension self-activation");
+    assert.ok(!active.includes("write"));
+    const inspection = inspectSession(session);
+    const loaded = inspection.resourceLoader.getExtensions();
+    assert.deepEqual(loaded.errors, []);
+    assert.ok(loaded.extensions.some((extension) => extension.resolvedPath === extensionPath));
+    assert.ok(!loaded.extensions.some((extension) => extension.resolvedPath.endsWith("/extensions/harness.ts")));
+    assert.equal(h.surfaces.length, 1);
+    assert.ok(loaded.extensions.some((extension) => extension.commands.has("mcp")), "Fresh retains the MCP execution backend");
+    assert.equal(capabilityAllowsTool(opened.capabilityScope, "default_extension"), true);
+    assert.equal(capabilityAllowsTool(opened.capabilityScope, "denied_extension"), false);
+    assert.deepEqual(lifecycle, ["started"], "default extension session_start actually runs");
+    const stored = JSON.parse(await readFile(path.join(h.root, "agent", "settings.json"), "utf8"));
+    assert.deepEqual(stored.extensions, [new URL("../../extensions/harness.ts", import.meta.url).pathname], "child-only resource exclusions do not change user settings");
+  } finally {
+    await opened.execution.dispose();
+    assert.deepEqual(lifecycle, ["started", "stopped"], "extension sessions close with the child");
+    if (previousAgentDir === undefined) delete process.env["PI_CODING_AGENT_DIR"];
+    else process.env["PI_CODING_AGENT_DIR"] = previousAgentDir;
+    await close(h);
+  }
+});
+
+test("Inherited resource setup stays isolated from default extensions", async () => {
+  const h = await harness();
+  const extensionPath = path.join(h.cwd, ".pi", "extensions", "unrequested.ts");
+  await mkdir(path.dirname(extensionPath), { recursive: true });
+  await writeFile(extensionPath, `export default function() { throw new Error("must not load for Inherited"); }`, "utf8");
+  const opened = await h.factory.open(request(h));
+  try {
+    const inspection = inspectSession(opened.execution.session);
+    assert.deepEqual(inspection.resourceLoader.getExtensions().errors, []);
+    assert.equal(inspection.resourceLoader.getSystemPrompt(), "INHERITED SYSTEM PROMPT");
+    assert.ok(!inspection.resourceLoader.getExtensions().extensions.some((extension) => extension.resolvedPath === extensionPath));
+  } finally {
+    await opened.execution.dispose();
     await close(h);
   }
 });

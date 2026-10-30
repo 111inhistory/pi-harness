@@ -11,10 +11,25 @@ function field(name: string): string {
 const turns = { batchContext: field('batchContext'), task: field('task'), messageFrom: field('messageFrom'),
   originalAssignment: field('originalAssignment'), restatement: field('restatement'), control: field('control') };
 const context: string = promptString('subagent-turns.json', 'context');
+export const inheritedContextInstruction: string = field('inheritedContext');
 
 /** Insert protocol values literally, not as replacement patterns. */
 export function childContext(agentId: string, parentId: string, parentSocket: string): string {
   return context.replaceAll('{agentId}', () => agentId).replaceAll('{parentId}', () => parentId).replaceAll('{parentSocket}', () => parentSocket);
+}
+
+/** Assemble the current child identity without changing its inherited history. */
+export function childPromptBlocks(options: {
+  context: string;
+  roleInstructions: string | null;
+  inherited: boolean;
+  inheritedContext: string;
+}): string[] {
+  return [
+    ...(options.roleInstructions !== null ? [options.roleInstructions] : []),
+    options.context,
+    ...(options.inherited && options.inheritedContext.trim() !== "" ? [options.inheritedContext] : []),
+  ];
 }
 
 /** Routing and execution must see the same assignment. */

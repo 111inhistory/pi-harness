@@ -252,7 +252,6 @@ export interface RuntimeOptions {
 
 export interface CreatedAgentItem {
   id: string;
-  status: JobStatus;
   socket: string;
   warnings?: string[];
 }
@@ -272,11 +271,12 @@ export interface AgentView {
 
 export interface DetailedAgentItem {
   id: string;
-  parentId: string | null;
   status: string;
   socket: string;
+  children: DetailedAgentItem[];
   history?: { jobId: string } & JobHistoryPaths;
   historyError?: LifecycleError;
+  historyDir?: string;
 }
 
 export interface JobView {
@@ -979,7 +979,6 @@ export class SubagentRuntime {
         const warnings = inheritedWarnings(job.spec);
         return {
           id: job.agentId,
-          status: job.status,
           socket: this.#agentSocketPath(job.agentId, this.#socketDir),
           ...(warnings.length > 0 ? { warnings } : {}),
         };
@@ -1081,15 +1080,15 @@ export class SubagentRuntime {
   listDetailed(
     filter: HistoryFilter | null,
     { callerId }: { callerId: string },
-  ): { items: DetailedAgentItem[] } {
+  ): DetailedAgentItem | null {
     const targetId = filter?.id;
     const agents = [...this.#agents.values()];
     const visible = new Set<string>();
     const main: DetailedAgentItem = {
       id: MAIN_ACTOR_ID,
-      parentId: null,
       status: "running",
       socket: this.#agentSocketPath(MAIN_ACTOR_ID, this.#socketDir),
+      children: [],
     };
     if (filter?.all === true) {
       visible.add(MAIN_ACTOR_ID);
@@ -1114,22 +1113,21 @@ export class SubagentRuntime {
         addChildren(caller);
       }
     }
-    const items: DetailedAgentItem[] = [];
-    if (visible.has(MAIN_ACTOR_ID) && (!targetId || targetId === MAIN_ACTOR_ID) && (!filter?.status || filter.status === main.status)) items.push(main);
+    const nodes = new Map<string, DetailedAgentItem>();
+    if (visible.has(MAIN_ACTOR_ID)) nodes.set(MAIN_ACTOR_ID, main);
     const listed = [...visible]
       .filter((id) => id !== MAIN_ACTOR_ID)
       .map((id) => this.#agents.get(id))
       .filter((agent): agent is Agent => agent !== undefined);
     for (const agent of listed) {
-      if (targetId && agent.agentId !== targetId) continue;
       const liveJob = this.#liveJobOf(agent);
       const currentStatus = liveJob ? liveJob.status : (agent.status === "idle" ? "stopped" : agent.status);
       if (filter?.status !== undefined && filter.status !== currentStatus && filter.status !== agent.status) continue;
       const item: DetailedAgentItem = {
         id: agent.agentId,
-        parentId: agent.parentAgentId ?? "Main",
         status: currentStatus,
         socket: this.#agentSocketPath(agent.agentId, this.#socketDir),
+        children: [],
       };
       const latest = [...agent.jobIds]
         .reverse()
@@ -1145,9 +1143,16 @@ export class SubagentRuntime {
           item.historyError = errorInfo(error, "history_unavailable");
         }
       }
-      items.push(item);
+      nodes.set(item.id, item);
     }
-    return { items };
+    for (const agent of listed) {
+      const node = nodes.get(agent.agentId);
+      const parent = nodes.get(agent.parentAgentId ?? MAIN_ACTOR_ID);
+      if (node && parent) parent.children.push(node);
+    }
+    const rootId = targetId ?? (filter?.all === true || callerId === MAIN_ACTOR_ID
+      ? MAIN_ACTOR_ID : this.#agents.get(callerId)?.parentAgentId ?? MAIN_ACTOR_ID);
+    return nodes.get(rootId) ?? null;
   }
 
   #visibleGroup(parentId: string | null, selfId?: string): Agent[] {

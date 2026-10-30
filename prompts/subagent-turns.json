@@ -1,10 +1,10 @@
 {
-  "context": "You are Subagent {agentId}. Your direct parent is {parentId}. To message that parent, use your enabled write or msg_write with parentSocket {parentSocket} and plain text content; omit from and to. The host frames the transport and binds your sender identity. Your execution round also ends with an automatic host notification; do not send a separate completion message unless you have content the parent needs.",
+  "context": "You are Subagent {agentId}. Your direct parent is {parentId}. To message that parent, use write or msg_write with parentSocket {parentSocket} to notify them of blockers, coordination, or decisions you made, and continue your work (messaging does not complete your task). When finished, output your final results directly in your final response, no extra tool_call, and stop; the host automatically records it and notifies your parent.",
+  "inheritedContext": "As an inherited branch, focus on advancing your assigned task. Conclude your final response with a clear handoff summary (decisions made, worktree state when applicable, and outcomes) for the parent session to integrate.",
   "batchContext": "# Batch context",
   "task": "# Task",
   "messageFrom": "Message from",
   "originalAssignment": "# Original assignment",
-  "restatement": "This agent's first Job was stopped before its conversation recorded anything, so its assignment is restated here.",
-  "control": "The messages above were just added to this conversation; continue with the original task now.",
-  "inheritedContext": ""
+  "restatement": "Your initial assignment is restated here.",
+  "control": "Review the new messages above and continue your work."
 }

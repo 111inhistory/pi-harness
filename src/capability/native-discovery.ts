@@ -49,7 +49,7 @@ function selectedServer(pi: ExtensionAPI, ctx: ExtensionContext, server: unknown
 }
 
 /** Disable discovery as executable tools, not just as prompt recommendations. */
-export function installNativeDiscoveryBoundary(pi: ExtensionAPI): void {
+export function installNativeDiscoveryBoundary(pi: ExtensionAPI): () => ReadonlySet<string> {
   let currentContext: ExtensionContext | undefined;
   pi.on('session_start', (_event, ctx) => { currentContext = ctx; });
   pi.on('session_shutdown', () => { currentContext = undefined; });
@@ -70,7 +70,7 @@ export function installNativeDiscoveryBoundary(pi: ExtensionAPI): void {
   const permits = (ctx: ExtensionContext, name: string) => !isNativeDiscoveryTool(name) &&
     createCapabilityScopeView(pi).allows(name) &&
     (!isMcpExecutionTool(name) || selectedNames(ctx).has(name));
-  installCapabilityCodemode(pi, permits, (name) => currentContext
+  const declaredTools = installCapabilityCodemode(pi, permits, (name) => currentContext
     ? permits(currentContext, name)
     : !isNativeDiscoveryTool(name) && !isMcpExecutionTool(name));
 
@@ -124,6 +124,7 @@ export function installNativeDiscoveryBoundary(pi: ExtensionAPI): void {
     });
     return { messages };
   });
+  return declaredTools;
 }
 
 function executionTool<TParams extends ToolDefinition['parameters'], TDetails, TState>(

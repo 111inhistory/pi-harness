@@ -15,6 +15,8 @@ import type { AgentSession, ExtensionAPI } from "@earendil-works/pi-coding-agent
 import type { Api, AssistantMessage, ImageContent, Model, Usage } from "@earendil-works/pi-ai";
 
 import { promptText } from "../../src/prompt-text.mjs";
+import { childContext } from "../../src/subagent/prompt.ts";
+import { getAgentSocketPath } from "../../src/ipc/socket.ts";
 import { setCapabilityParent } from "../../src/capability/scope.ts";
 import type { SubagentExecution } from "../../src/subagent/execution.ts";
 import { NativeJobRunner } from "../../src/subagent/native-runner.ts";
@@ -745,6 +747,48 @@ test("a continuation restates its assignment and appends startup input as native
   assert.equal(h.actors.retained[0]?.sessionManager, manager);
   assert.equal(h.factory.requests[0]?.sessionManager, manager);
 });
+
+for (const inherited of [false, true]) {
+  for (const stage of ["initial", "continuation", "reopen", "seed-continuation"] as const) {
+    test(`${inherited ? "Inherited" : "Fresh"} prompt assembly survives ${stage}`, async () => {
+      const h = harness({ route: routedIdentity() });
+      h.models.result = fakeModel();
+      const seed = freshSpec({
+        inheritContext: inherited,
+        inheritedContext: inherited ? {
+          systemPrompt: "CAPTURED_PARENT_PROMPT", model: { provider: "fake", id: "fake-1" },
+          tools: ["read"], entries: [],
+        } : null,
+      });
+      if (stage === "continuation" || stage === "reopen") {
+        const manager = SessionManager.inMemory("/tmp/project");
+        h.actors.seed("sub_01", retainedActor(manager, {
+          sessionManager: stage === "reopen" ? null : manager,
+          roleId: inherited ? null : "role-runner",
+          roleInstructions: inherited ? null : "ROLE INSTRUCTIONS",
+          systemPrompt: inherited ? "CAPTURED_PARENT_PROMPT" : null,
+        }));
+      }
+      const spec = stage === "initial" ? seed : { kind: "continuation" as const, name: null, seed };
+      const outcome = await h.runner.start(jobRequest(spec, stage === "initial" ? {} : {
+        jobId: "sub_01_r2", continuedFromJobId: "sub_01",
+        pendingMessages: [{ type: "message", from: "Main", content: "CONTINUE_ASSIGNMENT" }],
+      })).done;
+      assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+      const opened = h.factory.requests[0];
+      assert.ok(opened);
+      const orientation = turnsText("inheritedContext");
+      assert.deepEqual(opened.appendSystemPrompt, [
+        ...(!inherited ? ["ROLE INSTRUCTIONS"] : []),
+        childContext("sub_01", "Main", getAgentSocketPath("Main", "/tmp/sockets")),
+        ...(inherited && orientation.trim() !== "" ? [orientation] : []),
+      ]);
+      assert.equal(opened.loadDefaultExtensions, !inherited);
+      assert.equal(h.routing.calls.length, !inherited && (stage === "initial" || stage === "seed-continuation") ? 1 : 0);
+      if (stage === "reopen") assert.equal(h.actors.opens.length, 1);
+    });
+  }
+}
 
 test("a continuation without a retained session or seed fails explicitly", async () => {
   const h = harness();

@@ -57,6 +57,8 @@ Capability 应避免让 Main 接触与当前工作无关的资源目录和检索
 - 禁用全局 MCP 资源与模板列表。`read_mcp_resource` 还要求目标服务器具有当前启用且允许的入选工具；错误正文不返回服务器目录。
 - 历史 Codemode 声明中的旧目录在请求投影中移除，不修改用户正文或磁盘历史。
 
+MCP 配置中的 `codemode`／`deferred` exposure 不表示工具在 Capability 激活后只能从脚本调用。入选并激活的工具可以直接声明和调用，也可在 Codemode 中组合执行。结果是否重复参数结构按原生 loadout 实际隐藏的声明逐项判断，不因 `codemode.mode = only` 一概保留完整接口。
+
 先调用 Capability 选好工具，再运行 Codemode 脚本。如果脚本运行期间才激活新工具，当前脚本不能立即调用；新工具从下一次 Codemode 调用起可用。
 
 该边界不承诺让模型忘记此前已读的用户正文，也不构成文件系统沙箱。基础文件工具仍按当前权限工作。
@@ -119,16 +121,34 @@ Shell Preflight 独立配置和使用。本项目不要求三个功能各自作�
 
 | 操作 | 当前接口与行为 |
 | --- | --- |
-| 创建 | `subagent_create({context?, tasks: [{task, name?, inheritContext?}]})`；返回后后台执行，不等待任务完成 |
-| 创建返回 | 包含 `id`、`status`、`socket` 和 `history` 路径 |
+| 创建 | `subagent_create({context?, tasks: [{task, name?, inheritContext?}]})`；等待本批全部子 Agent 首次模型请求分发到 SDK 运行时，不等待响应或任务完成 |
+| 创建返回 | `items` 按输入顺序包含 `id` 和 `socket`，不返回 `status` 或历史路径；启动前失败以工具错误报告失败 ID，已注册节点保留，不自动重建 |
 | 上下文 | 默认不继承聊天历史；`inheritContext: true` 复制父会话快照 |
-| 查询 | `subagent_list({id?, all?})`；默认视图有范围限制，`all: true` 查询全部 |
+| 查询 | `subagent_list({id?, all?})`；返回嵌套 `children` 树，不返回 `parentId` 或外层 `items`；默认视图有范围限制，`all: true` 查询完整树，`id` 返回可见子树或 `null`；持久化存储启用时返回的树根附带 `historyDir` |
 | 取消 | `subagent_stop({id})`；请求取消，不等待执行退出与历史写入结束 |
-| 结果读取 | 从 `history.summary` 读取摘要，从 `history.cleanJsonl` 检索完整记录 |
+| 结果读取 | 从 `history.summary` 读取摘要，从 `history.cleanJsonl` 检索完整记录；持久化启用时也可通过根节点 `historyDir` 查看包含以往各轮在内的 `<jobId>/summary.md` 与 `transcript.jsonl` |
 | 通信 | `write`／`msg_write` 向返回的 IPC 地址写入消息 |
 | 续跑 | 向已停止的 Subagent 发消息，会启动同一 Subagent 的新一轮执行 |
 
+Fresh 初始工具按 Pi 默认配置加载，包括已配置的扩展工具与 MCP 后端，并合并角色 `enableTools`。角色 `excludeTools` 通过 SDK 始终排除，`enableTools` 和扩展主动激活都不能绕过。Root 装配入口由子会话 surface 替代，不重复加载。Inherited 沿用既有继承路径，不套用 Fresh 默认工具加载。
+
 Subagent 当前共享工作目录。当前实现限制每个父节点最多 4 个活跃子节点，最多派生两层。
+
+创建的等待边界是子会话自身的 SDK 模型流调用已成功返回流句柄，不是注册完成、路由分类调用或请求前钩子；它不保证供应商已接受 HTTP 请求或模型最终成功。此前失败会使 create 报错，此后失败由终态通知报告。
+
+默认查询以 Main 或调用者的直接父节点为根。每个同父组最多 4 项，活跃优先、最近停止节点补齐；Main 展开可见活跃子节点，子 Agent 只展开自己，不展开 peers 的孩子。停止节点不展开，即使仍有活跃后代。节点保留状态、Socket 和可用的最近已结束 Job 历史；运行中的节点可同时带上一轮历史。`all: true` 不作窗口裁剪或停止节点折叠。持久化存储启用时，返回的树根节点（含 id 选中的子树根）附带 `historyDir` 指针，指向包含各轮 `<jobId>/summary.md` 与 `transcript.jsonl` 的持久化历史目录；内存会话不附带该字段。
+
+### 本轮结果直接交付（TODO / Not Migrated）
+
+**尚未迁移。** 当前终态通知仅携带状态、错误和历史路径；父会话通过 `history.summary` 读取该轮最终输出。
+
+计划将本轮最终输出直接放入发送给父会话的终态通知，减少一次单独读取结果文件的工具调用：
+
+- 结果取自该 Job 的最终模型输出，不额外调用模型生成交付摘要。
+- 参照 `read` 的有界输出方式：短结果直接返回；过长结果截断，明确标记截断并提供本轮完整结果的文件路径，供按需补读。截断限额在实现时确定。
+- 结果绑定 `agentId`、`jobId` 和 `round`，只交付本轮内容。续跑产生新一轮后，不重新附带此前轮次的结果，不拼接 Actor 的累计历史或 Inherited 捕获的父会话背景。
+- 不把整份 `summary.md` 或 `transcript.jsonl` 当作直接返回正文；这些文件继续承担历史查阅用途。
+- 状态与错误仍独立于结果正文。直接交付不改变本轮的执行、结束或通知触发条件。
 
 ### 广播
 
@@ -136,7 +156,7 @@ Subagent 当前共享工作目录。当前实现限制每个父节点最多 4 �
 
 每个接收者使用与单独发送相同的规则：停止节点在允许续跑时启动新一轮任务，仍受并发上限等限制；正在停止或收尾的节点可以拒绝消息。
 
-广播返回每个接收者的成功或失败，不隐藏部分失败，也不自动重试。
+广播有部分失败时，消息写入工具报错并指出失败接收者，不返回成功结果，也不自动重试。
 
 ### 思考强度
 
@@ -169,7 +189,7 @@ Agent 应通过提供的 `write`／`msg_write` 发送消息，不应另写 Pytho
 
 `write` 写入普通文件时保持文件写入语义，向受管理的 Agent 端点发送消息时使用消息封装。`msg_write` 仍只用于消息端点，不写普通文件。提示词与工具说明已同步更新为纯文本通信规范。
 
-消息写入成功不等于接收者已读取，也不等于任务已完成。
+消息写入成功沿用 SDK 文件 `write` 的返回格式，不另加 ACK 或回执对象；失败以消息投递错误报告。消息写入成功不等于接收者已读取，也不等于任务已完成。超时或错误不保证消息尚未送达，不自动重发。
 
 ### 自动完成通知
 
@@ -210,6 +230,28 @@ Agent 应通过提供的 `write`／`msg_write` 发送消息，不应另写 Pytho
 ## 提示词与架构
 
 工具提示词应表达上述使用流程和行为边界。提示词正文放在 `prompts/`，通过 `src/prompt-text.mjs` 读取；执行代码保留数据装配、参数结构和权限判断。角色说明与路由偏好仍来自 `subagent-routing.json`，不新增模板框架或静默回退正文。
+
+### Subagent 提示词装配
+
+运行时始终读取 `prompts/subagent-tools.json` 与 `prompts/subagent-turns.json`。`*.new.json` 仅作讨论稿，不参与发现、加载或回退。文案确认后写回原文件，再删除讨论稿；不迁移运行时文件名。
+
+| 模块 | 资产字段 | 装配位置 |
+| --- | --- | --- |
+| A：共同范围与通信 | tools 的 `namespace`、`instructions` | Subagent namespace；共同指引随已启用成员进入提示词 |
+| B：派生与协调 | tools 的 `create.guideline` | 仅追加到 `subagent_create.promptGuidelines`，不追加到 list／stop 的共同指引 |
+| C：子会话身份与交付 | turns 的 `context` | 所有子会话的 `appendSystemPrompt`；替换实际 Agent ID、Parent ID 与父端点 |
+| D1：Fresh 职责 | `subagent-routing.json` 的角色说明 | Fresh 路由后注入，续跑保留已记录角色 |
+| D2：Inherited 上下文定位 | turns 的 `inheritedContext` | 仅 Inherited 会话额外注入，续跑及重新打开原生会话时仍按该 Actor 身份装配 |
+
+`inheritedContext` 接线与正式正文已启用。空串或全空白时不产生额外指引；非空正文原样传递，不由代码补写默认措辞。装配不清洗继承历史，也不把它改写成新的 assignment。
+
+参数说明按所属工具与实际嵌套位置保存，不再使用顶层扁平 `parameters`：
+- `create.parameters.context`
+- `create.parameters.tasks.description` 及 `create.parameters.tasks.items.{name,task,inheritContext}`
+- `list.parameters.{all,id}`、`stop.parameters.id`
+- `msg_write.parameters.{path,content}`
+
+这些是提示词资产路径，公开调用参数仍为 `context`、`tasks[].task` 等原有字段。正文可以独立编辑；回归验证字段映射、按能力与上下文模式选块、身份与端点替换和实际工具行为，不锁定具体文案。
 
 公开行为应先于内部架构方案确定。消息合并已撤回，不为预留该功能引入协调状态。
 

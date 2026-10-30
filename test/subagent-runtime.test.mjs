@@ -123,7 +123,7 @@ test("rejects an invalid batch atomically and leaves no state behind", () => {
   assert.equal(created.items.length, 1);
   const [item] = created.items;
   assert.match(item.id, AGENT_ID_PATTERN);
-  assert.deepEqual(item, { id: item.id, status: "running", socket: getAgentSocketPath(item.id) });
+  assert.deepEqual(item, { id: item.id, socket: getAgentSocketPath(item.id) });
   // A new actor's first Job shares its id; later continuations get their own.
   assert.deepEqual(runtime.jobs().jobs.map((job) => [job.jobId, job.name]), [[item.id, "first"]]);
   // A task assignment is exactly name/task/inheritContext: routing, roles and
@@ -171,7 +171,7 @@ test("registers entries in input order with distinct actor and Job IDs within a 
   const [a, b] = first.items;
   for (const item of first.items) {
     assert.match(item.id, AGENT_ID_PATTERN);
-    assert.equal(item.status, "running");
+    assert.equal("status" in item, false);
     assert.deepEqual(runtime.jobs({ jobIds: [item.id] }).jobs.map((job) => job.jobId), [item.id]);
   }
   assert.notEqual(a.id, b.id);
@@ -201,7 +201,7 @@ test("runs all twenty descendants concurrently while enforcing each parent's wid
   }, { parentAgentId: parent.id }).items);
   const all = [...roots, ...children];
   assert.equal(adapter.started.length, 20);
-  assert.ok(all.every((item) => item.status === "running"));
+  assert.ok(runtime.jobs().jobs.every((job) => job.status === "running"));
   assert.ok(adapter.started.every((handle) => handle.job.budget.snapshot().running));
   assert.throws(() => runtime.create({ tasks: [spec("fifth")] }), (error) => error.code === "child_limit_exceeded");
   for (const parent of roots) {
@@ -239,7 +239,7 @@ test("validates Fresh and inherited specs and snapshots the parent context once 
   );
 
   assert.equal(captures, 1);
-  assert.deepEqual(items.map((item) => item.status), ["running", "running", "running"]);
+  assert.ok(items.every((item) => !("status" in item)));
 
   const [fresh, inheritA, inheritB] = adapter.started.slice(1).map((handle) => handle.job.spec);
   assert.deepEqual(fresh, {
@@ -289,7 +289,7 @@ test("refuses inherited specs without a snapshot source and inside inherited ses
   );
   // A Fresh Subagent created from an inherited session still works.
   const created = inheritedSession.create({ tasks: [spec("fresh")] });
-  assert.equal(created.items[0].status, "running");
+  assert.equal("status" in created.items[0], false);
   assert.equal(adapter.started.length, 1);
 });
 
@@ -969,7 +969,7 @@ test("rejects a write that would exceed four active children", async () => {
   assert.equal(revived.job.agentId, roots[0].id);
   assert.equal(revived.job.continuedFromJobId, roots[0].id);
   assert.deepEqual(revived.job.pendingMessages.map((message) => message.content), ["wake up"]);
-  assert.equal(fifth.status, "running");
+  assert.equal(runtime.jobs({ jobIds: [fifth.id] }).jobs[0].status, "running");
 });
 
 test("rejects unknown senders and targets, invalid messages and sender spoofing", async () => {
@@ -1547,7 +1547,7 @@ test("restored history paths are resolved by the adapter, not an in-memory trans
   const runtime = createSubagentRuntime({ startJob: createFakeAdapter().startJob,
     historyPaths(jobId) { reads.push(jobId); return { summary: `/views/${jobId}/summary.md`, cleanJsonl: `/views/${jobId}/transcript.jsonl` }; } });
   runtime.restoreState(validState());
-  assert.equal(runtime.listDetailed({ id: "sub_01" }, { callerId: "Main" }).items[0].history.summary, "/views/sub_01/summary.md");
+  assert.equal(runtime.listDetailed({ id: "sub_01" }, { callerId: "Main" }).history.summary, "/views/sub_01/summary.md");
   assert.deepEqual(reads, ["sub_01"]);
   assert.equal("readRef" in runtime, false);
   assert.equal("readHistory" in runtime, false);

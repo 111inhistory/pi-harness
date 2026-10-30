@@ -7,14 +7,14 @@ import { installCapabilityCodemode } from '../../src/capability/codemode.ts';
 import { installNativeDiscoveryBoundary } from '../../src/capability/native-discovery.ts';
 import { waitFor } from '../../test-support/async.mjs';
 
-function registrationFixture() {
+function registrationFixture(mode: 'on' | 'only' = 'on') {
   const definitions = new Map<string, ToolDefinition>();
   const handlers = new Map<string, unknown[]>();
   let active = ['codemode', 'gate'];
   const pi = {
     registerTool: (tool: ToolDefinition) => { definitions.set(tool.name, tool); },
     on: (event: string, handler: unknown) => { handlers.set(event, [...handlers.get(event) ?? [], handler]); },
-    getSettings: () => ({}),
+    getSettings: () => ({ codemode: { mode } }),
     getActiveTools: () => [...active],
     setActiveTools: (names: string[]) => { active = names; },
     getAllTools: () => [...definitions.values()],
@@ -59,6 +59,26 @@ test('old native Codemode catalogs are removed from request declarations, not fr
   assert.equal(system.content, 'Keep base instructions');
   assert.deepEqual(result.messages[1], user);
   assert.match(JSON.stringify(messages[0]), /PRIVATE_OLD_CATALOG/, 'projection never rewrites stored history');
+});
+
+test('only mode hides direct exposure, not active codemode or deferred declarations', () => {
+  const { pi, definitions } = registrationFixture('only');
+  const declaredTools = installCapabilityCodemode(pi, () => true, () => true);
+  const names = ['codemode', 'direct_tool', 'script_tool', 'deferred_tool'];
+  const tools: AgentTool[] = names.map((name) => ({
+    name, label: name, description: name, parameters: { type: 'object', properties: {} },
+    execute: async () => ({ content: [], details: undefined }),
+  }));
+  const exposure = (name: string) => name === 'codemode' ? 'model-only' as const
+    : name === 'direct_tool' ? 'direct' as const : name === 'script_tool' ? 'codemode' as const : 'deferred' as const;
+  pi.setActiveTools(names);
+  definitions.get('codemode')!.prepareLoadout!({
+    declared: tools, callable: tools.slice(1), registered: tools,
+    getExposure: exposure, getNamespace: () => undefined, getPromptGuidelines: () => [],
+  });
+  assert.deepEqual([...declaredTools()], ['codemode', 'script_tool', 'deferred_tool']);
+  pi.setActiveTools(names.slice(1));
+  assert.deepEqual([...declaredTools()], names.slice(1), 'inactive Codemode cannot hide declarations');
 });
 
 test('a Codemode admission aborted after wake-up passes the free worker to the next script', { timeout: 10000 }, async () => {

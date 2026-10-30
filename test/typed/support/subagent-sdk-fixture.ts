@@ -4,7 +4,7 @@
  *
  * The scenario child process owns the native SDK, the scripted provider and
  * its fixtures. This module only describes the narrow slice those scenarios
- * need, validates the receipts the production runtime returns, and reads
+ * need, validates the native write results, and reads
  * native transcript evidence. It never re-implements a production decision.
  */
 
@@ -28,7 +28,7 @@ import type {
 
 import { SocketWriteError } from "../../../src/ipc/socket.ts";
 import { SubagentError } from "../../../src/subagent/runtime.ts";
-import type { BroadcastReceipt, MessageReceipt } from "../../../src/subagent/runtime.ts";
+import { treeNodes } from "./agent-tree.ts";
 
 /** One scripted provider request recorded by the scenario child process. */
 export interface FixtureChat {
@@ -54,8 +54,7 @@ export interface FixtureHistoryPaths {
 export interface FixtureActor {
   readonly id: string;
   readonly socket: string;
-  readonly status: string;
-  readonly parentId?: string | null;
+  readonly status?: string;
   readonly history?: FixtureHistoryPaths;
   readonly historyError?: { readonly code: string; readonly message: string };
   readonly warnings?: readonly string[];
@@ -136,10 +135,9 @@ const array = (value: unknown, label: string): unknown[] => {
 /** Narrow one received actor object without asserting an unvalidated shape. */
 export function actorOf(value: unknown): FixtureActor {
   const item = record(value, "Actor item");
-  if (typeof item.id !== "string" || typeof item.socket !== "string" || typeof item.status !== "string") {
-    throw new Error("An Actor item must contain string id, socket and status fields.");
+  if (typeof item.id !== "string" || typeof item.socket !== "string") {
+    throw new Error("An Actor item must contain string id and socket fields.");
   }
-  const parentId = typeof item.parentId === "string" || item.parentId === null ? item.parentId : undefined;
   const warnings = Array.isArray(item.warnings)
     ? item.warnings.filter((warning: unknown): warning is string => typeof warning === "string")
     : undefined;
@@ -147,8 +145,7 @@ export function actorOf(value: unknown): FixtureActor {
   return {
     id: item.id,
     socket: item.socket,
-    status: item.status,
-    ...(parentId === undefined ? {} : { parentId }),
+    ...(typeof item.status === "string" ? { status: item.status } : {}),
     ...(history === undefined ? {} : { history }),
     ...(warnings === undefined ? {} : { warnings }),
   };
@@ -167,10 +164,15 @@ function historyOf(value: unknown): FixtureHistoryPaths | undefined {
   return { jobId: history.jobId, summary: history.summary, cleanJsonl: history.cleanJsonl };
 }
 
-/** Read the Actor items out of a `subagent_create`/`subagent_list` result. */
-export function toolItems(result: FixtureToolResult): FixtureActor[] {
+/** Read registrations from create, which never returns a progress status. */
+export function createdItems(result: FixtureToolResult): FixtureActor[] {
   const details = record(result.details, "Tool details");
   return array(details.items, "Tool details.items").map(actorOf);
+}
+
+/** Flatten a list tree only when a scenario needs counts or lookup. */
+export function listedActors(result: FixtureToolResult): FixtureActor[] {
+  return treeNodes(result.details).map(actorOf);
 }
 
 /** The last tool result message for one native tool, with a narrowed type. */
@@ -181,7 +183,7 @@ export function lastToolResult(messages: readonly Message[], toolName: string): 
 }
 
 /** Read the Actor items out of the raw JSON text of one tool result message. */
-export function toolItemsFromMessage(message: ToolResultMessage): FixtureActor[] {
+export function createdItemsFromMessage(message: ToolResultMessage): FixtureActor[] {
   const parsed: unknown = JSON.parse(textOfContent(message.content));
   const body = record(parsed, "Tool result JSON");
   return array(body.items, "Tool result items").map(actorOf);
@@ -194,79 +196,32 @@ function textOfContent(content: readonly FixtureContent[]): string {
   throw new Error("The tool result message has no text content.");
 }
 
-/** Validate the receipt Runtime returned for one managed write. */
-export function messageReceipt(result: FixtureToolResult): MessageReceipt {
-  const details = record(result.details, "Managed message receipt");
-  if (details.ok !== true || typeof details.to !== "string") {
-    throw new Error("A message receipt must be successful and name its recipient.");
-  }
-  const jobId = details.jobId;
-  if (jobId !== null && typeof jobId !== "string") {
-    throw new Error("A message receipt jobId must be a string or null.");
-  }
-  return { ok: true, to: details.to, jobId };
+/** Managed messages use the same public success result as native file writes. */
+export function assertWriteSuccess(result: FixtureToolResult): void {
+  assert.notEqual(result.isError, true);
+  assert.equal(result.details, undefined);
+  assert.match(textOfContent(result.content), /^Successfully wrote to /);
 }
 
-/** Validate the receipt of one broadcast write. */
-export function broadcastReceipt(result: FixtureToolResult): BroadcastReceipt {
-  const details = record(result.details, "Broadcast receipt");
-  if (typeof details.ok !== "boolean" || details.to !== "all") {
-    throw new Error("A broadcast receipt must report ok and target 'all'.");
-  }
-  const sent = array(details.sent, "Broadcast receipt sent").map((entry) => {
-    const recipient = record(entry, "Broadcast recipient");
-    if (typeof recipient.to !== "string" || (recipient.jobId !== null && typeof recipient.jobId !== "string")) {
-      throw new Error("A broadcast recipient must have a string target and a Job id or null.");
-    }
-    return { to: recipient.to, jobId: recipient.jobId };
-  });
-  const errors = array(details.errors, "Broadcast receipt errors").map((entry) => {
-    const failure = record(entry, "Broadcast error");
-    if (typeof failure.to !== "string" || typeof failure.code !== "string" || typeof failure.message !== "string") {
-      throw new Error("A broadcast error must have string target, code and message fields.");
-    }
-    return { to: failure.to, code: failure.code, message: failure.message };
-  });
-  return { ok: details.ok, to: "all", sent, errors };
+export function assertWriteSuccessFromMessage(message: ToolResultMessage): void {
+  assertWriteSuccess({ content: message.content, details: message.details, isError: message.isError });
 }
 
-/** Parse the receipt the managed write tool returned to a native writer model. */
-export function messageReceiptFromMessage(message: ToolResultMessage): MessageReceipt {
-  const parsed: unknown = JSON.parse(textOfContent(message.content));
-  return messageReceipt({ content: message.content, details: parsed });
-}
-
-/**
- * Deliver one text through the real `msg_write` tool and require the runtime
- * to answer with an accepted receipt for the addressed Actor's live Job.
- */
 export async function deliverToActor(
   fixture: ScenarioFixture,
   actor: Pick<FixtureActor, "id" | "socket">,
   content: string,
-): Promise<MessageReceipt> {
-  const receipt = messageReceipt(await fixture.call("msg_write", { path: actor.socket, content }));
-  assert.equal(receipt.to, actor.id, "the receipt must name the addressed Actor");
-  assert.equal(typeof receipt.jobId, "string", "the receipt must name the Job that accepted delivery");
-  return receipt;
+): Promise<void> {
+  assertWriteSuccess(await fixture.call("msg_write", { path: actor.socket, content }));
 }
 
-/** Deliver one broadcast through the real `msg_write` tool and check its fanout. */
+/** Fanout is verified in recipient transcripts, not in a public receipt. */
 export async function deliverBroadcast(
   fixture: ScenarioFixture,
   socket: string,
   content: string,
-  recipients: number,
-): Promise<BroadcastReceipt> {
-  const receipt = broadcastReceipt(await fixture.call("msg_write", { path: socket, content }));
-  assert.deepEqual(receipt.errors, [], `broadcast rejected: ${JSON.stringify(receipt.errors)}`);
-  assert.equal(receipt.ok, true);
-  assert.equal(receipt.sent.length, recipients, "the receipt must report one outcome per direct child");
-  assert.ok(
-    receipt.sent.every((entry) => typeof entry.jobId === "string"),
-    "every broadcast recipient must name the Job that accepted delivery",
-  );
-  return receipt;
+): Promise<void> {
+  assertWriteSuccess(await fixture.call("msg_write", { path: socket, content }));
 }
 
 /** A stopping write must be refused by the Runtime with its own busy state. */

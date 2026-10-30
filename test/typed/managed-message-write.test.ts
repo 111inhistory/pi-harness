@@ -3,18 +3,14 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import type { ExtensionToolContext } from '@earendil-works/pi-coding-agent';
+import { createWriteToolDefinition, type ExtensionToolContext } from '@earendil-works/pi-coding-agent';
 import { createManagedWriteTools, type ManagedWriteHost } from '../../src/subagent/message-write.ts';
 
-// The SDK write definition only reads ctx.cwd. This fixture is intentionally
-// limited to that SDK boundary; production admission uses the typed host port.
 const context = (cwd: string): ExtensionToolContext => ({ cwd }) as ExtensionToolContext;
-
 async function fixture(run: (cwd: string) => Promise<void>): Promise<void> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'managed-write-'));
   try { await run(cwd); } finally { await rm(cwd, { recursive: true, force: true }); }
 }
-
 function host(overrides: Partial<ManagedWriteHost> = {}): ManagedWriteHost {
   return {
     resolveEndpoint: async () => ({ isManaged: true, targetId: 'sub_01' }),
@@ -24,35 +20,48 @@ function host(overrides: Partial<ManagedWriteHost> = {}): ManagedWriteHost {
   };
 }
 
-test('managed write exposes runtime receipt rather than SDK filesystem success', async () => {
+test('write and msg_write return the SDK file-write result without delivery metadata', async () => {
   await fixture(async (cwd) => {
     const calls: unknown[] = [];
     const tools = createManagedWriteTools({ cwd, senderId: 'main', host: host({
       sendMessage: async (command) => { calls.push(command); return { ok: true, to: command.to, jobId: 'sub_01#r2' }; },
     }) });
-    const result = await tools.write.execute('m1', { path: 'sub_01.sock', content: '{"from":"fake"}' }, undefined, undefined, context(cwd));
-    assert.deepEqual(calls, [{ from: 'Main', to: 'sub_01', content: '{"from":"fake"}' }]);
-    assert.deepEqual(result.details, { ok: true, to: 'sub_01', jobId: 'sub_01#r2' });
-    assert.doesNotMatch(JSON.stringify(result.content), /Successfully wrote/);
+    const args = { path: 'sub_01.sock', content: '{"from":"fake"}' };
+    const native = createWriteToolDefinition(cwd, { operations: { mkdir: async () => {}, writeFile: async () => {} } });
+    const expected = await native.execute('native', args, undefined, undefined, context(cwd));
+    for (const tool of [tools.write, tools.msg_write]) {
+      const result = await tool.execute('message', args, undefined, undefined, context(cwd));
+      assert.deepEqual(result, expected);
+      assert.equal(result.details, undefined);
+      assert.equal(tool.renderResult, native.renderResult);
+    }
+    assert.deepEqual(calls, Array.from({ length: 2 }, () => ({ from: 'Main', to: 'sub_01', content: args.content })));
   });
 });
 
-test('message tool returns partial broadcast failures without hiding successful recipients', async () => {
+test('partial broadcast fails instead of returning file-write success', async () => {
   await fixture(async (cwd) => {
-    const receipt = { ok: false, to: 'all' as const, sent: [{ to: 'sub_01', jobId: 'sub_01' }], errors: [{ to: 'sub_02', code: 'agent_busy', message: 'finalizing' }] };
     const tools = createManagedWriteTools({ cwd, senderId: 'Main', host: host({
       resolveEndpoint: async () => ({ isManaged: true, isBroadcast: true, parentId: 'main' }),
-      sendMessage: async (command) => { assert.equal(command.to, 'all'); return receipt; },
+      sendMessage: async () => ({ ok: false, to: 'all', sent: [{ to: 'sub_01', jobId: 'sub_01' }],
+        errors: [{ to: 'sub_02', code: 'agent_busy', message: 'finalizing' }] }),
     }) });
-    const result = await tools.message.execute('b1', { path: 'children.sock', content: 'hello' }, undefined, undefined, context(cwd));
-    assert.deepEqual(result.details, receipt);
+    await assert.rejects(tools.msg_write.execute('broadcast', { path: 'children.sock', content: 'hello' }, undefined, undefined, context(cwd)),
+      { code: 'delivery_failed', message: 'sub_02: finalizing' });
   });
 });
 
-test('runtime admission rejection reaches the calling tool', async () => {
+test('delivery rejection or timeout propagates as a failed write without retry', async () => {
   await fixture(async (cwd) => {
-    const tools = createManagedWriteTools({ cwd, senderId: 'Main', host: host({ sendMessage: async () => { throw new Error('invalid_message'); } }) });
-    await assert.rejects(tools.message.execute('bad', { path: 'sub_01.sock', content: '' }, undefined, undefined, context(cwd)), /invalid_message/);
+    for (const failure of [new Error('recipient unavailable'), Object.assign(new Error('delivery timed out'), { code: 'timeout' })]) {
+      let calls = 0;
+      const tools = createManagedWriteTools({ cwd, senderId: 'Main', host: host({
+        sendMessage: async () => { calls += 1; throw failure; },
+      }) });
+      await assert.rejects(tools.msg_write.execute('failed', { path: 'sub_01.sock', content: 'hello' }, undefined, undefined, context(cwd)),
+        (error: unknown) => error === failure);
+      assert.equal(calls, 1);
+    }
   });
 });
 
@@ -66,13 +75,23 @@ test('ordinary files retain SDK write behavior and never invoke runtime', async 
   });
 });
 
-test('concurrent tool invocations cannot share captured receipts', async () => {
+test('a pending write cannot report success before delivery and concurrent failures stay isolated', async () => {
   await fixture(async (cwd) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let completed = false;
     const tools = createManagedWriteTools({ cwd, senderId: 'Main', host: host({
-      sendMessage: async ({ content, to }) => { await new Promise((resolve) => setTimeout(resolve, content === 'first' ? 20 : 0)); return { ok: true, to, jobId: content }; },
+      sendMessage: async ({ content, to }) => {
+        if (content === 'fail') throw new Error('rejected');
+        await gate;
+        return { ok: true, to, jobId: 'internal-job' };
+      },
     }) });
-    const [first, second] = await Promise.all(['first', 'second'].map((content, index) => tools.message.execute(content, { path: `sub_0${index + 1}.sock`, content }, undefined, undefined, context(cwd))));
-    assert.equal(first?.details && 'jobId' in first.details ? first.details.jobId : null, 'first');
-    assert.equal(second?.details && 'jobId' in second.details ? second.details.jobId : null, 'second');
+    const success = tools.msg_write.execute('pending', { path: 'sub_01.sock', content: 'wait' }, undefined, undefined, context(cwd))
+      .then((result) => { completed = true; return result; });
+    await assert.rejects(tools.msg_write.execute('failed', { path: 'sub_02.sock', content: 'fail' }, undefined, undefined, context(cwd)), /rejected/);
+    assert.equal(completed, false);
+    release();
+    assert.equal((await success).details, undefined);
   });
 });

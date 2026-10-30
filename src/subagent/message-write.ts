@@ -14,7 +14,7 @@ import { SubagentError, type BroadcastReceipt, type MessageReceipt } from './run
 type NativeWriteTool = ReturnType<typeof createWriteToolDefinition>;
 type WriteArguments = Parameters<NativeWriteTool['execute']>;
 type Receipt = MessageReceipt | BroadcastReceipt;
-export type ManagedWriteTool = ToolDefinition<NativeWriteTool['parameters'], Receipt | undefined>;
+export type ManagedWriteTool = ToolDefinition<NativeWriteTool['parameters'], undefined>;
 
 export interface ManagedWriteHost {
   resolveEndpoint(address: string): Promise<EndpointResolverResult>;
@@ -27,51 +27,51 @@ export interface ManagedWriteHost {
   }): Promise<Receipt>;
 }
 
-interface MessageToolText {
-  message: { description: string; snippet: string; guidelines: string[] };
-  parameters: { messagePath: string; messageContent: string };
+interface MsgWriteToolText {
+  msg_write: { description: string; snippet: string; guidelines: string[] };
+  parameters: { path: string; content: string };
 }
 
-function messageToolText(): MessageToolText {
+function msgWriteToolText(): MsgWriteToolText {
   const value: unknown = JSON.parse(promptText('subagent-tools.json'));
-  if (typeof value !== 'object' || value === null || !('message' in value) || !('parameters' in value)) {
-    throw new TypeError('Invalid Subagent message tool text.');
+  if (typeof value !== 'object' || value === null || !('msg_write' in value)) {
+    throw new TypeError('Invalid Subagent msg_write tool text.');
   }
-  const message = value.message;
-  const parameters = value.parameters;
-  if (typeof message !== 'object' || message === null ||
-      !('description' in message) || typeof message.description !== 'string' ||
-      !('snippet' in message) || typeof message.snippet !== 'string' ||
-      !('guidelines' in message) || !Array.isArray(message.guidelines) ||
-      !message.guidelines.every((item: unknown): item is string => typeof item === 'string') ||
+  const msg_write = value.msg_write;
+  if (typeof msg_write !== 'object' || msg_write === null || !('parameters' in msg_write)) {
+    throw new TypeError('Invalid Subagent msg_write tool text.');
+  }
+  const parameters = msg_write.parameters;
+  if (!('description' in msg_write) || typeof msg_write.description !== 'string' ||
+      !('snippet' in msg_write) || typeof msg_write.snippet !== 'string' ||
+      !('guidelines' in msg_write) || !Array.isArray(msg_write.guidelines) ||
+      !msg_write.guidelines.every((item: unknown): item is string => typeof item === 'string') ||
       typeof parameters !== 'object' || parameters === null ||
-      !('messagePath' in parameters) || typeof parameters.messagePath !== 'string' ||
-      !('messageContent' in parameters) || typeof parameters.messageContent !== 'string') {
-    throw new TypeError('Invalid Subagent message tool text.');
+      !('path' in parameters) || typeof parameters.path !== 'string' ||
+      !('content' in parameters) || typeof parameters.content !== 'string') {
+    throw new TypeError('Invalid Subagent msg_write tool text.');
   }
   return {
-    message: { description: message.description, snippet: message.snippet, guidelines: [...message.guidelines] },
-    parameters: { messagePath: parameters.messagePath, messageContent: parameters.messageContent },
+    msg_write: { description: msg_write.description, snippet: msg_write.snippet, guidelines: [...msg_write.guidelines] },
+    parameters: { path: parameters.path, content: parameters.content },
   };
 }
 
-const text = messageToolText();
+const text = msgWriteToolText();
 const actorId = (id: string): string => id.toLowerCase() === 'main' ? 'Main' : id;
 
 /**
- * Keep SDK path expansion and ordinary-file behavior, but replace the tool
- * result when a managed message was admitted. Each invocation owns its receipt;
- * SDK WriteOperations itself has a void result and cannot expose that receipt.
+ * Keep the SDK write result for files and messages alike. Delivery receipts
+ * stay internal; rejected messages and partial broadcasts fail the tool.
  * Runtime send is never executed under the listener-ownership mutex.
  */
 export function createManagedWriteTools(options: {
   cwd: string;
   senderId: string;
   host: ManagedWriteHost;
-}): { write: ManagedWriteTool; message: ManagedWriteTool } {
+}): { write: ManagedWriteTool; msg_write: ManagedWriteTool } {
   const native = createWriteToolDefinition(options.cwd);
   const execute = async (...args: WriteArguments) => {
-    let receipt: Receipt | undefined;
     const operations = createSocketAwareWriteOperations({
       senderId: options.senderId,
       resolveEndpoint: (address) => options.host.resolveEndpoint(address),
@@ -90,10 +90,14 @@ export function createManagedWriteTools(options: {
           }
           to = endpoint.targetId;
         }
-        receipt = await options.host.sendMessage({
+        const receipt = await options.host.sendMessage({
           from, to, content: args[1].content,
           ...(args[2] === undefined ? {} : { signal: args[2] }),
         });
+        if (!receipt.ok) {
+          throw new SubagentError('delivery_failed', receipt.errors.map((error) => `${error.to}: ${error.message}`).join('; '));
+        }
+        if (args[2]?.aborted) throw new SubagentError('cancelled', 'Message send was cancelled.');
       },
     });
     if (process.platform === 'win32' && isWindowsPipe(args[1].path)) {
@@ -101,27 +105,22 @@ export function createManagedWriteTools(options: {
       // active Named Pipe. Pipes use message admission, not filesystem locking.
       if (args[2]?.aborted) throw new SubagentError('cancelled', 'Message send was cancelled.');
       await operations.writeFile(args[1].path, args[1].content);
-    } else {
-      const result = await createWriteToolDefinition(options.cwd, { operations }).execute(...args);
-      if (receipt === undefined) return result;
+      // Named Pipes bypass the SDK's filesystem queue, but use its result format.
+      return { content: [{ type: 'text' as const, text: `Successfully wrote to ${args[1].path}` }], details: undefined };
     }
-    if (receipt === undefined) throw new SubagentError('invalid_state', 'The message send returned no result.');
-    return { content: [{ type: 'text' as const, text: JSON.stringify(receipt) }], details: receipt };
+    return createWriteToolDefinition(options.cwd, { operations }).execute(...args);
   };
-  // Native's renderer assumes undefined details and a filesystem mutation.
-  // Let Pi's generic renderer show structured message results instead.
-  const { renderResult: _fileResultRenderer, ...metadata } = native;
-  const write: ManagedWriteTool = { ...metadata, execute };
-  const messagePath = { ...native.parameters.properties.path, description: text.parameters.messagePath };
-  const messageContent = { ...native.parameters.properties.content, description: text.parameters.messageContent };
-  const message: ManagedWriteTool = {
+  const write: ManagedWriteTool = { ...native, execute };
+  const messagePath = { ...native.parameters.properties.path, description: text.parameters.path };
+  const messageContent = { ...native.parameters.properties.content, description: text.parameters.content };
+  const msg_write: ManagedWriteTool = {
     ...write,
     name: 'msg_write',
     defaultActive: false,
     label: 'Send Agent Message',
-    description: text.message.description,
-    promptSnippet: text.message.snippet,
-    promptGuidelines: [...text.message.guidelines],
+    description: text.msg_write.description,
+    promptSnippet: text.msg_write.snippet,
+    promptGuidelines: [...text.msg_write.guidelines],
     parameters: {
       ...native.parameters,
       properties: {
@@ -135,5 +134,5 @@ export function createManagedWriteTools(options: {
       return execute(...args);
     },
   };
-  return { write, message };
+  return { write, msg_write };
 }

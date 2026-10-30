@@ -44,7 +44,7 @@ for (const [name, description] of [
   ["namespace-leaf", "Depth 2 Capability accepts the loaded two-tool Subagent namespace"],
   ["capability-missing", "Capability internal execution does not require public Subagent tools"],
   ["external-socket", "a host write refuses an unmanaged external socket without connecting while a genuine external client preserves its payload and a same-named Agent keeps stopping"],
-  // These scenarios check runtime receipts, host delivery and native queue semantics through the loaded extensions.
+  // These scenarios check native write results, host delivery and native queue semantics through the loaded extensions.
   ["upstream-main", "native child write reaches Main's receiving socket and wakes Main with the real sender"],
   ["upstream-main-steer", "child-to-Main delivery steers a busy root without starting a concurrent turn"],
   ["upstream-main-clear", "clearing an ordinary native steer cannot swallow the later host terminal notification"],
@@ -53,7 +53,7 @@ for (const [name, description] of [
   ["upstream-main-reload", "Main receiving endpoint is rebuilt after reload and a revived child can deliver upstream"],
   ["upstream-parent", "Depth 2 write reaches and revives only its direct parent, preserving the leaf sender"],
   ["upstream-parent-steer", "a busy Subagent parent receives independent progress and terminal events through native steering"],
-  ["sender-wire", "plain-text child write returns a runtime receipt and reaches the peer with the actual sender attributed by the host"],
+  ["sender-wire", "plain-text child write uses native write output and reaches the peer with the actual sender attributed by the host"],
   ["sender-reserved", "JSON literal message text cannot impersonate another sender"],
   ["revive", "explicit revival retains the listener, appends both histories and does not reroute"],
   ["history", "real native tool execution retains complete clean history and the final summary"],

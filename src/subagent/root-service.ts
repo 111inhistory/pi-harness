@@ -81,6 +81,7 @@ export class RootService implements ManagedWriteHost {
   readonly #store: ReturnType<typeof createSubagentStore>;
   readonly #historyDir: string;
   readonly #pendingEvents: RuntimeEvent[] = [];
+  readonly #starting = new Map<string, Promise<void>>();
   readonly #retainedScopes = new Map<string, CapabilityToolCatalog>();
   #registry: ModelRegistry;
   #phase: RootPhase = 'initializing';
@@ -160,7 +161,11 @@ export class RootService implements ManagedWriteHost {
       socketDir,
       isIdTaken: (id) => options.allocatedIds.has(id),
       onIdAllocated: (id) => options.allocatedIds.add(id),
-      startJob: (request) => this.runner.start(request),
+      startJob: (request) => {
+        const handle = this.runner.start(request);
+        if (request.continuedFromJobId === null) this.#starting.set(request.agentId, handle.firstModelCall);
+        return handle;
+      },
       finalizeJob: (input) => this.#finalize(input),
       // Pure path projection only. Reading/rebuilding belongs to list(), not
       // domain transitions or notification publication.
@@ -246,18 +251,25 @@ export class RootService implements ManagedWriteHost {
   async create(batch: unknown, options: SubagentSurfaceCreateOptions, ctx: ExtensionContext): Promise<CreatedAgents> {
     this.assertOperational();
     this.#registry = ctx.modelRegistry;
-    const result = this.runtime.create(batch, options);
+    let result = this.runtime.create(batch, options);
     if (this.#persistenceFailure !== null) throw this.#persistenceFailure;
     try { await this.listeners.sync(); } catch (error) {
-      // Registration already committed. Do not misreport it as an uncreated
-      // batch and encourage the caller to create duplicate Actors.
       this.#report(errorOf(error));
-      return { ...result, warnings: [...(result.warnings ?? []), `IPC listener setup failed: ${errorOf(error).message}`] };
+      result = { ...result, warnings: [...(result.warnings ?? []), `IPC listener setup failed: ${errorOf(error).message}`] };
     }
+    const started = await Promise.allSettled(result.items.map((item) => {
+      const ready = this.#starting.get(item.id);
+      this.#starting.delete(item.id);
+      return ready ?? Promise.reject(new Error(`Agent ${item.id} has no startup handle.`));
+    }));
+    const failures = started.flatMap((outcome, index) => outcome.status === 'rejected'
+      ? [`${result.items[index]!.id}: ${errorOf(outcome.reason).message}`] : []);
+    if (failures.length) throw new SubagentError('start_failed',
+      `Subagent startup failed: ${failures.join('; ')}. Registered agents: ${result.items.map((item) => item.id).join(', ')}; do not recreate this batch.`);
     return result;
   }
 
-  async list(filter: unknown, callerId: string): Promise<{ items: DetailedAgentItem[] }> {
+  async list(filter: unknown, callerId: string): Promise<DetailedAgentItem | null> {
     this.assertOperational();
     if (!record(filter)) throw new SubagentError('invalid_request', 'List parameters must be an object.');
     if (filter.id !== undefined && typeof filter.id !== 'string') throw new SubagentError('invalid_request', 'List id must be a string.');
@@ -270,12 +282,20 @@ export class RootService implements ManagedWriteHost {
     for (const job of this.runtime.jobs().jobs) {
       if (['completed', 'failed', 'cancelled'].includes(job.status)) latest.set(job.agentId, job.jobId);
     }
-    for (const item of result.items) {
-      if (item.id === 'Main') { item.status = this.#options.context.isIdle() ? 'idle' : 'running'; continue; }
-      const jobId = latest.get(item.id);
-      if (jobId === undefined) continue;
-      try { const history = this.#view(jobId); if (history !== null) item.history = { jobId, ...history }; }
-      catch (error) { item.historyError = { code: 'history_read_failed', message: errorOf(error).message }; }
+    const enrich = (item: DetailedAgentItem): void => {
+      if (item.id === 'Main') item.status = this.#options.context.isIdle() ? 'idle' : 'running';
+      else {
+        const jobId = latest.get(item.id);
+        if (jobId !== undefined) {
+          try { const history = this.#view(jobId); if (history !== null) item.history = { jobId, ...history }; }
+          catch (error) { item.historyError = { code: 'history_read_failed', message: errorOf(error).message }; }
+        }
+      }
+      item.children.forEach(enrich);
+    };
+    if (result) {
+      enrich(result);
+      if (this.#store.durable) result.historyDir = this.#historyDir;
     }
     return result;
   }
