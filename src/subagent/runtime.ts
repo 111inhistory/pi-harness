@@ -10,9 +10,10 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { watchSubagentBudget } from './budget-watch.ts';
 import { terminalResultContent } from "./result.ts";
 
-import { createJobBudget } from "../job-budget.mjs";
+import { createJobBudget, type BudgetPhase, type BudgetSnapshot, type BudgetSnapshotDetail, type BudgetTerminal, type BudgetTerminalError, type BudgetTermination, type JobBudgetPort } from './job-budget.ts';
 import {
   adjudicateTerminal,
   firstEffectiveStopping,
@@ -45,83 +46,7 @@ export interface JobHistoryPaths {
   [key: string]: unknown;
 }
 
-export interface BudgetLimit {
-  soft: number;
-  hard: number;
-}
-
-export interface BudgetProfile {
-  modelCalls: BudgetLimit;
-  activeTimeMs: BudgetLimit;
-  lifetimeMs: number;
-}
-
-export type BudgetPhase = "normal" | "warning" | "exhausted";
-export type BudgetTermination = "model_final" | "cancelled" | "job_failed" | "budget_exhausted" | "lifetime_expired";
-
-/** The Budget's own error record; the public projection adds a message. */
-export interface BudgetTerminalError {
-  code: string;
-  message?: string;
-  detail?: unknown;
-}
-
-export interface BudgetTerminal {
-  status: TerminalStatus;
-  termination: BudgetTermination;
-  truncated: boolean;
-  error: BudgetTerminalError | null;
-}
-
-export interface BudgetSnapshot {
-  jobId: string | null;
-  depth: number | null;
-  phase: BudgetPhase;
-  modelCalls: number;
-  activeTimeMs: number;
-  rejectedProjectedModelCalls: number | null;
-  running: boolean;
-  warningTaken: boolean;
-  terminal: BudgetTerminal | null;
-}
-
-export interface BudgetSnapshotDetail extends BudgetSnapshot {
-  profile: BudgetProfile;
-  elapsedMs: number;
-}
-
-export type BudgetCheck = BudgetSnapshot;
-
-export type BudgetChargeResult =
-  | { ok: true; sequence: number }
-  | { ok: false; reason: string; terminal: BudgetTerminal | null; error: BudgetTerminalError | null };
-
-export type BudgetStartResult =
-  | { ok: true; activeTimeMs: number }
-  | {
-      ok: false;
-      reason: string;
-      terminal: BudgetTerminal | null;
-      error: BudgetTerminalError | null;
-      activeTimeMs?: number;
-    };
-
-export type BudgetTerminateResult =
-  | { ok: true; terminal: BudgetTerminal }
-  | { ok: false; reason: string; terminal: BudgetTerminal | null; error: BudgetTerminalError | null };
-
-/** The narrow Budget surface the lifecycle owns; the Budget module owns limits. */
-export interface JobBudgetPort {
-  beginModelCall(): BudgetChargeResult;
-  takeWarning(): string | null;
-  check(): BudgetCheck;
-  startActive(): BudgetStartResult;
-  pauseActive(): { ok: true; activeTimeMs: number };
-  terminate(options: { reason: "model_final" | "cancelled" | "failed"; error?: LifecycleError | null }): BudgetTerminateResult;
-  snapshot(): BudgetSnapshot;
-  snapshot(options: { detail: true }): BudgetSnapshotDetail;
-  snapshot(options?: { detail?: boolean }): BudgetSnapshot | BudgetSnapshotDetail;
-}
+export type { BudgetLimit, BudgetProfile, BudgetPhase, BudgetTermination, BudgetTerminalError, BudgetTerminal, BudgetSnapshot, BudgetSnapshotDetail, BudgetChargeResult, BudgetStartResult, BudgetTerminateResult, JobBudgetPort } from './job-budget.ts';
 
 export interface InheritedContext {
   [key: string]: unknown;
@@ -156,7 +81,7 @@ export interface JobRequest {
   budget: JobBudgetPort;
   continuedFromJobId: string | null;
   pendingMessages: RuntimeDelivery[];
-  checkBudget(): BudgetCheck;
+  checkBudget(): BudgetSnapshot;
   recordStart(startEntryId: string | null): void;
 }
 
@@ -527,10 +452,11 @@ function publicBudgetError(error: unknown): LifecycleError | null {
 }
 
 function publicBudgetSnapshot(budget: JobBudgetPort): BudgetSnapshot {
-  const snapshot = cloneValue(budget.snapshot());
-  if (snapshot.terminal?.error) {
-    const publicError = publicBudgetError(snapshot.terminal.error);
-    if (publicError !== null) snapshot.terminal.error = publicError;
+  const snapshot = budget.snapshot();
+  const terminal = snapshot.terminal;
+  if (terminal?.error) {
+    const publicError = publicBudgetError(terminal.error);
+    if (publicError !== null) return { ...snapshot, terminal: { ...terminal, error: publicError } };
   }
   return snapshot;
 }
@@ -834,7 +760,7 @@ export class SubagentRuntime {
   #stoppedSequence = 0;
   #jobs = new Map<string, Job>();
   #handles = new Map<string, StartedJobHandle | null>();
-  #lifetimeTimers = new Map<string, NodeJS.Timeout>();
+  #budgetWatches = new Map<string, () => void>();
   #waiters = new Map<string, Array<(view: JobView) => void>>();
   #childSequences = new Map<string, number>();
   #transitionDepth = 0;
@@ -997,7 +923,7 @@ export class SubagentRuntime {
     const jobId = continuedFromJobId === null ? agent.agentId : this.#allocateJobId(agent);
     // `job-budget.mjs` is still an untyped dependency; this boundary assertion
     // is the single place where its real API is bound to the closed domain port.
-    const budget = createJobBudget({ depth: agent.depth, jobId }) as JobBudgetPort;
+    const budget = createJobBudget({ depth: agent.depth, jobId });
     const job: Job = {
       jobId,
       agentId: agent.agentId,
@@ -1030,7 +956,7 @@ export class SubagentRuntime {
       spec: persistedSpec(spec),
       origin: cloneValue(origin),
     });
-    this.#scheduleLifetime(job);
+    this.#watchBudget(job);
     this.#refreshAgent(agent.agentId);
     return job;
   }
@@ -1476,6 +1402,7 @@ export class SubagentRuntime {
         return;
       }
 
+      this.#watchBudget(job);
       // Reserve the handle entry before invoking the adapter so synchronous aborts
       // wait for its returned handle rather than finalizing a run still starting.
       this.#handles.set(job.jobId, null);
@@ -1522,7 +1449,7 @@ export class SubagentRuntime {
       origin: job.origin,
       budget,
       continuedFromJobId: job.continuedFromJobId,
-      pendingMessages: pending.map((envelope) => cloneValue(envelope)),
+      pendingMessages: pending,
       checkBudget: () => this.#checkBudget(job),
       recordStart: (startEntryId) => this.#recordStart(job, startEntryId),
     };
@@ -1545,8 +1472,7 @@ export class SubagentRuntime {
     const budget = job.budget;
     if (budget === null) throw stateError(`Job ${job.jobId} has no Budget.`);
     budget.pauseActive();
-    clearTimeout(this.#lifetimeTimers.get(job.jobId));
-    this.#lifetimeTimers.delete(job.jobId);
+    this.#clearBudgetWatch(job.jobId);
 
     const payload = isPlainObject(execution) ? execution : {};
     if (payload.result !== undefined && payload.result !== null) job.result = cloneValue(payload.result);
@@ -1600,7 +1526,7 @@ export class SubagentRuntime {
     this.#beginFinalization(job, { error });
   }
 
-  #checkBudget(job: Job): BudgetCheck {
+  #checkBudget(job: Job): BudgetSnapshot {
     return this.#withTransition(() => {
       const budget = job.budget;
       if (budget === null) throw stateError(`Job ${job.jobId} has no Budget.`);
@@ -1614,23 +1540,17 @@ export class SubagentRuntime {
     });
   }
 
-  #scheduleLifetime(job: Job): void {
-    const schedule = (): void => {
-      const budget = job.budget;
-      if (budget === null) return;
-      const detail = budget.snapshot({ detail: true });
-      const remaining = Math.max(1, detail.profile.lifetimeMs - detail.elapsedMs);
-      const timer = setTimeout(() => {
-        this.#lifetimeTimers.delete(job.jobId);
-        if (TERMINAL_STATUSES.has(job.status) || job.status === "stopping") return;
-        // The same observation the adapter takes through `checkBudget()`: an
-        // an expired lease stops execution through that shared observation point.
-        if (this.#checkBudget(job).terminal?.status !== "failed") schedule();
-      }, remaining);
-      timer.unref?.();
-      this.#lifetimeTimers.set(job.jobId, timer);
-    };
-    schedule();
+  #clearBudgetWatch(jobId: string): void {
+    this.#budgetWatches.get(jobId)?.();
+    this.#budgetWatches.delete(jobId);
+  }
+
+  #watchBudget(job: Job): void {
+    this.#clearBudgetWatch(job.jobId);
+    if (job.budget === null) return;
+    const stop = watchSubagentBudget(job.budget, () => this.#checkBudget(job));
+    if (TERMINAL_STATUSES.has(job.status) || job.status === 'stopping' || job.status === 'finalizing') stop();
+    else this.#budgetWatches.set(job.jobId, stop);
   }
 
   /**
@@ -1644,8 +1564,7 @@ export class SubagentRuntime {
       // observation cannot rewrite what this generation is stopping for.
       job.stopping = firstEffectiveStopping(job.stopping, { status, error });
       job.status = "stopping";
-      clearTimeout(this.#lifetimeTimers.get(job.jobId));
-      this.#lifetimeTimers.delete(job.jobId);
+      this.#clearBudgetWatch(job.jobId);
       if (this.#handles.has(job.jobId)) this.#cancelHandle(job);
       else this.#beginFinalization(job);
     });
@@ -1667,8 +1586,7 @@ export class SubagentRuntime {
 
   #end(job: Job, terminalInfo: EndInfo): void {
     this.#withTransition(() => {
-      clearTimeout(this.#lifetimeTimers.get(job.jobId));
-      this.#lifetimeTimers.delete(job.jobId);
+      this.#clearBudgetWatch(job.jobId);
       job.status = terminalInfo.status;
       job.error = terminalInfo.error ?? null;
       if (terminalInfo.historyState !== undefined) {

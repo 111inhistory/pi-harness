@@ -109,14 +109,17 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
     if (children > 1) {
       await Promise.all([started.promise, secondPromptRequested.promise]);
       assert.equal(dispatchedCalls, 1);
-      assert.equal(returned, false, 'one dispatched child cannot resolve batch creation while another is still preparing');
+      const ready = await creation;
+      assert.equal(returned, true, 'local readiness does not wait for provider dispatch');
+      assert.ok(ready.details);
       releaseSecondPrompt.resolve();
     }
     const created = await creation;
-    assert.equal(dispatchedCalls, children, 'create must await every first dispatch without waiting for the held responses');
+    assert.ok(dispatchedCalls <= children);
     const registration = created.details as { items: Record<string, unknown>[] };
     assert.ok(registration.items[0]);
-    assert.equal('status' in registration.items[0], false);
+    assert.equal(registration.items[0].model, model.id);
+    assert.equal(registration.items[0].role, null);
     await started.promise;
     rejectTerminal = rejectWrite;
     const navigation = session.extensionRunner.emit({
@@ -162,6 +165,6 @@ test('initial Inherited Job retains SDK custom model even when absent from catal
   await runBoundary(false, true);
 });
 
-test('batch create waits for every first SDK dispatch, not merely the first child or completed output', { timeout: 15000 }, async () => {
+test('batch create waits for local readiness without waiting for every provider dispatch', { timeout: 15000 }, async () => {
   await runBoundary(false, false, 2);
 });

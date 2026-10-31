@@ -22,7 +22,7 @@ for (const durable of [false, true]) {
     const outputs = [short, long];
     service.runner.start = (request) => {
       request.recordStart(null);
-      return { firstModelCall: Promise.resolve(), done: Promise.resolve({ status: 'completed', result: outputs.shift() ?? '' }), cancel() {} };
+      return { ready: Promise.resolve(), done: Promise.resolve({ status: 'completed', result: outputs.shift() ?? '' }), cancel() {} };
     };
     t.after(async () => { await service.retire(); await rm(cwd, { recursive: true, force: true }); });
     await service.initialize();
@@ -52,6 +52,8 @@ for (const durable of [false, true]) {
       assert.equal(await readFile(file, 'utf8'), long, 'missing raw result rebuilds from stored Job output');
     } else {
       assert.equal((await service.list({}, 'Main'))?.historyDir, undefined);
+      await service.retire();
+      assert.equal(await readFile(file, 'utf8'), long, 'root retirement does not invalidate delivered paths');
       t.after(() => rm(path.dirname(file), { recursive: true, force: true }));
     }
   });
@@ -71,7 +73,7 @@ test('artifact failure keeps bounded delivery and the completed status', async (
   assert.ok(dir);
   await mkdir(dir, { recursive: true });
   await writeFile(path.join(dir, 'sub_01'), 'BLOCK_DIRECTORY');
-  service.runner.start = () => ({ firstModelCall: Promise.resolve(), done: Promise.resolve({ status: 'completed', result: 'line\n'.repeat(DEFAULT_MAX_LINES + 3) }), cancel() {} });
+  service.runner.start = () => ({ ready: Promise.resolve(), done: Promise.resolve({ status: 'completed', result: 'line\n'.repeat(DEFAULT_MAX_LINES + 3) }), cancel() {} });
   const actor = service.runtime.create({ tasks: [{ task: 'complete despite artifact failure' }] }).items[0]!;
   const ended = await service.runtime.jobDone(actor.id);
   assert.equal(ended.status, 'completed');

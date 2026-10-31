@@ -64,7 +64,7 @@ import {
 } from "../src/capability/agent.ts";
 import { promptText } from "../src/prompt-text.mjs";
 
-import { installModelCallBudget } from "../src/pi-job-budget.mjs";
+import { installModelCallBudget } from "../src/subagent/pi-job-budget.ts";
 import { captureInheritedContext } from "../src/inherited-context.mjs";
 import { discoverSessionSkills } from "../src/capability-skills.mjs";
 import { capabilityPublicResult } from "../src/capability/result.ts";

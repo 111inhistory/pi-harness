@@ -27,10 +27,9 @@ import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-age
 
 import { capabilityAllowsTool, capabilityAvailableTools } from "../capability/scope.ts";
 import { getAgentSocketPath } from "../ipc/socket.ts";
-import { installModelCallBudget } from "../pi-job-budget.mjs";
+import { installModelCallBudget } from "./pi-job-budget.ts";
 import { childContext, childPromptBlocks, composeAssignment, continuationControlPrompt, inheritedContextInstruction } from './prompt.ts';
 import { readTranscript } from "../subagent-view.mjs";
-import { watchSubagentBudget } from "./budget-watch.ts";
 import { deliveryEntryFor, deliveryMessage, peerDeliveryEntry } from "./delivery.ts";
 import { takeQueuedMessages } from "./lifecycle.ts";
 import { harnessToolsForDepth, inheritedToolNames } from "./tool-policy.ts";
@@ -82,19 +81,18 @@ class LiveJob {
   child: NativeChildApi | null = null;
   closed = false;
   cancelled = false;
-  readonly firstModelCall: Promise<void>;
-  modelCallStarted!: () => void;
-  modelCallFailed!: (error: unknown) => void;
+  readonly ready: Promise<void>;
+  sessionReady!: () => void;
+  startupFailed!: (error: unknown) => void;
 
   constructor(request: JobRequest) {
     this.jobId = request.jobId;
     this.agentId = request.agentId;
-    this.firstModelCall = new Promise<void>((resolve, reject) => {
-      this.modelCallStarted = resolve;
-      this.modelCallFailed = reject;
+    this.ready = new Promise<void>((resolve, reject) => {
+      this.sessionReady = resolve;
+      this.startupFailed = reject;
     });
-    // Runtime-only users may observe done without awaiting creation readiness.
-    void this.firstModelCall.catch(() => {});
+    void this.ready.catch(() => {});
     for (const delivery of request.pendingMessages) this.pending.push(pendingInputOf(delivery));
   }
 
@@ -134,9 +132,9 @@ export class NativeJobRunner {
     // this Job and be buffered, never be answered as an unknown Job.
     this.#jobs.set(request.jobId, live);
     const done = this.#run(request, live);
-    void done.then((outcome) => live.modelCallFailed(outcome.error ?? new Error(`Agent ${request.agentId} ended before its first model call.`)),
-      (error: unknown) => live.modelCallFailed(error));
-    return { done, firstModelCall: live.firstModelCall, cancel: () => { live.cancel(); } };
+    void done.then((outcome) => live.startupFailed(outcome.error ?? new Error(`Agent ${request.agentId} ended before its session was ready.`)),
+      (error: unknown) => live.startupFailed(error));
+    return { done, ready: live.ready, cancel: () => { live.cancel(); } };
   }
 
   /** The installed child surface of an actor's live run (capability parent scope). */
@@ -251,14 +249,9 @@ export class NativeJobRunner {
     let updateRetainedTools: (() => void) | null = null;
     let finalizeActor: (() => void) | null = null;
 
-    // The verdict comes from the runtime's observation point: an expired Budget
-    // stops the Job through the runtime's stopping transition, which reaches
-    // this handle's cancel path.
-    const stopBudgetWatch = watchSubagentBudget(request.budget, request.checkBudget);
     // One reusable cleanup set: the execution handle owns it once a native
     // session exists, and the failure path before creation still releases it.
     const releaseJobResources = (): void => {
-      stopBudgetWatch();
       unsubscribeBudget?.();
       unsubscribe?.();
     };
@@ -403,6 +396,7 @@ export class NativeJobRunner {
 
       const opened = await deps.sessions.open({
         loadDefaultExtensions: roleId !== null,
+        ...(roleId === null && plannedTools !== null ? { inheritedTools: plannedTools } : {}),
         agentId: request.agentId,
         cwd,
         trusted,
@@ -474,30 +468,10 @@ export class NativeJobRunner {
         request.budget,
       );
 
-      // Observe dispatch AFTER auth/projection, the budget guard and the SDK
-      // stream function have accepted the request, not at registration time.
-      // This confirms SDK dispatch, not HTTP acceptance or model completion.
-      const agent = native.session.agent;
-      if (!agent || !('streamFunction' in agent) || typeof agent.streamFunction !== 'function') {
-        throw new Error('The child session has no model stream boundary.');
-      }
-      const previousStream = agent.streamFunction;
-      const observeStream = async (...args: unknown[]): Promise<unknown> => {
-        const stream: unknown = await previousStream.apply(agent, args);
-        live.modelCallStarted();
-        return stream;
-      };
-      agent.streamFunction = observeStream;
-      native.addCleanup(() => {
-        if (agent.streamFunction === observeStream) agent.streamFunction = previousStream;
-      });
-
       // This Job's history is scoped by the append-only SessionManager tree: the
       // boundary is the leaf at start, and native compaction appends entries
       // instead of rewriting or dropping them.
       const jobMessages = (): unknown[] => messagesAfter(manager, boundary);
-
-      await deps.listeners.sync();
 
       let jobErr: unknown = null;
 
@@ -540,6 +514,9 @@ export class NativeJobRunner {
           for (const entry of assigned) await appendCustomMessage(native.session, entry.message);
           // Whatever the run then does — finish, fail or be stopped — its own
           // outcome decides the Job; the prompt submission itself is final.
+          // Local setup and initial input are complete. Provider projection,
+          // authentication and execution now belong to the background run.
+          live.sessionReady();
           try {
             await native.prompt(prompt, { expandPromptTemplates: false });
           } finally {
@@ -669,7 +646,7 @@ async function replayParkedCustom(
 
 async function replayParkedUser(live: LiveJob, sessionManager: SessionManager, message: unknown): Promise<void> {
   const content = readParkedUser(message);
-  if (content.text === "" && content.images.length === 0) return;
+  if (content.text.trim() === "" && content.images.length === 0) return;
   const boundary = sessionManager.getLeafId();
   await requireExecution(live).prompt(content.text, {
     expandPromptTemplates: false,

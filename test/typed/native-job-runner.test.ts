@@ -23,7 +23,7 @@ import { NativeJobRunner } from "../../src/subagent/native-runner.ts";
 import { SubagentError } from "../../src/subagent/runtime.ts";
 import type {
   BudgetChargeResult,
-  BudgetCheck,
+  BudgetSnapshot as BudgetCheck,
   BudgetSnapshot,
   BudgetSnapshotDetail,
   BudgetStartResult,
@@ -43,7 +43,6 @@ import type {
   NativeExecution,
   NativeHandoffResult,
   NativeJobRunnerDeps,
-  NativeListenerPort,
   NativeOpenedSession,
   NativeQueueAgent,
   NativeRetainedActor,
@@ -247,8 +246,8 @@ class FakeBudget implements JobBudgetPort {
 class FakeAgent implements NativeQueueAgent {
   steeringMode: NativeQueueAgent["steeringMode"] = "one-at-a-time";
   followUpMode: NativeQueueAgent["followUpMode"] = "one-at-a-time";
-  streamFunction: ((...args: unknown[]) => unknown) | undefined = () => undefined;
-  prepareRequest: ((...args: unknown[]) => Promise<unknown>) | undefined;
+  streamFunction: NativeQueueAgent['streamFunction'] = () => { throw new Error('Unexpected provider dispatch in fake session'); };
+  prepareRequest?: NonNullable<NativeQueueAgent['prepareRequest']>;
   readonly #steering: unknown[] = [];
   readonly #followUp: unknown[] = [];
 
@@ -485,10 +484,6 @@ class RecordingRouting implements NativeRoutingPort {
   }
 }
 
-class RecordingListeners implements NativeListenerPort {
-  async sync(): Promise<void> {}
-}
-
 class RecordingSessionFactory implements NativeSessionFactory {
   readonly requests: NativeSessionRequest[] = [];
   readonly sessions: FakeSession[] = [];
@@ -530,7 +525,6 @@ interface Harness {
   routing: RecordingRouting;
   tools: { catalog: () => readonly NativeToolDescriptor[] };
   root: { storageError: Error | null; canStartJob: boolean; mayPersist: boolean };
-  listeners: RecordingListeners;
   notifications: string[];
 }
 
@@ -550,7 +544,6 @@ function harness(options: {
   if (options.route !== undefined) routing.result = options.route;
   const tools = { catalog: (): readonly NativeToolDescriptor[] => options.catalog ?? [] };
   const root = { storageError: null as Error | null, canStartJob: true, mayPersist: true };
-  const listeners = new RecordingListeners();
   const notifications: string[] = [];
   const deps: NativeJobRunnerDeps = {
     root,
@@ -560,10 +553,9 @@ function harness(options: {
     models,
     routing,
     tools,
-    listeners,
     notify: (message) => { notifications.push(message); },
   };
-  return { runner: new NativeJobRunner(deps), actors, factory, models, routing, tools, root, listeners, notifications };
+  return { runner: new NativeJobRunner(deps), actors, factory, models, routing, tools, root, notifications };
 }
 
 function freshSpec(overrides: Partial<FreshJobSpec> = {}): FreshJobSpec {

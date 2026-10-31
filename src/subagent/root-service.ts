@@ -1,6 +1,6 @@
 import path from 'node:path';
-import { existsSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync } from 'node:fs';
+import { temporaryResultDirectory } from './temporary-results.ts';
 import { resultNeedsFile } from './result.ts';
 import {
   SessionManager,
@@ -22,12 +22,12 @@ import { NativeDeliveryRouter } from './native-delivery.ts';
 import { createNativeSessionFactory } from './native-session.ts';
 import { installSessionSurface, type SubagentSurfaceCreateOptions } from './surface.ts';
 import type { ManagedWriteHost } from './message-write.ts';
-import type { NativeCustomHandoff, NativeRouteResult, NativeRoutingPort } from './native-types.ts';
+import type { NativeCustomHandoff, NativeRouteResult, NativeRoutingPort, NativeStartedJob } from './native-types.ts';
 import {
   createSubagentRuntime, copyInheritedEntries, SubagentError,
   type RuntimeEvent, type SubagentRuntime, type DetailedAgentItem,
   type CreatedAgents, type JobHistoryPaths, type FinalizeJobInput,
-  type InheritedContext,
+  type InheritedContext, type JobRequest,
 } from './runtime.ts';
 
 interface RootServiceOptions {
@@ -85,7 +85,7 @@ export class RootService implements ManagedWriteHost {
   readonly #historyDir: string;
   #temporaryResults: string | null = null;
   readonly #pendingEvents: RuntimeEvent[] = [];
-  readonly #starting = new Map<string, Promise<void>>();
+  #creation: { gate: Promise<void>; ready: Promise<void>[] } | null = null;
   readonly #retainedScopes = new Map<string, CapabilityToolCatalog>();
   #registry: ModelRegistry;
   #phase: RootPhase = 'initializing';
@@ -158,7 +158,6 @@ export class RootService implements ManagedWriteHost {
       models: { inherited: (model) => capturedModel(model, this.#registry) },
       routing: { route: (input) => this.#route(input) },
       tools: { catalog: () => options.api.getAllTools() },
-      listeners: { sync: () => this.listeners.sync() },
       notify: (message) => this.#report(new Error(message)),
     });
     this.runtime = createSubagentRuntime({
@@ -166,8 +165,9 @@ export class RootService implements ManagedWriteHost {
       isIdTaken: (id) => options.allocatedIds.has(id),
       onIdAllocated: (id) => options.allocatedIds.add(id),
       startJob: (request) => {
-        const handle = this.runner.start(request);
-        if (request.continuedFromJobId === null) this.#starting.set(request.agentId, handle.firstModelCall);
+        const creation = this.#creation;
+        const handle = creation === null ? this.runner.start(request) : this.#startAfterListeners(request, creation.gate);
+        creation?.ready.push(handle.ready);
         return handle;
       },
       finalizeJob: (input) => this.#finalize(input),
@@ -256,22 +256,45 @@ export class RootService implements ManagedWriteHost {
   async create(batch: unknown, options: SubagentSurfaceCreateOptions, ctx: ExtensionContext): Promise<CreatedAgents> {
     this.assertOperational();
     this.#registry = ctx.modelRegistry;
-    let result = this.runtime.create(batch, options);
-    if (this.#persistenceFailure !== null) throw this.#persistenceFailure;
-    try { await this.listeners.sync(); } catch (error) {
-      this.#report(errorOf(error));
-      result = { ...result, warnings: [...(result.warnings ?? []), `IPC listener setup failed: ${errorOf(error).message}`] };
+    let open!: () => void;
+    let fail!: (error: unknown) => void;
+    const creation = { gate: new Promise<void>((resolve, reject) => { open = resolve; fail = reject; }), ready: [] as Promise<void>[] };
+    let result: CreatedAgents;
+    this.#creation = creation;
+    try {
+      result = this.runtime.create(batch, options);
+    } finally {
+      this.#creation = null;
     }
-    const started = await Promise.allSettled(result.items.map((item) => {
-      const ready = this.#starting.get(item.id);
-      this.#starting.delete(item.id);
-      return ready ?? Promise.reject(new Error(`Agent ${item.id} has no startup handle.`));
-    }));
+    try {
+      if (this.#persistenceFailure !== null) throw this.#persistenceFailure;
+      await this.listeners.sync();
+      open();
+    } catch (error) {
+      fail(error);
+    }
+    const started = await Promise.allSettled(creation.ready);
     const failures = started.flatMap((outcome, index) => outcome.status === 'rejected'
       ? [`${result.items[index]!.id}: ${errorOf(outcome.reason).message}`] : []);
     if (failures.length) throw new SubagentError('start_failed',
       `Subagent startup failed: ${failures.join('; ')}. Registered agents: ${result.items.map((item) => item.id).join(', ')}; do not recreate this batch.`);
-    return result;
+    return { ...result, items: result.items.map(item => {
+      const actor = this.actors.get(item.id);
+      return { ...item, role: actor?.roleId ?? null, model: actor?.modelRef?.id ?? null };
+    }) };
+  }
+
+  #startAfterListeners(request: JobRequest, gate: Promise<void>): NativeStartedJob {
+    let handle: NativeStartedJob | null = null;
+    let cancelled = false;
+    const start = gate.then(() => {
+      if (cancelled) throw new SubagentError('cancelled', 'Subagent startup was cancelled.');
+      handle = this.runner.start(request);
+      return handle;
+    });
+    const ready = start.then(started => started.ready);
+    void ready.catch(() => {});
+    return { ready, done: start.then(started => started.done), cancel() { cancelled = true; handle?.cancel(); } };
   }
 
   async list(filter: unknown, callerId: string): Promise<DetailedAgentItem | null> {
@@ -355,7 +378,7 @@ export class RootService implements ManagedWriteHost {
       if (!this.#store.durable) {
         const text = resultText(outcome.result);
         if (text !== null && resultNeedsFile(text)) {
-          this.#temporaryResults ??= mkdtempSync(path.join(tmpdir(), 'pi-subagent-results-'));
+          this.#temporaryResults ??= temporaryResultDirectory();
           writeFileAtomic(path.join(this.#temporaryResults, `${job.jobId}.txt`), text);
         }
         return;

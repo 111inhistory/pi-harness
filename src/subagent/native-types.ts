@@ -13,6 +13,7 @@
  * so the runner cannot mutate the root's actor map behind its back.
  */
 
+import type { Agent } from '@earendil-works/pi-agent-core';
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
 
@@ -206,7 +207,7 @@ export interface NativeSessionEvent {
 }
 
 /** The Agent queue surface the end-of-turn loop reads parked messages through. */
-export interface NativeQueueAgent extends QueueCapable {
+export interface NativeQueueAgent extends QueueCapable, Pick<Agent, 'streamFunction' | 'prepareRequest'> {
   hasQueuedMessages(): boolean;
 }
 
@@ -247,6 +248,7 @@ export interface NativeExecution {
 export interface NativeSessionRequest {
   /** Fresh actors load normal Pi extensions; inherited actors keep their captured loadout. */
   readonly loadDefaultExtensions: boolean;
+  readonly inheritedTools?: readonly string[];
   readonly agentId: string;
   readonly cwd: string;
   readonly trusted: boolean;
@@ -284,11 +286,6 @@ export interface NativeSessionFactory {
    */
   assertModelRuntime(): void;
   open(request: NativeSessionRequest): Promise<NativeOpenedSession>;
-}
-
-/** Synchronize the root's registered Actor endpoints before execution. */
-export interface NativeListenerPort {
-  sync(): Promise<void>;
 }
 
 /** One peer message handed to a live run. */
@@ -331,8 +328,8 @@ export interface NativeJobOutcome {
 
 /** The physical handle the runtime receives from the runner. */
 export interface NativeStartedJob extends StartedJobHandle {
-  /** Resolves after the child's first stream call is handed to the SDK runtime. */
-  readonly firstModelCall: Promise<void>;
+  /** Resolves once routing, session construction and the initial input are ready. */
+  readonly ready: Promise<void>;
   readonly done: Promise<NativeJobOutcome>;
   readonly cancel: () => void;
 }
@@ -345,6 +342,5 @@ export interface NativeJobRunnerDeps {
   readonly models: NativeModelResolver;
   readonly routing: NativeRoutingPort;
   readonly tools: NativeToolCatalogProvider;
-  readonly listeners: NativeListenerPort;
   readonly notify?: ((message: string, level: "error") => void) | undefined;
 }
