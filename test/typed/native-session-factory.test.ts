@@ -23,12 +23,13 @@ import {
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 import { fauxProvider, InMemoryCredentialStore, getCurrentTools } from "@earendil-works/pi-ai";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model, TranscriptContext } from "@earendil-works/pi-ai";
 
 import { capabilityAllowsTool } from "../../src/capability/scope.ts";
 import type { CapabilityScopedTool, CapabilityToolCatalog } from "../../src/capability/scope.ts";
 import { ModelRuntimeBridgeError } from "../../src/subagent/model-runtime.ts";
 import { createNativeSessionFactory } from "../../src/subagent/native-session.ts";
+import { convertResponsesMessages } from '../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js';
 import { SubagentError } from "../../src/subagent/runtime.ts";
 import type {
   NativeChildSurfaceScope,
@@ -124,7 +125,6 @@ async function harness(): Promise<Harness> {
 }
 
 interface RequestOptions {
-  readonly loadDefaultExtensions?: boolean;
   readonly agentId?: string;
   readonly cwd?: string;
   readonly trusted?: boolean;
@@ -142,7 +142,6 @@ function request(h: Harness, options: RequestOptions = {}): NativeSessionRequest
   const cwd = options.cwd ?? h.cwd;
   const excludedTools = options.excludedTools ?? ["bash"];
   return {
-    loadDefaultExtensions: options.loadDefaultExtensions ?? false,
     agentId,
     cwd,
     trusted: options.trusted ?? true,
@@ -317,7 +316,7 @@ test("Fresh uses default extensions minus exclusions without installing the root
   }), "utf8");
   h.parentTools.push({ name: "default_extension" }, { name: "denied_extension" }, { name: "optional_extension" });
   const opened = await h.factory.open(request(h, {
-    loadDefaultExtensions: true, systemPrompt: null,
+    systemPrompt: null,
     excludedTools: ["write", "denied_extension"],
   }));
   try {
@@ -451,6 +450,70 @@ test("an abort during child setup disposes the created SDK session", async () =>
     );
     assert.equal(h.surfaces.length, 1, "the child surface existed before the abort was observed");
   } finally {
+    await close(h);
+  }
+});
+
+
+test("Inherited waits for deferred MCP registration, restores its declaration, and calls the child backend", {timeout:15000}, async () => {
+  const h = await harness();
+  const previousAgentDir = process.env['PI_CODING_AGENT_DIR'];
+  process.env['PI_CODING_AGENT_DIR'] = path.join(h.root,'agent');
+  const name = 'mcp__inherited_fixture__inspect';
+  const script = `
+    const readline = require('node:readline');
+    readline.createInterface({input:process.stdin}).on('line',line=>{
+      const message=JSON.parse(line); if(message.id===undefined)return;
+      let result={};
+      if(message.method==='initialize')result={protocolVersion:'2025-11-25',capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}};
+      if(message.method==='tools/list')result={tools:[{name:'inspect',description:'Inherited inspection',inputSchema:{type:'object',properties:{}}}]};
+      if(message.method==='tools/call')result={content:[{type:'text',text:'CHILD_MCP_BACKEND'}]};
+      process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:message.id,result})+'\\n');
+    });
+  `;
+  await writeFile(path.join(h.root,'agent','mcp.json'),JSON.stringify({autoEnableCodemode:false,mcpServers:{
+    inherited_fixture:{command:process.execPath,args:['-e',script],exposure:'deferred'},
+  }}));
+  h.parentTools.push({name});
+  const model = {...h.model,api:'openai-codex-responses' as Api};
+  const input = {...request(h,{model,excludedTools:[]}),inheritedTools:['read',name]};
+  input.sessionManager.appendCustomEntry('capability-discovery', {version:1,result:{status:'ok',tools:[],skills:[],
+    mcp:[{ref:`tool://${name}`,name,kind:'tool',status:'available',server:'inherited_fixture'}],
+    coverage:{local:'searched',remote:'not_searched'},
+  }});
+  input.sessionManager.appendMessage({role:'system',content:'PARENT_DECLARATIONS',timestamp:0,
+    toolsAdded:[{name,description:'Inherited inspection',parameters:{type:'object',properties:{}}}],
+  });
+  const opened = await h.factory.open(input);
+  try {
+    assert.ok(opened.execution.session.getActiveToolNames().includes(name));
+    assert.ok(opened.capabilityScope.getAllTools().some(tool=>tool.name===name));
+    let calls=0;
+    h.runtime.streamSimple=(_model,context)=>{
+      calls++;
+      const declared=getCurrentTools(context.messages);
+      assert.equal(declared.filter(tool=>tool.name===name).length,1,'inherited declaration is callable once, not a stale placeholder');
+      const wire = convertResponsesMessages(model, context as unknown as TranscriptContext, new Set([model.provider]), {
+        supportsMidConvoSystemMessages: true, supportsAdditionalTools: true,
+      });
+      const additions = wire.filter(item => item.type === 'additional_tools').flatMap(item => item.tools);
+      assert.ok(additions.some(tool => tool.type === 'function' && tool.name === name), 'Responses wire preserves the inherited callable interface');
+      if(calls===2){
+        const result=context.messages.findLast(message=>message.role==='toolResult'&&message.toolName===name);
+        assert.ok(result?.role==='toolResult'&&result.content.some(part=>part.type==='text'&&part.text.includes('CHILD_MCP_BACKEND')));
+      }
+      const message={role:'assistant' as const,api:model.api,provider:model.provider,model:model.id,
+        content:calls===1?[{type:'toolCall' as const,id:'mcp-call',name,arguments:{}}]:[{type:'text' as const,text:'DONE'}],
+        stopReason:calls===1?'toolUse' as const:'stop' as const,timestamp:Date.now(),
+        usage:{input:1,output:1,totalTokens:2,cacheRead:0,cacheWrite:0,cost:{input:0,output:0,total:0,cacheRead:0,cacheWrite:0}},
+      };
+      const stream=new AssistantMessageEventStream();stream.push({type:'done',reason:message.stopReason,message});stream.end();return stream;
+    };
+    await opened.execution.prompt('Inspect the inherited resource.',{expandPromptTemplates:false});
+    assert.equal(calls,2,JSON.stringify(input.sessionManager.getBranch()));
+  } finally {
+    await opened.execution.dispose();
+    if(previousAgentDir===undefined)delete process.env['PI_CODING_AGENT_DIR'];else process.env['PI_CODING_AGENT_DIR']=previousAgentDir;
     await close(h);
   }
 });
