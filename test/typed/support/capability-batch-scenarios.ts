@@ -186,7 +186,7 @@ export async function runResponsesOnlyScenario(fixture: CapabilityScenarioFixtur
   };
   const selectedInterfaces = parsed.tools[0];
   assert.ok(selectedInterfaces);
-  assert.equal(selectedInterfaces.toolCount, 3, "the compact interface keeps the selected member count");
+  assert.equal(selectedInterfaces.toolCount, 4, "the compact interface keeps all newly selected Subagent members");
   assert.equal(selectedInterfaces.tools, undefined, "compact interfaces omit members hidden from native declarations");
   assert.equal(selectedInterfaces.parameters, undefined, "argument schemas stay in the Codemode query path");
   assert.match(selectedInterfaces.interface ?? "", /describeTool/);
@@ -441,8 +441,7 @@ export async function runNamespaceScenario(fixture: CapabilityScenarioFixture): 
   const { session, cwd, controls, call, toolAnswer, create, stopped, chats } = fixture;
   const members = ["subagent_create", "subagent_list", "subagent_stop", "msg_write"];
   const initial = session.getActiveToolNames();
-  assert.ok(members.filter(name => name !== "msg_write").every((name) => !initial.includes(name)));
-  assert.ok(initial.includes("msg_write"));
+  assert.ok(members.every((name) => !initial.includes(name)), "Main starts without any Subagent namespace member");
   assert.doesNotMatch(session.systemPrompt, /subagent_create|one JSON object per line/);
   const nativeWrite = createWriteToolDefinition(cwd);
   const sessionWrite = session.getToolDefinition("write");
