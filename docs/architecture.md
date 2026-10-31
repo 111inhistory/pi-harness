@@ -29,6 +29,10 @@ Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定�
 
 Runner 通过 `openSubagentExecution` 获得 SDK Session。共享执行句柄负责 abort 和 cleanup；Root 不用超时竞争强制 dispose 一个仍在执行的 Session。
 
+父 Subagent 回复结束后，若直接子节点仍处于 `running`、`stopping` 或 `finalizing`，Runner 保留会话并等待事件，不结束当前 Job。Runtime 暂停活跃时间并重排到 lifetime 截止时间；消息、子节点通知或最后一个子节点结束会唤醒原循环，恢复活跃时间后重排 deadline。队列和直接子节点均为空才正常收尾，期间不分配新 Job 或 Budget。取消会释放等待；失败或取消后的晚到子节点通知只追加保留历史。
+
+Runtime 先尝试投递子节点终态，再发最后子节点结束的唤醒信号。信号不创建执行轮次，模型不需要轮询或调用等待工具。`reviveWithNotification` 已删除；显式消息仍可将停止节点唤醒为新轮次。
+
 恢复分两部分：Actor 层读取原生文件、解析身份和历史区间；Runtime 校验完整拓扑与 Job 关系，再统一裁定未结束 Job 为 `job_interrupted`。适配层不预先改写终态或另算停止排序。恢复不会自动重跑或重发旧通知。
 
 持久化 Actor 在结束后解除 manager 引用，下次按需打开。纯内存 Actor 保留唯一的原生对话，不能套用文件型 Actor 的释放规则。

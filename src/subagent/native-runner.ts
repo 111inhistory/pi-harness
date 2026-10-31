@@ -81,6 +81,7 @@ class LiveJob {
   child: NativeChildApi | null = null;
   closed = false;
   cancelled = false;
+  wake: (() => void) | null = null;
   readonly ready: Promise<void>;
   sessionReady!: () => void;
   startupFailed!: (error: unknown) => void;
@@ -103,6 +104,7 @@ class LiveJob {
     if (this.cancelled) return;
     this.cancelled = true;
     this.closed = true;
+    this.wake?.();
     this.abort.abort();
     const pending = this.execution?.abort();
     if (pending !== undefined) void pending.catch(() => {});
@@ -135,6 +137,13 @@ export class NativeJobRunner {
     void done.then((outcome) => live.startupFailed(outcome.error ?? new Error(`Agent ${request.agentId} ended before its session was ready.`)),
       (error: unknown) => live.startupFailed(error));
     return { done, ready: live.ready, cancel: () => { live.cancel(); } };
+  }
+
+  /** Wake the existing run when its last child settles, without allocating a Job. */
+  wake(agentId: string): void {
+    for (const live of this.#jobs.values()) {
+      if (live.agentId === agentId && !live.closed) live.wake?.();
+    }
   }
 
   /** The installed child surface of an actor's live run (capability parent scope). */
@@ -200,6 +209,7 @@ export class NativeJobRunner {
     const session = live.session;
     if (session === null || !session.isStreaming) {
       live.pending.push({ kind: "custom", from, message });
+      live.wake?.();
       return { accepted: true, mode: "pending" };
     }
     const body = {
@@ -219,6 +229,7 @@ export class NativeJobRunner {
       }
     })();
     live.steers.add(steer);
+    live.wake?.();
     let failure: { error: unknown } | null;
     try {
       failure = await steer;
@@ -525,7 +536,7 @@ export class NativeJobRunner {
           throwIfBudgetFailed(request.budget);
           if (!live.cancelled) {
             assertRunCompleted(jobMessages());
-            await drainLiveMessages(live, manager);
+            await drainLiveMessages(live, manager, request, deps.children);
             throwIfBudgetFailed(request.budget);
           }
         } catch (error) {
@@ -582,30 +593,39 @@ export class NativeJobRunner {
  * parked text to this loop exactly once, so nothing is replayed.
  *
  * The loop first waits for every steer that is still in flight, then checks
- * both sources and closes in the same synchronous step when they are empty: a
- * hand-over therefore either lands inside a round of this Job or is refused by
- * the closed flag — never accepted into a session that is being disposed. What
- * bounds the loop is the Job's own Budget and the fact that a round only
- * happens while a message is actually waiting.
+ * sources and only closes when both queues and the direct-child set are empty.
+ * A parent waiting for children keeps this Job and session, pauses active-time
+ * accounting, and wakes on new input, final-child settlement or cancellation.
+ * A hand-over therefore lands inside this Job or is refused by the closed flag.
  */
-async function drainLiveMessages(live: LiveJob, sessionManager: SessionManager): Promise<void> {
+async function drainLiveMessages(
+  live: LiveJob, sessionManager: SessionManager, request: JobRequest,
+  children: NativeJobRunnerDeps['children'],
+): Promise<void> {
   const session = live.session;
   if (session === null) return;
   for (;;) {
+    if (live.cancelled) return;
     while (live.steers.size > 0) await Promise.all([...live.steers]);
+    if (live.cancelled) return;
     const parked = takeParkedMessages(session);
     const buffered = live.pending.splice(0);
     if (parked.length === 0 && buffered.length === 0) {
+      if (children.hasActiveChildren(live.agentId)) {
+        await waitForChildren(live, request, children);
+        continue;
+      }
       live.closed = true;
       return;
     }
     // Replay each parked native message unchanged, with its original type.
     for (const message of parked) {
+      if (live.cancelled) return;
       const custom = readParkedCustom(message);
       if (custom !== null) await replayParkedCustom(live, sessionManager, custom);
       else await replayParkedUser(live, sessionManager, message);
     }
-    if (buffered.length > 0) {
+    if (buffered.length > 0 && !live.cancelled) {
       // Buffered events were never handed to the SDK. Append each one as its
       // own native entry and let ONE control prompt consume them all: no
       // per-message model loop, no concatenated body.
@@ -614,6 +634,23 @@ async function drainLiveMessages(live: LiveJob, sessionManager: SessionManager):
       await requireExecution(live).prompt(continuationControlPrompt(null), { expandPromptTemplates: false });
       assertRunCompleted(messagesAfter(sessionManager, boundary));
     }
+  }
+}
+
+async function waitForChildren(
+  live: LiveJob, request: JobRequest, children: NativeJobRunnerDeps['children'],
+): Promise<void> {
+  // Install the signal before pausing; pause can observe expiry and cancel the run.
+  const wake = new Promise<void>(resolve => { live.wake = resolve; });
+  let paused = false;
+  try {
+    request.pauseActive();
+    paused = true;
+    if (live.cancelled || live.pending.length > 0 || !children.hasActiveChildren(live.agentId)) live.wake?.();
+    await wake;
+  } finally {
+    live.wake = null;
+    if (paused && !live.cancelled) request.resumeActive();
   }
 }
 

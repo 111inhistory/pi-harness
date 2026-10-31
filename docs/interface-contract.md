@@ -220,7 +220,9 @@ Agent 应通过提供的 `msg_write` 发送消息；`write` 保持 SDK 原生文
 
 通知表达本轮执行的结束状态，清晰区分正常完成、取消和失败，不使用模糊的“停止”。
 
-**通知可唤醒空闲的父 Agent。** 适配层已接入空闲父 Agent 唤醒续跑（revival），通过普通续跑任务（continuation Job）路径唤醒；父 Agent 忙碌时，普通消息与终态通知各自进入原生队列，不合并。唤醒不启动与现有执行并发的父 Agent 轮次。
+**子节点通知继续父 Subagent 的当前轮次。** 只要还有处于 `running`、`stopping` 或 `finalizing` 的直接子节点，正常执行的父 Subagent 在回复结束后保持 `running`，保留当前 Job、Budget、会话和活跃名额。队列为空时暂停活跃时间计费，仍受总存活租约限制；消息或子节点通知到达后在同一 Job 内继续。所有直接子节点终结且通知处理完毕后，父 Subagent 才正常收尾并交付一次终态通知。
+
+子节点终态通知不创建 continuation Job。父 Subagent 若已因取消或失败关闭，晚到的子节点通知仅追加到保留历史，不自动续跑。只有显式消息向已停止节点发起新一轮执行；Main 的原生通知唤醒行为保持不变。
 
 **通知的排队、中断和后续执行沿用 Pi steer message，不另设通知专用的取消或恢复规则。** 每条通知独立作为 steer message 投递，保留宿主来源和本轮任务结果。
 
@@ -291,7 +293,7 @@ Harness 为没有专用结果渲染器的工具提供统一预览，包括 Capab
 核心 typed 模块（`src/subagent/execution.ts`、`lifecycle.ts`、`delivery.ts`、`routing.ts`、`storage.ts`、`view.ts`、`job-budget.ts`、`pi-job-budget.ts`、`inherited-context.ts`、`src/ipc/endpoint.ts`、`message.ts`、`src/capability/discovery-record.ts`、`skills.ts`、`shell-preflight.ts`）已在当前工作区分离实现并建立单元测试：
 
 - Capability 共享底层执行入口，落实 D4 仅本地检索，基于 `capability-discovery` 分支规范记录解决嵌套调用记忆丢失。
-- 终态裁定统一覆盖正常完成、取消与失败，支持空闲父 Agent 唤醒续跑。
+- 终态裁定统一覆盖正常完成、取消与失败；子节点通知恢复父 Subagent 的当前 Job，显式消息才启动停止节点的新轮次。
 - 普通消息与终态通知各自基于 Pi steer message 投递，不维护合并状态。
 - IPC 通信完成纯文本接口与宿主分帧，建立私有目录与失效 Socket 回收机制。
 

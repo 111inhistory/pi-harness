@@ -149,6 +149,7 @@ export class RootService implements ManagedWriteHost {
       models: { inherited: (model) => capturedModel(model, this.#registry) },
       routing: { route: (input) => this.#route(input) },
       tools: { catalog: () => options.api.getAllTools() },
+      children: { hasActiveChildren: (agentId) => this.runtime.hasActiveChildren(agentId) },
       notify: (message) => this.#report(new Error(message)),
     });
     this.runtime = createSubagentRuntime({
@@ -169,6 +170,7 @@ export class RootService implements ManagedWriteHost {
       deliverMessage: (input) => this.#delivery.toAgent(input),
       deliverToMain: (message) => this.#delivery.toMain(message),
       onEvent: (event) => this.#event(event),
+      onChildrenSettled: (agentId) => this.runner.wake(agentId),
       prepareInherited: ({ agentId, snapshot }) => {
         if (!this.#store.durable) return { ...snapshot, entries: copyInheritedEntries(snapshot.entries) };
         if (!Array.isArray(snapshot.entries)) throw new SubagentError('invalid_state', 'The captured seed has no native entries.');
@@ -178,7 +180,7 @@ export class RootService implements ManagedWriteHost {
       },
     });
     this.#delivery = new NativeDeliveryRouter({
-      runtime: this.runtime, runner: this.runner,
+      runner: this.runner,
       ownsContext: () => this.#mayPersist(),
       canWake: () => this.active,
       sendToMain: (message, triggerTurn) => options.api.sendMessage(message, { triggerTurn, deliverAs: 'steer' }),

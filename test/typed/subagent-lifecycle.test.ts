@@ -6,7 +6,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 import { sendDelivery, DELIVERY_CUSTOM_TYPE } from "../../src/subagent/delivery.ts";
 
-import { createSubagentRuntime, SubagentError } from "../../src/subagent/runtime.ts";
+import { createSubagentRuntime, SubagentError, type DeliverMessageRequest } from "../../src/subagent/runtime.ts";
 import {
   ServiceLifecycle,
   adjudicateTerminal,
@@ -155,42 +155,34 @@ test("terminal notifications cover completion, cancellation and failure with sen
   assert.equal(fake.mainMessages.length, 4);
 });
 
-test("a terminal notification wakes an idle parent through an ordinary continuation Job", async () => {
+test("a late terminal notification does not revive a stopped parent; explicit messages do", async () => {
   const fake = adapter();
-  let runtime: any;
-  runtime = createSubagentRuntime({
+  const notices: DeliverMessageRequest[] = [];
+  const runtime = createSubagentRuntime({
     startJob: fake.startJob,
-    // The extension adapter implements this same call; this fake keeps the
-    // runtime-level continuation admission under test.
-    deliverMessage: async ({ agentId, message }: any) => {
-      runtime.reviveWithNotification(agentId, message);
-      return { accepted: true };
-    },
+    deliverMessage: async request => { notices.push(request); return { accepted: true }; },
   });
-  const parent = runtime.create({ tasks: [{ name: "parent", task: "coordinate" }] }).items[0] as { id: string };
-  fake.handleFor(parent.id).resolve({ result: "parent idle", messages: [] });
+  const parent = runtime.create({ tasks: [{ name: "parent", task: "coordinate" }] }).items[0]!;
+  const child = runtime.create({ tasks: [{ name: "child", task: "report" }] }, { parentAgentId: parent.id }).items[0]!;
+  runtime.stop(parent.id);
+  fake.handleFor(parent.id).resolve({ result: "cancelled parent", messages: [] });
   await runtime.jobDone(parent.id);
-
-  const child = runtime.create({ tasks: [{ name: "child", task: "report" }] }, { parentAgentId: parent.id }).items[0] as { id: string };
   fake.handleFor(child.id).resolve({ result: "child done", messages: [] });
   await runtime.jobDone(child.id);
+  assert.equal(runtime.jobs().jobs.length, 2);
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0]!.agentId, parent.id);
+  assert.equal(notices[0]!.jobId, null);
+  assert.equal(notices[0]!.message.type, "notification");
 
-  const jobs = runtime.jobs().jobs;
-  assert.equal(jobs.length, 3, "the notification creates one continuation Job, not a second orchestrator");
-  const revived = jobs[2]!;
-  assert.equal(revived.agentId, parent.id);
-  assert.equal(revived.continuedFromJobId, parent.id);
-  assert.equal(revived.status, "running");
+  const revived = await runtime.sendMessage({ from: "Main", to: parent.id, content: "continue explicitly" });
+  assert.ok('jobId' in revived && revived.jobId);
+  assert.equal(runtime.jobs().jobs.length, 3);
   const request = fake.started.at(-1)!.request;
   assert.equal(request.pendingMessages.length, 1);
-  assert.equal(request.pendingMessages[0].type, "notification");
-  assert.equal(request.pendingMessages[0].from, child.id);
-  assert.equal(request.pendingMessages[0].jobId, child.id);
-  assert.equal(request.pendingMessages[0].round, 1);
-
+  assert.equal(request.pendingMessages[0].type, "message");
   fake.handleFor(revived.jobId).resolve({ result: "parent resumed", messages: [] });
   await runtime.jobDone(revived.jobId);
-  assert.equal(runtime.jobs({ jobIds: [revived.jobId] }).jobs[0]!.status, "completed");
 });
 
 test("real SDK queue extraction preserves two steering messages and a follow-up", () => {

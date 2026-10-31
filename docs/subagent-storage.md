@@ -104,7 +104,8 @@ subagent-sessions/<rootId>/views/<jobId>/result.txt
 - Fresh：注册 Job 及首次拓扑 → 路由并保存身份 → 打开子会话 → 写起点 → 原生执行。
 - Inherited：捕获并过滤父分支 → 写种子 → 注册 Job 并保存身份 → 写起点 → 原生执行。
 - 结束：原生退出与清理 → 冻结候选终态 → 生成视图并记录历史写入状态 → Runtime 统一发布一次根终态 → 通知父节点。
-- 续跑：注册新的 continuation Job → 必要时写时复制 → 定位锚点 → 写新起点 → 原生执行。
+- 等待子任务：保留当前 Job 与会话，不写终态；暂停活跃时间，消息或子任务终结后在同一轮继续。取消或失败按正常终态路径收尾。
+- 续跑：显式消息向停止节点注册新的 continuation Job → 必要时写时复制 → 定位锚点 → 写新起点 → 原生执行。子节点终态通知不注册 continuation Job。
 
 内存会话不生成持久化历史视图；结果超过通知上限时，Root 写入单独的系统临时文件，临时文件由 `src/subagent/temporary-results.ts` 集中管理，在根服务退役与 `/reload` 时保持存活供父节点补读，在 Node.js 进程正常退出时清理（不保证 SIGKILL 下清理），通知附该文件路径。
 

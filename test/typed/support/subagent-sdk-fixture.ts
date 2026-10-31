@@ -82,6 +82,8 @@ export interface FixtureTranscriptEvent {
   readonly role?: string;
   readonly type?: string;
   readonly customType?: string;
+  readonly toolName?: string;
+  readonly isError?: boolean;
   readonly content?: unknown;
   readonly details?: unknown;
 }
@@ -255,6 +257,8 @@ function transcriptEvent(value: unknown): FixtureTranscriptEvent {
     ...(typeof event.role === "string" ? { role: event.role } : {}),
     ...(typeof event.type === "string" ? { type: event.type } : {}),
     ...(typeof event.customType === "string" ? { customType: event.customType } : {}),
+    ...(typeof event.toolName === "string" ? { toolName: event.toolName } : {}),
+    ...(typeof event.isError === "boolean" ? { isError: event.isError } : {}),
     ...("content" in event ? { content: event.content } : {}),
     ...("details" in event ? { details: event.details } : {}),
   };

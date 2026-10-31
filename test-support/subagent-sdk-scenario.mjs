@@ -24,6 +24,8 @@ import {
   runExternalSocketScenario, runListenerCacheScenario, runPeerSenderScenario,
   runRestoreInvalidScenario, runUpstreamParentSteerScenario,
 } from "../test/typed/support/subagent-sdk-scenarios.ts";
+import { runHierarchicalBroadcastScenario } from "../test/typed/support/broadcast-parent-hold-scenario.ts";
+import { runUpstreamParentHoldScenario } from "../test/typed/support/upstream-parent-hold-scenario.ts";
 import {
   runPackageSkillsScenario,
   runResponsesOnlyScenario,
@@ -500,48 +502,7 @@ try {
   } else if (scenario === "upstream-parent-steer") {
     await runUpstreamParentSteerScenario(fixture);
   } else if (scenario === "upstream-parent") {
-    const send = controlledGate();
-    const received = controlledGate();
-    let parent;
-    let parentRuns = 0;
-    controls.chat = async (request) => {
-      if (request.text.includes("UPSTREAM_LEAF")) {
-        await send.promise;
-        assert.match(request.text, /Your direct parent is sub_01/);
-        assert.ok(request.text.includes(parent.socket));
-        const wrote = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
-        if (!wrote) return toolAnswer("msg_write", { path: parent.socket, content: "UPSTREAM_PARENT_MARKER" }, "leaf-upstream-write");
-        return textAnswer("Leaf done");
-      }
-      if (request.text.includes("UPSTREAM_PARENT")) {
-        parentRuns++;
-        const created = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent_create");
-        if (!created) return toolAnswer("subagent_create", { tasks: [{ task: "UPSTREAM_LEAF: send to your direct parent" }] });
-        if (request.text.includes("UPSTREAM_PARENT_MARKER")) {
-          assert.match(request.text, /\[Message from sub_01_01\]/);
-          assert.ok(request.context.messages.some((entry) => entry.role === "user" &&
-            (typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content)).includes("[Message from sub_01_01]")),
-          "revival preserves the host-attributed leaf message in the parent's native User input");
-          received.resolve();
-        }
-        return textAnswer("Parent done");
-      }
-      assert.fail("Depth 2 delivery to its direct parent must not wake Main");
-    };
-    parent = await create("UPSTREAM_PARENT: create a leaf, then finish");
-    await stopped(parent.id);
-    const leaf = await item(parent.id + "_01");
-    assert.equal("parentSocket" in leaf, false);
-    send.resolve();
-    await stopped(leaf.id);
-    const leafEvents = await events((await stopped(leaf.id)).history.cleanJsonl);
-    const sent = leafEvents.find((event) => event.role === "toolResult" && event.toolName === "msg_write");
-    assert.ok(sent && !sent.isError, JSON.stringify(sent));
-    await received.promise;
-    await stopped(parent.id);
-    assert.ok(parentRuns >= 3 && parentRuns <= 4, "parent consumes the leaf message and terminal notice without rerouting its original assignment");
-    assert.equal(classifications.length, 4, "only the original parent and leaf assignments are routed; notification continuation reuses their identities");
-    assert.equal(session.messages.some((message) => message.role === "custom" && message.customType === "agent-message"), false);
+    await runUpstreamParentHoldScenario(fixture);
   } else if (scenario === "sender-wire") {
     await runPeerSenderScenario(fixture);
   } else if (scenario === "sender-reserved") {
@@ -676,44 +637,7 @@ try {
     exit.resolve();
     await Promise.all(actors.map((actor) => stopped(actor.id)));
   } else if (scenario === "broadcast") {
-    const exit = controlledGate();
-    controls.chat = async (request) => {
-      const spawned = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "subagent_create");
-      if (request.text.includes("SPAWN_MARKER") && !spawned) {
-        return toolAnswer("subagent_create", { tasks: [{ name: "ChildOne", task: "Child assignment one" }, { name: "ChildTwo", task: "Child assignment two" }] }, "create-children");
-      }
-      if (request.text.includes("SPAWN_MARKER")) {
-        const broadcastSent = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
-        if (spawned && !broadcastSent) {
-          return toolAnswer("msg_write", { path: getBroadcastSocketPath("sub_01", sessionSocketDir), content: "CHILD_BROADCAST_ONLY" }, "child-broadcast");
-        }
-      }
-      await exit.promise;
-      return textAnswer("Local actor finished");
-    };
-    const roots = (await call("subagent_create", { tasks: [
-      { task: "SPAWN_MARKER parent assignment" }, { task: "Sibling assignment two" },
-      { task: "Sibling assignment three" }, { task: "Sibling assignment four" },
-    ] })).details.items;
-    const children = await waitFor(async () => {
-      const tree = (await call("subagent_list", {})).details;
-      const found = tree.children.flatMap((actor) => actor.children);
-      return found.length === 2 && found.every((actor) => actor.status === "running") &&
-        chats.filter((request) => request.text.includes("Child assignment")).length === 2 && found;
-    }, { label: "depth-2 children run alongside four active parents" });
-    assert.deepEqual(children.map((child) => child.id), ["sub_01_01", "sub_01_02"]);
-    await assert.rejects(call("msg_write", { path: getBroadcastSocketPath("sub_01", sessionSocketDir), content: "OVERSTEP" }), (err) => isSubagentError(err, "invalid_target"));
-    await deliverBroadcast(fixture, getBroadcastSocketPath("Main", sessionSocketDir), "ROOT_BROADCAST_ONLY");
-    exit.resolve();
-    await Promise.all([...roots, ...children].map((actor) => stopped(actor.id)));
-    const childRequests = chats.filter((request) => request.text.includes("Child assignment"));
-    assert.ok(childRequests.every((request) => !request.text.includes("ROOT_BROADCAST_ONLY")), "Main must not recursively broadcast to grandchildren");
-    for (const name of ["Child assignment one", "Child assignment two"]) {
-      assert.match(childRequests.filter((request) => request.text.includes(name)).at(-1).text, /CHILD_BROADCAST_ONLY/);
-    }
-    const rootRequests = chats.filter((request) => !request.text.includes("Child assignment"));
-    assert.ok(rootRequests.every((request) => !request.text.includes("CHILD_BROADCAST_ONLY")), "child broadcasts must not reach ancestors or peers");
-    assert.equal(rootRequests.filter((request) => request.text.includes("ROOT_BROADCAST_ONLY")).length, 4);
+    await runHierarchicalBroadcastScenario(fixture);
   } else if (scenario === "inherited") {
     sessionManager.appendMessage({ role: "user", content: "Captured parent context marker", timestamp: Date.now() });
     sessionManager.appendMessage(assistant([

@@ -532,6 +532,7 @@ function harness(options: {
   scope?: NativeChildApi;
   promptHandler?: PromptHandler;
   catalog?: readonly NativeToolDescriptor[];
+  hasActiveChildren?: (agentId: string) => boolean;
   route?: NativeRouteResult | null;
 } = {}): Harness {
   const actors = new RecordingActors();
@@ -553,6 +554,7 @@ function harness(options: {
     models,
     routing,
     tools,
+    children: { hasActiveChildren: options.hasActiveChildren ?? (() => false) },
     notify: (message) => { notifications.push(message); },
   };
   return { runner: new NativeJobRunner(deps), actors, factory, models, routing, tools, root, notifications };
@@ -583,6 +585,8 @@ function jobRequest(spec: JobSpec, overrides: Partial<JobRequest> = {}): JobRequ
     continuedFromJobId: null,
     pendingMessages: [],
     checkBudget: () => budget.check(),
+    pauseActive: () => { budget.pauseActive(); },
+    resumeActive: () => { budget.startActive(); },
     recordStart: () => {},
   };
   return { ...base, ...overrides };
@@ -1107,6 +1111,98 @@ test("a provider error fails the Job instead of reporting an earlier answer", as
   // The earlier answer of this Job is never reported as the failed run's result.
   assert.equal(outcome.result, "");
   assert.equal(outcome.history?.startEntryId, null);
+});
+
+test('a parent consumes child notices in the same Job and Budget before closing', async () => {
+  let activeChildren = 2;
+  let turns = 0;
+  const firstPause = deferred<void>();
+  const secondPause = deferred<void>();
+  let pauses = 0;
+  let resumes = 0;
+  const budget = new FakeBudget();
+  const h = harness({ route: routedIdentity(), hasActiveChildren: () => activeChildren > 0,
+    promptHandler: async () => ['WAITING', 'ONE_CHILD_LEFT', 'FINAL_COMBINED'][turns++]! });
+  const request = jobRequest(freshSpec(), { budget,
+    pauseActive() { pauses++; (pauses === 1 ? firstPause : secondPause).resolve(); },
+    resumeActive() { resumes++; },
+  });
+  const running = h.runner.start(request);
+  let ended = false;
+  void running.done.then(() => { ended = true; });
+  await firstPause.promise;
+  assert.equal(ended, false);
+  assert.equal(h.factory.executions[0]?.disposeCount, 0);
+  activeChildren = 1;
+  await h.runner.handoffCustom('sub_01', { from: 'sub_01_01', customType: 'agent-delivery',
+    content: 'FIRST_CHILD_RESULT', display: true, details: { status: 'completed' } });
+  await secondPause.promise;
+  assert.equal(ended, false);
+  activeChildren = 0;
+  await h.runner.handoffCustom('sub_01', { from: 'sub_01_02', customType: 'agent-delivery',
+    content: 'SECOND_CHILD_RESULT', display: true, details: { status: 'completed' } });
+  const outcome = await running.done;
+  assert.equal(outcome.status, 'completed');
+  assert.equal(outcome.result, 'FINAL_COMBINED');
+  assert.equal(turns, 3);
+  assert.equal(pauses, 2);
+  assert.equal(resumes, 2);
+  assert.equal(h.factory.requests.length, 1, 'holding never opens a replacement session');
+  assert.equal(h.factory.executions[0]?.disposeCount, 1);
+  assert.equal(request.budget, budget);
+  assert.deepEqual(customEntries(runManager(h)).map(entry => entry.content), ['FIRST_CHILD_RESULT', 'SECOND_CHILD_RESULT']);
+});
+
+test('last-child settlement wakes an idle parent even without a delivered notice', async () => {
+  let activeChildren = true;
+  const paused = deferred<void>();
+  let resumed = 0;
+  const h = harness({ route: routedIdentity(), hasActiveChildren: () => activeChildren });
+  const running = h.runner.start(jobRequest(freshSpec(), {
+    pauseActive() { paused.resolve(); }, resumeActive() { resumed++; },
+  }));
+  await paused.promise;
+  activeChildren = false;
+  h.runner.wake('sub_01');
+  assert.equal((await running.done).status, 'completed');
+  assert.equal(resumed, 1);
+  assert.equal(h.factory.sessions[0]?.prompts.length, 1);
+});
+
+test('cancellation releases a held parent without resuming or opening a model turn', async () => {
+  const paused = deferred<void>();
+  let resumed = 0;
+  const h = harness({ route: routedIdentity(), hasActiveChildren: () => true });
+  const running = h.runner.start(jobRequest(freshSpec(), {
+    pauseActive() { paused.resolve(); }, resumeActive() { resumed++; },
+  }));
+  await paused.promise;
+  running.cancel();
+  const outcome = await running.done;
+  assert.equal(outcome.status, 'cancelled');
+  assert.equal(resumed, 0);
+  assert.equal(h.factory.sessions[0]?.prompts.length, 1);
+  assert.deepEqual(await h.runner.handoffCustom('sub_01', { from: 'sub_01_01', customType: 'agent-delivery',
+    content: 'LATE_RESULT', display: true, details: {} }), { accepted: false, reason: 'job_closed' });
+});
+
+test('a peer message during a hold resumes work, then holds again for the remaining child', async () => {
+  let activeChildren = true;
+  const firstPause = deferred<void>();
+  const secondPause = deferred<void>();
+  let pauses = 0;
+  const h = harness({ route: routedIdentity(), hasActiveChildren: () => activeChildren });
+  const running = h.runner.start(jobRequest(freshSpec(), {
+    pauseActive() { (++pauses === 1 ? firstPause : secondPause).resolve(); }, resumeActive() {},
+  }));
+  await firstPause.promise;
+  await h.runner.handoff('sub_01', { from: 'Main', content: 'NEW_DIRECTION' });
+  await secondPause.promise;
+  assert.equal(h.factory.sessions[0]?.prompts.length, 2);
+  activeChildren = false;
+  h.runner.wake('sub_01');
+  assert.equal((await running.done).status, 'completed');
+  assert.equal(pauses, 2);
 });
 
 test('cancellation during initial message append rejects readiness', async t => {
