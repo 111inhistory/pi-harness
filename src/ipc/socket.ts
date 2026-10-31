@@ -8,7 +8,6 @@
  */
 
 import crypto from "node:crypto";
-import fsp from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -225,34 +224,6 @@ export function writeSocket(
       if (!settled) reject(new SocketWriteError("missing_response", "Socket closed before returning the delivery result."));
     });
   });
-}
-
-/** Check reserved IPC directories without creating a root service. */
-export async function isInSocketDirectory(address: string, root: string): Promise<boolean> {
-  if (ipc.isNamespace(address)) return false;
-  const inside = (value: string, base: string): boolean => {
-    const relative = path.relative(base, value);
-    return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-  };
-  const absolute = path.resolve(address);
-  const base = path.resolve(root);
-  if (inside(absolute, base)) return true;
-  const canonical = async (value: string): Promise<string> => {
-    let current = value;
-    const suffix: string[] = [];
-    for (;;) {
-      try {
-        return path.join(await fsp.realpath(current), ...suffix);
-      } catch (error) {
-        if (errorCode(error) !== "ENOENT") throw error;
-        const parent = path.dirname(current);
-        if (parent === current) return value;
-        suffix.unshift(path.basename(current));
-        current = parent;
-      }
-    }
-  };
-  return inside(await canonical(absolute), await canonical(base));
 }
 
 /** The registry answer for one endpoint-shaped address. */

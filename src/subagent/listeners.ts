@@ -3,7 +3,6 @@ import {
   endpointKey,
   getAgentSocketPath,
   getBroadcastSocketPath,
-  isInSocketDirectory,
   validateInboundFrame,
   type EndpointResolverResult,
 } from '../ipc/socket.ts';
@@ -63,12 +62,7 @@ export class AgentListeners {
         ? { isManaged: true, isBroadcast: true, parentId: destination.owner }
         : { isManaged: true, isBroadcast: false, targetId: destination.owner };
     }
-    if (await this.isReservedPath(address)) throw new SubagentError('unknown_endpoint', 'No registered Agent owns this IPC address.');
     return { isManaged: false };
-  }
-
-  isReservedPath(address: string): Promise<boolean> {
-    return isInSocketDirectory(address, this.#options.baseSocketDir);
   }
 
   sync(): Promise<void> {

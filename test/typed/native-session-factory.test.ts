@@ -367,7 +367,10 @@ test("Inherited loads configured execution backends while retaining the captured
     assert.deepEqual(inspection.resourceLoader.getExtensions().errors, []);
     assert.equal(inspection.resourceLoader.getSystemPrompt(), "INHERITED SYSTEM PROMPT");
     assert.ok(inspection.resourceLoader.getExtensions().extensions.some(extension => extension.resolvedPath === extensionPath));
-    assert.ok(opened.execution.session.getActiveToolNames().includes('inherited_extension'));
+    assert.ok(opened.capabilityScope.getAllTools().some(tool => tool.name === 'inherited_extension'));
+    assert.ok(!opened.execution.session.getActiveToolNames().includes('inherited_extension'), 'factory waits for registration without applying the inherited loadout');
+    // The Runner applies the final permitted loadout after factory readiness.
+    opened.execution.session.setActiveToolsByName([...input.inheritedTools]);
     assert.ok(inspection.resourceLoader.getExtensions().extensions.some(extension => extension.commands.has('mcp')));
     let calls = 0;
     h.runtime.streamSimple = (_model, context) => {
@@ -486,8 +489,11 @@ test("Inherited waits for deferred MCP registration, restores its declaration, a
   });
   const opened = await h.factory.open(input);
   try {
-    assert.ok(opened.execution.session.getActiveToolNames().includes(name));
     assert.ok(opened.capabilityScope.getAllTools().some(tool=>tool.name===name));
+    // The SDK may restore historical declarations as tools register; the Runner
+    // still applies the final permitted loadout once after factory readiness.
+    opened.execution.session.setActiveToolsByName([...input.inheritedTools]);
+    assert.ok(opened.execution.session.getActiveToolNames().includes(name));
     let calls=0;
     h.runtime.streamSimple=(_model,context)=>{
       calls++;

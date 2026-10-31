@@ -9,7 +9,6 @@ import test from "node:test";
 import {
   createOwnedNdjsonServer,
   getAgentSocketPath,
-  isInSocketDirectory,
   isWindowsPipe,
   writeSocket,
 } from "../src/ipc/socket.ts";

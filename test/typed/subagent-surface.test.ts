@@ -129,14 +129,9 @@ class RecordingHost implements SubagentSurfaceHost {
   readonly sends: unknown[] = [];
   readonly receipts: MessageReceipt[] = [];
   endpoint: EndpointResolverResult = { isManaged: true, targetId: "sub_02" };
-  reserved = false;
 
   async resolveEndpoint(): Promise<EndpointResolverResult> {
     return this.endpoint;
-  }
-
-  async isReservedPath(): Promise<boolean> {
-    return this.reserved;
   }
 
   async sendMessage(command: Parameters<SubagentSurfaceHost["sendMessage"]>[0]): Promise<MessageReceipt | BroadcastReceipt> {
