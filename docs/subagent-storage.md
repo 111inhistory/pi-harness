@@ -30,7 +30,7 @@ Pi 原生 `SessionManager` 仍保留其解析的历史。插件不重写 Pi 的�
 
 ### 4.1 A 层：根分支事件
 
-`src/subagent/storage.ts` 使用 TypeScript 判别联合类型定义事件，适配层使用 `pi.appendEntry(customType, data)` 写入；`data.v = 2`。
+`src/subagent/storage.ts` 定义事件名称并校验磁盘事件，适配层使用 `pi.appendEntry(customType, data)` 写入；`data.v = 2`。
 
 | `customType` | 写入时机 | 字段 |
 | --- | --- | --- |

@@ -4,15 +4,6 @@
 
 ## 未实现功能
 
-### Inherited 的 Responses 工具在线续跑与压缩生命周期验收
-
-Inherited 的基础工具注册、延迟 MCP 后端调用与 Responses 原生 `additional_tools` 声明链已在离线 SDK 场景中验证（见[归档](archive/resolved-issues.md#inherited-工具注册与-responses-additional_tools-基础链条)）。
-
-- [ ] 验证父会话动态激活工具后，Inherited 分支在真实提供方在线环境下多轮续跑能实际调用这些工具。
-- [ ] 验证原生压缩后的工具继承调用生命周期；不只验证声明仍在离线测试请求中。
-
-当前可用路径继续使用，专项适配另行完成，不以恢复已移除的压缩插件为前提。
-
 ### 用户查看与控制入口
 
 `subagent_list` 是模型接口，不能替代用户查看、停止和发送消息的界面。用户入口仍未设计交付。
@@ -26,6 +17,15 @@ Inherited 的基础工具注册、延迟 MCP 后端调用与 Responses 原生 `a
 只有资源、没有工具的 MCP 服务器仍无独立发现项。
 
 ## 待验收场景
+
+### Inherited 的 Responses 工具在线续跑与压缩生命周期验收
+
+Inherited 的基础工具注册、延迟 MCP 后端调用与 Responses 原生 `additional_tools` 声明链已在离线 SDK 场景中验证（见[归档](archive/resolved-issues.md#inherited-工具注册与-responses-additional_tools-基础链条)）。
+
+- [ ] 验证父会话动态激活工具后，Inherited 分支在真实提供方在线环境下多轮续跑能实际调用这些工具。
+- [ ] 验证原生压缩后的工具继承调用生命周期；不只验证声明仍在离线测试请求中。
+
+当前可用路径继续使用，专项适配另行完成，不以恢复已移除的压缩插件为前提。
 
 - **新 TS 调用链的多轮在线运行**：本次接线主要通过新进程里的真实 SDK 与本地模拟模型验证。此前 Gemini 迁移样本和在线冒烟不能替代新调用链的真实提供方验收。
 - **Linux 长时间压力测试**：此前测试因提供方终止而未完成。

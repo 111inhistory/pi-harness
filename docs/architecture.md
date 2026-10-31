@@ -121,7 +121,7 @@ Harness 用 `result-rendering.ts` 为没有专用结果渲染器的工具提供�
 
 原 Subagent／Runtime／Socket／平台 MJS 重导出入口已删除。`extensions/harness.ts` 直接装配 `src/subagent/extension.ts`，业务模块见上表。
 
-`src/` 与 `extensions/` 生产代码已全部迁移至严格 TypeScript（`storage.ts`、`view.ts`、`routing.ts`、`job-budget.ts`、`pi-job-budget.ts` 位于 `src/subagent/`，`inherited-context.ts`、`prompt-text.ts` 提供缓存 getter，`skills.ts` 位于 `src/capability/`，`shell-preflight.ts` 位于 `src/` 与 `extensions/`）；`scripts/` 与历史测试用例（`test/*.test.mjs`）仍保持 MJS。
+`src/` 与 `extensions/` 生产代码已全部迁移至严格 TypeScript（`storage.ts`、`view.ts`、`routing.ts`、`job-budget.ts`、`pi-job-budget.ts` 位于 `src/subagent/`，`inherited-context.ts` 负责原生继承捕获，`prompt-text.ts` 提供缓存 getter，`skills.ts` 位于 `src/capability/`，`shell-preflight.ts` 位于 `src/` 与 `extensions/`）；`scripts/` 与历史测试用例（`test/*.test.mjs`）仍保持 MJS。
 
 提示词正文在 `prompts/`；代码保留参数结构、动态装配、权限和生命周期判断。运行时只读取原命名的 `subagent-tools.json` 与 `subagent-turns.json`，不读取 `.new.json` 讨论稿。共同 namespace 指引随工具提供，`create.guideline` 仅挂到 create；所有子会话注入 turns 的 `context`，Fresh 添加路由角色，Inherited 添加非空的 `inheritedContext`。`native-runner.ts` 按已保留的路由身份识别模式，续跑不因当前 Job 是 continuation 而丢失 Inherited 定位。`prompt.ts` 负责原样拼装，参数说明按工具及数组项嵌套读取。字段与状态见[提示词装配](interface-contract.md#subagent-提示词装配)。正文在模块初始化时读取，修改后应重启 Pi，不承诺 `/reload` 刷新全部 ESM 依赖。
 
