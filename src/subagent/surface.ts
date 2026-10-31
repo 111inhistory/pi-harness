@@ -31,8 +31,8 @@ import type {
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "@earendil-works/pi-ai";
 
-import { captureInheritedContext } from "../inherited-context.ts";
-import { promptString, promptText } from "../prompt-text.ts";
+import { captureInheritedContext, type InheritedSnapshot } from "../inherited-context.ts";
+import { promptString } from "../prompt-text.ts";
 import {
   createMessageWriteTool,
   type ManagedWriteHost,
@@ -100,19 +100,17 @@ export interface SubagentSurfaceApi {
  * Capture one inherited-context snapshot for a child at `childDepth`, adding
  * the host-generated warning for whatever the child cannot inherit.
  *
- * The capture helper is a JavaScript boundary, so its result enters here as
- * `unknown` and is validated before any field is read. A malformed capture
- * throws; the runtime that invokes this lazily reports it as
- * `inherited_snapshot_failed`.
+ * The capture pins the spawning call's physical model before removing pending
+ * calls from the inherited native entries.
  */
 export function captureContextForChild(
   api: SubagentSurfaceApi,
   ctx: ExtensionContext,
   childDepth: number,
-): unknown {
-  const captured: unknown = captureInheritedContext(api, ctx);
-  const snapshot = requireCapturedContext(captured);
-  const dropped = droppedInheritedTools(api.getAllTools(), snapshot["tools"], childDepth);
+  toolCallId?: string,
+): InheritedSnapshot & { readonly warnings?: readonly string[] } {
+  const snapshot = captureInheritedContext(api, ctx, toolCallId);
+  const dropped = droppedInheritedTools(api.getAllTools(), snapshot.tools, childDepth);
   return dropped.length === 0 ? snapshot : { ...snapshot, warnings: [inheritedToolsWarning(dropped)] };
 }
 
@@ -164,7 +162,7 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
         promptSnippet: TOOL_TEXT.create.snippet,
         promptGuidelines: [...SUBAGENT_NAMESPACE.instructions?.split("\n") ?? [], TOOL_TEXT.create.guideline],
         parameters: createParameters,
-        async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        async execute(toolCallId, params, _signal, _onUpdate, ctx) {
           const host = await resolveHost(ctx);
           return respond(await host.create(params, {
             parentAgentId: caller.parentAgentId,
@@ -176,7 +174,7 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
               agentId: caller.parentAgentId,
               mode: ctx.mode,
             },
-            captureInheritedContext: () => captureContextForChild(api, ctx, scope.depth + 1),
+            captureInheritedContext: () => captureContextForChild(api, ctx, scope.depth + 1, toolCallId),
           }, ctx));
         },
       }
@@ -264,22 +262,32 @@ function respond<T>(payload: T): AgentToolResult<T> {
   return { content: [{ type: "text", text: JSON.stringify(payload) }], details: payload };
 }
 
-function requireCapturedContext(value: unknown): Record<string, unknown> {
-  if (!isRecord(value)) {
-    throw new TypeError("The inherited-context capture returned no snapshot object.");
-  }
-  const tools = value["tools"];
-  if (tools !== undefined && (!Array.isArray(tools) || tools.some((name) => typeof name !== "string"))) {
-    throw new TypeError("The inherited-context capture returned a malformed tool list.");
-  }
-  return value;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-const TOOL_TEXT = parseToolText();
+const text = (...fields: string[]): string => promptString('subagent-tools.json', ...fields);
+const TOOL_TEXT: SurfaceToolText = {
+  namespace: text('namespace'),
+  create: {
+    description: text('create', 'description'), snippet: text('create', 'snippet'), guideline: text('create', 'guideline'),
+    parameters: {
+      context: text('create', 'parameters', 'context'),
+      tasks: {
+        description: text('create', 'parameters', 'tasks', 'description'),
+        items: {
+          name: text('create', 'parameters', 'tasks', 'items', 'name'),
+          task: text('create', 'parameters', 'tasks', 'items', 'task'),
+          inheritContext: text('create', 'parameters', 'tasks', 'items', 'inheritContext'),
+        },
+      },
+    },
+  },
+  list: {
+    description: text('list', 'description'), snippet: text('list', 'snippet'),
+    parameters: { all: text('list', 'parameters', 'all'), id: text('list', 'parameters', 'id') },
+  },
+  stop: {
+    description: text('stop', 'description'), snippet: text('stop', 'snippet'),
+    parameters: { id: text('stop', 'parameters', 'id') },
+  },
+};
 
 export const SUBAGENT_NAMESPACE: ToolNamespace = Object.freeze({
   name: "subagent",
@@ -325,63 +333,6 @@ interface SurfaceToolText {
   };
   readonly list: { readonly description: string; readonly snippet: string; readonly parameters: { readonly all: string; readonly id: string } };
   readonly stop: { readonly description: string; readonly snippet: string; readonly parameters: { readonly id: string } };
-}
-
-function parseToolText(): SurfaceToolText {
-  const value: unknown = JSON.parse(promptText("subagent-tools.json"));
-  const root = requireRecord(value, "the tool text");
-  const create = requireRecord(root["create"], "create");
-  const list = requireRecord(root["list"], "list");
-  const stop = requireRecord(root["stop"], "stop");
-  const createParams = requireRecord(create["parameters"], "create.parameters");
-  const tasks = requireRecord(createParams["tasks"], "create.parameters.tasks");
-  const items = requireRecord(tasks["items"], "create.parameters.tasks.items");
-  const listParams = requireRecord(list["parameters"], "list.parameters");
-  const stopParams = requireRecord(stop["parameters"], "stop.parameters");
-  return {
-    namespace: requireText(root["namespace"], "namespace"),
-    create: {
-      description: requireText(create["description"], "create.description"),
-      snippet: requireText(create["snippet"], "create.snippet"),
-      guideline: requireText(create["guideline"], "create.guideline"),
-      parameters: {
-        context: requireText(createParams["context"], "create.parameters.context"),
-        tasks: {
-          description: requireText(tasks["description"], "create.parameters.tasks.description"),
-          items: {
-            name: requireText(items["name"], "create.parameters.tasks.items.name"),
-            task: requireText(items["task"], "create.parameters.tasks.items.task"),
-            inheritContext: requireText(items["inheritContext"], "create.parameters.tasks.items.inheritContext"),
-          },
-        },
-      },
-    },
-    list: {
-      description: requireText(list["description"], "list.description"),
-      snippet: requireText(list["snippet"], "list.snippet"),
-      parameters: {
-        all: requireText(listParams["all"], "list.parameters.all"),
-        id: requireText(listParams["id"], "list.parameters.id"),
-      },
-    },
-    stop: {
-      description: requireText(stop["description"], "stop.description"),
-      snippet: requireText(stop["snippet"], "stop.snippet"),
-      parameters: { id: requireText(stopParams["id"], "stop.parameters.id") },
-    },
-  };
-}
-
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (!isRecord(value)) throw new TypeError(`Invalid Subagent tool text: ${label} must be an object.`);
-  return value;
-}
-
-function requireText(value: unknown, label: string): string {
-  if (typeof value !== "string" || value === "") {
-    throw new TypeError(`Invalid Subagent tool text: ${label} must be a non-empty string.`);
-  }
-  return value;
 }
 
 // The declared tool parameter types, exported so callers can name a batch.

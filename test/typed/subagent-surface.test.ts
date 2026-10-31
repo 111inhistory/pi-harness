@@ -2,11 +2,9 @@
  * Contract tests for the Subagent session surface.
  *
  * The surface factory is the real production builder; the fakes implement only
- * the declared host/api ports. The managed write pair is the real shared
- * factory, so messages and ordinary files are verified to use the SDK write
- * result while managed delivery still goes through the host. The single SDK assertion is the
- * tool-context fixture, which provides exactly the members the surface and the
- * inherited-context capture read (same pattern as managed-message-write.test).
+ * the declared host/api ports. Messaging uses the standalone tool; native file
+ * writes remain SDK-owned. The SDK context fixture supplies only the members
+ * used by the surface and inherited-context capture.
  */
 
 import assert from "node:assert/strict";
@@ -21,6 +19,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { promptText } from "../../src/prompt-text.ts";
+import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { fauxProvider } from '@earendil-works/pi-ai';
 import type { EndpointResolverResult } from "../../src/ipc/socket.ts";
 import {
   captureContextForChild,
@@ -111,7 +111,7 @@ class FakeSurfaceApi implements SubagentSurfaceApi {
     return this.catalog;
   }
 
-  getActiveTools(): readonly string[] {
+  getActiveTools(): string[] {
     return this.active;
   }
 }
@@ -471,6 +471,43 @@ test("concurrent managed sends keep per-execution hosts isolated", async () => {
   assert.deepEqual(second.sends, [{ from: "Main", to: "sub_03", content: "second" }]);
   assert.equal(a.details, undefined);
   assert.equal(b.details, undefined);
+});
+
+test('create forwards its tool call id to physical model capture before pending-call removal', async () => {
+  const physical = fauxProvider().getModel();
+  const manager = SessionManager.inMemory(ROOT_SCOPE.cwd);
+  manager.appendMessage({
+    role: 'assistant', api: physical.api, provider: physical.provider, model: physical.id,
+    content: [{ type: 'toolCall', id: 'spawn-physical-call', name: 'subagent_create', arguments: {} }],
+    stopReason: 'toolUse', timestamp: 1,
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+  });
+  const ctx = {
+    ...sdkContext({ cwd: ROOT_SCOPE.cwd }),
+    model: { ...physical, api: 'pi-virtual' },
+    modelRegistry: { runtime: {
+      streamSimple() {}, getAuth() {}, getRegisteredProviderIds() {},
+      getPhysicalModel(provider: string, id: string) {
+        assert.equal(provider, physical.provider);
+        assert.equal(id, physical.id);
+        return physical;
+      },
+    } },
+    sessionManager: manager,
+  } as unknown as ExtensionToolContext;
+  const host = new RecordingHost();
+  const tools = createSurfaceTools({ api: new FakeSurfaceApi(), resolveHost: async () => host, scope: ROOT_SCOPE });
+  assert.ok(tools.create);
+  await tools.create.execute('spawn-physical-call', { tasks: [{ task: 'inherit', inheritContext: true }] }, undefined, undefined, ctx);
+  const recorded = host.creates[0];
+  assert.ok(recorded);
+  const snapshot = recorded.options.captureInheritedContext();
+  assert.ok(isRecord(snapshot));
+  assert.equal(snapshot['model'], physical);
+  assert.ok(Array.isArray(snapshot['entries']));
+  assert.equal(snapshot['entries'].filter((entry: unknown) => isRecord(entry) && entry['type'] === 'message').length, 0,
+    'the pending spawning call is removed only after physical identity is captured');
 });
 
 test("inherited capture warns about non-transplantable parent tools", async () => {

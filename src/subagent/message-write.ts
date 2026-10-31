@@ -2,7 +2,7 @@ import { Type } from '@earendil-works/pi-ai';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import path from 'node:path';
 import { isIpcPath, isWindowsPipe, type EndpointResolverResult } from '../ipc/socket.ts';
-import { promptText } from '../prompt-text.ts';
+import { promptString, promptStrings } from '../prompt-text.ts';
 import { SubagentError, type BroadcastReceipt, type MessageReceipt } from './runtime.ts';
 
 type Receipt = MessageReceipt | BroadcastReceipt;
@@ -17,14 +17,15 @@ export interface ManagedWriteHost {
   }): Promise<Receipt>;
 }
 
-interface MsgWriteToolText {
-  description: string;
-  snippet: string;
-  guidelines: string[];
-  parameters: { path: string; content: string };
-}
-
-const text: MsgWriteToolText = JSON.parse(promptText('subagent-tools.json')).msg_write;
+const text = {
+  description: promptString('subagent-tools.json', 'msg_write', 'description'),
+  snippet: promptString('subagent-tools.json', 'msg_write', 'snippet'),
+  guidelines: promptStrings('subagent-tools.json', 'msg_write', 'guidelines'),
+  parameters: {
+    path: promptString('subagent-tools.json', 'msg_write', 'parameters', 'path'),
+    content: promptString('subagent-tools.json', 'msg_write', 'parameters', 'content'),
+  },
+};
 const parameters = Type.Object({
   path: Type.String({ description: text.parameters.path }),
   content: Type.String({ description: text.parameters.content }),
