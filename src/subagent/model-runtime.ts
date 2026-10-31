@@ -19,7 +19,8 @@
  * unavailable or incomplete bridge is always an explicit failure.
  */
 
-import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { Api, Model } from "@earendil-works/pi-ai";
 
 /**
  * The private-SDK surface was audited against this package version. Bump only
@@ -77,4 +78,22 @@ export function parentModelRuntime(registry: unknown, subject = "this session"):
       `${subject} cannot reuse the parent session's provider registrations and virtual models; refusing to ` +
       "silently fall back to a fresh runtime",
   );
+}
+
+/** Pin a virtual selection to the physical response that issued the spawning call. */
+export function physicalModelForCall(
+  ctx: Pick<ExtensionContext, "model" | "modelRegistry" | "sessionManager">,
+  toolCallId?: string,
+): Model<Api> | null {
+  const selected = ctx.model ?? null;
+  if (selected === null || selected.api !== "pi-virtual") return selected;
+  const messages = ctx.sessionManager.buildSessionProjection().messages;
+  const producing = messages.findLast(message => message.role === "assistant" &&
+    message.content.some(block => block.type === "toolCall" &&
+      (block.id === toolCallId || toolCallId?.startsWith(`${block.id}/`))));
+  const physical = producing?.role === "assistant"
+    ? parentModelRuntime(ctx.modelRegistry, "inherited context").getPhysicalModel(producing.provider, producing.model)
+    : undefined;
+  if (physical !== undefined) return physical;
+  throw new Error("The physical model that issued the inherited-context request is unavailable; refusing to reroute the conversation.");
 }

@@ -26,13 +26,13 @@ import { MAX_AGENT_DEPTH } from "./runtime.ts";
 /** The only shape the transplantability filter needs from a registered tool. */
 export interface ToolPolicyTool {
   readonly name: string;
-  readonly sourceInfo?: { readonly source?: string | undefined } | undefined;
+  readonly sourceInfo?: { readonly source?: string | undefined; readonly path?: string | undefined } | undefined;
 }
 
 /** Harness tools a child keeps below the leaf depth, in registration order. */
-const HARNESS_TOOLS = ["subagent_create", "subagent_list", "subagent_stop", "capability"] as const;
+const HARNESS_TOOLS = ["subagent_create", "subagent_list", "subagent_stop", "capability", "msg_write"] as const;
 /** At the leaf depth a child may only list; it cannot create or stop. */
-const LEAF_HARNESS_TOOLS = ["subagent_list"] as const;
+const LEAF_HARNESS_TOOLS = ["subagent_list", "msg_write"] as const;
 
 /** The harness tool names a child at `depth` may hold. */
 export function harnessToolsForDepth(depth: number): readonly string[] {
@@ -40,10 +40,10 @@ export function harnessToolsForDepth(depth: number): readonly string[] {
 }
 
 /**
- * Names a child may still receive: this depth's harness tools, the file tools
- * the child harness registers, and every tool the parent build marks as
- * built-in. Tools contributed by other extensions expose no execute handle a
- * fresh session could re-register, so they are not transplantable.
+ * Names eligible for independent registration in the child's configured loaders.
+ * Built-ins and file-backed extensions can be recreated. Inline-only extensions
+ * expose no loader or execute handle to another session and remain unavailable.
+ * The session factory verifies actual registration before accepting a loadout.
  */
 export function transplantableToolNames(
   tools: readonly ToolPolicyTool[],
@@ -51,7 +51,8 @@ export function transplantableToolNames(
 ): ReadonlySet<string> {
   const names = new Set<string>([...harnessToolsForDepth(childDepth), "read", "write", "msg_write"]);
   for (const tool of tools) {
-    if (tool.sourceInfo?.source === "builtin") names.add(tool.name);
+    const source = tool.sourceInfo;
+    if (source?.source === "builtin" || (source?.path !== undefined && !source.path.startsWith('<'))) names.add(tool.name);
   }
   return names;
 }

@@ -21,7 +21,8 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
+import { fauxProvider, InMemoryCredentialStore, getCurrentTools } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
 import { capabilityAllowsTool } from "../../src/capability/scope.ts";
@@ -45,6 +46,7 @@ interface Harness {
   readonly root: string;
   readonly cwd: string;
   readonly model: Model<Api>;
+  readonly runtime: ModelRuntime;
   readonly parentTools: CapabilityScopedTool[];
   readonly surfaces: SurfaceInstallation[];
   readonly parentCalls: Array<string | null>;
@@ -112,6 +114,7 @@ async function harness(): Promise<Harness> {
     root,
     cwd,
     model: faux.models[0],
+    runtime,
     parentTools,
     surfaces,
     parentCalls,
@@ -348,21 +351,59 @@ test("Fresh uses default extensions minus exclusions without installing the root
   }
 });
 
-test("Inherited resource setup stays isolated from default extensions", async () => {
+test("Inherited loads configured execution backends while retaining the captured prompt", async () => {
   const h = await harness();
-  const extensionPath = path.join(h.cwd, ".pi", "extensions", "unrequested.ts");
+  const extensionPath = path.join(h.cwd, ".pi", "extensions", "inherited.ts");
   await mkdir(path.dirname(extensionPath), { recursive: true });
-  await writeFile(extensionPath, `export default function() { throw new Error("must not load for Inherited"); }`, "utf8");
-  const opened = await h.factory.open(request(h));
+  await writeFile(extensionPath, `export default function(pi) {
+    pi.registerTool({name:'inherited_extension', label:'Inherited fixture', description:'Fixture',
+      parameters:{type:'object', properties:{}}, defaultActive:false,
+      execute:async()=>({content:[{type:'text',text:'CHILD_BACKEND'}],details:{}})});
+  }`, "utf8");
+  h.parentTools.push({name:'inherited_extension'});
+  const input = { ...request(h), inheritedTools: ['read', 'inherited_extension'] };
+  const opened = await h.factory.open(input);
   try {
     const inspection = inspectSession(opened.execution.session);
     assert.deepEqual(inspection.resourceLoader.getExtensions().errors, []);
     assert.equal(inspection.resourceLoader.getSystemPrompt(), "INHERITED SYSTEM PROMPT");
-    assert.ok(!inspection.resourceLoader.getExtensions().extensions.some((extension) => extension.resolvedPath === extensionPath));
+    assert.ok(inspection.resourceLoader.getExtensions().extensions.some(extension => extension.resolvedPath === extensionPath));
+    assert.ok(opened.execution.session.getActiveToolNames().includes('inherited_extension'));
+    assert.ok(inspection.resourceLoader.getExtensions().extensions.some(extension => extension.commands.has('mcp')));
+    let calls = 0;
+    h.runtime.streamSimple = (_model, context) => {
+      calls++;
+      assert.ok(getCurrentTools(context.messages).some(tool => tool.name === 'inherited_extension'));
+      if (calls === 2) {
+        const result = context.messages.findLast(message => message.role === 'toolResult');
+        assert.ok(result?.role === 'toolResult' && result.content.some(part => part.type === 'text' && part.text === 'CHILD_BACKEND'));
+      }
+      const message = {
+        role: 'assistant' as const, api: h.model.api, provider: h.model.provider, model: h.model.id,
+        content: calls === 1 ? [{type:'toolCall' as const,id:'child-call',name:'inherited_extension',arguments:{}}] : [{type:'text' as const,text:'DONE'}],
+        stopReason: calls === 1 ? 'toolUse' as const : 'stop' as const, timestamp: Date.now(),
+        usage:{input:1,output:1,totalTokens:2,cacheRead:0,cacheWrite:0,cost:{input:0,output:0,total:0,cacheRead:0,cacheWrite:0}},
+      };
+      const stream = new AssistantMessageEventStream();
+      stream.push({type:'done',reason:message.stopReason,message});
+      stream.end();
+      return stream;
+    };
+    await opened.execution.prompt('Run the inherited tool.', {expandPromptTemplates:false});
+    assert.equal(calls, 2);
   } finally {
     await opened.execution.dispose();
     await close(h);
   }
+});
+
+test("Inherited refuses captured extension names without a child backend", async () => {
+  const h = await harness();
+  try {
+    const input = {...request(h), inheritedTools:['parent_only']};
+    await assert.rejects(h.factory.open(input),
+      (error: unknown) => error instanceof SubagentError && error.code === 'inherited_tool_unavailable' && error.message.includes('parent_only'));
+  } finally { await close(h); }
 });
 
 test("an unknown recorded thinking level fails explicitly before child setup", async () => {

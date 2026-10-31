@@ -41,10 +41,9 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
   type ExtensionToolContext,
-  type FileEntry,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
 import {
@@ -62,11 +61,11 @@ import {
   type CapabilityOpenSessionRequest,
   type CapabilityRunSession,
 } from "../src/capability/agent.ts";
-import { promptText } from "../src/prompt-text.mjs";
+import { promptString, promptStrings } from "../src/prompt-text.ts";
 
 import { installModelCallBudget } from "../src/subagent/pi-job-budget.ts";
-import { captureInheritedContext } from "../src/inherited-context.mjs";
-import { discoverSessionSkills } from "../src/capability-skills.mjs";
+import { captureInheritedContext, type InheritedSnapshot } from "../src/inherited-context.ts";
+import { discoverSessionSkills } from "../src/capability/skills.ts";
 import { capabilityPublicResult } from "../src/capability/result.ts";
 import { capabilityPromptTranscript, type ProjectionMessage } from "../src/capability/prompt.ts";
 import { appendDiscoveryRecord } from "../src/capability/discovery-record.ts";
@@ -77,9 +76,6 @@ import { createEligibleToolCatalog, supplySelectedToolInterfaces } from "../src/
 import {
   additiveToolTranscript, capabilityModelResult, capabilityToolDelta, retrievalToolLoadout, supportsAdditiveResponses,
 } from "../src/responses-tool-prefix.ts";
-
-/** `Model<Api>.api` of Pi virtual catalog entries (routed before a provider). */
-const VIRTUAL_MODEL_API = "pi-virtual";
 
 const toolsPrompt = readToolsPrompt();
 const policyPrompt = readPolicyPrompt();
@@ -102,15 +98,6 @@ interface ActivationHit {
   readonly tools?: readonly ActivationHit[] | undefined;
 }
 
-interface InheritedSnapshot {
-  readonly capturedAt: number;
-  readonly cwd: string;
-  readonly systemPrompt: string;
-  readonly model: Model<Api> | null;
-  readonly thinkingLevel: ThinkingLevel | null;
-  readonly tools: readonly string[];
-  readonly entries: readonly FileEntry[];
-}
 
 interface Activation {
   readonly activated: readonly string[];
@@ -120,66 +107,15 @@ interface Activation {
 type DiscoveryRecordWriter = Parameters<typeof appendDiscoveryRecord>[0];
 type HarnessSettings = ReturnType<SettingsManager["getSettings"]>;
 
-type UnknownRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function readToolsPrompt(): CapabilityToolsPrompt {
-  const value: unknown = JSON.parse(promptText("capability-tools.json"));
-  if (!isRecord(value) || !isRecord(value["capability"])) {
-    throw new Error("capability-tools.json is missing its capability section.");
-  }
-  const capability = value["capability"];
-  const snippet = capability["snippet"];
-  const guidelines = capability["guidelines"];
-  if (typeof snippet !== "string" || !Array.isArray(guidelines) || guidelines.some((line) => typeof line !== "string")) {
-    throw new Error("capability-tools.json has an invalid capability prompt.");
-  }
-  return { capability: { snippet, guidelines } };
+  return { capability: {
+    snippet: promptString("capability-tools.json", "capability", "snippet"),
+    guidelines: promptStrings("capability-tools.json", "capability", "guidelines"),
+  } };
 }
 
 function readPolicyPrompt(): CapabilityPolicyPrompt {
-  const value: unknown = JSON.parse(promptText("capability-policy.json"));
-  if (!isRecord(value) || typeof value["additiveExecutionBlocked"] !== "string") {
-    throw new Error("capability-policy.json is missing additiveExecutionBlocked.");
-  }
-  return { additiveExecutionBlocked: value["additiveExecutionBlocked"] };
-}
-
-function isModel(value: unknown): value is Model<Api> {
-  return isRecord(value) &&
-    typeof value["id"] === "string" &&
-    typeof value["provider"] === "string" &&
-    typeof value["api"] === "string";
-}
-
-function isThinkingLevel(value: unknown): value is ThinkingLevel {
-  return value === "off" || value === "minimal" || value === "low" || value === "medium" ||
-    value === "high" || value === "xhigh" || value === "max";
-}
-
-function inheritedSnapshot(value: unknown): InheritedSnapshot {
-  if (!isRecord(value)) throw new Error("The inherited capability context is not an object.");
-  const cwd = value["cwd"];
-  const systemPrompt = value["systemPrompt"];
-  const entries = value["entries"];
-  const tools = value["tools"];
-  const model = value["model"];
-  const thinkingLevel = value["thinkingLevel"];
-  if (typeof cwd !== "string" || typeof systemPrompt !== "string" || !Array.isArray(entries)) {
-    throw new Error("The inherited capability context is incomplete.");
-  }
-  return {
-    capturedAt: typeof value["capturedAt"] === "number" ? value["capturedAt"] : Date.now(),
-    cwd,
-    systemPrompt,
-    model: isModel(model) ? model : null,
-    thinkingLevel: isThinkingLevel(thinkingLevel) ? thinkingLevel : null,
-    tools: Array.isArray(tools) ? tools.filter((tool): tool is string => typeof tool === "string") : [],
-    entries: entries as readonly FileEntry[],
-  };
+  return { additiveExecutionBlocked: promptString("capability-policy.json", "additiveExecutionBlocked") };
 }
 
 export default function capabilityExtension(pi: ExtensionAPI, { discovery = true }: { discovery?: boolean } = {}): void {
@@ -234,11 +170,11 @@ export default function capabilityExtension(pi: ExtensionAPI, { discovery = true
       let previouslyActive = new Set<string>();
       try {
         service.projectTrusted = ctx.isProjectTrusted();
-        const snapshot = inheritedSnapshot(captureInheritedContext(pi, ctx));
-        const physicalModel = inheritedModel(snapshot, ctx, parentModelRuntime(ctx.modelRegistry, "capability discovery"), toolCallId);
+        const snapshot = captureInheritedContext(pi, ctx, toolCallId);
+        const physicalModel = snapshot.model;
         const engine = createCapabilityDiscovery({
           broker,
-          openSession: (request) => openInternalSession(pi, service, ctx, request, snapshot, toolCallId),
+          openSession: (request) => openInternalSession(pi, service, ctx, request, snapshot),
         });
         result = await engine.discover(signal === undefined ? { cwd: ctx.cwd } : { cwd: ctx.cwd, signal });
         if (cancelled(signal, ctx.signal)) {
@@ -428,53 +364,12 @@ function inheritedSystemPrompt(snapshot: InheritedSnapshot): string | null {
   return inherited === "" ? null : snapshot.systemPrompt;
 }
 
-/**
- * The caller's exact current model. A physical selection is used as-is. A
- * virtual selection must not be routed again for this conversation: the
- * physical model that produced the calling `capability` tool call is the model
- * whose thinking blocks and signatures are being inherited, so its identity is
- * read from that assistant message and resolved through the caller's own
- * runtime. When that identity cannot be proven, discovery fails explicitly
- * instead of silently rerouting to another provider or model.
- */
-function inheritedModel(
-  snapshot: InheritedSnapshot,
-  ctx: ExtensionToolContext,
-  modelRuntime: ReturnType<typeof parentModelRuntime>,
-  toolCallId: string,
-): Model<Api> | undefined {
-  const selected = snapshot.model ?? ctx.model;
-  if (selected === undefined || selected === null) return undefined;
-  if (selected.api !== VIRTUAL_MODEL_API) return selected;
-  const messages = ctx.sessionManager.buildSessionProjection().messages;
-  let producing: AgentMessage | null = null;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-    if (message.content.some((block) => block?.type === "toolCall" && block.id === toolCallId)) {
-      producing = message;
-      break;
-    }
-  }
-  const physical =
-    producing !== null && producing.role === "assistant" &&
-    typeof producing.provider === "string" && typeof producing.model === "string"
-      ? modelRuntime.getPhysicalModel(producing.provider, producing.model)
-      : undefined;
-  if (physical !== undefined) return physical;
-  throw new Error(
-    "the caller selected a virtual model and the physical model that produced the calling capability request cannot be " +
-      "identified; refusing to reroute this conversation to another provider or model",
-  );
-}
-
 async function openInternalSession(
   pi: ExtensionAPI,
   service: { readonly agentDir: string },
   ctx: ExtensionToolContext,
   request: CapabilityOpenSessionRequest,
   snapshot: InheritedSnapshot,
-  toolCallId: string,
 ): Promise<CapabilityRunSession> {
   const cwd = ctx.cwd;
   const settings = internalSettings(pi, ctx.isProjectTrusted());
@@ -494,7 +389,7 @@ async function openInternalSession(
       : { systemPrompt: inheritedPrompt, appendSystemPrompt: [request.instructions] }),
   });
   await resourceLoader.reload();
-  const model = inheritedModel(snapshot, ctx, modelRuntime, toolCallId);
+  const model = snapshot.model;
   const additive = supportsAdditiveResponses(model);
   const inheritedMessages: readonly ProjectionMessage[] = snapshot.entries.flatMap((entry) =>
     entry.type === "message" ? [entry.message as unknown as ProjectionMessage] : []);

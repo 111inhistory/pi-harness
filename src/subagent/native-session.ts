@@ -15,9 +15,8 @@
  *   `model-runtime.ts` resolves the root registry's exact runtime, so extension
  *   providers and runtime credentials stay available; an unavailable bridge is
  *   an explicit failure, never a fresh fallback.
- * - The host installs this depth's child surface. Fresh actors also load normal
- *   Pi extension defaults and the MCP backend; Inherited setup stays on its
- *   captured-loadout path.
+ * - The host installs this depth's child surface. Both modes load configured
+ *   execution backends; Inherited restores its captured model, prompt and loadout.
  */
 
 import { fileURLToPath } from "node:url";
@@ -86,7 +85,7 @@ function narrowThinkingLevel(value: string | null): ThinkingLevel | undefined {
 
 class ConcreteNativeSessionFactory implements NativeSessionFactory {
   readonly #deps: NativeSessionFactoryDeps;
-  /** One settings layer per cwd, project trust and Fresh/Inherited resource mode. */
+  /** One settings layer per cwd and project trust. */
   readonly #settings = new Map<string, SettingsManager>();
 
   constructor(deps: NativeSessionFactoryDeps) {
@@ -103,7 +102,11 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
     // to createAgentSession through openSubagentExecution.
     const modelRuntime = this.#modelRuntime();
     const thinkingLevel = narrowThinkingLevel(request.thinkingLevel);
-    const settings = this.#settingsFor(request.cwd, request.trusted, request.loadDefaultExtensions);
+    const settings = this.#settingsFor(request.cwd, request.trusted);
+    const inheritedTools = request.inheritedTools;
+    const selected = new Set(inheritedTools ?? []);
+    const missing = new Set<string>();
+    let registrationChanged: (() => void) | undefined;
 
     // The child Pi exists while the resource loader runs; the host callback
     // installs this depth's tool surface into it. Only the first child is
@@ -123,7 +126,17 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
         );
         capabilityExtension(childPi, { discovery: surface.depth < MAX_AGENT_DEPTH });
         this.#deps.installChildSurface(childPi, surface);
-        if (request.loadDefaultExtensions) installCapabilityMcp(childPi);
+        installCapabilityMcp({
+          ...childPi,
+          registerTool(tool) {
+            childPi.registerTool(tool);
+            if (selected.has(tool.name) && tool.exposure !== 'hidden') {
+              missing.delete(tool.name);
+              childPi.setActiveTools([...childPi.getActiveTools(), tool.name]);
+              registrationChanged?.();
+            }
+          },
+        });
       },
     };
 
@@ -131,7 +144,7 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
       cwd: request.cwd,
       agentDir: this.#deps.agentDir,
       settingsManager: settings,
-      noExtensions: !request.loadDefaultExtensions,
+      noExtensions: false,
       extensionFactories: [childFactory],
       // An Inherited child keeps the parent's system prompt; a Fresh child keeps
       // Pi's own prompt and appends the routed role instructions supplied by
@@ -177,16 +190,49 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
       },
       { signal: request.signal },
     );
-    if (request.loadDefaultExtensions) {
-      execution.addCleanup(async () => {
-        await execution.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-      });
-      try {
-        await execution.session.bindExtensions({});
-      } catch (error) {
-        await execution.dispose();
-        throw error;
+    execution.addCleanup(async () => {
+      await execution.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    });
+    try {
+      await execution.session.bindExtensions({});
+      if (inheritedTools !== undefined) {
+        const registered = new Map(childPi.getAllTools().map(tool => [tool.name, tool]));
+        for (const name of selected) {
+          if (request.excludedTools.includes(name)) continue;
+          const tool = registered.get(name);
+          if (tool?.exposure === 'hidden') throw new SubagentError('inherited_tool_unavailable', `Inherited tool ${name} is hidden in this child.`);
+          if (tool === undefined) missing.add(name);
+        }
+        const unavailable = [...missing].filter(name => !name.startsWith('mcp__'));
+        if (unavailable.length > 0) throw new SubagentError('inherited_tool_unavailable',
+          `Configured child extensions did not register inherited tools: ${unavailable.join(', ')}.`);
+        if (missing.size > 0) await new Promise<void>((resolve, reject) => {
+          const finish = (): void => {
+            if (missing.size > 0) return;
+            clearTimeout(timer);
+            request.signal.removeEventListener('abort', abort);
+            registrationChanged = undefined;
+            resolve();
+          };
+          const abort = (): void => {
+            clearTimeout(timer);
+            registrationChanged = undefined;
+            reject(new DOMException('Inherited tool startup was aborted.', 'AbortError'));
+          };
+          const timer = setTimeout(() => {
+            request.signal.removeEventListener('abort', abort);
+            registrationChanged = undefined;
+            reject(new SubagentError('inherited_tool_unavailable', `Inherited MCP tools did not register: ${[...missing].join(', ')}.`));
+          }, 10_000);
+          registrationChanged = finish;
+          request.signal.addEventListener('abort', abort, { once: true });
+          if (request.signal.aborted) abort();
+        });
+        execution.session.setActiveToolsByName([...selected].filter(name => !request.excludedTools.includes(name)));
       }
+    } catch (error) {
+      await execution.dispose();
+      throw error;
     }
     return { execution, capabilityScope: childPi };
   }
@@ -195,12 +241,12 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
     return parentModelRuntime(this.#deps.modelRegistry(), "subagent sessions");
   }
 
-  #settingsFor(cwd: string, trusted: boolean, loadDefaultExtensions: boolean): SettingsManager {
-    const key = `${cwd}\u0000${trusted}\u0000${loadDefaultExtensions}`;
+  #settingsFor(cwd: string, trusted: boolean): SettingsManager {
+    const key = `${cwd}\u0000${trusted}`;
     const cached = this.#settings.get(key);
     if (cached !== undefined) return cached;
     let settings = SettingsManager.create(cwd, this.#deps.agentDir, { projectTrusted: trusted });
-    if (loadDefaultExtensions) {
+    {
       // Resource discovery reads the individual settings layers, not applyOverrides.
       // Keep their relative paths and package filters; replace only our root entry.
       const layers = { global: settings.getGlobalSettings(), project: settings.getProjectSettings() };

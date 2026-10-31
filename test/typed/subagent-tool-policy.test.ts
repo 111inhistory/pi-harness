@@ -25,8 +25,9 @@ const HARNESS: readonly string[] = [
   "subagent_list",
   "subagent_stop",
   "capability",
+  "msg_write",
 ];
-const LEAF: readonly string[] = ["subagent_list"];
+const LEAF: readonly string[] = ["subagent_list", "msg_write"];
 
 function tools(catalog: ReadonlyArray<{ name: string; source?: string }>): ToolPolicyTool[] {
   return catalog.map((tool) => (
@@ -102,20 +103,20 @@ test("the inherited allowlist keeps capture order, then appends harness tools", 
   // Capture order is preserved; harness tools fill the tail in declared order.
   assert.deepEqual(
     inheritedToolNames(catalog, ["write", "read"], 0),
-    ["write", "read", "subagent_create", "subagent_list", "subagent_stop", "capability"],
+    ["write", "read", "subagent_create", "subagent_list", "subagent_stop", "capability", "msg_write"],
   );
   // An already-captured harness tool keeps its captured position and is not repeated.
   assert.deepEqual(
     inheritedToolNames(catalog, ["capability", "read"], 0),
-    ["capability", "read", "subagent_create", "subagent_list", "subagent_stop"],
+    ["capability", "read", "subagent_create", "subagent_list", "subagent_stop", "msg_write"],
   );
   // Non-transplantable and duplicate entries never reach the allowlist.
   assert.deepEqual(
     inheritedToolNames(catalog, ["extension_tool", "read", "read", "write"], 0),
-    ["read", "write", "subagent_create", "subagent_list", "subagent_stop", "capability"],
+    ["read", "write", "subagent_create", "subagent_list", "subagent_stop", "capability", "msg_write"],
   );
   // At the leaf depth only the list harness tool is appended.
-  assert.deepEqual(inheritedToolNames(catalog, ["read"], MAX_AGENT_DEPTH), ["read", "subagent_list"]);
+  assert.deepEqual(inheritedToolNames(catalog, ["read"], MAX_AGENT_DEPTH), ["read", "subagent_list", "msg_write"]);
   // Malformed capture falls back to exactly the harness tools.
   assert.deepEqual(inheritedToolNames(catalog, null, 0), [...HARNESS]);
 });
@@ -140,4 +141,15 @@ test("allowlist and dropped list stay consistent for the same capture", () => {
     const explained = new Set([...allowed, ...dropped]);
     for (const name of captured) assert.ok(explained.has(name));
   }
+});
+
+test("file-backed extensions and MCP backends may recreate inherited tool registrations", () => {
+  const catalog: ToolPolicyTool[] = [
+    {name:'configured_tool',sourceInfo:{source:'local',path:'/tmp/fixture/extension.ts'}},
+    {name:'mcp__configured__inspect',sourceInfo:{source:'local',path:'/tmp/fixture/harness.ts'}},
+    {name:'inline_only',sourceInfo:{source:'inline',path:'<inline:fixture>'}},
+  ];
+  assert.deepEqual(droppedInheritedTools(catalog,['configured_tool','mcp__configured__inspect','inline_only'],1),['inline_only']);
+  assert.deepEqual(inheritedToolNames(catalog,['configured_tool','mcp__configured__inspect'],1),
+    ['configured_tool','mcp__configured__inspect',...HARNESS]);
 });
