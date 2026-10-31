@@ -70,7 +70,8 @@ function nextDeadlineMs(detail: BudgetDeadlineSnapshot): number {
   const activeRemaining = detail.running
     ? detail.profile.activeTimeMs.hard - detail.activeTimeMs
     : Number.POSITIVE_INFINITY;
-  return Math.max(1, Math.min(lifetimeRemaining, activeRemaining));
+  // Node timers use a signed 32-bit delay; recheck long leases in bounded chunks.
+  return Math.max(1, Math.min(2_147_483_647, lifetimeRemaining, activeRemaining));
 }
 
 function watchBudgetDeadline(
