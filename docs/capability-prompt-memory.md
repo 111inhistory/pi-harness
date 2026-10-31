@@ -24,8 +24,12 @@ to the session branch:
 ## Contents
 
 - Tools and MCP groups: refs, names, descriptions, exposure, shared instructions,
-  and selected group members. Native declarations or selected result metadata
-  provide argument schemas; branch records do not duplicate schemas.
+  and selected group members. Native declarations, Codemode interface queries,
+  or fallback result metadata provide argument schemas; branch records do not
+  duplicate schemas.
+- Shared instructions are injected by this section. Capability tool-result text
+  omits them, including fallback results, so the same guidance is not copied into
+  both the tool result and its anchored memory section.
 - Skills: absolute entry paths, names, and descriptions. The host does not infer
   constraints or associations from Skill prose. A Skill ref is its entry path;
   the model uses native file read to understand the guidance.
@@ -48,8 +52,11 @@ listing, and default `<mcp_servers>` injection.
 
 Codemode remains available for execution and composition. Its sandbox does not
 register `searchTools`. `ALL_TOOLS`, `describeTool`, and `describeNamespace` see
-only currently enabled, permitted tools. Nested calls still pass through Pi's
-tool pipeline. Generic MCP resource reads also require a currently enabled,
+only currently enabled, permitted tools. `ALL_TOOLS` carries short descriptions;
+`describeTool` returns the full interface when requested. A sandbox keeps the tool
+snapshot captured at its start, so newly activated tools require a new Codemode
+call. Catalog queries do not wait for MCP backends. Actual nested calls still pass
+through Pi's tool pipeline. Generic MCP resource reads also require a currently enabled,
 permitted member of the selected server namespace.
 
 Old native Codemode declarations can embed a catalog in their description. The
@@ -84,7 +91,7 @@ compaction itself.
 
 ## Regression coverage
 
-- `test/capability-prompt.test.mjs`: checks immediate availability, request
+- `test/typed/capability-prompt.test.ts`: checks immediate availability, request
   immutability, idempotence, deduplication, shared guidance updates, native and
   repeated compaction, raw-entry restoration, branch isolation, and Responses
   prefix preservation.
@@ -96,4 +103,9 @@ compaction itself.
   selected MCP execution, scoped Codemode helpers, resource-read permissions,
   and late server registration in both extension load orders.
 - `test/typed/capability-codemode-boundary.test.ts`: checks historical catalog
-  removal without user-text mutation, and worker admission after cancellation.
+  removal without user-text mutation, slim catalogs, full explicit interface
+  queries, sandbox snapshots, and worker admission after cancellation.
+- `test/typed/capability-feedback-sdk.test.ts`: checks complete, compact feedback
+  in real SDK model requests and full namespace selection after ref-only repeats.
+- `test/typed/capability-allowlist-mask.test.ts`: reproduces the unresolved SDK
+  allowlist case where activation fails after the selection record was written.
