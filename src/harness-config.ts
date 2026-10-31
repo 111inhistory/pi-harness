@@ -121,34 +121,60 @@ function requireNewBudget(value: unknown, source: string, field: string): void {
   }
 }
 
+/** Last layer index that wrote each field path, so later relations blame the right file. */
+type FieldOrigins = Map<string, number>;
+
 /** The default shape is also the field schema; special nodes are explicit. */
-function mergeNode(base: object, value: unknown, source: string, field: string): Record<string, unknown> {
+function mergeNode(base: object, value: unknown, source: string, field: string, origins: FieldOrigins, layer: number): Record<string, unknown> {
   const patch = object(value, source, field);
   const merged: Record<string, unknown> = { ...base };
   for (const [key, item] of Object.entries(patch)) {
     const child = field === '' ? key : `${field}.${key}`;
     if (field === 'subagent.budgetsByDepth') {
-      if (!/^[1-9][0-9]*$/.test(key) || !Number.isSafeInteger(Number(key))) {
-        throw new HarnessConfigError(source, child, 'must name a positive integer depth.');
-      }
+      const depth = /^[1-9][0-9]*$/.test(key) ? Number(key) : Number.NaN;
+      if (!Number.isSafeInteger(depth)) throw new HarnessConfigError(source, child, 'must name a positive integer depth.');
       const previous = merged[key];
       if (previous === undefined) requireNewBudget(item, source, child);
-      merged[key] = mergeNode(previous === undefined ? DEFAULT_HARNESS_CONFIG.subagent.budgetsByDepth[1]! : object(previous, source, child), item, source, child);
-      continue;
+      const profile = previous === undefined ? DEFAULT_HARNESS_CONFIG.subagent.budgetsByDepth[1]! : object(previous, source, child);
+      merged[key] = mergeNode(profile, item, source, child, origins, layer);
+    } else if (!Object.hasOwn(merged, key)) {
+      throw new HarnessConfigError(source, child, 'is unknown.');
+    } else {
+      const previous = merged[key];
+      if (field === 'subagent.prompts') merged[key] = promptPatch(previous as string, item, source, child);
+      else if (typeof previous === 'number') merged[key] = numberValue(item, source, child);
+      else merged[key] = mergeNode(previous as object, item, source, child, origins, layer);
     }
-    if (!Object.hasOwn(merged, key)) throw new HarnessConfigError(source, child, 'is unknown.');
-    const previous = merged[key];
-    if (field === 'subagent.prompts') merged[key] = promptPatch(previous as string, item, source, child);
-    else if (typeof previous === 'number') merged[key] = numberValue(item, source, child);
-    else merged[key] = mergeNode(previous as object, item, source, child);
+    origins.set(child, layer);
   }
   return merged;
 }
 
-function validateRelations(config: HarnessConfig, source: string): void {
+/**
+ * Layers compose before they are judged: a global value may be completed by a
+ * trusted project value. Relations are therefore checked once on the final
+ * snapshot, and each violation is attributed to the last layer that touched
+ * either side of the relation.
+ */
+function validateRelations(config: HarnessConfig, origins: FieldOrigins, sources: readonly string[]): void {
+  const layerOf = (field: string): number => {
+    for (let current = field; ;) {
+      const found = origins.get(current);
+      if (found !== undefined) return found;
+      const dot = current.lastIndexOf('.');
+      if (dot < 0) return -1;
+      current = current.slice(0, dot);
+    }
+  };
+  const fail = (fields: readonly string[], field: string, reason: string): never => {
+    const layer = Math.max(...fields.map(layerOf));
+    throw new HarnessConfigError(layer < 0 ? sources.at(-1) ?? '' : sources[layer]!, field, reason);
+  };
   const budget = (profile: BudgetProfile, field: string): void => {
     for (const key of ['modelCalls', 'activeTimeMs'] as const) {
-      if (profile[key].soft > profile[key].hard) throw new HarnessConfigError(source, `${field}.${key}.hard`, 'must be at least soft.');
+      if (profile[key].soft > profile[key].hard) {
+        fail([`${field}.${key}.hard`, `${field}.${key}.soft`], `${field}.${key}.hard`, 'must be at least soft.');
+      }
     }
   };
   budget(config.capability.budget, 'capability.budget');
@@ -156,10 +182,14 @@ function validateRelations(config: HarnessConfig, source: string): void {
     budget(profile, `subagent.budgetsByDepth.${depth}`);
   }
   for (let depth = 1; depth <= config.subagent.maxDepth; depth++) {
-    if (!config.subagent.budgetsByDepth[depth]) throw new HarnessConfigError(source, `subagent.budgetsByDepth.${depth}`, 'is required by maxDepth.');
+    if (!config.subagent.budgetsByDepth[depth]) {
+      fail(['subagent.maxDepth'], `subagent.budgetsByDepth.${depth}`, 'is required by subagent.maxDepth.');
+    }
   }
   const retry = config.subagent.routingRetry;
-  if (retry.maxDelayMs < retry.baseDelayMs) throw new HarnessConfigError(source, 'subagent.routingRetry.maxDelayMs', 'must be at least baseDelayMs.');
+  if (retry.maxDelayMs < retry.baseDelayMs) {
+    fail(['subagent.routingRetry.maxDelayMs', 'subagent.routingRetry.baseDelayMs'], 'subagent.routingRetry.maxDelayMs', 'must be at least baseDelayMs.');
+  }
 }
 
 export interface HarnessConfigLayer { readonly value: unknown; readonly source: string }
@@ -167,10 +197,11 @@ export interface HarnessConfigLayer { readonly value: unknown; readonly source: 
 /** Apply text patches in layer order, rather than merging patch objects. */
 export function resolveHarnessConfig(layers: readonly HarnessConfigLayer[] = []): HarnessConfig {
   let config = DEFAULT_HARNESS_CONFIG;
-  for (const layer of layers) {
-    config = mergeNode(config, layer.value, layer.source, '') as unknown as HarnessConfig;
-    validateRelations(config, layer.source);
+  const origins: FieldOrigins = new Map();
+  for (const [index, layer] of layers.entries()) {
+    config = mergeNode(config, layer.value, layer.source, '', origins, index) as unknown as HarnessConfig;
   }
+  validateRelations(config, origins, layers.map((layer) => layer.source));
   return config;
 }
 
