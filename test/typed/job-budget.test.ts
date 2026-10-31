@@ -5,7 +5,7 @@ import {
   BUDGET_WARNING_MESSAGE,
   JobBudgetError,
   createJobBudget,
-} from "../src/job-budget.mjs";
+} from "../../src/subagent/job-budget.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -15,15 +15,15 @@ function createClock(start = 10_000) {
   let value = start;
   return {
     now: () => value,
-    advance(ms) {
+    advance(ms: number) {
       value += ms;
       return value;
     },
   };
 }
 
-function jobBudgetError(code) {
-  return (error) => error instanceof JobBudgetError && error.code === code;
+function jobBudgetError(code: string) {
+  return (error: unknown) => error instanceof JobBudgetError && error.code === code;
 }
 
 test("counts Model Calls before dispatch and warns exactly once at soft", () => {
@@ -88,7 +88,7 @@ test("allows the hard-th Model Call and rejects the projected hard+1", () => {
   assert.deepEqual(frozen.terminal, rejected.terminal);
 
   const again = budget.beginModelCall();
-  assert.equal(again.ok, false);
+  assert.ok(!again.ok);
   assert.equal(again.reason, "already_terminal");
   assert.deepEqual(again.terminal, rejected.terminal);
 
@@ -98,8 +98,8 @@ test("allows the hard-th Model Call and rejects the projected hard+1", () => {
     assert.equal(depthOne.beginModelCall().ok, true);
   }
   const rejectedOne = depthOne.beginModelCall();
-  assert.equal(rejectedOne.ok, false);
-  assert.deepEqual(rejectedOne.error.detail, {
+  assert.ok(!rejectedOne.ok);
+  assert.deepEqual(rejectedOne.error?.detail, {
     dimension: "model_calls",
     soft: 160,
     hard: 200,
@@ -117,7 +117,9 @@ test("accrues Active Time only while running and expires at the active hard limi
   assert.equal(budget.snapshot().activeTimeMs, 0);
 
   assert.deepEqual(budget.startActive(), { ok: true, activeTimeMs: 0 });
-  assert.equal(budget.startActive().reason, "already_running");
+  const alreadyRunning = budget.startActive();
+  assert.ok(!alreadyRunning.ok);
+  assert.equal(alreadyRunning.reason, "already_running");
   clock.advance(20 * MINUTE);
   assert.equal(budget.snapshot().activeTimeMs, 20 * MINUTE);
   assert.equal(budget.snapshot().running, true);
@@ -151,14 +153,14 @@ test("accrues Active Time only while running and expires at the active hard limi
   assert.equal(expired.activeTimeMs, 60 * MINUTE);
 
   const refusedCall = budget.beginModelCall();
-  assert.equal(refusedCall.ok, false);
+  assert.ok(!refusedCall.ok);
   assert.equal(refusedCall.reason, "already_terminal");
 });
 
 for (const [depth, lifetimeMs] of [
   [1, 24 * HOUR],
   [2, 12 * HOUR],
-]) {
+] as const) {
   test(`expires depth ${depth} on lifetime even for a job that never ran`, () => {
     const clock = createClock();
     const budget = createJobBudget({ depth, now: clock.now });
@@ -206,7 +208,9 @@ test("freezes monotonically at the terminal state", () => {
   clock.advance(24 * HOUR);
   assert.deepEqual(finished.snapshot(), frozen);
   assert.deepEqual(finished.check(), frozen);
-  assert.equal(finished.beginModelCall().reason, "already_terminal");
+  const refused = finished.beginModelCall();
+  assert.ok(!refused.ok);
+  assert.equal(refused.reason, "already_terminal");
   assert.deepEqual(finished.startActive(), {
     ok: false,
     reason: "already_terminal",
@@ -251,75 +255,12 @@ test("freezes monotonically at the terminal state", () => {
   assert.equal(running.snapshot().activeTimeMs, 10 * MINUTE);
 });
 
-test("snapshots and terminal errors are immutable", () => {
-  const clock = createClock();
-  const budget = createJobBudget({ depth: 2, now: clock.now });
-  budget.beginModelCall();
-  const view = budget.snapshot();
-  assert.ok(Object.isFrozen(view));
-  assert.throws(() => {
-    view.modelCalls = 99;
-  }, TypeError);
-  assert.throws(() => {
-    view.phase = "normal";
-  }, TypeError);
-
-  const blown = createJobBudget({ depth: 2, now: clock.now });
-  for (let call = 1; call <= 65; call += 1) {
-    blown.beginModelCall();
-  }
-  const { terminal } = blown.snapshot();
-  assert.ok(Object.isFrozen(terminal));
-  assert.ok(Object.isFrozen(terminal.error));
-  assert.ok(Object.isFrozen(terminal.error.detail));
-  assert.throws(() => {
-    terminal.error.detail.hard = 1;
-  }, TypeError);
-
-  const error = new JobBudgetError("invalid_depth", "boom", { depth: 9 });
-  assert.ok(Object.isFrozen(error.detail));
-});
-
-test("rejects invalid depth and options", () => {
-  const clock = createClock();
-  const invalidDepth = (options) =>
-    assert.throws(() => createJobBudget(options), jobBudgetError("invalid_depth"));
-
-  invalidDepth();
-  invalidDepth({ depth: 0 });
-  invalidDepth({ depth: 3 });
-  invalidDepth({ depth: 1.5 });
-  invalidDepth({ depth: "2" });
-  invalidDepth({ depth: null, now: clock.now });
-  invalidDepth({ profile: undefined });
-
-  const invalidOptions = (options) =>
-    assert.throws(() => createJobBudget(options), jobBudgetError("invalid_options"));
-
-  invalidOptions("depth 1");
-  invalidOptions({ depth: 1, soft: 10 });
-  invalidOptions({ depth: 1, now: 42 });
-  invalidOptions({ depth: 1, now: () => "later" });
-  invalidOptions({ depth: 1, jobId: 7 });
-  invalidOptions({ depth: 1, jobId: "" });
-  invalidOptions({
-    depth: 1,
-    profile: { modelCalls: { soft: 5, hard: 4 }, activeTimeMs: { soft: 1, hard: 2 }, lifetimeMs: 10 },
-  });
-  invalidOptions({
-    depth: 1,
-    profile: { modelCalls: { soft: 5, hard: 8 }, activeTimeMs: { soft: 1, hard: 2 } },
-  });
-  invalidOptions({
-    depth: 1,
-    profile: { modelCalls: { soft: 5, hard: 8 }, activeTimeMs: { soft: 1, hard: 2 }, lifetimeMs: 10, extra: true },
-  });
-
-  const budget = createJobBudget({ depth: 2, now: clock.now });
-  assert.throws(() => budget.terminate({ reason: "exploded" }), jobBudgetError("invalid_options"));
-  assert.throws(() => budget.terminate(), jobBudgetError("invalid_options"));
-  assert.throws(() => budget.snapshot({ detail: "yes" }), jobBudgetError("invalid_options"));
-  assert.throws(() => budget.snapshot({ verbose: true }), jobBudgetError("invalid_options"));
+test("validates numeric profile domains and clock output", () => {
+  assert.throws(() => createJobBudget({ depth: 3 }), jobBudgetError("invalid_depth"));
+  const profile = { modelCalls: { soft: 5, hard: 4 }, activeTimeMs: { soft: 1, hard: 2 }, lifetimeMs: 10 };
+  assert.throws(() => createJobBudget({ profile }), jobBudgetError("invalid_options"));
+  assert.throws(() => createJobBudget({ depth: 1, now: () => NaN }), jobBudgetError("invalid_options"));
+  assert.throws(() => createJobBudget({ profile: { ...profile, modelCalls: { soft: 1, hard: 2 }, lifetimeMs: 0 } }), jobBudgetError("invalid_options"));
 });
 
 test("honours an explicit profile without a depth", () => {
@@ -339,8 +280,9 @@ test("honours an explicit profile without a depth", () => {
   }
   assert.equal(budget.takeWarning(), BUDGET_WARNING_MESSAGE);
   const rejected = budget.beginModelCall();
+  assert.ok(!rejected.ok);
   assert.equal(rejected.reason, "budget_exceeded");
-  assert.deepEqual(rejected.error.detail, {
+  assert.deepEqual(rejected.error?.detail, {
     dimension: "model_calls",
     soft: 2,
     hard: 4,

@@ -1,6 +1,6 @@
 /** Internal Capability session: batch search, cumulative selection and bounded progress. */
 import type { AgentToolResult, ToolDefinition } from '@earendil-works/pi-coding-agent';
-import { createJobBudget } from '../job-budget.mjs';
+import { createJobBudget } from '../subagent/job-budget.ts';
 import { promptString, promptText } from '../prompt-text.mjs';
 import { watchCapabilityBudget } from '../subagent/budget-watch.ts';
 import type { BudgetTerminalView } from '../subagent/budget-watch.ts';
