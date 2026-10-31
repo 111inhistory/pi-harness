@@ -181,6 +181,9 @@ export interface RuntimeOptions {
 export interface CreatedAgentItem {
   id: string;
   socket: string;
+  /** The host attaches the settled identity after local readiness. */
+  role?: string | null;
+  model?: string | null;
   warnings?: string[];
 }
 
@@ -893,8 +896,6 @@ export class SubagentRuntime {
   ): Job {
     const { index = null, spec, origin = null, createdBy, continuedFromJobId = null } = input;
     const jobId = continuedFromJobId === null ? agent.agentId : this.#allocateJobId(agent);
-    // `job-budget.mjs` is still an untyped dependency; this boundary assertion
-    // is the single place where its real API is bound to the closed domain port.
     const budget = createJobBudget({ depth: agent.depth, jobId });
     const job: Job = {
       jobId,

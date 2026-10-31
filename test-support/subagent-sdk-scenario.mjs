@@ -14,7 +14,7 @@ import capabilityExtension from "../extensions/capability.ts";
 import { deriveSessionUid, getAgentSocketPath, getBroadcastSocketPath } from "../src/ipc/socket.ts";
 import { resolveTranscriptTools } from "../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js";
 import { convertResponsesMessages } from "../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
-import { deferred, waitFor } from "./async.mjs";
+import { deferred, waitFor } from "./async.ts";
 import { treeNodes } from "../test/typed/support/agent-tree.ts";
 import { capabilityGuiText } from "../test/typed/support/capability-gui.ts";
 import {

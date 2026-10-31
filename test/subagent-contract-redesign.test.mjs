@@ -4,7 +4,7 @@ import test from "node:test";
 import { createSubagentRuntime, SubagentError } from "../src/subagent/runtime.ts";
 import { foldEvents } from "../src/subagent/storage.ts";
 import { deriveSessionUid } from "../src/ipc/socket.ts";
-import { deferred } from "../test-support/async.mjs";
+import { deferred } from "../test-support/async.ts";
 import { treeNodes } from "./typed/support/agent-tree.ts";
 
 function harness(t, options = {}) {

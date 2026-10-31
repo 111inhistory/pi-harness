@@ -18,7 +18,7 @@ import { CAPABILITY_STEP_TOOL_NAME } from '../../src/capability/contracts.ts';
 import type { CapabilityStepDetails } from '../../src/capability/agent.ts';
 import { installCapabilityMcp } from '../../src/capability/native-discovery.ts';
 import { setCapabilityParent } from '../../src/capability/scope.ts';
-import { waitFor } from '../../test-support/async.mjs';
+import { waitFor } from '../../test-support/async.ts';
 
 for (const nativeFirst of [false, true]) {
   test(`selected ${nativeFirst ? 'codemode' : 'deferred'} MCP tools remain directly callable in only mode (${nativeFirst ? 'native-first' : 'harness-first'})`, async () => {

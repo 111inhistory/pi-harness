@@ -13,7 +13,7 @@ import {
   isWindowsPipe,
   writeSocket,
 } from "../src/ipc/socket.ts";
-import { deferred } from "../test-support/async.mjs";
+import { deferred } from "../test-support/async.ts";
 
 async function sockets(t) {
   const root = await fsp.mkdtemp(path.join(tmpdir(), "pi-sock-"));

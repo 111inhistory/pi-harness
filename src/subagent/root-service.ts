@@ -41,10 +41,6 @@ interface RootServiceOptions {
 type RootPhase = 'initializing' | 'open' | 'quiescing' | 'detached' | 'failed';
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const errorOf = (error: unknown): Error => error instanceof Error ? error : new Error(String(error));
-const transcriptObjects = (values: readonly unknown[]): object[] => values.map((value) => {
-  if (!record(value)) throw new SubagentError('history_write_failed', 'A native transcript message is not an object.');
-  return value;
-});
 const resultText = (value: unknown): string | null => {
   if (value === null || value === undefined) return null;
   if (typeof value !== 'string') throw new SubagentError('history_write_failed', 'The native task result is not text.');
@@ -81,7 +77,7 @@ export class RootService implements ManagedWriteHost {
   readonly runner: NativeJobRunner;
   readonly listeners: AgentListeners;
   readonly #delivery: NativeDeliveryRouter;
-  readonly #store: ReturnType<typeof createSubagentStore>;
+  readonly #store: ReturnType<typeof createSubagentStore<SessionManager>>;
   readonly #historyDir: string;
   #temporaryResults: string | null = null;
   readonly #pendingEvents: RuntimeEvent[] = [];
@@ -114,12 +110,7 @@ export class RootService implements ManagedWriteHost {
     this.actors = new ActorSessionStore({
       storage: {
         durable: this.#store.durable,
-        openForAppend: (agentId, file, anchor, actorCwd) => {
-          const opened = this.#store.openForAppend(agentId, file, anchor, actorCwd);
-          // This manager is created by our injected SessionManager.open above.
-          if (!(opened.manager instanceof SessionManager)) throw new SubagentError('storage_corrupt', 'Storage returned a non-native session manager.');
-          return { ...opened, manager: opened.manager };
-        },
+        openForAppend: (agentId, file, anchor, actorCwd) => this.#store.openForAppend(agentId, file, anchor, actorCwd),
         readSlice: (...args) => this.#store.readSlice(...args),
         hasRecordedTurn: (...args) => this.#store.hasRecordedTurn(...args),
         interruptedEnd: (...args) => this.#store.interruptedEnd(...args),
@@ -211,15 +202,10 @@ export class RootService implements ManagedWriteHost {
   async initialize(): Promise<void> {
     try {
       if (process.platform !== 'win32') ensurePrivateSocketRoot(this.#socketRoot);
-      const state: unknown = this.#store.load();
-      if (!record(state) || !Array.isArray(state.actors) || !Array.isArray(state.jobs)) throw new SubagentError('storage_corrupt', 'The registry has no Actor or Job lists.');
+      const state = this.#store.load();
       for (const id of this.#store.takenIds()) this.#options.allocatedIds.add(id);
-      const jobs = state.jobs.map((value: unknown) => {
-        if (!record(value)) throw new SubagentError('storage_corrupt', 'A stored Job is not an object.');
-        return value;
-      });
+      const jobs = state.jobs;
       for (const actor of state.actors) {
-        if (!record(actor) || typeof actor.agentId !== 'string') throw new SubagentError('storage_corrupt', 'A stored Actor has no ID.');
         if (actor.record == null) continue;
         const first = jobs.find((job) => job.agentId === actor.agentId && job.continuedFromJobId === null);
         const seed = first && record(first.spec) && record(first.spec.inheritedContext) ? first.spec.inheritedContext : null;
@@ -227,7 +213,6 @@ export class RootService implements ManagedWriteHost {
       }
       const restoredJobs = jobs.map((job) => {
         if (job.end != null) return job;
-        if (typeof job.agentId !== 'string') throw new SubagentError('storage_corrupt', 'A Job has no Actor ID.');
         const seed = record(job.spec) && record(job.spec.inheritedContext) ? job.spec.inheritedContext : null;
         const start = job.started === true ? job.startEntryId : seed?.seedLeafId ?? null;
         if (start !== null && typeof start !== 'string') throw new SubagentError('storage_corrupt', 'A Job has malformed native start bounds.');
@@ -237,7 +222,6 @@ export class RootService implements ManagedWriteHost {
       });
       this.runtime.restoreState({ ...state, jobs: restoredJobs });
       const initial = jobs.filter((job) => job.continuedFromJobId === null).map((job) => {
-        if (typeof job.agentId !== 'string') throw new SubagentError('storage_corrupt', 'A Job has no Actor ID.');
         const start = job.startEntryId ?? null;
         if (start !== null && typeof start !== 'string') throw new SubagentError('storage_corrupt', 'A Job has malformed native start bounds.');
         return { agentId: job.agentId, startEntryId: start };
@@ -330,7 +314,6 @@ export class RootService implements ManagedWriteHost {
 
   stop(target: unknown) { this.assertOperational(); return this.runtime.stop(target); }
   resolveEndpoint(address: string) { this.assertOperational(); return this.listeners.resolve(address); }
-  isReservedPath(address: string) { return this.listeners.isReservedPath(address); }
   sendMessage(command: Parameters<SubagentRuntime['sendMessage']>[0]) {
     this.assertOperational();
     return this.runtime.sendMessage(command);
@@ -387,7 +370,7 @@ export class RootService implements ManagedWriteHost {
       const record = this.runtime.jobRecord(job.jobId);
       if (record === null) throw new SubagentError('invalid_state', 'The finalizing Job has no history record.');
       writeJobView(this.#historyDir, { ...record, ...job, ...outcome,
-        result: resultText(outcome.result), transcript: transcriptObjects(outcome.transcript ?? []),
+        result: resultText(outcome.result), transcript: outcome.transcript ?? [],
         roleId: descriptor?.roleId ?? null, model: descriptor?.modelRef?.id ?? null });
     } finally { this.actors.seal(job.agentId, outcome.history?.endEntryId ?? null); }
     // Runtime emits the ONE terminal event, including historyState/Error,
@@ -449,14 +432,8 @@ export class RootService implements ManagedWriteHost {
     return proxy;
   }
 
-  async #route(input: Parameters<NativeRoutingPort['route']>[0]): Promise<NativeRouteResult> {
-    const value: unknown = await routeSubagent({ ...input, registry: this.#registry, configPath: path.join(this.#options.agentDir, 'subagent-routing.json') });
-    if (!record(value) || typeof value.roleId !== 'string' || typeof value.instructions !== 'string' || typeof value.thinkingLevel !== 'string' ||
-        !Array.isArray(value.excludeTools) || !value.excludeTools.every((name: unknown): name is string => typeof name === 'string') ||
-        !Array.isArray(value.enableTools) || !value.enableTools.every((name: unknown): name is string => typeof name === 'string')) throw new SubagentError('routing_unavailable', 'Routing returned a malformed identity.');
-    const model = capturedModel(value.model, this.#registry);
-    if (model === null) throw new SubagentError('model_unavailable', 'Routing returned no usable model.');
-    return { roleId: value.roleId, instructions: value.instructions, model, thinkingLevel: value.thinkingLevel, excludeTools: value.excludeTools, enableTools: value.enableTools };
+  #route(input: Parameters<NativeRoutingPort['route']>[0]): Promise<NativeRouteResult> {
+    return routeSubagent({ ...input, registry: this.#registry, configPath: path.join(this.#options.agentDir, 'subagent-routing.json') });
   }
   #report(error: Error): void {
     try { this.#options.context.ui?.notify(error.message, 'error'); } catch { /* error remains on the owning operation */ }

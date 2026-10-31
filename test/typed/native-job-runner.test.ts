@@ -1109,6 +1109,22 @@ test("a provider error fails the Job instead of reporting an earlier answer", as
   assert.equal(outcome.history?.startEntryId, null);
 });
 
+test('cancellation during initial message append rejects readiness', async t => {
+  const h = harness({ route: routedIdentity() });
+  const send = FakeSession.prototype.sendCustomMessage;
+  let running: ReturnType<NativeJobRunner['start']>;
+  t.mock.method(FakeSession.prototype, 'sendCustomMessage', async function(this: FakeSession, ...args: Parameters<FakeSession['sendCustomMessage']>) {
+    await send.apply(this, args);
+    running.cancel();
+  });
+  running = h.runner.start(jobRequest(freshSpec(), {
+    pendingMessages: [{ type: 'message', from: 'Main', content: 'STARTUP_INPUT' }],
+  }));
+  await assert.rejects(running.ready, /startup was cancelled/);
+  await running.done;
+  assert.equal(h.factory.sessions[0]?.prompts.length, 0);
+});
+
 test("cancelling aborts the owned session, refuses late input and disposes once", async () => {
   const gate = deferred<null | string>();
   const h = harness({ route: routedIdentity(), promptHandler: async () => gate.promise });

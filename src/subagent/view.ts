@@ -27,7 +27,7 @@ export interface JobView {
   readonly result: string | null;
   readonly budget: { readonly modelCalls?: number; readonly activeTimeMs?: number } | null;
   readonly previousJobId: string | null;
-  readonly transcript: readonly object[];
+  readonly transcript: readonly unknown[];
 }
 export interface TranscriptMessage { role: string; [field: string]: unknown }
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);

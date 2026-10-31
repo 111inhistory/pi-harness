@@ -5,7 +5,7 @@ import type { AgentTool } from '@earendil-works/pi-agent-core';
 import type { Message } from '@earendil-works/pi-ai';
 import { installCapabilityCodemode } from '../../src/capability/codemode.ts';
 import { installNativeDiscoveryBoundary } from '../../src/capability/native-discovery.ts';
-import { waitFor } from '../../test-support/async.mjs';
+import { waitFor } from '../../test-support/async.ts';
 
 function registrationFixture(mode: 'on' | 'only' = 'on') {
   const definitions = new Map<string, ToolDefinition>();
