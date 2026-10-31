@@ -244,6 +244,7 @@ export class NativeJobRunner {
     const origin = readOrigin(request.origin);
     let sessionManager: SessionManager | null = null;
     let boundary: string | null = null;
+    let boundaryEstablished = false;
     let execution: NativeExecution | null = null;
     let unsubscribe: (() => void) | null = null;
     let unsubscribeBudget: (() => void) | null = null;
@@ -358,6 +359,7 @@ export class NativeJobRunner {
       const manager = sessionManager;
       deps.actors.restoreLeaf({ manager, agentId: request.agentId, retained, seed: snapshot });
       boundary = manager.getLeafId();
+      boundaryEstablished = true;
       request.recordStart(boundary);
       const sessionFile = deps.actors.durable ? manager.getSessionFile() ?? null : null;
       const allowInherited = retained === null ? fresh?.inheritContext !== true : retained.allowInherited;
@@ -570,8 +572,9 @@ export class NativeJobRunner {
     })().catch((error: unknown): NativeJobOutcome => ({
       status: "failed",
       error,
-      history: sessionManager === null ? null : { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
-      transcript: sessionManager === null ? [] : readTranscript(entriesAfter(sessionManager, boundary)),
+      result: sessionManager === null || !boundaryEstablished ? '' : readFinalText(messagesAfter(sessionManager, boundary)),
+      history: sessionManager === null || !boundaryEstablished ? null : { startEntryId: boundary, endEntryId: sessionManager.getLeafId() },
+      transcript: sessionManager === null || !boundaryEstablished ? [] : readTranscript(entriesAfter(sessionManager, boundary)),
     })).finally(async (): Promise<void> => {
       live.closed = true;
       this.#jobs.delete(request.jobId);
@@ -772,7 +775,7 @@ function readFinalText(messages: readonly unknown[]): string {
     const message = messages[index];
     if (!isRecord(message) || message["role"] !== "assistant") continue;
     const text = textOf(message["content"]);
-    if (text !== "") return text;
+    return message["stopReason"] === "toolUse" ? "" : text;
   }
   return "";
 }

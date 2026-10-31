@@ -1,7 +1,7 @@
 /**
  * Readable per-Job views of subagent work.
  *
- * A view is derived data: `summary.md` and `transcript.jsonl` of one Job,
+ * A view is derived data: summary, transcript and raw result of one Job,
  * written once when the Job ends and rebuilt from native storage whenever it is
  * missing. Nothing reads a view back to restore state. A Job's history bounds
  * are sealed when it ends, so its view never changes and is independent of
@@ -15,12 +15,12 @@ import { writeFileAtomic, writeJsonlAtomic } from "./subagent-storage.mjs";
 
 export function jobViewPaths(viewsDir, jobId) {
   const dir = join(viewsDir, jobId);
-  return { summary: join(dir, "summary.md"), transcript: join(dir, "transcript.jsonl") };
+  return { summary: join(dir, "summary.md"), transcript: join(dir, "transcript.jsonl"), result: join(dir, "result.txt") };
 }
 
 export function hasJobView(viewsDir, jobId) {
   const paths = jobViewPaths(viewsDir, jobId);
-  return existsSync(paths.summary) && existsSync(paths.transcript);
+  return existsSync(paths.summary) && existsSync(paths.transcript) && existsSync(paths.result);
 }
 
 /**
@@ -35,6 +35,7 @@ export function hasJobView(viewsDir, jobId) {
  */
 export function writeJobView(viewsDir, view) {
   const paths = jobViewPaths(viewsDir, view.jobId);
+  writeFileAtomic(paths.result, view.result ?? "");
   writeJsonlAtomic(paths.transcript, view.transcript);
   writeFileAtomic(paths.summary, renderSummary(viewsDir, view));
   return paths;

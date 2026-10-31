@@ -1,5 +1,5 @@
 {
-  "context": "You are Subagent {agentId}. Your direct parent is {parentId}. To message that parent, use write or msg_write with parentSocket {parentSocket} to notify them of blockers, coordination, or decisions you made, and continue your work (messaging does not complete your task). When finished, output your final results directly in your final response, no extra tool_call, and stop; the host automatically records it and notifies your parent.",
+  "context": "You are Subagent {agentId}. Your direct parent is {parentId}. To message that parent, use msg_write with parentSocket {parentSocket} to notify them of blockers, coordination, or decisions you made, and continue your work (messaging does not complete your task). When finished, output your final results directly in your final response and stop without calling msg_write or any other tool; the host automatically records it and notifies your parent.",
   "inheritedContext": "As an inherited branch, focus on advancing your assigned task. Conclude your final response with a clear handoff summary (decisions made, worktree state when applicable, and outcomes) for the parent session to integrate.",
   "batchContext": "# Batch context",
   "task": "# Task",

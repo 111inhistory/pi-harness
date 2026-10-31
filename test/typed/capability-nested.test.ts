@@ -16,7 +16,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 
-import capabilityExtension from "../../extensions/capability.mjs";
+import capabilityExtension from "../../extensions/capability.ts";
+import { CAPABILITY_STEP_TOOL_NAME } from "../../src/capability/contracts.ts";
 import { CAPABILITY_DISCOVERY_RECORD } from "../../src/capability/discovery-record.ts";
 import { CAPABILITY_SECTION } from "../../src/capability/prompt.ts";
 
@@ -140,7 +141,7 @@ async function runNestedCapability({ failRecordWrite = false } = {}): Promise<Sc
       const declared = (context.messages as { toolsAdded?: { name: string }[] }[])
         .flatMap((message) => message.toolsAdded ?? [])
         .map((tool) => tool.name);
-      const isInternal = declared.includes("capability_search");
+      const isInternal = declared.includes(CAPABILITY_STEP_TOOL_NAME);
       const stream = new AssistantMessageEventStream();
       let message: AssistantMessage;
       if (isInternal) {
@@ -148,11 +149,26 @@ async function runNestedCapability({ failRecordWrite = false } = {}): Promise<Sc
         const step = childRequests.length;
         toolCallIds.child += 1;
         const id = `child-${toolCallIds.child}`;
-        if (step === 1) message = assistantMessage(model, toolCall(id, "capability_search", { query: "fixture_slides", src: "remote" }), "toolUse");
-        else if (step === 2) message = assistantMessage(model, toolCall(id, "capability_search", { query: "fixture_slides", src: "all" }), "toolUse");
-        else if (step === 3) message = assistantMessage(model, toolCall(id, "capability_search", { query: "fixture_slides", src: "local" }), "toolUse");
-        else if (step === 4) message = assistantMessage(model, toolCall(id, "submit_result", { refs: ["tool://fixture_slides"] }), "toolUse");
-        else message = assistantMessage(model, [{ type: "text", text: "done" }], "stop");
+        if (step === 1) {
+          message = assistantMessage(
+            model,
+            toolCall(id, CAPABILITY_STEP_TOOL_NAME, {
+              queries: ["fixture_slides"],
+            }),
+            "toolUse",
+          );
+        } else if (step === 2) {
+          message = assistantMessage(
+            model,
+            toolCall(id, CAPABILITY_STEP_TOOL_NAME, {
+              refs: ["tool://fixture_slides"],
+              finish: true,
+            }),
+            "toolUse",
+          );
+        } else {
+          message = assistantMessage(model, [{ type: "text", text: "done" }], "stop");
+        }
       } else {
         parentRequests.push(structuredClone({ messages: context.messages as unknown as ObservedMessage[] }));
         toolCallIds.parent += 1;
@@ -258,7 +274,7 @@ test("nested Capability discovery persists branch memory without exposing remote
   const scenario = await runNestedCapability();
   assert.deepEqual(scenario.errors, []);
   assert.deepEqual(scenario.fetchCalls, [], "remote search must not touch the network");
-  assert.equal(scenario.childRequests.length, 4, "disabled remote attempts, one local search and the terminating submission");
+  assert.equal(scenario.childRequests.length, 2, "one local search batch and the terminating finish step");
 
   const records = recordsOn(scenario.branch);
   assert.equal(records.length, 1, "exactly one successful discovery is persisted");
@@ -297,8 +313,7 @@ test("nested Capability discovery persists branch memory without exposing remote
 
   // Retrieval tools are internal to the child session: they never become
   // public parent tools, and no public Subagent tool had to be registered.
-  assert.ok(!scenario.parentToolNames.includes("capability_search"));
-  assert.ok(!scenario.parentToolNames.includes("submit_result"));
+  assert.ok(!scenario.parentToolNames.includes(CAPABILITY_STEP_TOOL_NAME));
   assert.ok(!scenario.parentToolNames.includes("subagent_list"));
   assert.ok(!scenario.parentToolNames.includes("subagent_stop"));
   assert.ok(scenario.activeTools.includes("fixture_slides"), "a persisted discovery activates its selected tool");
@@ -315,7 +330,7 @@ test("a branch-record write failure fails closed before activation and leaves no
   const scenario = await runNestedCapability({ failRecordWrite: true });
   assert.deepEqual(scenario.errors, []);
   assert.deepEqual(scenario.fetchCalls, [], "remote search must not touch the network");
-  assert.equal(scenario.childRequests.length, 4, "the retrieval itself still completed");
+  assert.equal(scenario.childRequests.length, 2, "the retrieval itself still completed");
 
   assert.equal(scenario.nestedOutcome?.isError, true, "Main must not receive a successful-looking result");
   const details = scenario.nestedOutcome?.result.details as {

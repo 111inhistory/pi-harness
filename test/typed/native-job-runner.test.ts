@@ -735,12 +735,12 @@ test("a continuation restates its assignment and appends startup input as native
   assert.ok(entries[1]?.content.includes("terminal says done"));
   assert.ok(entries[1]?.content.includes("[Subagent sub_03 completed (round 1)]"));
   assert.deepEqual(entries[1]?.details, {
-    sourceId: "sub_03", round: 1, source: "host", status: "completed",
+    sourceId: "sub_03", round: 1, source: "host", status: "completed", jobId: "sub_03",
     terminal: {
       status: "completed",
       details: {
         type: "notification", from: "sub_03", subagentId: "sub_03", jobId: "sub_03",
-        round: 1, status: "completed", error: null, history: null, content: "terminal says done",
+        round: 1, status: "completed", error: null, history: null,
       },
     },
   });
@@ -1042,6 +1042,50 @@ test("an SDK steer failure is delivery_uncertain, never a safe refusal", async (
   assert.equal(outcome.status, "completed");
 });
 
+for (const finalKind of ["empty", "thinking"] as const) {
+  test(`a ${finalKind} final message does not reuse earlier same-Job text`, async () => {
+    const gate = deferred<null | string>();
+    let seen: FakeSession | null = null;
+    const h = harness({ route: routedIdentity(), promptHandler: async (text) => {
+      if (text.includes("do the task")) return gate.promise;
+      if (finalKind === "empty") return "";
+      assert.ok(seen);
+      seen.append({ ...assistant(""), content: [{ type: "thinking", thinking: "NOT_RESULT_TEXT" }] });
+      return null;
+    } });
+    const started = h.runner.start(jobRequest(freshSpec()));
+    const session = await waitForSession(h);
+    seen = session;
+    await waitFor(() => session.prompts.length === 1, "the primary prompt");
+    let handedOff = false;
+    session.onRunEnd = () => {
+      if (handedOff) return;
+      handedOff = true;
+      void h.runner.handoff("sub_01", { from: "sub_02", content: "new input" });
+    };
+    gate.resolve("INTERMEDIATE_NOT_FINAL");
+    const outcome = await started.done;
+    assert.equal(outcome.status, "completed");
+    assert.equal(outcome.result, "");
+  });
+}
+
+test("restore failure cannot expose a retained actor's prior answer", async () => {
+  const h = harness();
+  const manager = SessionManager.inMemory("/tmp/project");
+  manager.appendMessage(assistant("PRIOR_OR_INHERITED_OUTPUT"));
+  h.actors.seed("sub_01", retainedActor(manager, { roleId: null, roleInstructions: null }));
+  h.actors.restoreLeaf = () => { throw new Error("restore failed"); };
+  const outcome = await h.runner.start(jobRequest({ kind: "continuation", name: null, seed: null }, {
+    continuedFromJobId: "sub_01#r1", pendingMessages: [{ type: "message", from: "Main", content: "continue" }],
+  })).done;
+  assert.equal(outcome.status, "failed");
+  assert.equal(outcome.result, "");
+  assert.deepEqual(outcome.transcript, []);
+  assert.equal(outcome.history, null);
+  assert.equal(h.factory.requests.length, 0);
+});
+
 test("a provider error fails the Job instead of reporting an earlier answer", async () => {
   const gate = deferred<null | string>();
   const h = harness({
@@ -1069,7 +1113,7 @@ test("a provider error fails the Job instead of reporting an earlier answer", as
   assert.equal(outcome.error.code, "provider_error");
   assert.match(outcome.error.message, /provider exploded/);
   // The earlier answer of this Job is never reported as the failed run's result.
-  assert.equal(outcome.result, undefined);
+  assert.equal(outcome.result, "");
   assert.equal(outcome.history?.startEntryId, null);
 });
 

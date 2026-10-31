@@ -120,7 +120,7 @@ export function peerDeliveryEntry(input: PeerDeliveryInput): DeliveryEntry {
 function noticeDetails(notice: TerminalNotification): Record<string, unknown> {
   return { type: notice.type, from: notice.from, subagentId: notice.subagentId,
     jobId: notice.jobId, round: notice.round, status: notice.status,
-    error: notice.error, history: notice.history, content: notice.content };
+    error: notice.error, history: notice.history };
 }
 
 /**
@@ -137,7 +137,7 @@ export function deliveryEntryFor(message: RuntimeDelivery): DeliveryEntry {
       ...(message.jobId === undefined ? {} : { jobId: message.jobId }),
     });
   }
-  return { sourceId: message.subagentId, round: message.round, content: message.content,
+  return { sourceId: message.subagentId, round: message.round, jobId: message.jobId, content: message.content,
     terminal: { status: message.status, details: noticeDetails(message) } };
 }
 

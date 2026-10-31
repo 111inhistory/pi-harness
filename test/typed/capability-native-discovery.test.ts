@@ -13,7 +13,9 @@ import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-s
 import type { McpTransportFactory } from '@earendil-works/pi-coding-agent';
 type McpTransport = ReturnType<McpTransportFactory>;
 type JsonRpcMessage = Parameters<Parameters<McpTransport['onMessage']>[0]>[0];
-import capabilityExtension from '../../extensions/capability.mjs';
+import capabilityExtension from '../../extensions/capability.ts';
+import { CAPABILITY_STEP_TOOL_NAME } from '../../src/capability/contracts.ts';
+import type { CapabilityStepDetails } from '../../src/capability/agent.ts';
 import { installCapabilityMcp } from '../../src/capability/native-discovery.ts';
 import { setCapabilityParent } from '../../src/capability/scope.ts';
 import { waitFor } from '../../test-support/async.mjs';
@@ -67,20 +69,32 @@ for (const nativeFirst of [false, true]) {
       ], 'toolUse');
       runtime.streamSimple = (_model, context) => {
         const stream = new AssistantMessageEventStream();
-        const internal = getCurrentTools(context.messages).some((entry) => entry.name === 'capability_search');
+        const internal = getCurrentTools(context.messages).some((entry) => entry.name === CAPABILITY_STEP_TOOL_NAME);
         let message: AssistantMessage;
         if (internal) {
           childStep++;
-          if (childStep === 1) message = tool('capability_search', { query: 'inspect', src: 'local' });
-          else if (childStep === 2) {
-            const result = context.messages.findLast((entry) => entry.role === 'toolResult' && entry.toolName === 'capability_search');
+          if (childStep === 1) {
+            message = tool(CAPABILITY_STEP_TOOL_NAME, { queries: ['inspect'], refs: [] });
+          } else if (childStep === 2) {
+            const result = context.messages.findLast((entry) => entry.role === 'toolResult' && entry.toolName === CAPABILITY_STEP_TOOL_NAME);
             assert.ok(result && result.role === 'toolResult');
             const body = result.content.find((part) => part.type === 'text');
             assert.ok(body?.type === 'text');
-            assert.equal((JSON.parse(body.text) as { mcp: unknown[] }).mcp.length, 1);
-            message = tool('capability_search', { query: 'tool://read_mcp_resource', src: 'local' });
-          } else if (childStep === 3) message = tool('capability_search', { query: 'namespace://mcp__no_resources_fixture', src: 'local' });
-          else message = tool('submit_result', { refs: ['namespace://mcp__selected_fixture', 'tool://read_mcp_resource', 'namespace://mcp__no_resources_fixture'] });
+            const stepDetails = JSON.parse(body.text) as CapabilityStepDetails;
+            assert.equal(stepDetails.searches[0]?.mcp.length, 1);
+            message = tool(CAPABILITY_STEP_TOOL_NAME, {
+              queries: ['tool://read_mcp_resource', 'namespace://mcp__no_resources_fixture'],
+              refs: ['namespace://mcp__selected_fixture'],
+            });
+          } else if (childStep === 3) {
+            message = tool(CAPABILITY_STEP_TOOL_NAME, {
+              queries: [],
+              refs: ['tool://read_mcp_resource', 'namespace://mcp__no_resources_fixture'],
+              finish: true,
+            });
+          } else {
+            message = response([{ type: 'text', text: 'done' }], 'stop');
+          }
         } else {
           requests.push(structuredClone(context));
           rootStep++;

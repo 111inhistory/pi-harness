@@ -47,13 +47,9 @@ Capability 和 Subagent 已恢复使用，基础真实调用与续跑已验收�
 
 typed 核心、适配层和存储 v2 已接入。具体职责边界见[当前架构](architecture.md)，数据格式见[存储说明](subagent-storage.md)，未完成及未验证项见[已知问题](known-issues.md)。这些记录不代表全部边界已审计；用户查看界面和远端审批仍延期。
 
-### Shell Preflight 的已知 Bug
+### Shell Preflight 的已修复问题
 
-作者报告：Windows 下，聊天框 `!` 命令使用 Bash，而不是预期的 PowerShell（`pwsh`）。
-
-Shell Preflight 已覆盖 Agent 的 Shell 工具调用和聊天框命令入口。但覆盖入口不等于选对 Shell。
-
-本次整理只记录 Bug，不修复代码。根因和回归条件仍待验证。详见[已知问题与待定事项](known-issues.md#windows-聊天框命令选错-shell)。
+Windows 聊天框 `!`／`!!` 命令选错 Shell 的问题已修复：命令通过 PowerShell AST 检查后，交给 SDK 原生 PowerShell operations 执行，不再回退到 Bash。修复与局部验证见[归档记录](archive/resolved-issues.md#windows-聊天框命令选错-shell)；完整平台验收仍见[已知问题](known-issues.md#待验收场景)。
 
 ## 文档的事实边界
 

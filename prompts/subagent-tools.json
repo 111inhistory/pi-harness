@@ -1,6 +1,6 @@
 {
   "namespace": "Orchestrate independent background subagents for concurrent execution.",
-  "instructions": "Use subagent_list to inspect status and historyDir paths. Use write or msg_write to agent addresses, or your children.sock to broadcast to direct active agents without opening custom socket connections. Messaging a stopped agent revives it for a new round.",
+  "instructions": "Use subagent_list to inspect status and historyDir paths. Use msg_write to agent addresses, or your children.sock to broadcast to direct active agents without opening custom socket connections. Messaging a stopped agent revives it for a new round.",
   "create": {
     "description": "Create background subagents for concurrent execution. Returns agent IDs and socket addresses; does not wait for task completion.",
     "snippet": "Delegate parallel workloads to direct subagents",
@@ -33,7 +33,7 @@
     }
   },
   "msg_write": {
-    "description": "Send a plain-text message to a managed Agent IPC endpoint: Unix Socket or Windows Named Pipe. The host binds the sender and transport framing. Omit from/to, JSON or NDJSON envelopes, and trailing newlines. Cannot write files.",
+    "description": "Send a plain-text message to a managed Agent IPC endpoint: Unix Socket or Windows Named Pipe. The host binds the sender and transport framing. Omit from/to, JSON or NDJSON envelopes, and trailing newlines.",
     "snippet": "Send plain-text messages to agents through their Socket paths",
     "guidelines": [
       "Provide the message body as plain text content; do not add from/to, JSON/NDJSON framing, a trailing newline, or a custom Socket client."

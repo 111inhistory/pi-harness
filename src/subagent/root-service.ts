@@ -1,4 +1,7 @@
 import path from 'node:path';
+import { existsSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resultNeedsFile } from './result.ts';
 import {
   SessionManager,
   type ExtensionAPI,
@@ -6,7 +9,7 @@ import {
   type ModelRegistry,
 } from '@earendil-works/pi-coding-agent';
 import type { Api, Model } from '@earendil-works/pi-ai';
-import { createSubagentStore, EVENTS, SUBAGENT_SESSIONS_DIR } from '../subagent-storage.mjs';
+import { createSubagentStore, EVENTS, SUBAGENT_SESSIONS_DIR, writeFileAtomic } from '../subagent-storage.mjs';
 import { hasJobView, jobViewPaths, writeJobView, readTranscript } from '../subagent-view.mjs';
 import { routeSubagent } from '../subagent-routing.mjs';
 import { DEFAULT_SOCKET_DIR, deriveSessionUid } from '../ipc/socket.ts';
@@ -80,6 +83,7 @@ export class RootService implements ManagedWriteHost {
   readonly #delivery: NativeDeliveryRouter;
   readonly #store: ReturnType<typeof createSubagentStore>;
   readonly #historyDir: string;
+  #temporaryResults: string | null = null;
   readonly #pendingEvents: RuntimeEvent[] = [];
   readonly #starting = new Map<string, Promise<void>>();
   readonly #retainedScopes = new Map<string, CapabilityToolCatalog>();
@@ -170,6 +174,7 @@ export class RootService implements ManagedWriteHost {
       // Pure path projection only. Reading/rebuilding belongs to list(), not
       // domain transitions or notification publication.
       historyPaths: (jobId) => this.#historyPaths(jobId),
+      resultPath: (jobId) => this.#resultPath(jobId),
       deliverMessage: (input) => this.#delivery.toAgent(input),
       deliverToMain: (message) => this.#delivery.toMain(message),
       onEvent: (event) => this.#event(event),
@@ -347,7 +352,14 @@ export class RootService implements ManagedWriteHost {
 
   async #finalize({ job, outcome }: FinalizeJobInput): Promise<void> {
     try {
-      if (!this.#store.durable) return;
+      if (!this.#store.durable) {
+        const text = resultText(outcome.result);
+        if (text !== null && resultNeedsFile(text)) {
+          this.#temporaryResults ??= mkdtempSync(path.join(tmpdir(), 'pi-subagent-results-'));
+          writeFileAtomic(path.join(this.#temporaryResults, `${job.jobId}.txt`), text);
+        }
+        return;
+      }
       const descriptor = this.actors.get(job.agentId);
       const record = this.runtime.jobRecord(job.jobId);
       if (record === null) throw new SubagentError('invalid_state', 'The finalizing Job has no history record.');
@@ -359,10 +371,17 @@ export class RootService implements ManagedWriteHost {
     // after this hook settles. The view writer never publishes job-end.
   }
 
+  #resultPath(jobId: string): string | null {
+    const file = this.#store.durable ? jobViewPaths(this.#historyDir, jobId).result
+      : this.#temporaryResults === null ? null : path.join(this.#temporaryResults, `${jobId}.txt`);
+    return file !== null && existsSync(file) ? file : null;
+  }
+
   #historyPaths(jobId: string): JobHistoryPaths | null {
     if (!this.#store.durable) return null;
     const paths = jobViewPaths(this.#historyDir, jobId);
-    return { summary: paths.summary, cleanJsonl: paths.transcript };
+    const result = this.#resultPath(jobId);
+    return { summary: paths.summary, cleanJsonl: paths.transcript, ...(result === null ? {} : { result }) };
   }
 
   #view(jobId: string): JobHistoryPaths | null {
@@ -376,7 +395,7 @@ export class RootService implements ManagedWriteHost {
       writeJobView(this.#historyDir, { ...job, result: resultText(job.result), transcript: readTranscript(entries), roleId: descriptor?.roleId ?? null, model: descriptor?.modelRef?.id ?? null });
     }
     const paths = jobViewPaths(this.#historyDir, jobId);
-    return { summary: paths.summary, cleanJsonl: paths.transcript };
+    return { summary: paths.summary, cleanJsonl: paths.transcript, result: paths.result };
   }
 
   async #appendNotice(agentId: string, message: NativeCustomHandoff): Promise<boolean> {

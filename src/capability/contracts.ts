@@ -4,10 +4,13 @@
  * Discovery tools share these schemas. Descriptions come from
  * `prompts/capability-tools.json`; no schema text is duplicated in code.
  *
- * The internal `capability_search` tool is local-only. The schema must
- * advertise exactly the source the engine can execute; `src/capability-agent.mjs`
- * still fails closed for any other value at execution time.
+ * The internal `capability_step` tool is local-only. The schema must advertise
+ * exactly the source the engine can execute; the engine accepts only local
+ * searches at execution time.
  */
+
+import { Type } from "@earendil-works/pi-ai";
+import type { Static } from "@earendil-works/pi-ai";
 
 import { promptText } from "../prompt-text.mjs";
 
@@ -15,15 +18,12 @@ interface CapabilityToolsPrompt {
   readonly capability: {
     readonly description: string;
   };
-  readonly search: {
+  readonly step: {
+    readonly description: string;
     readonly parameters: {
-      readonly query: string;
-      readonly src: string;
-    };
-  };
-  readonly submit: {
-    readonly parameters: {
+      readonly queries: string;
       readonly refs: string;
+      readonly finish: string;
     };
   };
 }
@@ -39,91 +39,39 @@ export const CAPABILITY_TOOL_DESCRIPTION: string = toolsPrompt.capability.descri
  * caller's conversation, and search categories, candidate counts and budget
  * controls are fixed harness behavior that must never become model input.
  */
-export interface CapabilityParametersSchema {
-  readonly type: "object";
-  readonly properties: Readonly<Record<string, never>>;
-  readonly additionalProperties: false;
-}
+export const CAPABILITY_PARAMETERS = Type.Object({}, { additionalProperties: false });
 
-export const CAPABILITY_PARAMETERS: CapabilityParametersSchema = Object.freeze({
-  type: "object",
-  properties: Object.freeze({}),
-  additionalProperties: false,
-});
+export type CapabilityParameters = Static<typeof CAPABILITY_PARAMETERS>;
 
-/** The only source group an internal capability search may request. */
-export type CapabilitySearchSource = "local";
+/** Internal retrieval tool: only the nested capability retrieval agent sees this. */
+export const CAPABILITY_STEP_TOOL_NAME = "capability_step" as const;
 
-export const CAPABILITY_SEARCH_SOURCES = Object.freeze(["local"] as const);
+/**
+ * One batched retrieval step. The engine submits `refs` selected from earlier
+ * results first, then launches `queries` as parallel local searches. `finish`
+ * ends discovery after this step; it is absent/false for a continuing step.
+ */
+export const CAPABILITY_STEP_PARAMETERS = Type.Object(
+  {
+    queries: Type.Optional(Type.Array(Type.String(), {
+      default: [],
+      description: toolsPrompt.step.parameters.queries,
+    })),
+    refs: Type.Optional(Type.Array(Type.String(), {
+      default: [],
+      description: toolsPrompt.step.parameters.refs,
+    })),
+    finish: Type.Optional(
+      Type.Boolean({
+        default: false,
+        description: toolsPrompt.step.parameters.finish,
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
 
-/** Internal retrieval tool: only the nested capability search agent sees these. */
-export const CAPABILITY_SEARCH_TOOL_NAME = "capability_search" as const;
-
-export interface CapabilitySearchParametersSchema {
-  readonly type: "object";
-  readonly properties: {
-    readonly query: {
-      readonly type: "string";
-      readonly minLength: 1;
-      readonly description: string;
-    };
-    readonly src: {
-      readonly type: "string";
-      readonly enum: typeof CAPABILITY_SEARCH_SOURCES;
-      readonly description: string;
-    };
-  };
-  readonly required: readonly ["query", "src"];
-  readonly additionalProperties: false;
-}
-
-export const CAPABILITY_SEARCH_PARAMETERS: CapabilitySearchParametersSchema = Object.freeze({
-  type: "object",
-  properties: Object.freeze({
-    query: Object.freeze({
-      type: "string",
-      minLength: 1,
-      description: toolsPrompt.search.parameters.query,
-    }),
-    src: Object.freeze({
-      type: "string",
-      enum: CAPABILITY_SEARCH_SOURCES,
-      description: toolsPrompt.search.parameters.src,
-    }),
-  }),
-  required: Object.freeze(["query", "src"] as const),
-  additionalProperties: false,
-});
-
-export const SUBMIT_RESULT_TOOL_NAME = "submit_result" as const;
-
-export interface SubmitResultParametersSchema {
-  readonly type: "object";
-  readonly properties: {
-    readonly refs: {
-      readonly type: "array";
-      readonly items: {
-        readonly type: "string";
-      };
-      readonly description: string;
-    };
-  };
-  readonly required: readonly ["refs"];
-  readonly additionalProperties: false;
-}
-
-export const SUBMIT_RESULT_PARAMETERS: SubmitResultParametersSchema = Object.freeze({
-  type: "object",
-  properties: Object.freeze({
-    refs: Object.freeze({
-      type: "array",
-      items: Object.freeze({ type: "string" }),
-      description: toolsPrompt.submit.parameters.refs,
-    }),
-  }),
-  required: Object.freeze(["refs"] as const),
-  additionalProperties: false,
-});
+export type CapabilityStepParameters = Static<typeof CAPABILITY_STEP_PARAMETERS>;
 
 /** Deterministic bounds for every result list and body read. */
 export interface CapabilityLimits {

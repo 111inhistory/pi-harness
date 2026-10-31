@@ -1,26 +1,20 @@
 {
   "capability": {
-    "description": "Find reusable skills and task guidance alongside tools and MCP capabilities for the current task. Uses this conversation; no arguments. Searches local resources and returns relevant refs and availability. A namespace is one candidate with its tools and shared instructions. May activate selected tools already registered in this session, but never installs packages or executes capabilities. For Skill discovery, use capability rather than manual filesystem or web searches unless the user explicitly requests those search methods.",
-    "snippet": "Find reusable guidance and capabilities for the current task",
+    "description": "Find local Skills, Tools, and MCP capabilities for the current conversation and return selected refs; no arguments.",
+    "snippet": "Find task guidance and capabilities",
     "guidelines": [
-      "Use capability to find missing capabilities or reuse established guidance and specialized tools before inventing a workflow or building a replacement, for example for Word editing or PPT creation.",
-      "Use capability for resource discovery. Native tool_search and global MCP resource listing are disabled. Codemode can execute enabled tools but provides no searchTools. Use selected tool declarations or the returned interfaces for arguments. Read Skill entry files by their returned absolute paths.",
-      "Discover Skills through capability. Unless the user explicitly requests filesystem or web searches for Skills, do not search local directories, installed repositories, other agent profiles, or the web for them. A general request to find Skills does not authorize bypassing Capability's configured selection; report gaps or ask about configuration instead. Reading a returned Skill file or its linked instructions is not a new discovery search.",
-      "Skills may contain workflows, rules, preferences, fixed background, or descriptions. Read relevant guidance and use it alongside tool interfaces; a generic tool description may not fit the current task.",
-      "Reuse relevant findings throughout the task. Search again when requirements change or a new capability gap appears, not before every tool call."
+      "Understand the task and project context first, then check whether you lack guidance, background info, or specialized tools (e.g. for tasks like PPT creation or complex workflows). If true, call capability; otherwise proceed directly.",
+      "Skills provide workflows, rules, and conventions. Discover them through capability (not filesystem or web searches), and use read to inspect the returned skill entry paths.",
+      "Reuse discovered capabilities throughout the task; use capability whenever current tools do not cover the needs, or if you lose track of a Skill's path. For existing tools and MCP, use describeTool(name) in codemode to inspect parameters, or ALL_TOOLS to list what you have (filtering recommended)."
     ]
   },
-  "search": {
-    "description": "Search registered tools, MCP capabilities, and local skills for reusable guidance and missing operations. Skills may cover workflows, rules, preferences, or background. Search local resources with src \"local\". A namespace is one candidate with all its visible tools and shared instructions. Submit its top-level ref. Returns candidate refs with metadata; only refs returned here can be submitted with submit_result.",
+  "step": {
+    "label": "Capability Step",
+    "description": "Advance discovery by searching with queries, accumulating selected refs, or finishing. All parameters optional.",
     "parameters": {
-      "query": "Keywords for relevant guidance (workflows, rules, preferences, or background) or tools, or a ref from an earlier result (tool://read, namespace://subagent, mcp://firefox_devtools, or an absolute Skill entry path) for an exact lookup.",
-      "src": "local: session tools, MCP servers and local skills."
-    }
-  },
-  "submit": {
-    "description": "Submit relevant guidance and tool refs together for the current task. Every ref must come from a capability_search result in this run. An empty list means no relevant capability exists and is only valid after at least one completed search. Call this exactly once; the run ends on a successful submission.",
-    "parameters": {
-      "refs": "Relevant skill/guidance and tool refs from this invocation's capability_search results, most relevant first. Empty when nothing is relevant; refs that no search returned are rejected."
+      "queries": "Parallel local searches using keywords. Defaults to []; omit when not searching.",
+      "refs": "Exact refs from earlier results. Select namespace refs, not member refs. Selections accumulate; defaults to [].",
+      "finish": "Set true to finish discovery. Defaults to false."
     }
   }
 }

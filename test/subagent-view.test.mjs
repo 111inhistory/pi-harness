@@ -40,6 +40,7 @@ test("Job views are written under the supplied session views directory as newlin
   const paths = jobViewPaths(viewsDir, "sub_01");
   assert.equal(paths.summary, path.join(viewsDir, "sub_01", "summary.md"));
   assert.equal(paths.transcript, path.join(viewsDir, "sub_01", "transcript.jsonl"));
+  assert.equal(paths.result, path.join(viewsDir, "sub_01", "result.txt"));
 
   const view = jobView();
   assert.deepEqual(writeJobView(viewsDir, view), paths);
@@ -54,7 +55,45 @@ test("Job views are written under the supplied session views directory as newlin
   assert.match(summary, /Check parser errors/);
   assert.match(summary, /Original findings/);
   assert.match(summary, /5 model calls, 12s active/);
-  assert.deepEqual((await fsp.readdir(path.dirname(paths.summary))).sort(), ["summary.md", "transcript.jsonl"]);
+  assert.deepEqual((await fsp.readdir(path.dirname(paths.summary))).sort(), ["result.txt", "summary.md", "transcript.jsonl"]);
+});
+
+test("Result files keep the raw result bytes, including whitespace and trailing newlines", async (t) => {
+  const { viewsDir } = await viewsFixture(t);
+  const result = "  indented finding\nsecond line\n\n";
+  const paths = jobViewPaths(viewsDir, "sub_01");
+  writeJobView(viewsDir, jobView({ result }));
+  assert.deepEqual(await fsp.readFile(paths.result), Buffer.from(result));
+
+  writeJobView(viewsDir, jobView({ result: null }));
+  assert.deepEqual(await fsp.readFile(paths.result), Buffer.alloc(0));
+});
+
+test("Each Job round has its own result file", async (t) => {
+  const { viewsDir } = await viewsFixture(t);
+  const first = jobView({ jobId: "sub_01", round: 1, result: "first round" });
+  const second = jobView({ jobId: "sub_02", round: 2, result: "second round", previousJobId: "sub_01" });
+  const firstPaths = writeJobView(viewsDir, first);
+  const secondPaths = writeJobView(viewsDir, second);
+  assert.notEqual(firstPaths.result, secondPaths.result);
+  assert.equal(await fsp.readFile(firstPaths.result, "utf8"), "first round");
+  assert.equal(await fsp.readFile(secondPaths.result, "utf8"), "second round");
+});
+
+test("A missing raw result file makes the Job view incomplete", async (t) => {
+  const { viewsDir } = await viewsFixture(t);
+  const paths = writeJobView(viewsDir, jobView());
+  assert.equal(hasJobView(viewsDir, "sub_01"), true);
+  await fsp.rm(paths.result);
+  assert.equal(hasJobView(viewsDir, "sub_01"), false);
+
+  writeJobView(viewsDir, jobView());
+  await fsp.rm(paths.summary);
+  assert.equal(hasJobView(viewsDir, "sub_01"), false);
+
+  writeJobView(viewsDir, jobView());
+  await fsp.rm(paths.transcript);
+  assert.equal(hasJobView(viewsDir, "sub_01"), false);
 });
 
 test("Job view writes reject filesystem failures rather than claiming success", async (t) => {

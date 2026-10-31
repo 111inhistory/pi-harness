@@ -90,11 +90,12 @@ ID 占用扫描覆盖根文件全部分支的 Actor／Job 事件、自有子文�
 ```text
 subagent-sessions/<rootId>/views/<jobId>/summary.md
 subagent-sessions/<rootId>/views/<jobId>/transcript.jsonl
+subagent-sessions/<rootId>/views/<jobId>/result.txt
 ```
 
-一个 Job 一份视图，不按 Actor 跨轮追加。`summary.md` 保存任务、状态、用量、结果和续跑关系；`transcript.jsonl` 保存该 Job 的清洗区间。
+一个 Job 一份视图，不按 Actor 跨轮追加。`summary.md` 保存任务、状态、用量、结果和续跑关系；`transcript.jsonl` 保存该 Job 的清洗区间；`result.txt` 原样保存该轮最终回复文本，供截断通知补读。
 
-视图不参与恢复。缺失时由 Root 列表层在当前根目录重建，再通过 `history.summary`、`history.cleanJsonl` 返回路径。每项分别捕获错误；一份损坏历史不阻断其余 Actor 状态。Runtime 的列表投影和终态通知本身不执行视图写入。Fork 不为生成视图写父目录。当前分支不可见的 Job 不进入列表。
+视图不参与恢复。缺失时由 Root 列表层在当前根目录重建，再通过 `history.summary`、`history.cleanJsonl`、`history.result` 返回路径。任一视图文件缺失都会触发重建，原始结果取自 Job 保存的结果字段，不从累计对话重新推断。每项分别捕获错误；一份损坏历史不阻断其余 Actor 状态。Runtime 的列表投影和终态通知本身不执行视图写入。Fork 不为生成视图写父目录。当前分支不可见的 Job 不进入列表。
 
 旧 `src/subagent-history.mjs` 和跨轮追加实现已删除。旧项目目录 `.pi/subagents/` 不参与恢复，转换脚本也不处理该目录。
 
@@ -105,7 +106,9 @@ subagent-sessions/<rootId>/views/<jobId>/transcript.jsonl
 - 结束：原生退出与清理 → 冻结候选终态 → 生成视图并记录历史写入状态 → Runtime 统一发布一次根终态 → 通知父节点。
 - 续跑：注册新的 continuation Job → 必要时写时复制 → 定位锚点 → 写新起点 → 原生执行。
 
-每轮由 Runtime 独立通知父节点。普通消息和终态不合并，不为迁移或恢复重新执行已经结束的任务。
+内存会话不生成持久化历史视图；结果超过通知上限时，Root 写入单独的系统临时文件，通知附该文件路径。临时文件保留供父节点补读，不随当前 Job 结束删除。
+
+每轮由 Runtime 独立通知父节点，通知直接携带有界的本轮结果。普通消息和终态不合并，不为迁移或恢复重新执行已经结束的任务。
 
 ## 6. 兼容性与转换
 

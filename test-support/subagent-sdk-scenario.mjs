@@ -5,11 +5,12 @@ import fsp from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import {
-  createAgentSession, createCodemodeExtension, createWriteToolDefinition, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
+  createAgentSession, createCodemodeExtension, createWriteToolDefinition, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, DEFAULT_MAX_LINES,
 } from "@earendil-works/pi-coding-agent";
 import { AssistantMessageEventStream, getSystemMessageText, getCurrentTools } from "@earendil-works/pi-ai";
 import subagentExtension from "../src/subagent/extension.ts";
-import capabilityExtension from "../extensions/capability.mjs";
+import { installResultRendering } from "../src/result-rendering.ts";
+import capabilityExtension from "../extensions/capability.ts";
 import { deriveSessionUid, getAgentSocketPath, getBroadcastSocketPath } from "../src/ipc/socket.ts";
 import { resolveTranscriptTools } from "../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js";
 import { convertResponsesMessages } from "../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
@@ -23,6 +24,13 @@ import {
   runExternalSocketScenario, runListenerCacheScenario, runPeerSenderScenario,
   runRestoreInvalidScenario, runUpstreamParentSteerScenario,
 } from "../test/typed/support/subagent-sdk-scenarios.ts";
+import {
+  runPackageSkillsScenario,
+  runResponsesOnlyScenario,
+  runResponsesPrefixScenario,
+  runCapabilityMissingScenario,
+  runNamespaceScenario,
+} from "../test/typed/support/capability-batch-scenarios.ts";
 
 const scenario = process.argv[2];
 const cwd = process.cwd();
@@ -185,6 +193,7 @@ const resourceLoader = new DefaultResourceLoader({
   ...(scenario === "package-skills" ? { additionalSkillPaths: [cliSkillPath] } : {}),
   ...(scenario === "inherited" ? { systemPrompt: "Custom inherited system identity" } : {}),
   extensionFactories: [
+    { name: "result-rendering", factory: installResultRendering },
     ...(scenario !== "namespace-reverse" ? [{ name: "capability", factory: capabilityExtension }] : []),
     ...(scenario === "capability-missing" ? [] : [{ name: "subagent", factory: subagentExtension }]),
     ...(scenario === "namespace-reverse" ? [{ name: "capability", factory: capabilityExtension }] : []),
@@ -239,6 +248,8 @@ const fixture = {
   cwd, agentDir, socketDir, sessionSocketDir,
   session, sessionManager, chats, notificationChats, classifications, controls,
   call, create, item, stopped, gate: controlledGate, textAnswer, toolAnswer,
+  resourceLoader, networkAttempts, model,
+  getExternalToolExecutions: () => externalToolExecutions,
 };
 
 try {
@@ -263,158 +274,16 @@ try {
     assert.equal(chats.length, 1);
     assert.equal("budget" in (await stopped(reviewer.id)), false);
   } else if (scenario.startsWith("package-skills")) {
-    const cold = scenario === "package-skills-cold";
-    const expected = cold ? ["ppt-master"] : ["cli-ppt", "ppt-master"];
-    const inventory = session.extensionRunner.createContext();
-    const loaded = resourceLoader.getSkills().skills;
-    if (cold) assert.deepEqual(loaded, [], "cold Session has no loaded Skills or command entries");
-    else {
-      assert.ok(loaded.some((skill) => skill.name === "ppt-master"));
-      assert.ok(loaded.some((skill) => skill.name === "private-ppt"));
-    }
-    assert.ok(!loaded.some((skill) => skill.name === "filtered-ppt"));
-    await session.prompt("Visibility check: do not use tools.");
-    assert.doesNotMatch(chats.at(-1).text, /<available_skills>|<name>ppt-master<\/name>|Native package PPT guidance/,
-      "loaded Skills must not be advertised in the base prompt before Capability discovery");
-    if (!cold) assert.ok(resourceLoader.getSkills().skills.some((skill) => skill.name === "ppt-master"),
-      "hiding prompt summaries must retain Pi's resource inventory");
-    controls.chat = (request) => {
-      const searched = request.context.messages.findLast((message) => message.role === "toolResult" && message.toolName === "capability_search");
-      if (!searched) return toolAnswer("capability_search", { query: "ppt", src: "local" });
-      const matches = JSON.parse(searched.content[0].text);
-      assert.deepEqual(matches.skills.map((skill) => skill.name).sort(), expected);
-      assert.deepEqual(matches.warnings, []);
-      assert.ok(matches.skills.every((skill) => path.isAbsolute(skill.filePath) && skill.ref === skill.filePath));
-      return toolAnswer("submit_result", { refs: matches.skills.map((skill) => skill.filePath) });
-    };
-    const discovery = await call("capability", {});
-    assert.equal(discovery.isError, false, JSON.stringify(discovery.details));
-    assert.deepEqual(discovery.details.skills.map((skill) => skill.name).sort(), expected);
-    const visible = JSON.parse(discovery.content[0].text);
-    assert.equal(visible.warnings, undefined);
-    for (const hit of visible.skills) {
-      for (const field of ["match", "score", "reason"]) assert.equal(hit[field], undefined, `Main must not see ${field}`);
-    }
-    assert.ok(discovery.details.skills.every((hit) => typeof hit.score === "number" && typeof hit.reason === "string"), "ranking remains host-owned diagnostics");
-    const nativeRead = session.getToolDefinition("read");
-    const entryPath = visible.skills.find((skill) => skill.name === "ppt-master").filePath;
-    assert.ok(path.isAbsolute(entryPath));
-    const resource = await nativeRead.execute("read-package-skill", { path: entryPath }, undefined, undefined, inventory);
-    assert.match(resource.content[0].text, /Native package PPT guidance/);
-    assert.deepEqual(networkAttempts, [], "installed/CLI skills must not resolve or install missing packages");
+    await runPackageSkillsScenario(fixture, {
+      cold: scenario === "package-skills-cold",
+      expected: scenario === "package-skills-cold" ? ["ppt-master"] : ["cli-ppt", "ppt-master"],
+    });
   } else if (scenario === "responses-only") {
-    session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
-    await session.prompt("Seed Codemode-only context.");
-    controls.chat = (request) => {
-      const result = request.context.messages.findLast((message) => message.role === "toolResult" && message.toolName === "capability_search");
-      if (!result) return toolAnswer("capability_search", { query: "namespace://subagent", src: "local" });
-      return toolAnswer("submit_result", { refs: ["namespace://subagent"] });
-    };
-    const discovery = await call("capability", {});
-    assert.equal(discovery.isError, false, JSON.stringify(discovery.details));
-    const selectedInterfaces = JSON.parse(discovery.content[0].text).tools[0].tools;
-    assert.equal(selectedInterfaces.length, 3, "hidden direct declarations must not imply supplied interfaces");
-    assert.ok(selectedInterfaces.every((tool) => tool.parameters?.type === "object"), "selected interfaces must be supplied without a resource-read protocol");
-    controls.chat = () => textAnswer("Only mode continued");
-    await session.prompt("Continue without directly declared Subagent interfaces.");
-    assert.deepEqual(getCurrentTools(chats.at(-1).context.messages).map((tool) => tool.name), ["codemode"]);
+    await runResponsesOnlyScenario(fixture);
   } else if (scenario === "responses-prefix") {
-    const members = ["subagent_create", "subagent_list", "subagent_stop"];
-    session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
-    await session.prompt("Seed a stable Responses transcript without calling tools.");
-    const initial = structuredClone(chats[0].context.messages[0]);
-    session.setThinkingLevel("high");
-    let internalCalls = 0;
-    controls.chat = (request) => {
-      const declared = getCurrentTools(request.context.messages).map((tool) => tool.name);
-      const resultOf = (name) => request.context.messages.findLast((message) => message.role === "toolResult" && message.toolName === name);
-      if (declared.includes("capability_search")) {
-        internalCalls++;
-        assert.equal(request.options.reasoning, "high", "retrieval keeps the parent's effort for compatible Responses");
-        const head = request.context.messages[0];
-        const { capabilities: _discoveryMemory, ...baseSections } = head.sections ?? {};
-        assert.deepEqual({ ...head, sections: baseSections }, initial, "retrieval retains the base prompt and tool prefix while adding branch discovery memory");
-        assert.deepEqual(resolveTranscriptTools(request.context.messages, "changes").requestTools, [], "changes-capable Responses declare interfaces in the transcript");
-        assert.match(getSystemMessageText(request.context.messages.at(-1)), /only capability_search and submit_result/);
-        const deniedWrite = resultOf("write");
-        if (!deniedWrite) return toolAnswer("write", { path: "forbidden.txt", content: "must not execute" }, "forbidden-write");
-        assert.equal(deniedWrite.isError, true);
-        assert.match(deniedWrite.content[0].text, /unavailable in capability discovery/);
-        const deniedCodemode = resultOf("codemode");
-        if (!deniedCodemode) return toolAnswer("codemode", { code: 'await tools.write({path:"forbidden-nested.txt",content:"no"})' }, "forbidden-codemode");
-        assert.equal(deniedCodemode.isError, true);
-        assert.match(deniedCodemode.content[0].text, /unavailable in capability discovery/);
-        if (!resultOf("capability_search")) return toolAnswer("capability_search", { query: "namespace://subagent", src: "local" }, "search-group");
-        return toolAnswer("submit_result", { refs: ["namespace://subagent"] }, "submit-group");
-      }
-      return textAnswer("Parent completed");
-    };
-    const discovery = await call("capability", {});
-    assert.equal(discovery.isError, false, JSON.stringify(discovery.details));
-    assert.equal(internalCalls, 4);
-    const compact = JSON.parse(discovery.content[0].text);
-    const compactGui = capabilityGuiText(fixture, discovery);
-    assert.match(compactGui, /"interface":/);
-    assert.doesNotMatch(compactGui, /"parameters":/);
-    assert.equal(compact.tools[0].tools, undefined);
-    assert.equal(compact.tools[0].description, undefined);
-    assert.equal(compact.tools[0].instructions, session.getToolDefinition(members[0]).namespace.instructions,
-      "compaction preserves the namespace's shared guidance");
-    assert.deepEqual(discovery.details.tools[0].tools.map((tool) => tool.name), members);
-    assert.ok(members.every((name) => session.getActiveToolNames().includes(name)));
-    const repeated = await call("capability", {});
-    assert.equal(repeated.isError, false, JSON.stringify(repeated.details));
-    const repeatedText = JSON.parse(repeated.content[0].text);
-    assert.deepEqual(repeatedText.tools, [], "already active tools must not be reported as new interfaces");
-    assert.deepEqual(repeatedText.mcp, []);
-    assert.equal(repeatedText.guidance[0].ref, "namespace://subagent");
-    assert.match(capabilityGuiText(fixture, repeated), /"guidance":/);
-    assert.equal(repeated.details.tools[0].tools.length, 3, "full selection remains in details, not model text");
-    assert.equal(internalCalls, 8);
-    await assert.rejects(fsp.stat(path.join(cwd, "forbidden.txt")), { code: "ENOENT" });
-    await assert.rejects(fsp.stat(path.join(cwd, "forbidden-nested.txt")), { code: "ENOENT" });
-    await session.prompt("Continue after capability activation.");
-    const addedContext = chats.at(-1).context;
-    const resolved = resolveTranscriptTools(addedContext.messages, "changes");
-    assert.deepEqual(resolved.requestTools, [], "current Responses use inline tool declarations rather than a second top-level loadout");
-    const wire = convertResponsesMessages(model, addedContext, new Set([model.provider]), { includeSystemPrompt: false, ...model.compat });
-    const declaredInterfaces = wire.filter((item) => item.type === "additional_tools").flatMap((item) => item.tools);
-    for (const name of members) assert.ok(declaredInterfaces.some((tool) => tool.name === name && typeof tool.parameters === "object"), `wire request declares ${name}`);
-    session.setActiveToolsByName(session.getActiveToolNames().filter((name) => name !== "external_test_tool"));
-    controls.chat = (request) => {
-      const results = request.context.messages.filter((message) => message.role === "toolResult");
-      if (!results.some((result) => result.toolCallId === "disabled-direct")) return toolAnswer("external_test_tool", {}, "disabled-direct");
-      if (!results.some((result) => result.toolCallId === "disabled-nested")) return toolAnswer("codemode", { code: 'try { await tools.external_test_tool({}); text("UNEXPECTED_EXECUTION"); } catch (error) { text("DISABLED_EXTERNAL_TOOL: " + error.message); }' }, "disabled-nested");
-      return textAnswer("Disabled calls refused");
-    };
-    await session.prompt("Exercise disabled direct and nested calls.");
-    assert.equal(externalToolExecutions, 0);
-    const refused = session.messages.filter((message) => message.role === "toolResult" && ["disabled-direct", "disabled-nested"].includes(message.toolCallId));
-    assert.equal(refused.length, 2);
-    assert.equal(refused[0].isError, true);
-    assert.match(refused[0].content[0].text, /external_test_tool.*(not found|unavailable)/);
-    assert.match(refused[1].content.map((part) => part.text ?? "").join("\n"), /DISABLED_EXTERNAL_TOOL:/, "nested call must reach the script and be refused before execution");
-    assert.doesNotMatch(refused[1].content.map((part) => part.text ?? "").join("\n"), /UNEXPECTED_EXECUTION/);
-    assert.deepEqual(resolveTranscriptTools(chats.at(-1).context.messages, "changes").requestTools, []);
-    assert.match(textOf(chats.at(-1).context), /external_test_tool is unavailable/);
-    session.setActiveToolsByName([...session.getActiveToolNames(), "external_test_tool"]);
-    controls.chat = () => textAnswer("Re-enabled");
-    await session.prompt("Re-enable without a second declaration.");
-    const last = chats.at(-1).context;
-    assert.deepEqual(resolveTranscriptTools(last.messages, "changes").requestTools, []);
-    assert.equal(last.messages.flatMap((message) => message.toolsAdded ?? []).filter((tool) => tool.name === "external_test_tool").length, 1);
-    assert.match(textOf(last), /external_test_tool is available again/);
+    await runResponsesPrefixScenario(fixture);
   } else if (scenario === "capability-missing") {
-    controls.chat = (request) => {
-      const searched = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "capability_search");
-      return searched ? toolAnswer("submit_result", { refs: [] }) :
-        toolAnswer("capability_search", { query: "no matching local fixture", src: "local" });
-    };
-    const result = await call("capability", {});
-    assert.equal(result.isError, false, JSON.stringify(result.details));
-    assert.equal(result.details.status, "ok");
-    assert.ok(chats.length > 0, "internal execution does not require public Subagent tools");
-    assert.equal(classifications.length, 0, "internal retrieval does not enter public task role routing");
+    await runCapabilityMissingScenario(fixture);
   } else if (scenario === "namespace-leaf") {
     let leafResult;
     controls.chat = (request) => {
@@ -437,45 +306,7 @@ try {
     await stopped(parent.id + "_01");
     assert.equal(leafResult, true);
   } else if (scenario === "namespace" || scenario === "namespace-reverse") {
-    const members = ["subagent_create", "subagent_list", "subagent_stop"];
-    const initial = session.getActiveToolNames();
-    assert.ok(members.every((name) => !initial.includes(name)));
-    assert.doesNotMatch(session.systemPrompt, /subagent_create|one JSON object per line/);
-    const nativeWrite = createWriteToolDefinition(cwd);
-    assert.equal(session.getToolDefinition("write").description, nativeWrite.description);
-    controls.chat = (request) => {
-      assert.deepEqual(getCurrentTools(request.context.messages).map((tool) => tool.name).sort(), ["capability_search", "submit_result"]);
-      const search = request.context.messages.findLast((message) => message.role === "toolResult" && message.toolName === "capability_search");
-      if (!search) return toolAnswer("capability_search", { query: "subagent", src: "local" });
-      const found = JSON.parse(search.content.find((part) => part.type === "text").text);
-      const namespaces = found.tools.filter((hit) => hit.namespace === "subagent");
-      assert.equal(namespaces.length, 1, "matching members must collapse to one namespace candidate");
-      assert.equal(namespaces[0].ref, "namespace://subagent");
-      assert.deepEqual(namespaces[0].tools.map((tool) => tool.name), members);
-      return toolAnswer("submit_result", { refs: [namespaces[0].ref] });
-    };
-    const discoveryResult = await call("capability", {});
-    const discovery = discoveryResult.details;
-    const expandedGui = capabilityGuiText(fixture, discoveryResult);
-    assert.match(expandedGui, /"parameters":/);
-    assert.doesNotMatch(expandedGui, /"interface":/);
-    assert.equal(discovery.tools.length, 1, JSON.stringify(discovery));
-    assert.equal(discovery.tools[0].kind, "namespace");
-    assert.equal(discovery.tools[0].namespace, "subagent");
-    assert.deepEqual(discovery.tools[0].tools.map((tool) => tool.name), members);
-    assert.equal(discovery.tools[0].instructions, session.getToolDefinition(members[0]).namespace.instructions,
-      "namespace discovery preserves the registered shared guidance");
-    assert.ok(members.every((name) => session.getActiveToolNames().includes(name)));
-    assert.equal(session.getToolDefinition("write").description, nativeWrite.description);
-    assert.ok(discovery.tools[0].tools.some((tool) => tool.name === "subagent_stop"));
-    assert.ok(discovery.tools[0].description.length > 0);
-    const gate = deferred();
-    controls.chat = async () => { await gate.promise; return textAnswer("Namespace child done"); };
-    const actor = await create("Namespace task");
-    await deliverToActor(fixture, actor, "Namespace buffered message");
-    gate.resolve();
-    await stopped(actor.id);
-    assert.match(chats.at(-1).text, /Namespace buffered message/);
+    await runNamespaceScenario(fixture);
   } else if (scenario === "surface") {
     const names = session.getActiveToolNames();
     const subagents = ["subagent_create", "subagent_list", "subagent_stop"];
@@ -724,6 +555,7 @@ try {
     assert.match(chats.at(-1).text, /\[Message from Main\]/);
     assert.doesNotMatch(chats.at(-1).text, /\[Message from sub_99\]/);
   } else if (scenario === "revive") {
+    controls.chat = () => textAnswer(`Local result ROUND_${chats.length}_END`);
     const first = await create("Original assignment marker");
     const initial = await stopped(first.id);
     const initialMarkdown = await fsp.readFile(initial.history.summary, "utf8");
@@ -751,12 +583,20 @@ try {
       assert.notEqual(jsonl, previousJsonl);
       assert.equal(await fsp.readFile(initial.history.summary, "utf8"), initialMarkdown);
       assert.equal(await fsp.readFile(initial.history.cleanJsonl, "utf8"), initialJsonl);
+      const result = `Local result ROUND_${round}_END`;
+      assert.equal(await fsp.readFile(current.history.result, "utf8"), result);
+      const notice = sessionManager.getBranch().findLast((entry) => entry.type === "custom_message" && entry.details?.jobId === current.history.jobId);
+      assert.ok(notice);
+      assert.equal(notice.content.split(result).length - 1, 1);
+      assert.ok(!notice.content.includes(`ROUND_${round - 1}_END`));
+      assert.ok(!notice.content.includes("Original assignment marker"));
       previousMarkdown = markdown;
       previousJsonl = jsonl;
     }
-    assert.deepEqual((await fsp.readdir(path.dirname(initial.history.summary))).sort(), ["summary.md", "transcript.jsonl"]);
+    assert.deepEqual((await fsp.readdir(path.dirname(initial.history.summary))).sort(), ["result.txt", "summary.md", "transcript.jsonl"]);
   } else if (scenario === "history") {
-    controls.chat = () => chats.length === 1 ? toolAnswer("write", { path: "artifact.txt", content: "Actual native tool result" }) : textAnswer("Complete final answer\n困难度：low");
+    const finalOutput = `Complete final answer\n${'detail\n'.repeat(DEFAULT_MAX_LINES + 1)}困难度：low`;
+    controls.chat = () => chats.length === 1 ? toolAnswer("write", { path: "artifact.txt", content: "Actual native tool result" }) : textAnswer(finalOutput);
     const first = await create("Execute a real file tool then report");
     const terminal = await stopped(first.id);
     assert.equal("budget" in (await stopped(first.id)), false);
@@ -770,6 +610,13 @@ try {
     assert.ok(end.content.length > 0);
     assert.ok(streamedFragments > 0, "the native Session actually received stream fragments");
     assert.ok(records.every((r) => !["message_update", "text_delta", "toolcall_delta"].includes(r.type)));
+    assert.equal(await fsp.readFile(terminal.history.result, "utf8"), finalOutput);
+    const notice = sessionManager.getBranch().findLast((entry) => entry.type === "custom_message" && entry.details?.jobId === terminal.history.jobId);
+    assert.ok(notice);
+    assert.ok(notice.content.startsWith('Complete final answer'));
+    assert.ok(notice.content.includes(terminal.history.result));
+    assert.ok(!notice.content.includes('困难度：low'));
+    assert.equal('content' in notice.details.terminal.details, false);
     const final = records.filter((r) => r.role === "assistant").at(-1);
     assert.equal(final.stopReason, "stop");
     assert.ok(JSON.stringify(final).includes("Complete final answer"), "clean history must retain finalized message content, not just usage");
@@ -888,6 +735,12 @@ try {
     assert.equal(chats[0].text.includes("Later parent mutation must not leak"), false);
     const thinking = chats[0].context.messages.flatMap((message) => Array.isArray(message.content) ? message.content : []).find((block) => block.type === "thinking");
     assert.equal(thinking.thinking, "Recorded parent thinking");
+    const notice = sessionManager.getBranch().findLast((entry) => entry.type === "custom_message" && entry.details?.sourceId === first.id);
+    assert.ok(notice);
+    assert.ok(notice.content.startsWith('Local result.'));
+    for (const background of ['Recorded parent answer', 'Captured parent context marker', 'Inherited task marker']) {
+      assert.ok(!notice.content.includes(background));
+    }
     assert.equal(thinking.thinkingSignature, "native-signature-test");
     assert.equal("budget" in (await stopped(first.id)), false);
   } else if (scenario === "stopping" || scenario === "stop-history") {
@@ -932,7 +785,7 @@ try {
     assert.equal(notice.source, "host");
     assert.equal(notice.sourceId, first.id);
     assert.equal(notice.status, "failed");
-    assert.deepEqual(notice.terminal.details.history, { summary: terminal.history.summary, cleanJsonl: terminal.history.cleanJsonl });
+    assert.deepEqual(notice.terminal.details.history, { summary: terminal.history.summary, cleanJsonl: terminal.history.cleanJsonl, result: terminal.history.result });
   } else if (scenario === "memory-owners") {
     assert.equal(typeof globalThis.gc, "function");
     const actor = await create("Retain actor identity but release its native manager", { inheritContext: true });

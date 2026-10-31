@@ -1,7 +1,5 @@
 {
-  "additiveExecutionBlocked": "Capability discovery may execute only capability_search and submit_result. All other retained tool declarations are unavailable; execution is blocked.",
-  "budgetWrapUp": "Internal discovery: call submit_result now with the refs you verified, or with an empty list if the completed searches found nothing relevant.",
-  "memoryHeader": "Previously selected capabilities and guidance. These records do not grant execution permission or installation approval. Use the selected tool declarations or returned interfaces for calls. Read Skill entry files by their listed absolute paths. Native tool_search and Codemode searchTools are disabled; Codemode executes only currently enabled tools. Read the listed Skill entry before following its workflow, and re-read it when its contents are no longer in context.",
-  "submissionEmpty": "Submission accepted: no relevant capability found. Stop now.",
-  "submissionAccepted": "Submission accepted: {count} ref(s). Stop now; do not call more tools."
+  "additiveExecutionBlocked": "Only capability_step may execute.",
+  "budgetWrapUp": "Finish now via capability_step with finish: true and queries: []; include final selected refs.",
+  "memoryHeader": "Loaded tools and lazy-loaded skills. Use tool declarations or returned interfaces for calls. Read Skill files at the listed paths before use; re-read if no longer in context."
 }

@@ -1,11 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { promptText } from '../../src/prompt-text.mjs';
-import { CAPABILITY_SEARCH_PARAMETERS, CAPABILITY_TOOL_DESCRIPTION, CAPABILITY_TOOL_NAME, SUBMIT_RESULT_PARAMETERS } from '../../src/capability/contracts.ts';
-import { CAPABILITY_DISCOVERY_PROMPT, CAPABILITY_DISCOVERY_SYSTEM_PROMPT, capabilityBudgetWarning } from '../../src/capability-agent.mjs';
+import {
+  CAPABILITY_STEP_PARAMETERS,
+  CAPABILITY_STEP_TOOL_NAME,
+  CAPABILITY_TOOL_DESCRIPTION,
+  CAPABILITY_TOOL_NAME,
+} from '../../src/capability/contracts.ts';
+import {
+  CAPABILITY_DISCOVERY_PROMPT,
+  CAPABILITY_DISCOVERY_SYSTEM_PROMPT,
+  capabilityBudgetWarning,
+} from '../../src/capability/agent.ts';
 import { CAPABILITY_DISCOVERY_RECORD } from '../../src/capability/discovery-record.ts';
 import { CAPABILITY_SECTION, capabilityPromptTranscript } from '../../src/capability/prompt.ts';
-import capabilityExtension from '../../extensions/capability.mjs';
+import capabilityExtension from '../../extensions/capability.ts';
 
 function object(value: unknown): Record<string, unknown> {
   assert.ok(typeof value === 'object' && value !== null && !Array.isArray(value));
@@ -26,40 +35,50 @@ test('external Capability descriptions and parameter text remain connected to sc
   const tools = asset('capability-tools.json');
   assert.equal(publicText().description, CAPABILITY_TOOL_DESCRIPTION);
 
-  assert.equal(CAPABILITY_SEARCH_PARAMETERS.type, 'object');
-  assert.deepEqual([...CAPABILITY_SEARCH_PARAMETERS.required], ['query', 'src']);
-  assert.equal(CAPABILITY_SEARCH_PARAMETERS.additionalProperties, false);
-  assert.equal(CAPABILITY_SEARCH_PARAMETERS.properties.query.type, 'string');
-  assert.equal(CAPABILITY_SEARCH_PARAMETERS.properties.query.minLength, 1);
-  assert.deepEqual([...CAPABILITY_SEARCH_PARAMETERS.properties.src.enum], ['local']);
-  assert.ok(Object.isFrozen(CAPABILITY_SEARCH_PARAMETERS.properties.src.enum));
-  const search = object(object(tools.search).parameters);
-  assert.equal(search.query, CAPABILITY_SEARCH_PARAMETERS.properties.query.description);
-  assert.equal(search.src, CAPABILITY_SEARCH_PARAMETERS.properties.src.description);
-  assert.match(CAPABILITY_SEARCH_PARAMETERS.properties.src.description, /local:/);
-  assert.doesNotMatch(CAPABILITY_SEARCH_PARAMETERS.properties.src.description, /\bremote:|\ball:/);
+  assert.equal(CAPABILITY_STEP_TOOL_NAME, 'capability_step');
+  const schema = CAPABILITY_STEP_PARAMETERS as unknown as {
+    type: string;
+    required?: string[];
+    additionalProperties: boolean;
+    properties: {
+      queries: { type: string; items: { type: string }; description: string };
+      refs: { type: string; items: { type: string }; description: string };
+      finish: { type: string; default: boolean; description: string };
+    };
+  };
+  assert.equal(schema.type, 'object');
+  assert.deepEqual(schema.required ?? [], []);
+  assert.equal(schema.additionalProperties, false);
 
-  assert.equal(SUBMIT_RESULT_PARAMETERS.type, 'object');
-  assert.deepEqual([...SUBMIT_RESULT_PARAMETERS.required], ['refs']);
-  assert.equal(SUBMIT_RESULT_PARAMETERS.additionalProperties, false);
-  assert.equal(SUBMIT_RESULT_PARAMETERS.properties.refs.type, 'array');
-  assert.equal(SUBMIT_RESULT_PARAMETERS.properties.refs.items.type, 'string');
-  assert.equal(object(object(tools.submit).parameters).refs, SUBMIT_RESULT_PARAMETERS.properties.refs.description);
+  const stepParameters = object(object(tools.step).parameters);
+  assert.equal(schema.properties.queries.type, 'array');
+  assert.equal(schema.properties.queries.items.type, 'string');
+  assert.equal(stepParameters.queries, schema.properties.queries.description);
+
+  assert.equal(schema.properties.refs.type, 'array');
+  assert.equal(schema.properties.refs.items.type, 'string');
+  assert.equal(stepParameters.refs, schema.properties.refs.description);
+
+  assert.equal(schema.properties.finish.type, 'boolean');
+  assert.equal(schema.properties.finish.default, false);
+  assert.equal(stepParameters.finish, schema.properties.finish.description);
 });
 
-test('fixed policy text retains the actual interface/Skill path guidance', () => {
+test('retrieval prompts and budget guidance use external assets', () => {
+  const discovery = asset('capability-discovery.json');
   const policy = asset('capability-policy.json');
-  assert.equal(Object.hasOwn(policy, 'remoteSearchDisabled'), false);
+  assert.equal(CAPABILITY_DISCOVERY_SYSTEM_PROMPT, discovery.system);
+  assert.equal(CAPABILITY_DISCOVERY_PROMPT, discovery.user);
+  for (const field of ['memoryHeader', 'budgetWrapUp', 'additiveExecutionBlocked']) {
+    assert.equal(typeof policy[field], 'string');
+    assert.ok(String(policy[field]).trim().length > 0);
+  }
   assert.equal(capabilityBudgetWarning('warning text'), `warning text\n\n${String(policy.budgetWrapUp)}`);
-  assert.equal(typeof policy.memoryHeader, 'string');
-  assert.match(String(policy.memoryHeader), /Use the selected tool declarations or returned interfaces for calls\. Read Skill entry files by their listed absolute paths\./);
-  assert.doesNotMatch(String(policy.memoryHeader), /read returned tool:\/\/|namespace:\/\/ refs for interface details/);
-  assert.equal(policy.submissionEmpty, 'Submission accepted: no relevant capability found. Stop now.');
 });
 
-test('registered Capability metadata uses external text without obsolete approval guidance', () => {
+test('registered Capability metadata uses external text', () => {
   const registered: Array<{ name: string; description: string; promptSnippet?: string; promptGuidelines?: string[] }> = [];
-  capabilityExtension({ registerTool: (tool: typeof registered[number]) => registered.push(tool), getAllTools: () => [], getActiveTools: () => [], on() {} });
+  capabilityExtension({ registerTool: (tool: typeof registered[number]) => registered.push(tool), getAllTools: () => [], getActiveTools: () => [], on: () => () => {} } as unknown as Parameters<typeof capabilityExtension>[0]);
   const tool = registered.find((candidate) => candidate.name === CAPABILITY_TOOL_NAME);
   assert.ok(tool);
   assert.equal(tool.name, CAPABILITY_TOOL_NAME);
@@ -67,8 +86,6 @@ test('registered Capability metadata uses external text without obsolete approva
   const text = publicText();
   assert.equal(tool.promptSnippet, text.snippet);
   assert.deepEqual(tool.promptGuidelines, text.guidelines);
-  assert.doesNotMatch([tool.description, tool.promptSnippet, ...(tool.promptGuidelines ?? [])].join('\n'), /needs_approval|approval receiver|npm marketplace/);
-  assert.doesNotMatch(CAPABILITY_DISCOVERY_SYSTEM_PROMPT + CAPABILITY_DISCOVERY_PROMPT, /approval receiver|npm marketplace/);
 });
 
 test('memory projection uses the external policy header', () => {

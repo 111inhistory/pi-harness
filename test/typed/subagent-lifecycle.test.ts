@@ -130,7 +130,10 @@ test("terminal notifications cover completion, cancellation and failure with sen
   );
   assert.equal(fake.mainMessages[0].error, null);
   assert.equal(fake.mainMessages[0].history, null, "a memory-only host has no derived history files");
-  assert.match(fake.mainMessages[2].content, /provider failed/);
+  assert.equal(fake.mainMessages[0].content, "done");
+  assert.equal(fake.mainMessages[1].content, "partial");
+  assert.equal(fake.mainMessages[2].content, "");
+  assert.match(fake.mainMessages[2].error, /provider failed/);
 
   // A continuation is a new execution round of the same sender; its terminal
   // event must not be mergeable with round one.
@@ -142,6 +145,8 @@ test("terminal notifications cover completion, cancellation and failure with sen
   assert.equal(continuation.jobId, revived.jobId);
   assert.equal(continuation.round, 2);
   assert.equal(continuation.status, "completed");
+  assert.equal(continuation.content, "second");
+  assert.ok(!continuation.content.includes("done"));
 
   // Read-only polls and repeated stops never resend a terminal notice.
   runtime.stop(completed.id);

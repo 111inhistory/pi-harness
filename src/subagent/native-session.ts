@@ -29,7 +29,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
 
-import capabilityExtension from "../../extensions/capability.mjs";
+import capabilityExtension from "../../extensions/capability.ts";
 import { setCapabilityParent } from "../capability/scope.ts";
 import { installCapabilityMcp } from "../capability/native-discovery.ts";
 import type { CapabilityToolCatalog } from "../capability/scope.ts";

@@ -10,6 +10,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { terminalResultContent } from "./result.ts";
 
 import { createJobBudget } from "../job-budget.mjs";
 import {
@@ -40,6 +41,7 @@ export interface HistoryBounds {
 export interface JobHistoryPaths {
   summary: string;
   cleanJsonl: string;
+  result?: string;
   [key: string]: unknown;
 }
 
@@ -242,6 +244,7 @@ export interface RuntimeOptions {
   allowInherited?: boolean;
   socketDir?: string;
   historyPaths?: (jobId: string) => JobHistoryPaths | null;
+  resultPath?: (jobId: string) => string | null;
   prepareInherited?: (input: { agentId: string; snapshot: InheritedContext }) => unknown;
   isIdTaken?: (id: string) => boolean;
   onIdAllocated?: (id: string) => void;
@@ -619,16 +622,6 @@ function inheritedWarnings(spec: JobSpec | null | undefined): string[] {
   return warnings.filter((warning): warning is string => typeof warning === "string");
 }
 
-/** One-line prose of a terminal Job for its creator; never the answer itself. */
-function completionText(job: Job): string {
-  const name = typeof job.spec.name === "string" && job.spec.name !== "" ? ` (${job.spec.name})` : "";
-  const lines = [`Subagent ${job.agentId}${name} finished Job ${job.jobId} with status ${job.status}.`];
-  if (job.error !== null && job.error !== undefined) {
-    lines.push(`Error: [${job.error.code}] ${job.error.message}`);
-  }
-  return lines.join("\n");
-}
-
 function isBudgetPhase(value: unknown): value is BudgetPhase {
   return value === "normal" || value === "warning" || value === "exhausted";
 }
@@ -830,6 +823,7 @@ export class SubagentRuntime {
   #allowInherited: boolean;
   #socketDir: string | undefined;
   #historyPaths: ((jobId: string) => JobHistoryPaths | null) | null;
+  #resultPath: ((jobId: string) => string | null) | null;
   #prepareInherited: ((input: { agentId: string; snapshot: InheritedContext }) => unknown) | null;
   #isIdTaken: ((id: string) => boolean) | null;
   #onIdAllocated: ((id: string) => void) | null;
@@ -859,6 +853,7 @@ export class SubagentRuntime {
       allowInherited = true,
       socketDir,
       historyPaths,
+      resultPath,
       prepareInherited,
       isIdTaken,
       onIdAllocated,
@@ -878,7 +873,7 @@ export class SubagentRuntime {
     if (deliverToMain !== undefined && typeof deliverToMain !== "function") {
       throw new SubagentError("invalid_options", "deliverToMain must be a function when provided.");
     }
-    for (const [name, value] of Object.entries({ onEvent, historyPaths, prepareInherited, isIdTaken, onIdAllocated })) {
+    for (const [name, value] of Object.entries({ onEvent, historyPaths, resultPath, prepareInherited, isIdTaken, onIdAllocated })) {
       if (value !== undefined && typeof value !== "function") {
         throw new SubagentError("invalid_options", `${name} must be a function when provided.`);
       }
@@ -897,6 +892,7 @@ export class SubagentRuntime {
     this.#allowInherited = allowInherited;
     this.#socketDir = socketDir;
     this.#historyPaths = historyPaths ?? null;
+    this.#resultPath = resultPath ?? null;
     this.#prepareInherited = prepareInherited ?? null;
     this.#isIdTaken = isIdTaken ?? null;
     this.#onIdAllocated = onIdAllocated ?? null;
@@ -1718,7 +1714,7 @@ export class SubagentRuntime {
   /**
    * Notify the Job's creator exactly once that it became terminal.
    *
-   * The envelope carries references and a one-line summary, never the answer.
+   * The envelope carries bounded final output from this Job, not actor history.
    * Delivery is best effort: one attempt, no retry, no acknowledgement, and a
    * failure here can never change the Job's outcome.
    */
@@ -1749,13 +1745,15 @@ export class SubagentRuntime {
       // A derived view may be unavailable. It must not suppress the one terminal
       // notice or reject the already-settled execution's completion chain.
     }
+    let resultPath: string | null = null;
+    try { resultPath = this.#resultPath?.(job.jobId) ?? null; } catch { /* Keep the terminal notice if its artifact is unavailable. */ }
     const envelope = terminalNotification({
       agentId: job.agentId,
       jobId: job.jobId,
       round,
       name: job.spec.name,
       status: terminalStatus(job.status, job.jobId),
-      content: completionText(job),
+      content: terminalResultContent(job.result, resultPath),
       error: job.error ?? null,
       history,
     });

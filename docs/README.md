@@ -2,7 +2,7 @@
 
 当前目标、接口要求与架构说明留在本目录。代码审查、测试审查和问题调查放在 `reviews/`。过时设计放在 `archive/`。
 
-当前 Subagent 调用链由 TS 应用模块装配，旧 MJS 重导出入口已删除；不是全仓 TS 迁移。宿主消息直接返回 Runtime 回执，外部 Socket 保留。存储 v2、旧历史迁移、备份和迁移工具按既定决定保留。提示词文件见 [`prompts/`](../prompts/README.md)。默认回归使用真实 SDK 与本地模拟模型；此前真实在线样本不代替新调用链的提供方验收。未验证项见[已知问题](known-issues.md)。
+当前 Subagent 与 Capability 检索调用链由 TS 模块装配，旧 MJS 入口已删除；不是全仓 TS 迁移。宿主消息保持 SDK 原生 write 结果，Runtime 回执仅在内部检查，外部 Socket 保留。存储 v2、旧历史迁移、备份和迁移工具按既定决定保留。提示词文件见 [`prompts/`](../prompts/README.md)。默认回归使用真实 SDK 与本地模拟模型；此前真实在线样本不代替新调用链的提供方验收。未验证项见[已知问题](known-issues.md)。
 
 ## 当前入口
 
@@ -21,6 +21,7 @@
 
 - 运行环境：Node.js `>=22.19.0`。
 - SDK 依赖：`@earendil-works/pi-agent-core`、`@earendil-works/pi-ai`、`@earendil-works/pi-codemode` 和 `@earendil-works/pi-coding-agent` 均锁定为 `1.4.0`。`undici` 单独覆盖为 `8.12.2`，修复锁定 SDK 的传递依赖告警，不升级或降级 SDK。
+- 内部检索协议：`capability_step` 合并增量提交与下一批并行搜索，结束后统一交付；计数、状态与放宽后的 Budget 见[内部批量检索](interface-contract.md#内部批量检索与增量提交)。
 - 本地能力检索：复用 `minisearch@7.2.0` 做 BM25 排序，使用库默认切词；精确引用独立查找，不做手写语义分类。详见[当前架构](architecture.md#capability)。
 - 安装与校验：使用 `npm ci` 安装固定依赖，使用 `npm run check` 执行类型检查（`tsc --noEmit`）与测试套件；已有 Windows / PowerShell 平台用例在 Linux 跳过。
 - 扩展装配：`extensions/harness.ts` 配套注册 Subagent、Capability 和原生 MCP 适配器。该入口禁止原生目录发现，保留选中工具的执行；Shell Preflight（`extensions/shell-preflight.mjs`）保持独立配置与使用。

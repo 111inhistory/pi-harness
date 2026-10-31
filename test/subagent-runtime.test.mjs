@@ -715,7 +715,9 @@ test("an observed active-time failure stops only its actor until the handle exit
     assert.equal(runtime.jobRecord(first.id).result, "partial output");
     assert.equal(adapter.mainMessages.length, 1);
     assert.equal(adapter.mainMessages[0].status, "failed");
-    assert.match(adapter.mainMessages[0].content, /status failed\./);
+    assert.equal(adapter.mainMessages[0].round, 1);
+    assert.equal(adapter.mainMessages[0].content, "partial output");
+    assert.equal(adapter.mainMessages[0].error, "Job execution budget exhausted.");
 
     // The sibling was already running; a later observation of the finished
     // Job changes nothing either.
@@ -1157,16 +1159,19 @@ test("notifies the creator with a typed terminal event for completion, failure a
     (({ type, from, subagentId, jobId, round, status, error }) => ({ type, from, subagentId, jobId, round, status, error }))(adapter.mainMessages[0]),
     { type: "notification", from: item.id, subagentId: item.id, jobId: item.id, round: 1, status: "completed", error: null },
   );
-  assert.match(adapter.mainMessages[0].content, /status completed/);
+  assert.equal(adapter.mainMessages[0].round, 1);
+  assert.equal(adapter.mainMessages[0].content, "the whole answer");
 
-  // Failures carry the error summary and notify the creator.
+  // Failures carry the result (empty here) and the error summary separately.
   const failing = runtime.create({ tasks: [spec("failing")] }).items[0];
   adapter.handleFor(failing.id).reject(new Error("model unreachable"));
   await runtime.jobDone(failing.id);
   assert.equal(adapter.mainMessages.length, 2);
   assert.equal(adapter.mainMessages[1].status, "failed");
   assert.equal(adapter.mainMessages[1].jobId, failing.id);
-  assert.match(adapter.mainMessages[1].content, /\[job_failed\] model unreachable/);
+  assert.equal(adapter.mainMessages[1].round, 1);
+  assert.equal(adapter.mainMessages[1].content, "");
+  assert.equal(adapter.mainMessages[1].error, "model unreachable");
 
   // Cancellation publishes its own terminal status rather than silence.
   const cancelled = runtime.create({ tasks: [spec("cancelled")] }).items[0];
@@ -1176,6 +1181,9 @@ test("notifies the creator with a typed terminal event for completion, failure a
   assert.equal(adapter.mainMessages.length, 3);
   assert.equal(adapter.mainMessages[2].status, "cancelled");
   assert.equal(adapter.mainMessages[2].jobId, cancelled.id);
+  assert.equal(adapter.mainMessages[2].round, 1);
+  assert.equal(adapter.mainMessages[2].content, "partial");
+  assert.equal(adapter.mainMessages[2].error, "Job cancelled while running.");
 });
 
 test("a failure reaches a running parent's live Job and hands an idle notice to the adapter", async () => {
@@ -1399,7 +1407,10 @@ test("emits terminal events before notifications, including synchronous batch fa
   });
   failing.create({ tasks: [spec("bad"), spec("good")] });
   assert.equal(failures.length, 1);
-  assert.match(failures[0].content, /\[start_failed\]/);
+  assert.equal(failures[0].status, "failed");
+  assert.equal(failures[0].round, 1);
+  assert.equal(failures[0].content, "");
+  assert.equal(failures[0].error, "cannot create session");
 });
 
 test("a failing persistence hook can never change a Job outcome", async () => {
