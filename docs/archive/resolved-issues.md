@@ -40,9 +40,15 @@ Socket 请求等待接收处理结果，成功正常返回，失败返回错误�
 
 提示词正文已外置到 `prompts/`。权限、参数类型和状态裁定不由正文执行。共同指引、create 专属指引、子会话身份和 Inherited 定位已按[装配契约](../interface-contract.md#subagent-提示词装配)接线。任务语言没有硬拒绝，英文仍是路由器的使用推荐。
 
-## 严格 TypeScript 接线
+## 严格 TypeScript 接线与生产代码迁移
 
-Subagent 应用入口、Runtime、SDK 执行器、会话工厂、身份保留、消息工具和 IPC 运行逻辑已进入严格 TS。原 Subagent／Runtime／Socket／平台 MJS 重导出入口已删除；这不表示存储、路由等剩余 MJS 模块也已迁移。
+Subagent 应用入口、Runtime、SDK 执行器、会话工厂、身份保留、消息工具和 IPC 运行逻辑已进入严格 TS。剩余生产代码（`src/subagent/storage.ts`、`src/subagent/view.ts`、`src/subagent/routing.ts`、`src/subagent/job-budget.ts`、`src/subagent/pi-job-budget.ts`、`src/inherited-context.ts`、`src/prompt-text.ts`、`src/capability/skills.ts`、`src/shell-preflight.ts` 以及 `extensions/shell-preflight.ts`）已全量迁移至 TypeScript。`scripts/` 与历史测试用例（`test/*.test.mjs`）仍保持 MJS。
+
+## Inherited 工具注册与 Responses additional_tools 基础链条
+
+已通过离线 SDK 回归验证（`test/typed/native-session-factory.test.ts`）。Inherited 会话在捕获时通过父会话 spawning assistant 消息锁定物理模型（`physicalModelForCall`），避免虚拟模型在子会话中重路由；Fresh 与 Inherited 均独立加载已配置扩展与 MCP 后端，异步 MCP 注册提供最多 10 秒有界等待。在 OpenAI Responses 模式下，继承工具通过 `additional_tools` 正确声明并成功执行子进程 MCP 后端调用。
+
+本项仅为真实 SDK 与离线子进程场景的局部验证，不能等同于真实提供方多轮在线运行或原生压缩生命周期验收。
 
 ## 本轮结果直接交付
 

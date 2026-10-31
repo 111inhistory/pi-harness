@@ -2,7 +2,7 @@
 
 当前目标、接口要求与架构说明留在本目录。代码审查、测试审查和问题调查放在 `reviews/`。过时设计放在 `archive/`。
 
-当前 Subagent 与 Capability 检索调用链由 TS 模块装配，旧 MJS 入口已删除；不是全仓 TS 迁移。宿主消息保持 SDK 原生 write 结果，Runtime 回执仅在内部检查，外部 Socket 保留。存储 v2、旧历史迁移、备份和迁移工具按既定决定保留。提示词文件见 [`prompts/`](../prompts/README.md)。默认回归使用真实 SDK 与本地模拟模型；此前真实在线样本不代替新调用链的提供方验收。未验证项见[已知问题](known-issues.md)。
+当前 Subagent 与 Capability 检索调用链由 TS 模块装配，`src/` 与 `extensions/` 生产代码已全部迁移至严格 TypeScript（`scripts/` 与部分测试历史用例仍为 MJS）。`write` 保持 SDK 原生文件工具完全不变；消息发送统一由专用的 `msg_write` 承担（Main 与全部子 Agent 默认启用，subagent 命名空间，仅限受管 IPC 目标）。存储 v2、旧历史迁移、备份和迁移工具按既定决定保留。提示词文件见 [`prompts/`](../prompts/README.md)。默认回归使用真实 SDK 与本地模拟模型；此前真实在线样本不代替新调用链的提供方验收。未验证项见[已知问题](known-issues.md)。
 
 ## 当前入口
 
@@ -24,7 +24,7 @@
 - 内部检索协议：`capability_step` 合并增量提交与下一批并行搜索，结束后统一交付；计数、状态与放宽后的 Budget 见[内部批量检索](interface-contract.md#内部批量检索与增量提交)。
 - 本地能力检索：复用 `minisearch@7.2.0` 做 BM25 排序，使用库默认切词；精确引用独立查找，不做手写语义分类。详见[当前架构](architecture.md#capability)。
 - 安装与校验：使用 `npm ci` 安装固定依赖，使用 `npm run check` 执行类型检查（`tsc --noEmit`）与测试套件；已有 Windows / PowerShell 平台用例在 Linux 跳过。
-- 扩展装配：`extensions/harness.ts` 配套注册 Subagent、Capability 和原生 MCP 适配器。该入口禁止原生目录发现，保留选中工具的执行；Shell Preflight（`extensions/shell-preflight.mjs`）保持独立配置与使用。
+- 扩展装配：`extensions/harness.ts` 配套注册 Subagent、Capability 和原生 MCP 适配器。该入口禁止原生目录发现，保留选中工具的执行；Shell Preflight（`extensions/shell-preflight.ts`）保持独立配置与使用。
 
 ## 暂缓的 Work 方案
 
@@ -32,7 +32,7 @@ Work 的代码、测试、演示和设计集中在 [`experiments/work/`](../expe
 
 ## 升级注意事项
 
-- 通用资源 URI 协议已删除。Skill 返回绝对物理路径，使用原生 `read`；工具接口通过返回值或原生声明提供。`write` 仍有受管消息适配：普通文件走 SDK，非受管 Socket／Named Pipe 拒绝连接。
+- 通用资源 URI 协议已删除。Skill 返回绝对物理路径，使用原生 `read`；工具接口通过返回值或原生声明提供。`write` 为 SDK 原生文件工具完全不变，不再覆写或承担消息发送；消息发送由专用 `msg_write` 工具提供，仅接受受管 IPC 地址。
 - 使用 `extensions/harness.ts` 启用完整发现边界。该入口替换 CLI 中可替换的原生扩展，无须修改 SDK。Codemode 仍可启用，但不提供 `searchTools`；接口查询只查看当前启用且允许的工具。改动对重新加载后的扩展生效，本轮不改用户全局配置。
 - Fresh 路由候选直接配置 `"thinking": "low"`、`"medium"` 或 `"high"`。旧的 `thinking.min`／`thinking.max` 配置需改成单个值；Inherited 继续继承父会话的强度。
 - Unix 默认 Socket 根目录按有效用户 ID 隔离。自定义根目录应归当前用户所有，权限为 `0700`，且不能是符号链接。不要通过放宽权限共享端点。

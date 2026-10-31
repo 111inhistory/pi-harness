@@ -4,10 +4,12 @@
 
 ## 未实现功能
 
-### Inherited 的 Responses 工具继承适配
+### Inherited 的 Responses 工具在线续跑与压缩生命周期验收
 
-- [ ] 核查 Inherited 的工具注册、执行与 Responses 原生 `additional_tools` 声明链，区分工具可移植性过滤与 API 声明保留的问题。
-- [ ] 验证父会话动态激活工具后，Inherited 分支能实际调用这些工具，并覆盖续跑和原生压缩后的调用；不只验证声明仍在请求中。
+Inherited 的基础工具注册、延迟 MCP 后端调用与 Responses 原生 `additional_tools` 声明链已在离线 SDK 场景中验证（见[归档](archive/resolved-issues.md#inherited-工具注册与-responses-additional_tools-基础链条)）。
+
+- [ ] 验证父会话动态激活工具后，Inherited 分支在真实提供方在线环境下多轮续跑能实际调用这些工具。
+- [ ] 验证原生压缩后的工具继承调用生命周期；不只验证声明仍在离线测试请求中。
 
 当前可用路径继续使用，专项适配另行完成，不以恢复已移除的压缩插件为前提。
 
@@ -34,7 +36,7 @@
 
 ## 剩余技术债
 
-存储引擎、路由实现、视图渲染、Budget 状态计算、继承捕获及部分 Capability 代码仍为 MJS。这些模块不会因为 TS 调用方存在就自动获得类型保证；整体 TS 迁移尚未完成。
+`src/` 与 `extensions/` 生产代码已全部迁移至严格 TypeScript（`storage.ts`、`view.ts`、`routing.ts`、`job-budget.ts`、`pi-job-budget.ts` 集中在 `src/subagent/`，`inherited-context.ts`、`prompt-text.ts`、`skills.ts`、`shell-preflight.ts` 补齐严格类型与单一事实源）。`scripts/` 与历史测试用例（`test/*.test.mjs`）仍保持 MJS。
 
 SDK 私有 ModelRuntime 桥仍是依赖边界，升级时需要复核。子会话收尾仍用 `takeQueuedMessages` 读取 SDK 选中的待处理队列；该辅助函数临时切换队列模式并使用探针，服务于原生输入保留，不能声称已移除全部队列探针。
 

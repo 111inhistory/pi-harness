@@ -145,20 +145,20 @@ Shell Preflight 独立配置和使用。本项目不要求三个功能各自作�
 
 | 操作 | 当前接口与行为 |
 | --- | --- |
-| 创建 | `subagent_create({context?, tasks: [{task, name?, inheritContext?}]})`；等待本批全部子 Agent 首次模型请求分发到 SDK 运行时，不等待响应或任务完成 |
-| 创建返回 | `items` 按输入顺序包含 `id` 和 `socket`，不返回 `status` 或历史路径；启动前失败以工具错误报告失败 ID，已注册节点保留，不自动重建 |
+| 创建 | `subagent_create({context?, tasks: [{task, name?, inheritContext?}]})`；等待本批各子 Agent 本地就绪（local readiness：路由分配、会话创建、扩展与工具配置完成、初始输入就绪且 IPC 监听准备就绪），不等待首次模型调用或第一轮任务完成 |
+| 创建返回 | `items` 按输入顺序包含 `id`、`socket`、`role` 与 `model`，不返回 `status` 或历史路径；启动前失败以工具错误报告失败 ID，已注册节点保留，不自动重建 |
 | 上下文 | 默认不继承聊天历史；`inheritContext: true` 复制父会话快照 |
 | 查询 | `subagent_list({id?, all?})`；返回嵌套 `children` 树，不返回 `parentId` 或外层 `items`；默认视图有范围限制，`all: true` 查询完整树，`id` 返回可见子树或 `null`；持久化存储启用时返回的树根附带 `historyDir` |
 | 取消 | `subagent_stop({id})`；请求取消，不等待执行退出与历史写入结束 |
 | 结果读取 | 终态通知直接携带本轮最终输出；超限时附完整结果路径。`history.result` 指向原始结果，`history.summary` 与 `history.cleanJsonl` 用于按需回顾该轮任务和记录 |
-| 通信 | `write`／`msg_write` 向返回的 IPC 地址写入消息 |
+| 通信 | `msg_write` 向返回的 IPC 地址写入消息；`write` 保持 SDK 原生文件工具完全不变，不用于消息发送 |
 | 续跑 | 向已停止的 Subagent 发消息，会启动同一 Subagent 的新一轮执行 |
 
-Fresh 初始工具按 Pi 默认配置加载，包括已配置的扩展工具与 MCP 后端，并合并角色 `enableTools`。角色 `excludeTools` 通过 SDK 始终排除，`enableTools` 和扩展主动激活都不能绕过。Root 装配入口由子会话 surface 替代，不重复加载。Inherited 沿用既有继承路径，不套用 Fresh 默认工具加载。
+Fresh 初始工具按 Pi 默认配置加载，包括已配置的扩展工具与 MCP 后端，并合并角色 `enableTools`。角色 `excludeTools` 通过 SDK 始终排除，`enableTools` 和扩展主动激活都不能绕过。Root 装配入口由子会话 surface 替代，不重复加载。Fresh 与 Inherited 均独立加载已配置的扩展与 MCP 后端（`noExtensions: false`）；Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定底层物理模型（`physicalModelForCall`），避免虚拟模型在子会话中重路由，恢复捕获的工具白名单（仅限可重新创建的文件型扩展工具与 MCP 工具，父会话专属诊断工具不传递）、系统提示词与思考强度，对异步 MCP 提供最多 10 秒有界等待。
 
 Subagent 当前共享工作目录。当前实现限制每个父节点最多 4 个活跃子节点，最多派生两层。
 
-创建的等待边界是子会话自身的 SDK 模型流调用已成功返回流句柄，不是注册完成、路由分类调用或请求前钩子；它不保证供应商已接受 HTTP 请求或模型最终成功。此前失败会使 create 报错，此后失败由终态通知报告。
+创建的等待边界是本批子会话本地就绪（local readiness：路由分配、会话创建、扩展与工具配置完成、初始输入就绪且 IPC 监听准备完毕），返回 `id`、`socket`、`role` 与 `model`；不再等待首次模型流分发（移除了 `firstModelCall` 和 `#starting` 拦截），也不等待响应或任务完成。本地准备阶段的失败会使 create 报错，运行阶段的失败由终态通知报告。
 
 默认查询以 Main 或调用者的直接父节点为根。每个同父组最多 4 项，活跃优先、最近停止节点补齐；Main 展开可见活跃子节点，子 Agent 只展开自己，不展开 peers 的孩子。停止节点不展开，即使仍有活跃后代。节点保留状态、Socket 和可用的最近已结束 Job 历史；运行中的节点可同时带上一轮历史。`all: true` 不作窗口裁剪或停止节点折叠。持久化存储启用时，返回的树根节点（含 id 选中的子树根）附带 `historyDir` 指针，指向包含各轮 `<jobId>/summary.md` 与 `transcript.jsonl` 的持久化历史目录；内存会话不附带该字段。
 
@@ -168,7 +168,7 @@ Subagent 当前共享工作目录。当前实现限制每个父节点最多 4 �
 
 - 结果正文沿用 SDK `read` 的头部截断规则：最多 2000 行或 50 KiB，先达到的上限生效。超限时明确标记截断，并附本轮完整结果路径；单行超过字节上限时不切碎该行，仅返回截断说明和路径。
 - 持久化会话写入 `views/<jobId>/result.txt`，通过 `history.result` 返回路径。文件只含原始结果，不添加标题、不裁剪空白、不补换行。缺失时可从保存的 Job 结果重建。
-- 内存会话仅在结果超限时写系统临时文件，不宣称存在持久化历史。文件写入失败时仍投递有界结果，并说明完整文件不可用，不伪造路径。
+- 内存会话仅在结果超限时写系统临时文件，临时文件由 `temporary-results.ts` 统一管理，在根服务退役或 `/reload` 时保持存活供父节点补读，在 Node.js 进程正常退出时清理（不保证 SIGKILL 下清理），不宣称存在持久化历史。文件写入失败时仍投递有界结果，并说明完整文件不可用，不伪造路径。
 - 结果绑定 `agentId`、`jobId` 和 `round`，只取本轮原生历史区间。续跑不附带此前轮次的结果、累计 Actor 历史或 Inherited 父会话背景。
 - 空的最后回复保持为空，不回退到更早的模型文字；工具调用说明不当作最终结果。失败或取消时只携带本轮已产生的最后回复文本，状态与错误仍单独报告。
 - `summary.md` 和 `transcript.jsonl` 继续用于历史查阅，不充当直接返回正文。结果文件写入失败不改变模型执行状态；历史写入状态另记。直接交付不改变执行、结束或通知触发条件。
@@ -193,11 +193,11 @@ Subagent 当前共享工作目录。当前实现限制每个父节点最多 4 �
 
 ### 通信指引
 
-Agent 应通过提供的 `write`／`msg_write` 发送消息，不应另写 Python Socket 客户端替代托管通信入口。
+Agent 应通过提供的 `msg_write` 发送消息；`write` 保持 SDK 原生文件工具完全不变，不再覆写或承担消息发送。
 
 **已实现纯文本通信接口与宿主分帧。** 调用方只提供接收地址和纯文本消息。`content` 就是消息正文，不要求调用方把正文封装成 JSON、拼接 NDJSON 或添加末尾换行。
 
-`write`／`msg_write` 由宿主负责通信封装、消息分帧（`src/ipc/message.ts` 中的 `managedFrame`）和发送者绑定。内部传输格式不属于 Agent 的调用契约。
+`msg_write` 位于 subagent 命名空间，对 Main 和所有子 Agent 默认启用，仅接受受管 IPC 地址。由宿主负责通信封装、消息分帧（`src/ipc/message.ts` 中的 `managedFrame`）和发送者绑定。内部传输格式不属于 Agent 的调用契约。
 
 以下是目标接口的工具参数示例，正文为纯文本，地址为接口返回的实际地址：
 
@@ -210,9 +210,9 @@ Agent 应通过提供的 `write`／`msg_write` 发送消息，不应另写 Pytho
 
 消息正文中的换行或 JSON 文本按普通内容传递，不被当成多个报文或宿主元数据。调用方不提供发送者身份；宿主统一绑定真实发送者。
 
-`write` 写入普通文件时保持文件写入语义，向受管理的 Agent 端点发送消息时使用消息封装。`msg_write` 仍只用于消息端点，不写普通文件。提示词与工具说明已同步更新为纯文本通信规范。
+`write` 仅用于普通文件读写，保持 SDK 原生文件操作 semantics。`msg_write` 专用于受管消息端点，不写普通文件。提示词与工具说明已同步更新为纯文本通信规范。
 
-消息写入成功沿用 SDK 文件 `write` 的返回格式，不另加 ACK 或回执对象；失败以消息投递错误报告。消息写入成功不等于接收者已读取，也不等于任务已完成。超时或错误不保证消息尚未送达，不自动重发。
+消息写入成功返回简洁纯文本（`Successfully sent message to ...`），`details: undefined`，不另加 ACK 或回执对象；失败以消息投递错误报告。广播部分失败在响应中保留失败接收者列表及原因，普通 IPC 错误不向调用方泄漏内部任意状态细节。消息写入成功不等于接收者已读取，也不等于任务已完成。超时或错误不保证消息尚未送达，不自动重发。
 
 ### 自动完成通知
 
@@ -260,7 +260,7 @@ Harness 为没有专用结果渲染器的工具提供统一预览，包括 Capab
 
 ## 提示词与架构
 
-工具提示词应表达上述使用流程和行为边界。提示词正文放在 `prompts/`，通过 `src/prompt-text.mjs` 读取；执行代码保留数据装配、参数结构和权限判断。角色说明与路由偏好仍来自 `subagent-routing.json`，不新增模板框架或静默回退正文。
+工具提示词应表达上述使用流程和行为边界。提示词正文放在 `prompts/`，通过 `src/prompt-text.ts` 的类型化缓存 getter 读取；执行代码保留数据装配、参数结构和权限判断。角色说明与路由偏好仍来自 `subagent-routing.json`，不新增模板框架或静默回退正文。
 
 ### Subagent 提示词装配
 
@@ -288,7 +288,7 @@ Harness 为没有专用结果渲染器的工具提供统一预览，包括 Capab
 
 ## 核心设计细节
 
-核心 typed 模块（`src/subagent/execution.ts`、`lifecycle.ts`、`delivery.ts`、`routing.ts`、`src/ipc/endpoint.ts`、`message.ts`、`src/capability/discovery-record.ts`）已在当前工作区分离实现并建立单元测试：
+核心 typed 模块（`src/subagent/execution.ts`、`lifecycle.ts`、`delivery.ts`、`routing.ts`、`storage.ts`、`view.ts`、`job-budget.ts`、`pi-job-budget.ts`、`inherited-context.ts`、`src/ipc/endpoint.ts`、`message.ts`、`src/capability/discovery-record.ts`、`skills.ts`、`shell-preflight.ts`）已在当前工作区分离实现并建立单元测试：
 
 - Capability 共享底层执行入口，落实 D4 仅本地检索，基于 `capability-discovery` 分支规范记录解决嵌套调用记忆丢失。
 - 终态裁定统一覆盖正常完成、取消与失败，支持空闲父 Agent 唤醒续跑。

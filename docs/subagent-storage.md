@@ -30,7 +30,7 @@ Pi 原生 `SessionManager` 仍保留其解析的历史。插件不重写 Pi 的�
 
 ### 4.1 A 层：根分支事件
 
-`src/subagent-storage.mjs` 定义事件，适配层使用 `pi.appendEntry(customType, data)` 写入；`data.v = 2`。
+`src/subagent/storage.ts` 使用 TypeScript 判别联合类型定义事件，适配层使用 `pi.appendEntry(customType, data)` 写入；`data.v = 2`。
 
 | `customType` | 写入时机 | 字段 |
 | --- | --- | --- |
@@ -85,7 +85,7 @@ ID 占用扫描覆盖根文件全部分支的 Actor／Job 事件、自有子文�
 
 ### 4.6 可读历史视图
 
-`src/subagent-view.mjs` 从 Job 元数据和原生区间派生文件：
+`src/subagent/view.ts` 从 Job 元数据和原生区间派生文件：
 
 ```text
 subagent-sessions/<rootId>/views/<jobId>/summary.md
@@ -106,7 +106,7 @@ subagent-sessions/<rootId>/views/<jobId>/result.txt
 - 结束：原生退出与清理 → 冻结候选终态 → 生成视图并记录历史写入状态 → Runtime 统一发布一次根终态 → 通知父节点。
 - 续跑：注册新的 continuation Job → 必要时写时复制 → 定位锚点 → 写新起点 → 原生执行。
 
-内存会话不生成持久化历史视图；结果超过通知上限时，Root 写入单独的系统临时文件，通知附该文件路径。临时文件保留供父节点补读，不随当前 Job 结束删除。
+内存会话不生成持久化历史视图；结果超过通知上限时，Root 写入单独的系统临时文件，临时文件由 `src/subagent/temporary-results.ts` 集中管理，在根服务退役与 `/reload` 时保持存活供父节点补读，在 Node.js 进程正常退出时清理（不保证 SIGKILL 下清理），通知附该文件路径。
 
 每轮由 Runtime 独立通知父节点，通知直接携带有界的本轮结果。普通消息和终态不合并，不为迁移或恢复重新执行已经结束的任务。
 
@@ -161,4 +161,4 @@ subagent-sessions/<rootId>/views/<jobId>/result.txt
 
 ## 9. 实施结果
 
-存储、Runtime、适配层和 Job 视图已接通；完整快照、`hydrate`、每轮历史重写与旧历史模块已移除。独立转换和真实数据迁移已完成，原件及备份保留。当前默认回归与提示词状态见[正文外置记录](reviews/prompt-extraction-review.md)。
+存储、Runtime、适配层和 Job 视图已全量进入 TypeScript（`src/subagent/storage.ts`、`src/subagent/view.ts`、`src/subagent/runtime.ts` 等）；完整快照、`hydrate`、每轮历史重写与旧历史模块已移除。独立转换和真实数据迁移已完成，原件及备份保留。当前默认回归与提示词状态见[正文外置记录](reviews/prompt-extraction-review.md)。
