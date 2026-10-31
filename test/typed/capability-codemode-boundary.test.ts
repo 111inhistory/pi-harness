@@ -134,3 +134,141 @@ test('a Codemode admission aborted after wake-up passes the free worker to the n
     else process.env['PI_CODEMODE_MAX_WORKERS'] = oldLimit;
   }
 });
+
+function scriptOutput(result: unknown): string {
+  const content = (result as { content?: { type: string; text?: string }[] }).content ?? [];
+  return content.filter((part) => part.type === 'text').map((part) => part.text ?? '').join('\n');
+}
+
+function returnedValue(result: unknown): unknown {
+  const text = scriptOutput(result);
+  assert.doesNotMatch(text, /Script error/, text);
+  const start = text.lastIndexOf('\nOutput:\n');
+  assert.notEqual(start, -1, text);
+  return JSON.parse(text.slice(start + '\nOutput:\n'.length));
+}
+
+const BIG_PARAMETER_GUIDANCE = `BIG_PARAMETER_GUIDANCE ${'describe the query in detail. '.repeat(40)}`;
+const BIG_PROMPT_GUIDELINE = `BIG_PROMPT_GUIDELINE ${'prefer short queries. '.repeat(40)}`;
+
+function bigFixture() {
+  const { pi, definitions } = registrationFixture();
+  const bigParameters = {
+    type: 'object',
+    properties: { query: { type: 'string', description: BIG_PARAMETER_GUIDANCE } },
+    required: ['query'],
+  } as const;
+  const bigTool: AgentTool = {
+    name: 'big_tool', label: 'Big tool', description: 'Search the big fixture index.',
+    parameters: bigParameters, outputSchema: { type: 'object', properties: { hits: { type: 'array', items: { type: 'string' } } } },
+    execute: async () => ({ content: [], details: {} }),
+  };
+  const secondTool: AgentTool = {
+    name: 'second_tool', label: 'Second tool', description: 'Read one big fixture document.',
+    parameters: { type: 'object', properties: {} }, execute: async () => ({ content: [], details: {} }),
+  };
+  const namespace = { name: 'fixture_ns', aliases: ['fixture'], description: 'Fixture namespace', instructions: 'FIXTURE_INSTRUCTIONS' };
+  for (const tool of [bigTool, secondTool]) {
+    definitions.set(tool.name, {
+      ...tool, promptGuidelines: [BIG_PROMPT_GUIDELINE], namespace,
+    } as unknown as ToolDefinition);
+  }
+  pi.setActiveTools(['codemode', 'big_tool', 'second_tool']);
+  installCapabilityCodemode(pi, () => true, () => true);
+  const ctx = {
+    tools: [bigTool, secondTool], sessionManager: { getBranch: () => [] }, modelRegistry: {},
+  } as unknown as ExtensionToolContext;
+  return { definitions, ctx };
+}
+
+test('sandbox ALL_TOOLS is a short plain listing while describeTool keeps the full declaration', async () => {
+  const { definitions, ctx } = bigFixture();
+  const result = await definitions.get('codemode')!.execute('catalog', { code: `
+    const listed = ALL_TOOLS.map((tool) => ({ name: tool.name, description: tool.description }));
+    const full = await describeTool('big_tool');
+    const namespace = await describeNamespace('fixture');
+    return JSON.stringify({ listed, full, namespace });
+  ` }, undefined, undefined, ctx);
+  const value = returnedValue(result) as {
+    listed: { name: string; description: string }[];
+    full: string;
+    namespace: { name: string; aliases: string[]; description: string; instructions: string; tools: string[] };
+  };
+  assert.deepEqual(value.listed.map((tool) => tool.name), ['big_tool', 'second_tool']);
+  for (const entry of value.listed) {
+    assert.ok(entry.description.length <= 200, `ALL_TOOLS description is long: ${entry.description.length}`);
+    assert.doesNotMatch(entry.description, /BIG_PARAMETER_GUIDANCE|BIG_PROMPT_GUIDELINE|declare const tools|properties/);
+  }
+  assert.equal(value.listed[0]!.description, 'Search the big fixture index.');
+  assert.equal(value.listed[1]!.description, 'Read one big fixture document.');
+
+  assert.match(value.full, /Search the big fixture index\./);
+  assert.match(value.full, /declare const tools/);
+  assert.match(value.full, /BIG_PARAMETER_GUIDANCE/);
+  assert.match(value.full, /BIG_PROMPT_GUIDELINE/, 'describeTool keeps prompt guidelines');
+
+  assert.deepEqual(value.namespace.tools, ['big_tool', 'second_tool']);
+  assert.equal(value.namespace.name, 'fixture_ns');
+  assert.equal(value.namespace.description, 'Fixture namespace');
+  assert.doesNotMatch(JSON.stringify(value.namespace), /BIG_PARAMETER_GUIDANCE|declare const tools|properties/,
+    'describeNamespace lists members without their schemas');
+});
+
+test('a running sandbox keeps its tool snapshot and the next call sees newly activated tools', async () => {
+  const { pi, definitions } = registrationFixture();
+  let gateStarted = false;
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+  const gateTool: AgentTool = {
+    name: 'gate', label: 'Gate', description: 'Hold the script open.',
+    parameters: { type: 'object', properties: {} }, execute: async () => ({ content: [], details: {} }),
+  };
+  const lateTool: AgentTool = {
+    name: 'late_tool', label: 'Late tool', description: 'Activated while a script runs.',
+    parameters: { type: 'object', properties: {} }, execute: async () => ({ content: [], details: {} }),
+  };
+  const ctxTools = [gateTool];
+  const ctx = {
+    tools: ctxTools, sessionManager: { getBranch: () => [] }, modelRegistry: {},
+    executeTool: async () => {
+      gateStarted = true;
+      await gate;
+      return { toolCall: { id: 'gate-call' }, isError: false, result: { content: [{ type: 'text', text: 'released' }], details: {} } };
+    },
+  } as unknown as ExtensionToolContext;
+  pi.setActiveTools(['codemode', 'gate']);
+  installCapabilityCodemode(pi, () => true, () => true);
+  const definition = definitions.get('codemode')!;
+  const code = 'await tools.gate({}); return JSON.stringify(ALL_TOOLS.map((tool) => tool.name));';
+  const running = definition.execute('snapshot', { code }, undefined, undefined, ctx);
+  try {
+    await waitFor(() => gateStarted);
+    ctxTools.push(lateTool);
+    pi.setActiveTools(['codemode', 'gate', 'late_tool']);
+  } finally {
+    releaseGate();
+  }
+  const during = (returnedValue(await running) as string[]).sort();
+  assert.deepEqual(during, ['gate'], 'the running sandbox keeps its own tool snapshot');
+
+  const next = (returnedValue(await definition.execute('next', { code }, undefined, undefined, ctx)) as string[]).sort();
+  assert.deepEqual(next, ['gate', 'late_tool'], 'the next Codemode call sees the newly activated tool');
+});
+
+test('codemode reach claims no servers instead of every active tool', () => {
+  const { pi, definitions } = registrationFixture();
+  pi.setActiveTools(['codemode', 'mcp__fixture_server__inspect', 'read']);
+  installCapabilityCodemode(pi, () => true, () => true);
+  const reachesTools = definitions.get('codemode')!.reachesTools!;
+  for (const code of [
+    'return ALL_TOOLS.map((tool) => tool.name);',
+    'return await describeTool("mcp__fixture_server__inspect");',
+    'return await describeNamespace("fixture_server");',
+    'return await tools.mcp__fixture_server__inspect({});',
+  ]) {
+    const reach = reachesTools({ code });
+    assert.notEqual(reach, 'all');
+    assert.ok(Array.isArray(reach) && !reach.includes('mcp__fixture_server__inspect'), 'no all-active enumeration');
+    assert.deepEqual(reach, [], `lookup script must not wait for MCP servers: ${code}`);
+  }
+});

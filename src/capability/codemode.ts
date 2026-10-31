@@ -148,6 +148,17 @@ function scopeDescription(description: string): string {
 }
 
 /**
+ * The sandbox only reads a tool's name and description: `ALL_TOOLS` lists
+ * `{ name, description }` and declarations are rendered host-side for
+ * `describeTool`. One plain line keeps that catalog small; the parameter schema
+ * and prompt guidelines stay in the full declaration.
+ */
+function summary(tool: AgentTool): string {
+  const line = (tool.description ?? '').split(/\r?\n/).map((part) => part.trim()).find((part) => part !== '') ?? '';
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
+}
+
+/**
  * Keep Pi's Codemode declaration/loadout/renderers, but use its public sandbox
  * with an explicit global list. The built-in executor always installs searchTools;
  * this adapter never registers it. ALL_TOOLS and description helpers see only the
@@ -177,7 +188,14 @@ export function installCapabilityCodemode(
           const description = scopeDescription(changes.descriptions['codemode']);
           return { ...changes, descriptions: { ...changes.descriptions, codemode: description } };
         },
-        reachesTools: () => pi.getActiveTools().filter((name) => name !== 'codemode' && permitsDeclaration(name)),
+        // Pi uses this from the MCP `tool_call` handler to wait for the servers a call
+        // may reach. A script's sandbox sees the already-active local catalog, so
+        // neither listing (ALL_TOOLS, describeTool, describeNamespace) nor a lookup
+        // needs an outer wait, and claiming every active tool would stall on unrelated
+        // MCP servers. Nested calls still wait natively for their own server: the
+        // sandbox executes them through `ctx.executeTool`, whose `tool_call` event is
+        // handled by the MCP extension for the tool's owner before it runs.
+        reachesTools: () => [],
         async execute(toolCallId, input, signal, onUpdate, ctx) {
           const started = performance.now();
           const parsed = parseCodemodeSource((input as { code: string }).code);
@@ -185,6 +203,7 @@ export function installCapabilityCodemode(
           const tools = ctx.tools.filter((tool) => tool.name !== 'codemode' && active.has(tool.name) && permits(ctx, tool.name));
           const declarations = new Map(tools.map((tool) => [tool.name, renderToolSample(declaration(tool,
             pi.getAllTools().find((entry) => entry.name === tool.name)?.promptGuidelines))]));
+          const summaries = new Map(tools.map((tool) => [tool.name, summary(tool)]));
           const calls: { id: string; name: string; args: string; status: string; durationMs?: number; error?: string }[] = [];
           const publish = () => onUpdate?.({ content: [], details: { calls: calls.map((call) => ({ ...call })) } });
           let usage: Usage | undefined;
@@ -207,7 +226,7 @@ export function installCapabilityCodemode(
               },
               tools: tools.map((tool) => ({
                 ...declaration(tool),
-                description: declarations.get(tool.name) ?? tool.description,
+                description: summaries.get(tool.name) ?? '',
                 async execute(args, { signal: nestedSignal }) {
                   const row = { id: `${toolCallId}/?`, name: tool.name, args: (JSON.stringify(args) ?? 'undefined').slice(0, 200), status: 'running' } as (typeof calls)[number];
                   calls.push(row); publish();
@@ -233,6 +252,7 @@ export function installCapabilityCodemode(
                   const tool = tools.find((entry) => entry.name === name || toCodemodeIdentifier(entry.name) === name);
                   return tool ? declarations.get(tool.name) : undefined;
                 } },
+                // Names and namespace metadata only; member schemas stay in describeTool.
                 { name: 'describeNamespace', spread: true, execute(value) {
                   const name = String(argsOf(value)[0]);
                   const members = tools.filter((tool) => {

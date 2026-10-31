@@ -2,5 +2,5 @@
   "disabledDescription": "Disabled: Capability owns resource discovery in this harness.",
   "codemodeFallback": "Execute JavaScript using currently enabled tools. Discover resources through capability.",
   "resourceReadRequirement": "The server must have a currently enabled tool selected through capability and permitted in this scope.",
-  "codemodeScope": "- `ALL_TOOLS`, `describeTool(name)` and `describeNamespace(name)` inspect only currently enabled tools. Resource discovery uses capability."
+  "codemodeScope": "- `ALL_TOOLS`, `describeTool(name)` and `describeNamespace(name)` inspect only currently enabled tools. Resource discovery uses capability. Tools enabled after a script starts, including by Capability inside that script, are callable in a new Codemode call."
 }
