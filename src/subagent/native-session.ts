@@ -132,7 +132,6 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
             childPi.registerTool(tool);
             if (selected.has(tool.name) && tool.exposure !== 'hidden') {
               missing.delete(tool.name);
-              childPi.setActiveTools([...childPi.getActiveTools(), tool.name]);
               registrationChanged?.();
             }
           },
@@ -228,7 +227,6 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
           request.signal.addEventListener('abort', abort, { once: true });
           if (request.signal.aborted) abort();
         });
-        execution.session.setActiveToolsByName([...selected].filter(name => !request.excludedTools.includes(name)));
       }
     } catch (error) {
       await execution.dispose();

@@ -52,6 +52,26 @@ async function canConnect(address: string): Promise<boolean> {
   }
 }
 
+test('endpoint resolution accepts registered addresses and rejects unknown addresses uniformly', async () => {
+  const root = path.join(os.tmpdir(), 'pi-listener-registry-fixture');
+  const listeners = new AgentListeners({
+    socketDir: root, baseSocketDir: root,
+    actors: () => [{ agentId: 'sub_01', parentAgentId: null, depth: 1 }],
+    isAccepting: () => true,
+    send: async command => ({ ok: true, to: command.to, jobId: null }),
+    onError: error => { throw error; },
+  });
+  assert.deepEqual(await listeners.resolve(getAgentSocketPath('sub_01', root)), {
+    isManaged: true, isBroadcast: false, targetId: 'sub_01',
+  });
+  assert.deepEqual(await listeners.resolve(getBroadcastSocketPath('sub_01', root)), {
+    isManaged: true, isBroadcast: true, parentId: 'sub_01',
+  });
+  for (const address of [getAgentSocketPath('ghost', root), getAgentSocketPath('ghost', path.dirname(root))]) {
+    assert.deepEqual(await listeners.resolve(address), { isManaged: false });
+  }
+});
+
 test("all registered stopped actor endpoints stay reachable beyond the display window", { skip: !posix, timeout: 15000 }, async (t) => {
   const root = await socketRoot(t);
   const runtime = createSubagentRuntime({

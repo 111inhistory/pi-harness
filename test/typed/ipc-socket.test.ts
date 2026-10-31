@@ -11,7 +11,6 @@ import {
   SocketWriteError,
   createOwnedNdjsonServer,
   getAgentSocketPath,
-  isInSocketDirectory,
   validateInboundFrame,
   writeSocket,
 } from "../../src/ipc/socket.ts";

@@ -66,7 +66,7 @@ export async function runListenerCacheScenario(fixture: ScenarioFixture): Promis
   if (process.platform !== "win32") {
     await assert.rejects(
       fixture.call("msg_write", { path: path.join(fixture.sessionSocketDir, "ghost.sock"), content: '{"content":"unknown"}' }),
-      (error: unknown) => isSubagentError(error, "unknown_endpoint"),
+      (error: unknown) => isSubagentError(error, "unmanaged_endpoint"),
     );
   }
   await fixture.session.reload();

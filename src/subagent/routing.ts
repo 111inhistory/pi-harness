@@ -7,6 +7,12 @@
  * differing candidate levels therefore also chooses the thinking level.
  */
 
+import { readFileSync } from 'node:fs';
+import { composeAssignment } from './prompt.ts';
+import { isRetryableAssistantError, retryDelayMs, type Api, type Model, type ClassifierApi, type ClassifierModel, type ClassifierContext, type ClassifierChoiceQuestion } from '@earendil-works/pi-ai';
+import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
+import type { JobBudgetPort } from './job-budget.ts';
+
 export const ROUTING_THINKING_LEVELS = ["low", "medium", "high"] as const;
 export type RoutingThinkingLevel = (typeof ROUTING_THINKING_LEVELS)[number];
 
@@ -187,11 +193,6 @@ export function modelSupportsThinking(
 }
 
 
-import { readFileSync } from 'node:fs';
-import { composeAssignment } from './prompt.ts';
-import { isRetryableAssistantError, retryDelayMs, type Api, type Model, type ClassifierApi, type ClassifierModel, type ClassifierContext, type ClassifierChoiceQuestion } from '@earendil-works/pi-ai';
-import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
-import type { JobBudgetPort } from './runtime.ts';
 
 export interface RouteSubagentInput {
   readonly registry: Pick<ModelRegistry, 'find' | 'findOfType' | 'classify'>;
