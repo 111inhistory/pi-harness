@@ -513,14 +513,15 @@ test("transplantability filters built-in and harness tools only", () => {
   assert.deepEqual(droppedInheritedTools(api.getAllTools(), ["read", "extension_tool", "extension_tool"], 0), ["extension_tool"]);
   assert.deepEqual(
     inheritedToolNames(api.getAllTools(), ["read", "extension_tool", "write"], 0),
-    ["read", "write", "subagent_create", "subagent_list", "subagent_stop", "capability"],
+    ["read", "write", "subagent_create", "subagent_list", "subagent_stop", "capability", "msg_write"],
   );
-  assert.deepEqual(harnessToolsForDepth(MAX_AGENT_DEPTH), ["subagent_list"]);
+  assert.deepEqual(harnessToolsForDepth(MAX_AGENT_DEPTH), ["subagent_list", "msg_write"]);
   assert.deepEqual(harnessToolsForDepth(MAX_AGENT_DEPTH - 1), [
     "subagent_create",
     "subagent_list",
     "subagent_stop",
     "capability",
+    "msg_write",
   ]);
 });
 

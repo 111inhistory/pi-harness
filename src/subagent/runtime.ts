@@ -767,10 +767,6 @@ export class SubagentRuntime {
   #completions: Job[] = [];
 
   constructor(options: RuntimeOptions) {
-    const rawOptions: unknown = options;
-    if (!isPlainObject(rawOptions)) {
-      throw new SubagentError("invalid_options", "Runtime options must be an object.");
-    }
     const {
       startJob,
       deliverMessage,
@@ -787,30 +783,6 @@ export class SubagentRuntime {
       agentSocketPath,
     } = options;
 
-    if (typeof startJob !== "function") {
-      throw new SubagentError("invalid_options", "A startJob adapter function is required.");
-    }
-    if (finalizeJob !== undefined && typeof finalizeJob !== "function") {
-      throw new SubagentError("invalid_options", "finalizeJob must be a function when provided.");
-    }
-    if (deliverMessage !== undefined && typeof deliverMessage !== "function") {
-      throw new SubagentError("invalid_options", "deliverMessage must be a function when provided.");
-    }
-    if (deliverToMain !== undefined && typeof deliverToMain !== "function") {
-      throw new SubagentError("invalid_options", "deliverToMain must be a function when provided.");
-    }
-    for (const [name, value] of Object.entries({ onEvent, historyPaths, resultPath, prepareInherited, isIdTaken, onIdAllocated })) {
-      if (value !== undefined && typeof value !== "function") {
-        throw new SubagentError("invalid_options", `${name} must be a function when provided.`);
-      }
-    }
-    if (typeof allowInherited !== "boolean") {
-      throw new SubagentError("invalid_options", "allowInherited must be a boolean.");
-    }
-    if (agentSocketPath !== undefined && typeof agentSocketPath !== "function") {
-      throw new SubagentError("invalid_options", "agentSocketPath must be a function when provided.");
-    }
-
     this.#startJob = startJob;
     this.#deliverMessage = deliverMessage ?? null;
     this.#deliverToMain = deliverToMain ?? null;
@@ -822,7 +794,7 @@ export class SubagentRuntime {
     this.#prepareInherited = prepareInherited ?? null;
     this.#isIdTaken = isIdTaken ?? null;
     this.#onIdAllocated = onIdAllocated ?? null;
-    this.#finalizeJob = typeof finalizeJob === "function" ? finalizeJob : null;
+    this.#finalizeJob = finalizeJob ?? null;
     this.#agentSocketPath = agentSocketPath ?? formatAgentSocketPath;
   }
 

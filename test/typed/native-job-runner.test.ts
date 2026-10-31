@@ -775,7 +775,7 @@ for (const inherited of [false, true]) {
         childContext("sub_01", "Main", getAgentSocketPath("Main", "/tmp/sockets")),
         ...(inherited && orientation.trim() !== "" ? [orientation] : []),
       ]);
-      assert.equal(opened.loadDefaultExtensions, !inherited);
+      assert.equal(opened.inheritedTools !== undefined, inherited);
       assert.equal(h.routing.calls.length, !inherited && (stage === "initial" || stage === "seed-continuation") ? 1 : 0);
       if (stage === "reopen") assert.equal(h.actors.opens.length, 1);
     });

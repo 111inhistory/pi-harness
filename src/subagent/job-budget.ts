@@ -1,4 +1,4 @@
-import { promptString } from '../prompt-text.mjs';
+import { promptString } from '../prompt-text.ts';
 
 export interface BudgetLimit { readonly soft: number; readonly hard: number }
 export interface BudgetProfile {

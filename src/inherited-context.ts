@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
-import type { ExtensionAPI, ExtensionContext, FileEntry } from '@earendil-works/pi-coding-agent';
+import type { ExtensionContext, FileEntry } from '@earendil-works/pi-coding-agent';
 import { isHarnessEntry, withoutEntries } from './subagent/storage.ts';
 import { physicalModelForCall } from './subagent/model-runtime.ts';
 
@@ -43,7 +43,7 @@ function withoutInFlightToolCalls(entries: FileEntry[]): FileEntry[] {
 
 /** Resolve the producing model before sanitizing the still-running spawning call. */
 export function captureInheritedContext(
-  pi: Pick<ExtensionAPI, 'getActiveTools'>,
+  pi: { getActiveTools(): readonly string[] },
   ctx: Pick<ExtensionContext, 'cwd' | 'model' | 'thinkingLevel' | 'modelRegistry' | 'sessionManager' | 'getSystemPrompt'>,
   toolCallId?: string,
 ): InheritedSnapshot {

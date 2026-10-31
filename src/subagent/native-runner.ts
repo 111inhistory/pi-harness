@@ -29,7 +29,7 @@ import { capabilityAllowsTool, capabilityAvailableTools } from "../capability/sc
 import { getAgentSocketPath } from "../ipc/socket.ts";
 import { installModelCallBudget } from "./pi-job-budget.ts";
 import { childContext, childPromptBlocks, composeAssignment, continuationControlPrompt, inheritedContextInstruction } from './prompt.ts';
-import { readTranscript } from "../subagent-view.mjs";
+import { readTranscript } from "./view.ts";
 import { deliveryEntryFor, deliveryMessage, peerDeliveryEntry } from "./delivery.ts";
 import { takeQueuedMessages } from "./lifecycle.ts";
 import { harnessToolsForDepth, inheritedToolNames } from "./tool-policy.ts";
@@ -395,7 +395,6 @@ export class NativeJobRunner {
       if (snapshot !== null) delete snapshot["entries"];
 
       const opened = await deps.sessions.open({
-        loadDefaultExtensions: roleId !== null,
         ...(roleId === null && plannedTools !== null ? { inheritedTools: plannedTools } : {}),
         agentId: request.agentId,
         cwd,
@@ -514,6 +513,7 @@ export class NativeJobRunner {
           for (const entry of assigned) await appendCustomMessage(native.session, entry.message);
           // Whatever the run then does — finish, fail or be stopped — its own
           // outcome decides the Job; the prompt submission itself is final.
+          if (live.cancelled) throw new SubagentError('cancelled', 'Subagent startup was cancelled.');
           // Local setup and initial input are complete. Provider projection,
           // authentication and execution now belong to the background run.
           live.sessionReady();

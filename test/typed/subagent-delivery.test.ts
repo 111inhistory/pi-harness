@@ -92,10 +92,3 @@ for (const status of ["cancelled", "failed"]) test(`${status} remains a host-own
   assert.equal(sent[0]!.details.status, status);
   assert.match(sent[0]!.content, new RegExp(status));
 });
-
-test("invalid event fields fail before native handoff", () => {
-  const options = { send: () => assert.fail("invalid input was sent") };
-  assert.throws(() => sendDelivery({ ...progress, sourceId: "" }, options), TypeError);
-  assert.throws(() => sendDelivery({ ...progress, round: null as never }, options), TypeError);
-  assert.throws(() => sendDelivery({ ...progress, content: null as never }, options), TypeError);
-});

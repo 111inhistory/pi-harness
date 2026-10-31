@@ -9,9 +9,9 @@ import {
   type ModelRegistry,
 } from '@earendil-works/pi-coding-agent';
 import type { Api, Model } from '@earendil-works/pi-ai';
-import { createSubagentStore, EVENTS, SUBAGENT_SESSIONS_DIR, writeFileAtomic } from '../subagent-storage.mjs';
-import { hasJobView, jobViewPaths, writeJobView, readTranscript } from '../subagent-view.mjs';
-import { routeSubagent } from '../subagent-routing.mjs';
+import { createSubagentStore, EVENTS, SUBAGENT_SESSIONS_DIR, writeFileAtomic } from './storage.ts';
+import { hasJobView, jobViewPaths, writeJobView, readTranscript } from './view.ts';
+import { routeSubagent } from './routing.ts';
 import { DEFAULT_SOCKET_DIR, deriveSessionUid } from '../ipc/socket.ts';
 import { ensurePrivateSocketRoot } from '../ipc/platform.ts';
 import { setCapabilityParent, type CapabilityToolCatalog } from '../capability/scope.ts';

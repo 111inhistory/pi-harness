@@ -246,8 +246,6 @@ export interface NativeExecution {
 
 /** Everything the child session factory needs for one Job. */
 export interface NativeSessionRequest {
-  /** Fresh actors load normal Pi extensions; inherited actors keep their captured loadout. */
-  readonly loadDefaultExtensions: boolean;
   readonly inheritedTools?: readonly string[];
   readonly agentId: string;
   readonly cwd: string;

@@ -2,7 +2,7 @@ import { Type } from '@earendil-works/pi-ai';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import path from 'node:path';
 import { isIpcPath, isWindowsPipe, type EndpointResolverResult } from '../ipc/socket.ts';
-import { promptText } from '../prompt-text.mjs';
+import { promptText } from '../prompt-text.ts';
 import { SubagentError, type BroadcastReceipt, type MessageReceipt } from './runtime.ts';
 
 type Receipt = MessageReceipt | BroadcastReceipt;

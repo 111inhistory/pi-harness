@@ -776,15 +776,6 @@ test("a Budget failure observed before the native handle exists is never lost or
   });
 });
 
-test("rejects invalid runtime options", () => {
-  assert.throws(() => createSubagentRuntime({}), (error) => error instanceof SubagentError && error.code === "invalid_options");
-  assert.throws(() => createSubagentRuntime({ startJob: () => {}, allowInherited: "yes" }), (error) => error.code === "invalid_options");
-  assert.throws(() => createSubagentRuntime({ startJob: () => {}, onEvent: "nope" }), (error) => error.code === "invalid_options");
-  assert.throws(() => createSubagentRuntime({ startJob: () => {}, historyPaths: 5 }), (error) => error.code === "invalid_options");
-  assert.throws(() => createSubagentRuntime({ startJob: () => {}, deliverMessage: "nope" }), (error) => error.code === "invalid_options");
-  assert.throws(() => createSubagentRuntime({ startJob: () => {}, deliverToMain: 5 }), (error) => error.code === "invalid_options");
-});
-
 test("delivers a message to a running agent without waiting for a response", async () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({

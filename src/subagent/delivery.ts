@@ -66,13 +66,6 @@ export interface PeerDeliveryInput {
   jobId?: string | null | undefined;
 }
 
-function validateDeliveryEntry(entry: DeliveryEntry): void {
-  if (typeof entry.sourceId !== "string" || entry.sourceId === "") throw new TypeError("Delivery sourceId must be a non-empty string.");
-  if (typeof entry.round !== "string" && typeof entry.round !== "number") throw new TypeError("Delivery round must be a string or number.");
-  if (typeof entry.content !== "string") throw new TypeError("Delivery content must be a string.");
-  if (entry.jobId !== undefined && typeof entry.jobId !== "string") throw new TypeError("Delivery jobId must be a string when provided.");
-}
-
 function formatDetails(details: unknown): string {
   if (typeof details === "string") return details;
   try {
@@ -87,7 +80,6 @@ function formatDetails(details: unknown): string {
  * of the content exactly once; no caller re-formats or merges it.
  */
 export function deliveryMessage(entry: DeliveryEntry): DeliveryCustomMessage {
-  validateDeliveryEntry(entry);
   let content = entry.content;
   if (entry.terminal !== undefined) {
     const details = entry.terminal.details === undefined ? "" : `: ${formatDetails(entry.terminal.details)}`;
@@ -148,7 +140,6 @@ export function sendDelivery(
     isActive?: () => boolean;
   },
 ): DeliveryResult {
-  validateDeliveryEntry(entry);
   try {
     if (options.isActive !== undefined && !options.isActive()) return { accepted: false, reason: "inactive" };
   } catch {

@@ -56,9 +56,9 @@ test('child prompt blocks select orientation without rewriting their text', () =
 test('missing prompt assets or invalid string fields fail instead of selecting fallback prose', () => {
   assert.throws(() => promptString('not-an-installed-prompt.json', 'text'), { code: 'ENOENT' });
   assert.throws(() => promptString('subagent-tools.json', 'missing'), {
-    name: 'TypeError', message: 'subagent-tools.json must define string missing.',
+    name: 'TypeError',
   });
   assert.throws(() => promptString('subagent-tools.json', 'parameters'), {
-    name: 'TypeError', message: 'subagent-tools.json must define string parameters.',
+    name: 'TypeError',
   });
 });

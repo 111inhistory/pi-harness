@@ -31,8 +31,8 @@ import type {
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "@earendil-works/pi-ai";
 
-import { captureInheritedContext } from "../inherited-context.mjs";
-import { promptString, promptText } from "../prompt-text.mjs";
+import { captureInheritedContext } from "../inherited-context.ts";
+import { promptString, promptText } from "../prompt-text.ts";
 import {
   createMessageWriteTool,
   type ManagedWriteHost,
