@@ -18,13 +18,13 @@ import {
 
 import capabilityExtension from "../../extensions/capability.ts";
 import { CAPABILITY_STEP_TOOL_NAME } from "../../src/capability/contracts.ts";
-import type { CapabilityStepDetails } from "../../src/capability/agent.ts";
+import type { CapabilityStepFeedback } from "../../src/capability/agent.ts";
 import { discoveryRecords, type StoredDiscovery } from "../../src/capability/discovery-record.ts";
 import { setCapabilityParent } from "../../src/capability/scope.ts";
 import type { CapabilityPublicResult } from "../../src/capability/result.ts";
 
 type ToolResultMessage = Extract<Message, { role: "toolResult" }>;
-type ScenarioMode = "provider_error" | "cancelled" | "denied_all" | "denied_mixed" | "denied_skill";
+type ScenarioMode = "provider_error" | "cancelled" | "denied_all" | "denied_mixed" | "denied_skill" | "activation_error";
 
 interface ObservedOutcome {
   readonly isError: boolean;
@@ -94,12 +94,12 @@ function toolResult(messages: readonly unknown[], name: string): ToolResultMessa
   return result;
 }
 
-function stepDetails(message: ToolResultMessage): CapabilityStepDetails {
+function stepFeedback(message: ToolResultMessage): CapabilityStepFeedback {
   const body = message.content.find((part) => part.type === "text");
   assert.ok(body?.type === "text", "capability_step must return text details");
   const parsed: unknown = JSON.parse(body.text);
   assert.ok(isRecord(parsed) && Array.isArray(parsed["searches"]), "capability_step details must carry search results");
-  return parsed as unknown as CapabilityStepDetails;
+  return parsed as unknown as CapabilityStepFeedback;
 }
 
 function contentText(content: unknown): string {
@@ -176,7 +176,7 @@ async function runScenario(mode: ScenarioMode): Promise<Scenario> {
           return stream;
         }
         if (internalCalls === 2) {
-          const firstSearch = stepDetails(toolResult(context.messages, CAPABILITY_STEP_TOOL_NAME)).searches[0];
+          const firstSearch = stepFeedback(toolResult(context.messages, CAPABILITY_STEP_TOOL_NAME)).searches[0];
           assert.ok(firstSearch);
           assert.ok(
             firstSearch.tools.some((hit) => hit.ref === "tool://fixture_partial"),
@@ -207,7 +207,7 @@ async function runScenario(mode: ScenarioMode): Promise<Scenario> {
           "internal selection must not activate the fixture before outer publication");
         assert.deepEqual(discoveryRecords(session.sessionManager.getBranch()), [],
           "internal selection must not persist before outer publication");
-        const continuedSearch = stepDetails(toolResult(context.messages, CAPABILITY_STEP_TOOL_NAME)).searches[0];
+        const continuedSearch = stepFeedback(toolResult(context.messages, CAPABILITY_STEP_TOOL_NAME)).searches[0];
         assert.equal(continuedSearch?.query, mode === "denied_skill" ? "survivor" : "second_pass");
 
         if (mode === "cancelled") {
@@ -219,8 +219,9 @@ async function runScenario(mode: ScenarioMode): Promise<Scenario> {
         }
 
         if (mode !== "provider_error") {
-          // Lose current eligibility between the search snapshot and publication.
-          setCapabilityParent(pi, null, ["fixture_partial"]);
+          // Lose current eligibility between the search snapshot and publication,
+          // except for the explicit activation-failure fallback scenario.
+          if (mode !== "activation_error") setCapabilityParent(pi, null, ["fixture_partial"]);
           const skillRef = mode === "denied_skill"
             ? continuedSearch?.skills[0]?.ref
             : undefined;
@@ -280,6 +281,13 @@ async function runScenario(mode: ScenarioMode): Promise<Scenario> {
         factory(extension) {
           pi = extension;
           capabilityExtension(extension);
+          if (mode === "activation_error") {
+            const setActiveTools = extension.setActiveTools.bind(extension);
+            extension.setActiveTools = ((names: string[]) => {
+              if (names.includes("fixture_partial")) throw new Error("simulated activation failure");
+              setActiveTools(names);
+            }) as ExtensionAPI["setActiveTools"];
+          }
           extension.registerTool({
             name: "fixture_partial",
             label: "Fixture partial",
@@ -491,4 +499,33 @@ test("the next native request declares the compacted interface with its argument
   assert.ok(declared, "activation declares the selected tool on the next request");
   assert.equal((declared.parameters as { type?: string }).type, "object");
   assert.equal(declared.description, "Selected fixture for partial publication.");
+});
+
+test("an activation failure keeps fallback argument schemas and full details without duplicating memory guidance", async () => {
+  const scenario = await runScenario("activation_error");
+  const visible = publicResult(scenario.outcome.content);
+  assert.equal(scenario.outcome.isError, false, "the selected resource stays publishable as partial");
+  assert.equal(visible.status, "partial");
+  assert.match(visible.partialReason ?? "", /selected tools could not be activated: simulated activation failure/);
+  assert.deepEqual(visible.tools?.map((hit) => hit.ref), ["tool://fixture_partial"]);
+  assert.deepEqual(
+    visible.tools?.[0]?.parameters,
+    { type: "object", properties: {} },
+    "without a declaration or query path, the result keeps the argument schema",
+  );
+  assert.equal(visible.tools?.[0]?.interface, undefined);
+  assert.equal(visible.tools?.[0]?.instructions, undefined, "canonical branch memory owns shared guidance");
+  assert.doesNotMatch(JSON.stringify(visible), /fixture_unrelated/);
+
+  assert.ok(isRecord(scenario.outcome.details));
+  assert.equal(scenario.outcome.details["status"], "partial");
+  assert.equal(
+    (scenario.outcome.details["tools"] as Array<{ ref?: string }>)[0]?.ref,
+    "tool://fixture_partial",
+    "full details remain intact",
+  );
+  assert.ok(!scenario.activeTools.includes("fixture_partial"), "the failed activation did not add the tool");
+  const next = scenario.rootRequests[1];
+  assert.ok(next);
+  assert.equal(getCurrentTools(next.messages).some((tool) => tool.name === "fixture_partial"), false);
 });

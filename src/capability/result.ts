@@ -11,6 +11,11 @@
  * kind of short `partialReason`, so a lost member or a degraded search is not
  * hidden solely in the internal warning list.
  *
+ * Shared tool/MCP `instructions` are omitted from Main's tool result in every
+ * case. The canonical branch record still stores them and the request projection
+ * injects them once in the anchored `<capabilities>` section, so repeating them
+ * in the result would only duplicate model-facing text.
+ *
  * Broker/discovery results cross a dynamic provider boundary, so this module
  * normalizes records instead of trusting a concrete runtime shape.
  */
@@ -26,6 +31,8 @@ const DIAGNOSTIC_HIT_FIELDS = new Set([
   "match", "score", "reason", "warnings",
   // Availability is implied by publication; these are host implementation data.
   "status", "available", "exposure", "source", "path",
+  // Canonical branch memory injects shared guidance once for every request.
+  "instructions",
 ]);
 
 /** Result groups whose entries are hits rather than plain values. */

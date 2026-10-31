@@ -15,7 +15,7 @@ import { convertResponsesMessages } from "../../../node_modules/@earendil-works/
 import { deferred } from "../../../test-support/async.ts";
 import { promptString } from "../../../src/prompt-text.ts";
 import { CAPABILITY_STEP_TOOL_NAME } from "../../../src/capability/contracts.ts";
-import type { CapabilityDiscoveryResult, CapabilityStepDetails } from "../../../src/capability/agent.ts";
+import type { CapabilityDiscoveryResult, CapabilityStepFeedback } from "../../../src/capability/agent.ts";
 import { deliverToActor, type FixtureChat, type ScenarioFixture } from "./subagent-sdk-fixture.ts";
 import { capabilityGuiText } from "./capability-gui.ts";
 
@@ -51,6 +51,10 @@ function textOf(context: { messages: readonly Message[] }): string {
       return "";
     })
     .join("\n");
+}
+
+function occurrences(text: string, needle: string): number {
+  return needle === "" ? 0 : text.split(needle).length - 1;
 }
 
 export async function runPackageSkillsScenario(
@@ -92,15 +96,20 @@ export async function runPackageSkillsScenario(
       typeof firstContent === "object" && firstContent !== null && "text" in firstContent && typeof firstContent.text === "string"
         ? firstContent.text
         : "";
-    const details = JSON.parse(rawText) as CapabilityStepDetails;
+    const details = JSON.parse(rawText) as CapabilityStepFeedback;
     const matches = details.searches[0];
     assert.ok(matches);
     assert.deepEqual(matches.skills.map((skill) => skill.name).sort(), expected);
     assert.deepEqual(matches.warnings, []);
-    assert.ok(matches.skills.every((skill) => path.isAbsolute(skill.filePath) && skill.ref === skill.filePath));
+    const skillRefs = matches.skills.map((skill) => {
+      assert.ok(skill.filePath);
+      assert.ok(path.isAbsolute(skill.filePath));
+      assert.equal(skill.ref, skill.filePath);
+      return skill.filePath;
+    });
     return toolAnswer(CAPABILITY_STEP_TOOL_NAME, {
       queries: [],
-      refs: matches.skills.map((skill) => skill.filePath),
+      refs: skillRefs,
       finish: true,
     });
   };
@@ -282,17 +291,27 @@ export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixt
   assert.doesNotMatch(compactGui, /"parameters":/);
   assert.equal(compact.tools[0]?.tools, undefined);
   assert.equal(compact.tools[0]?.description, undefined);
+  assert.equal(compact.tools[0]?.instructions, undefined, "request memory owns the shared guidance");
   const subagentCreateDef = session.getToolDefinition(members[0]!);
   assert.ok(subagentCreateDef);
-  assert.equal(
-    compact.tools[0]?.instructions,
-    (subagentCreateDef as unknown as { namespace: { instructions: string } }).namespace.instructions,
-    "compaction preserves the namespace's shared guidance",
-  );
+  const namespaceInstructions = (subagentCreateDef as unknown as { namespace: { instructions: string } }).namespace.instructions;
+  assert.ok(namespaceInstructions.length > 0);
   const discoveryDetails = discovery.details as CapabilityDiscoveryResult;
-  const toolsGroup = discoveryDetails.tools[0] as unknown as { tools: Array<{ name: string }> };
+  const toolsGroup = discoveryDetails.tools[0] as unknown as { name: string; tools: Array<{ name: string }>; instructions: string };
   assert.deepEqual(toolsGroup.tools.map((tool) => tool.name), members);
+  assert.equal(toolsGroup.instructions, namespaceInstructions, "full details retain the shared guidance");
+  assert.equal(occurrences(JSON.stringify(discovery.content), namespaceInstructions), 0, "the tool result does not repeat shared guidance");
   assert.ok(members.every((name) => session.getActiveToolNames().includes(name)));
+  await session.prompt("Continue after the first capability publication.");
+  const firstNext = chats.at(-1)!.context;
+  const firstMemory = firstNext.messages.flatMap((message) => {
+    if (message.role !== "system") return [];
+    const sections = "sections" in message && typeof message.sections === "object" && message.sections !== null
+      ? (message.sections as Record<string, unknown>)
+      : {};
+    return typeof sections["capabilities"] === "string" ? [sections["capabilities"]] : [];
+  }).join("\n");
+  assert.equal(occurrences(firstMemory, namespaceInstructions), 1, "the next request carries exactly one guidance copy");
   const repeated = await call("capability", {});
   assert.equal(repeated.isError, false, JSON.stringify(repeated.details));
   const repeatedFirst = repeated.content[0];
@@ -303,20 +322,28 @@ export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixt
   const repeatedText = JSON.parse(repeatedRaw) as {
     tools: unknown[];
     mcp: unknown[];
-    guidance: Array<{ ref: string }>;
+    guidance?: unknown;
   };
   assert.deepEqual(repeatedText.tools, [], "already active tools must not be reported as new interfaces");
   assert.deepEqual(repeatedText.mcp, []);
-  assert.equal(repeatedText.guidance[0]?.ref, "namespace://subagent");
-  assert.match(capabilityGuiText(fixture, repeated), /"guidance":/);
+  assert.equal(repeatedText.guidance, undefined, "already-active groups do not duplicate memory guidance");
+  assert.equal(occurrences(JSON.stringify(repeated.content), namespaceInstructions), 0);
   const repeatedDetails = repeated.details as CapabilityDiscoveryResult;
   const repeatedToolsGroup = repeatedDetails.tools[0] as unknown as { tools: unknown[] };
   assert.equal(repeatedToolsGroup.tools.length, 4, "full selection remains in details, not model text");
   assert.equal(internalCalls, 8);
   await assert.rejects(fsp.stat(path.join(cwd, "forbidden.txt")), { code: "ENOENT" });
   await assert.rejects(fsp.stat(path.join(cwd, "forbidden-nested.txt")), { code: "ENOENT" });
-  await session.prompt("Continue after capability activation.");
+  await session.prompt("Continue after the repeated capability discovery.");
   const addedContext = chats.at(-1)!.context;
+  const repeatedMemory = addedContext.messages.flatMap((message) => {
+    if (message.role !== "system") return [];
+    const sections = "sections" in message && typeof message.sections === "object" && message.sections !== null
+      ? (message.sections as Record<string, unknown>)
+      : {};
+    return typeof sections["capabilities"] === "string" ? [sections["capabilities"]] : [];
+  }).join("\n");
+  assert.equal(occurrences(repeatedMemory, namespaceInstructions), 1, "repeated discovery keeps one memory copy");
   const resolved = resolveTranscriptTools(addedContext.messages, "changes");
   assert.deepEqual(resolved.requestTools, [], "current Responses use inline tool declarations rather than a second top-level loadout");
   const wire = convertResponsesMessages(
@@ -436,16 +463,14 @@ export async function runNamespaceScenario(fixture: CapabilityScenarioFixture): 
         typeof part === "object" && part !== null && "type" in part && part.type === "text" && typeof (part as { text?: unknown }).text === "string",
     );
     assert.ok(textPart);
-    const found = JSON.parse(textPart.text) as CapabilityStepDetails;
+    const found = JSON.parse(textPart.text) as CapabilityStepFeedback;
     const searchResult = found.searches[0];
     assert.ok(searchResult);
-    const matchedNamespace = (
-      searchResult.tools as Array<{ ref: string; name: string; toolCount?: number; namespace?: unknown; tools?: unknown }>
-    ).find((hit) => hit.ref === "namespace://subagent");
+    const matchedNamespace = searchResult.tools.find((hit) => hit.ref === "namespace://subagent");
     assert.ok(matchedNamespace, "matching members must collapse to one namespace candidate");
     assert.equal(matchedNamespace.toolCount, members.length);
-    assert.equal(matchedNamespace.namespace, undefined, "the compact step body omits the namespace field");
-    assert.equal(matchedNamespace.tools, undefined, "the compact step body omits the member array");
+    assert.equal("namespace" in matchedNamespace, false, "the compact step body omits the namespace field");
+    assert.equal("tools" in matchedNamespace, false, "the compact step body omits the member array");
     return toolAnswer(CAPABILITY_STEP_TOOL_NAME, { queries: [], refs: [matchedNamespace.ref], finish: true });
   };
   const discoveryResult = await call("capability", {});

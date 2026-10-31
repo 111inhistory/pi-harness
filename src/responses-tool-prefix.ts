@@ -180,17 +180,12 @@ export function capabilityToolDelta<T extends CapabilityProjectionResult>(
   result: T,
   previouslyActive: ReadonlySet<string>,
 ): CapabilityToolDeltaResult<T> {
-  const guidance: CapabilityProjectionHit[] = [...(result.guidance ?? [])];
   const filter = (hits: readonly CapabilityProjectionHit[]): CapabilityProjectionHit[] => hits.flatMap((hit) => {
     if (Array.isArray(hit.tools)) {
       const added = hit.tools.filter((tool) => tool.name === undefined || !previouslyActive.has(tool.name));
       if (added.length) return [{ ...hit, tools: added, toolCount: added.length }];
-      if (hit.instructions !== undefined) {
-        const entry: { ref?: string; name?: string; instructions: string } = { instructions: hit.instructions };
-        if (hit.ref !== undefined) entry.ref = hit.ref;
-        if (hit.name !== undefined) entry.name = hit.name;
-        guidance.push(entry);
-      }
+      // The group's shared instructions are already in canonical branch memory;
+      // an extra guidance-only entry in the delta would duplicate them.
       return [];
     }
     return hit.name !== undefined && previouslyActive.has(hit.name) ? [] : [hit];
@@ -201,7 +196,6 @@ export function capabilityToolDelta<T extends CapabilityProjectionResult>(
     ...result,
     tools,
     mcp,
-    ...(guidance.length ? { guidance } : {}),
   } as CapabilityToolDeltaResult<T>;
 }
 
@@ -226,10 +220,10 @@ export type CapabilityModelResult<T extends CapabilityProjectionResult> =
 /**
  * Compact one hit when every selected member's interface is already available
  * through a native declaration or an active Codemode query path. Stable
- * refs/names/count and the group's shared instructions stay; duplicate argument
- * schemas, output schemas, per-member descriptions and ranking/implementation
- * fields are omitted, because repeating them costs tokens without adding a
- * usable interface. Hits without such a source stay fully expanded.
+ * refs/names/count stay; duplicate argument schemas, output schemas, per-member
+ * descriptions, shared instructions and ranking/implementation fields are
+ * omitted. Canonical branch memory injects the instructions once, and a hit
+ * without an interface source stays fully expanded except for diagnostics.
  */
 export function capabilityModelResult<T extends CapabilityProjectionResult>(
   result: T,
@@ -249,6 +243,7 @@ export function capabilityModelResult<T extends CapabilityProjectionResult>(
       description: _description,
       exposure: _exposure,
       status: _status,
+      instructions: _instructions,
       parameters: _parameters,
       outputSchema: _outputSchema,
       promptGuidelines: _promptGuidelines,

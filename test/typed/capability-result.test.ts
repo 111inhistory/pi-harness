@@ -71,7 +71,7 @@ test("Main receives selected resources without ranking or warning diagnostics", 
 
   const [namespace] = output.tools ?? [];
   assert.ok(namespace);
-  assert.equal(namespace.instructions, "Keep guidance");
+  assert.equal(namespace.instructions, undefined, "canonical request memory injects shared guidance once");
   const [member] = namespace.tools ?? [];
   assert.ok(member);
   assert.deepEqual(member.parameters, { properties: { reason: { type: "string" } } });
