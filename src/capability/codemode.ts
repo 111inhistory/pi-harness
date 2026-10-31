@@ -5,6 +5,7 @@ import { createCodemodeExtension, type ExtensionAPI, type ExtensionToolContext, 
 import { CodemodeSandbox, parseCodemodeSource, renderToolSample, type CodemodeTool, type CodemodeJsonSchema, toCodemodeIdentifier } from '@earendil-works/pi-codemode';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { ClassifierContext, ImagesContext, ModelType, Usage } from '@earendil-works/pi-ai';
+import { DEFAULT_HARNESS_CONFIG, type HarnessConfigProvider } from '../harness-config.ts';
 import { promptString } from '../prompt-text.ts';
 
 const codemodeScope = promptString('native-discovery.json', 'codemodeScope');
@@ -168,6 +169,7 @@ export function installCapabilityCodemode(
   pi: ExtensionAPI,
   permits: (ctx: ExtensionToolContext, name: string) => boolean,
   permitsDeclaration: (name: string) => boolean,
+  configFor: HarnessConfigProvider = () => DEFAULT_HARNESS_CONFIG,
 ): () => ReadonlySet<string> {
   let hiddenDeclarations = new Set<string>();
   createCodemodeExtension()({
@@ -197,6 +199,7 @@ export function installCapabilityCodemode(
         // handled by the MCP extension for the tool's owner before it runs.
         reachesTools: () => [],
         async execute(toolCallId, input, signal, onUpdate, ctx) {
+          const config = configFor(ctx);
           const started = performance.now();
           const parsed = parseCodemodeSource((input as { code: string }).code);
           const active = new Set(pi.getActiveTools());
@@ -219,7 +222,7 @@ export function installCapabilityCodemode(
           try {
             sandbox = new CodemodeSandbox({
               timeoutMs: Math.max(1, deadline - performance.now()),
-              memoryLimitBytes: 256 * 1024 * 1024,
+              memoryLimitBytes: config.codemode.memoryLimitBytes,
               acquireWorker: () => {
                 if (!reservation) throw new Error('Codemode worker reservation was already consumed.');
                 const release = reservation; reservation = undefined; return release;
@@ -272,7 +275,7 @@ export function installCapabilityCodemode(
             if (result.ok && result.value !== undefined) output.push(typeof result.value === 'string' ? result.value : JSON.stringify(result.value));
             if (!result.ok) output.push(`Script error: ${result.error.message}`);
             let text = output.join('\n');
-            const limit = (parsed.options.maxOutputTokens ?? 10000) * 4;
+            const limit = (parsed.options.maxOutputTokens ?? config.codemode.defaultMaxOutputTokens) * 4;
             let fullOutputPath: string | undefined;
             if (text.length > limit) {
               fullOutputPath = path.join(await mkdtemp(path.join(tmpdir(), 'pi-codemode-')), 'output.txt');

@@ -1,7 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import MiniSearch from 'minisearch';
-import { CAPABILITY_LIMITS as limits } from './contracts.ts';
+import { DEFAULT_HARNESS_CONFIG, type HarnessConfig } from '../harness-config.ts';
+import { CAPABILITY_DIAGNOSTIC_LIMITS } from './contracts.ts';
+
+/** The typed BM25 and resource bounds a broker uses for every search. */
+export type CapabilitySearchConfig = HarnessConfig['capability']['search'];
 
 /** Provider data is checked here before entering the search index. */
 export interface CapabilityProviders {
@@ -82,7 +86,7 @@ const record = (value: unknown): RecordValue => value !== null && typeof value =
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const string = (value: unknown): string => typeof value === 'string' ? value : '';
 const truncate = (text: string, max: number): string => text.length > max ? `${text.slice(0, max - 1)}…` : text;
-const errorText = (error: unknown): string => truncate(error instanceof Error ? error.message : String(error), limits.warningChars);
+const errorText = (error: unknown): string => truncate(error instanceof Error ? error.message : String(error), CAPABILITY_DIAGNOSTIC_LIMITS.warningChars);
 const compare = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0;
 const ref = (scheme: string, name: string): string => `${scheme}://${encodeURIComponent(name)}`;
 const mcpRef = (server: string, tool?: string): string => ref('mcp', server) + (tool ? `/${encodeURIComponent(tool)}` : '');
@@ -171,12 +175,12 @@ async function skills(providers: CapabilityProviders, cwd: string): Promise<{ sk
     const diagnostic = record(value);
     const message = string(diagnostic.message);
     if (!message) return [];
-    return [truncate(`skill discovery ${string(diagnostic.type) || 'warning'}: ${message}${diagnostic.path ? ` (${String(diagnostic.path)})` : ''}`, limits.warningChars)];
+    return [truncate(`skill discovery ${string(diagnostic.type) || 'warning'}: ${message}${diagnostic.path ? ` (${String(diagnostic.path)})` : ''}`, CAPABILITY_DIAGNOSTIC_LIMITS.warningChars)];
   });
   return { skills: [...found.values()], warnings };
 }
 
-function candidates(tools: Tool[], warnings: string[]): Candidate[] {
+function candidates(tools: Tool[], warnings: string[], limits: CapabilitySearchConfig['limits']): Candidate[] {
   const groups = new Map<string, Tool[]>();
   for (const tool of tools) {
     if (tool.isMcp && !tool.mcp && !tool.namespace) warnings.push(`mcp tool "${tool.name}" exposes no parseable server identity`);
@@ -219,13 +223,13 @@ function skillCandidate(skill: Skill): Candidate {
 }
 
 /** MiniSearch owns tokenization, term statistics, length normalization and scoring. */
-function rank(query: string, entries: Candidate[]): Ranked[] {
+function rank(query: string, entries: Candidate[], search: CapabilitySearchConfig): Ranked[] {
   if (!entries.length) return [];
   const index = new MiniSearch<{ id: number; text: string }>({
     fields: ['text'],
-    // Reduce repetition gains and strengthen field-length normalization.
-    // Delta zero keeps standard BM25 instead of the library's BM25+ variant.
-    searchOptions: { bm25: { k: 0.9, b: 0.9, d: 0 } },
+    // BM25 values come from the resolved Harness config; d = 0 keeps standard
+    // BM25 instead of the library's BM25+ variant.
+    searchOptions: { bm25: search.bm25 },
   });
   const owners: Candidate[] = [];
   const documents = entries.flatMap((candidate) => candidate.documents.map((text) => {
@@ -236,7 +240,7 @@ function rank(query: string, entries: Candidate[]): Ranked[] {
   index.addAll(documents);
   const best = new Map<Candidate, number>();
   const tokenize: (text: string) => string[] = MiniSearch.getDefault('tokenize');
-  const boundedQuery = tokenize(query).slice(0, limits.requestTokens).join(' ');
+  const boundedQuery = tokenize(query).slice(0, search.limits.requestTokens).join(' ');
   for (const match of index.search(boundedQuery)) {
     const candidate = typeof match.id === 'number' ? owners[match.id] : undefined;
     if (candidate && match.score > (best.get(candidate) ?? 0)) best.set(candidate, match.score);
@@ -259,10 +263,14 @@ function exactRef(query: string): string | null {
 
 const emptyResult = (): CapabilitySearchResult => ({ status: 'ok', tools: [], mcp: [], skills: [], remote: [], missingCapabilities: [], warnings: [] });
 
-export function createCapabilityBroker(providers: CapabilityProviders) {
+export function createCapabilityBroker(
+  providers: CapabilityProviders,
+  searchConfig: CapabilitySearchConfig = DEFAULT_HARNESS_CONFIG.capability.search,
+) {
   const readSkill = providers.readSkillFile ?? ((filePath: string) => readFile(filePath, 'utf8'));
   return {
     async search({ query, src, cwd = process.cwd(), signal }: { query?: unknown; src?: unknown; cwd?: string; signal?: AbortSignal } = {}): Promise<CapabilitySearchResult> {
+      const limits = searchConfig.limits;
       checkAbort(signal);
       const text = string(query).trim();
       const result = emptyResult();
@@ -280,7 +288,7 @@ export function createCapabilityBroker(providers: CapabilityProviders) {
         result.warnings.push(`tools search failed: ${errorText(toolSnapshot.reason)}`, `mcp search failed: ${errorText(toolSnapshot.reason)}`);
         failed += 2;
       }
-      const entries = candidates(tools, result.warnings);
+      const entries = candidates(tools, result.warnings, limits);
       if (skillSnapshot.status === 'fulfilled') {
         entries.push(...skillSnapshot.value.skills.map(skillCandidate));
         result.warnings.push(...skillSnapshot.value.warnings);
@@ -294,7 +302,7 @@ export function createCapabilityBroker(providers: CapabilityProviders) {
       const exact = requested !== null || exactSkill !== undefined;
       let ranked: Ranked[] = exact
         ? entries.filter((candidate) => candidate.aliases.has(requested ?? text)).map((candidate) => ({ candidate, score: 0 }))
-        : rank(text, entries);
+        : rank(text, entries, searchConfig);
       if (requested?.startsWith('tool://') && !ranked.length) {
         const name = decodeURIComponent(requested.slice('tool://'.length));
         if (tools.some((tool) => tool.name === name && tool.mcp)) result.warnings.push(`ref "${text}" names an MCP tool; MCP tools are addressed by their mcp://<server>/<tool> ref`);
@@ -312,7 +320,7 @@ export function createCapabilityBroker(providers: CapabilityProviders) {
         } catch (error) { result.warnings.push(`skill "${candidate.hit.name}" body unreadable: ${errorText(error)}`); }
       }
       checkAbort(signal);
-      if (!exact && readBodies.size) ranked = rank(text, entries.filter((candidate) => candidate.hit.kind !== 'skill' || selectedSkillSet.has(candidate)));
+      if (!exact && readBodies.size) ranked = rank(text, entries.filter((candidate) => candidate.hit.kind !== 'skill' || selectedSkillSet.has(candidate)), searchConfig);
       for (const { candidate, score } of ranked) {
         const hit = { ...candidate.hit, score, match: exact ? 'ref' as const : 'bm25' as const,
           reason: exact ? 'Exact reference lookup' : readBodies.has(candidate.hit.ref) ? 'BM25 metadata and body match' : candidate.hit.reason };
@@ -325,7 +333,7 @@ export function createCapabilityBroker(providers: CapabilityProviders) {
       if (!failed && !result.tools.length && !result.mcp.length && !result.skills.length) {
         result.missingCapabilities.push(`No local capability matched "${truncate(text, limits.descriptionChars)}".`);
       }
-      result.warnings = [...new Set(result.warnings)].slice(0, limits.warnings);
+      result.warnings = [...new Set(result.warnings)].slice(0, CAPABILITY_DIAGNOSTIC_LIMITS.warnings);
       return result;
     },
   };

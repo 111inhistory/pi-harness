@@ -8,6 +8,7 @@ import {
 import { discoveryRecords } from './discovery-record.ts';
 import { installCapabilityCodemode } from './codemode.ts';
 import { createCapabilityScopeView } from './scope.ts';
+import { DEFAULT_HARNESS_CONFIG, type HarnessConfigProvider } from '../harness-config.ts';
 import { promptString } from '../prompt-text.ts';
 
 const text = {
@@ -53,7 +54,10 @@ function selectedServer(pi: ExtensionAPI, ctx: ExtensionContext, server: unknown
 }
 
 /** Disable discovery as executable tools, not just as prompt recommendations. */
-export function installNativeDiscoveryBoundary(pi: ExtensionAPI): () => ReadonlySet<string> {
+export function installNativeDiscoveryBoundary(
+  pi: ExtensionAPI,
+  configFor: HarnessConfigProvider = () => DEFAULT_HARNESS_CONFIG,
+): () => ReadonlySet<string> {
   let currentContext: ExtensionContext | undefined;
   pi.on('session_start', (_event, ctx) => { currentContext = ctx; });
   pi.on('session_shutdown', () => { currentContext = undefined; });
@@ -76,7 +80,7 @@ export function installNativeDiscoveryBoundary(pi: ExtensionAPI): () => Readonly
     (!isMcpExecutionTool(name) || selectedNames(ctx).has(name));
   const declaredTools = installCapabilityCodemode(pi, permits, (name) => currentContext
     ? permits(currentContext, name)
-    : !isNativeDiscoveryTool(name) && !isMcpExecutionTool(name));
+    : !isNativeDiscoveryTool(name) && !isMcpExecutionTool(name), configFor);
 
   pi.on('tool_call', (event, ctx) => {
     if (isNativeDiscoveryTool(event.toolName)) {

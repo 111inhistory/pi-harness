@@ -57,27 +57,11 @@ export const CAPABILITY_STEP_PARAMETERS = Type.Object(
 
 export type CapabilityStepParameters = Static<typeof CAPABILITY_STEP_PARAMETERS>;
 
-/** Deterministic bounds for every result list and body read. */
-export interface CapabilityLimits {
-  readonly tools: number;
-  readonly mcp: number;
-  readonly skills: number;
-  readonly skillBodies: number;
-  readonly warnings: number;
-  readonly requestTokens: number;
-  readonly descriptionChars: number;
-  readonly skillBodyChars: number;
-  readonly warningChars: number;
-}
-
-export const CAPABILITY_LIMITS = Object.freeze({
-  tools: 8, // standalone tools or whole namespaces, not member count
-  mcp: 8, // whole MCP groups
-  skills: 6,
-  skillBodies: 6,
+/**
+ * Fixed diagnostic bounds. Search result and body limits are user-configurable
+ * (`capability.search.limits`); these two only shape audit text and stay fixed.
+ */
+export const CAPABILITY_DIAGNOSTIC_LIMITS = Object.freeze({
   warnings: 12,
-  requestTokens: 128,
-  descriptionChars: 240,
-  skillBodyChars: 60_000,
   warningChars: 200,
-} as const) satisfies CapabilityLimits;
+} as const);

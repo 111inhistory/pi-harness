@@ -1,6 +1,7 @@
 /** Internal Capability session: batch search, cumulative selection and bounded progress. */
 import type { AgentToolResult, ToolDefinition } from '@earendil-works/pi-coding-agent';
-import { createJobBudget } from '../subagent/job-budget.ts';
+import { createJobBudget, type BudgetProfile } from '../subagent/job-budget.ts';
+import { DEFAULT_HARNESS_CONFIG } from '../harness-config.ts';
 import { promptString, promptText } from '../prompt-text.ts';
 import { watchCapabilityBudget } from '../subagent/budget-watch.ts';
 import type { BudgetTerminalView } from '../subagent/budget-watch.ts';
@@ -8,15 +9,6 @@ import type { CapabilitySearchHit, CapabilitySearchResult } from './broker.ts';
 import type { CapabilitySearchCoverage } from './discovery-record.ts';
 import { CAPABILITY_STEP_PARAMETERS, CAPABILITY_STEP_TOOL_NAME } from './contracts.ts';
 
-export const CAPABILITY_DISCOVERY_BUDGET = Object.freeze({
-  modelCalls: Object.freeze({ soft: 16, hard: 20 }),
-  activeTimeMs: Object.freeze({ soft: 180_000, hard: 360_000 }),
-  lifetimeMs: 600_000,
-});
-export const CAPABILITY_NO_SELECTION_LIMIT = 3;
-// The first call must search before it can select; allow one extra empty step.
-const EMPTY_STEP_LIMIT = CAPABILITY_NO_SELECTION_LIMIT + 1;
-const MISSING_QUERIES = 5;
 export const CAPABILITY_DISCOVERY_SYSTEM_PROMPT = promptString('capability-discovery.json', 'system');
 export const CAPABILITY_DISCOVERY_PROMPT = promptString('capability-discovery.json', 'user');
 
@@ -33,6 +25,9 @@ function assetField(file: string, section: string, field: string): string {
 const stepDescription = assetField('capability-tools.json', 'step', 'description');
 const stepLabel = assetField('capability-tools.json', 'step', 'label');
 const budgetWrapUp = promptString('capability-policy.json', 'budgetWrapUp');
+const MISSING_QUERIES = 5;
+// The first call must search before it can select; allow one extra empty step.
+const EMPTY_STEP_ALLOWANCE = 1;
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
 export type CapabilityEndReason = 'finished' | 'no_selection_limit' | 'budget' | 'cancelled' | 'provider_error' | 'incomplete';
@@ -103,11 +98,16 @@ export interface CapabilityOpenSessionRequest {
 export interface CapabilityDiscoveryDependencies {
   broker: CapabilityBrokerPort;
   openSession(request: CapabilityOpenSessionRequest): CapabilityRunSession | Promise<CapabilityRunSession>;
+  /** Defaults to the shared Harness capability budget for direct helper calls. */
+  budget?: BudgetProfile;
+  /** Zero-selection feedback limit; the internal empty-step allowance is derived. */
+  noSelectionLimit?: number;
 }
 interface Run {
   broker: CapabilityBrokerPort;
   cwd: string;
   signal: AbortSignal | undefined;
+  noSelectionLimit: number;
   hits: Map<string, { group: 'tools' | 'mcp' | 'skills'; hit: CapabilitySearchHit }>;
   selected: Set<string>;
   warnings: string[];
@@ -190,7 +190,7 @@ function emptySelection(): CapabilityStepDetails['selection'] {
   return { accepted: [], alreadySelected: [], rejected: [] };
 }
 function stepFields(run: Run, selection: CapabilityStepDetails['selection'], error?: string): Omit<CapabilityStepDetails, 'searches'> {
-  return { selection, noSelectionCount: run.noSelectionCount, noSelectionLimit: CAPABILITY_NO_SELECTION_LIMIT,
+  return { selection, noSelectionCount: run.noSelectionCount, noSelectionLimit: run.noSelectionLimit,
     endReason: run.end?.reason ?? null, ...(error === undefined ? {} : { error }) };
 }
 function feedback(run: Run, selection: CapabilityStepDetails['selection'], searches: StepSearches = noSearches(), error?: string): AgentToolResult<CapabilityStepDetails> {
@@ -203,7 +203,7 @@ function countSelection(run: Run, count: number): void {
   if (count === 0) run.noSelectionCount += 1;
 }
 function reachedLimit(run: Run): boolean {
-  if (run.noSelectionCount < EMPTY_STEP_LIMIT) return false;
+  if (run.noSelectionCount < run.noSelectionLimit + EMPTY_STEP_ALLOWANCE) return false;
   stop(run, 'no_selection_limit', 'Capability discovery reached its zero-selection limit.');
   return true;
 }
@@ -305,10 +305,12 @@ export function createCapabilityDiscovery(deps: CapabilityDiscoveryDependencies)
   if (typeof deps.openSession !== 'function') throw new TypeError('createCapabilityDiscovery requires an openSession().');
   return {
     async discover({ cwd = process.cwd(), signal }: { cwd?: string | undefined; signal?: AbortSignal | undefined } = {}): Promise<CapabilityDiscoveryResult> {
-      const run: Run = { broker: deps.broker, cwd, signal, hits: new Map(), selected: new Set(), warnings: [], emptyQueries: [],
+      const budgetProfile = deps.budget ?? DEFAULT_HARNESS_CONFIG.capability.budget;
+      const noSelectionLimit = deps.noSelectionLimit ?? DEFAULT_HARNESS_CONFIG.capability.noSelectionLimit;
+      const run: Run = { broker: deps.broker, cwd, signal, noSelectionLimit, hits: new Map(), selected: new Set(), warnings: [], emptyQueries: [],
         completedSearches: 0, noSelectionCount: 0, end: null, session: null };
       if (signal?.aborted) return { ...capabilityFailureResult('Capability discovery was cancelled before startup.'), endReason: 'cancelled' };
-      const budget = createJobBudget({ profile: CAPABILITY_DISCOVERY_BUDGET });
+      const budget = createJobBudget({ profile: budgetProfile });
       let stopWatch: (() => void) | null = null;
       const onAbort = (): void => {
         // Caller cancellation invalidates publication even after an accepted finish.

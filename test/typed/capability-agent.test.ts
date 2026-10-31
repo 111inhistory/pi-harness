@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ExtensionToolContext } from '@earendil-works/pi-coding-agent';
-import { CAPABILITY_DISCOVERY_BUDGET, CAPABILITY_DISCOVERY_PROMPT, CAPABILITY_DISCOVERY_SYSTEM_PROMPT,
-  CAPABILITY_NO_SELECTION_LIMIT, createCapabilityDiscovery, providerErrorDetail } from '../../src/capability/agent.ts';
-import type { CapabilityBrokerPort, CapabilityOpenSessionRequest } from '../../src/capability/agent.ts';
+import { CAPABILITY_DISCOVERY_PROMPT, CAPABILITY_DISCOVERY_SYSTEM_PROMPT,
+  createCapabilityDiscovery, providerErrorDetail } from '../../src/capability/agent.ts';
+import type { CapabilityBrokerPort, CapabilityDiscoveryDependencies, CapabilityOpenSessionRequest } from '../../src/capability/agent.ts';
 import type { CapabilityStepParameters } from '../../src/capability/contracts.ts';
 import type { CapabilitySearchHit, CapabilitySearchResult, CapabilitySkillHit } from '../../src/capability/broker.ts';
+import { DEFAULT_HARNESS_CONFIG } from '../../src/harness-config.ts';
+
+const NO_SELECTION_LIMIT = DEFAULT_HARNESS_CONFIG.capability.noSelectionLimit;
+const DISCOVERY_BUDGET = DEFAULT_HARNESS_CONFIG.capability.budget;
 
 const toolHit: CapabilitySearchHit = { ref: 'tool://read', name: 'read', description: 'fixture tool', kind: 'tool', status: 'available', match: 'ref', score: 0, reason: 'fixture' };
 const skillHit: CapabilitySkillHit = { ...toolHit, ref: '/skills/fixture/SKILL.md', name: 'fixture', kind: 'skill', filePath: '/skills/fixture/SKILL.md' };
@@ -32,6 +36,8 @@ async function discover(options: {
   signal?: AbortSignal;
   onOpen?: (request: CapabilityOpenSessionRequest) => void;
   behavior?: (request: CapabilityOpenSessionRequest, state: State) => Promise<readonly unknown[] | void>;
+  budget?: CapabilityDiscoveryDependencies['budget'];
+  noSelectionLimit?: CapabilityDiscoveryDependencies['noSelectionLimit'];
 } = {}) {
   const state: State = { prompts: 0, opens: 0, aborts: 0, disposals: 0 };
   const engine = createCapabilityDiscovery({ broker: options.broker ?? broker(), openSession: async request => {
@@ -46,7 +52,8 @@ async function discover(options: {
       assert.equal(request.customTools[0]!.executionMode, 'sequential');
       return await options.behavior?.(request, state) ?? [];
     }, abort() { state.aborts++; }, async dispose() { await Promise.resolve(); state.disposals++; } };
-  } });
+  }, ...(options.budget === undefined ? {} : { budget: options.budget }),
+     ...(options.noSelectionLimit === undefined ? {} : { noSelectionLimit: options.noSelectionLimit }) });
   const output = await engine.discover({ cwd: '/fixture', signal: options.signal });
   return { output, state };
 }
@@ -59,7 +66,7 @@ test('parallel searches retain input order, then cumulative selection finishes w
     const first = await step(request, { queries: ['first', 'second'], refs: [] });
     assert.deepEqual(first.details.searches.map(search => search.query), ['first', 'second']);
     assert.equal(first.details.noSelectionCount, 1, 'bootstrap uses the extra empty-step allowance');
-    assert.equal(first.details.noSelectionLimit, CAPABILITY_NO_SELECTION_LIMIT);
+    assert.equal(first.details.noSelectionLimit, NO_SELECTION_LIMIT);
     const next = await step(request, { queries: ['third'], refs: [toolHit.ref] });
     assert.deepEqual(next.details.selection.accepted, [toolHit.ref]);
     assert.equal(next.terminate, undefined);
@@ -104,7 +111,7 @@ test('omitted fields support search-only, selection-only and finish-only steps',
 test('empty calls count as zero selection without searching or reporting query failures', async () => {
   const searches = broker();
   const { output } = await discover({ broker: searches, behavior: async request => {
-    for (let index = 1; index <= CAPABILITY_NO_SELECTION_LIMIT + 1; index++) {
+    for (let index = 1; index <= NO_SELECTION_LIMIT + 1; index++) {
       const idle = await step(request, {});
       assert.equal(idle.isError, undefined);
       assert.deepEqual(idle.details.searches, []);
@@ -151,13 +158,13 @@ test('startup failure is explicit and has no session to dispose', async () => {
 test('zero selections, not zero search hits, close the run after the extra bootstrap allowance', async () => {
   const searches = broker({ found: result([toolHit]) });
   const { output } = await discover({ broker: searches, behavior: async request => {
-    for (let index = 0; index < CAPABILITY_NO_SELECTION_LIMIT + 1; index++) {
+    for (let index = 0; index < NO_SELECTION_LIMIT + 1; index++) {
       const response = await step(request, { queries: ['found'], refs: [] });
       assert.equal(response.details.noSelectionCount, index + 1);
     }
     assert.equal(request.beforeRequest()?.stop, true);
   } });
-  assert.equal(searches.calls.length, CAPABILITY_NO_SELECTION_LIMIT, 'limit stops before dispatching the next batch');
+  assert.equal(searches.calls.length, NO_SELECTION_LIMIT, 'limit stops before dispatching the next batch');
   assert.equal(output.status, 'failed');
   assert.equal(output.endReason, 'no_selection_limit');
 });
@@ -167,7 +174,7 @@ test('new selections neither increment nor reset zero-selection count; repeats d
     await step(request, { queries: ['found'], refs: [] });
     const selected = await step(request, { queries: ['found'], refs: [toolHit.ref] });
     assert.equal(selected.details.noSelectionCount, 1);
-    for (let index = 0; index < CAPABILITY_NO_SELECTION_LIMIT; index++) {
+    for (let index = 0; index < NO_SELECTION_LIMIT; index++) {
       const repeated = await step(request, { queries: ['found'], refs: [toolHit.ref] });
       assert.deepEqual(repeated.details.selection.accepted, []);
       assert.deepEqual(repeated.details.selection.alreadySelected, [toolHit.ref]);
@@ -230,7 +237,7 @@ for (const ending of ['throw', 'provider', 'budget', 'incomplete'] as const) {
       if (ending === 'throw') throw new Error('MODEL_FAILURE');
       if (ending === 'provider') return [{ role: 'assistant', stopReason: 'error', errorMessage: 'PROVIDER_FAILURE' }];
       if (ending === 'budget') {
-        for (let index = 0; index <= CAPABILITY_DISCOVERY_BUDGET.modelCalls.hard; index++) request.budget.beginModelCall();
+        for (let index = 0; index <= DISCOVERY_BUDGET.modelCalls.hard; index++) request.budget.beginModelCall();
       }
       return [];
     } });
@@ -245,11 +252,11 @@ test('without accepted selections a model error, budget limit or incomplete repl
   for (const ending of ['provider', 'budget', 'incomplete']) {
     const { output } = await discover({ behavior: async request => {
       if (ending === 'provider') throw new Error('FAILED_WITHOUT_SELECTION');
-      if (ending === 'budget') for (let index = 0; index <= CAPABILITY_DISCOVERY_BUDGET.modelCalls.hard; index++) request.budget.beginModelCall();
+      if (ending === 'budget') for (let index = 0; index <= DISCOVERY_BUDGET.modelCalls.hard; index++) request.budget.beginModelCall();
     } });
     assert.equal(output.status, 'failed');
   }
-  assert.deepEqual(CAPABILITY_DISCOVERY_BUDGET.modelCalls, { soft: 16, hard: 20 });
+  assert.deepEqual(DISCOVERY_BUDGET.modelCalls, { soft: 16, hard: 20 });
 });
 
 test('caller cancellation before, during opening, or during execution respects session ownership', async () => {
@@ -309,6 +316,32 @@ test('a synchronous query throw is isolated from the rest of the batch', async (
   } });
   assert.equal(output.status, 'partial');
   assert.deepEqual(output.tools, [toolHit]);
+});
+
+test('custom no-selection limit keeps exactly one derived bootstrap allowance', async () => {
+  const { output } = await discover({ noSelectionLimit: 1, behavior: async request => {
+    const first = await step(request, {});
+    assert.equal(first.details.noSelectionLimit, 1);
+    assert.equal(first.details.noSelectionCount, 1);
+    assert.equal(first.terminate, undefined);
+    const second = await step(request, {});
+    assert.equal(second.details.noSelectionCount, 2);
+    assert.equal(second.details.endReason, 'no_selection_limit');
+    assert.equal(second.terminate, true);
+  } });
+  assert.equal(output.endReason, 'no_selection_limit');
+  assert.equal(output.status, 'failed');
+});
+
+test('custom capability budget is applied to the discovery session', async () => {
+  const budget = { modelCalls: { soft: 1, hard: 1 }, activeTimeMs: { soft: 1_000, hard: 2_000 }, lifetimeMs: 3_000 };
+  const { output } = await discover({ budget, behavior: async request => {
+    assert.deepEqual(request.budget.snapshot({ detail: true }).profile, budget);
+    assert.equal(request.budget.beginModelCall().ok, true);
+    assert.equal(request.budget.beginModelCall().ok, false);
+  } });
+  assert.equal(output.endReason, 'budget');
+  assert.equal(output.status, 'failed');
 });
 
 test('providerErrorDetail inspects the final assistant attempt and handles unknown input', () => {

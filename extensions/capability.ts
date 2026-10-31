@@ -59,6 +59,7 @@ import {
   CAPABILITY_TOOL_NAME,
 } from "../src/capability/contracts.ts";
 import { createCapabilityBroker, type CapabilityProviders } from "../src/capability/broker.ts";
+import { harnessConfigFor, type HarnessConfig } from "../src/harness-config.ts";
 import {
   CAPABILITY_DISCOVERY_SYSTEM_PROMPT,
   capabilityBudgetWarning,
@@ -128,13 +129,16 @@ function readPolicyPrompt(): CapabilityPolicyPrompt {
   return { additiveExecutionBlocked: promptString("capability-policy.json", "additiveExecutionBlocked") };
 }
 
-export default function capabilityExtension(pi: ExtensionAPI, { discovery = true }: { discovery?: boolean } = {}): void {
-  const declaredTools = installNativeDiscoveryBoundary(pi);
+export default function capabilityExtension(
+  pi: ExtensionAPI,
+  { discovery = true, config }: { discovery?: boolean; config?: HarnessConfig } = {},
+): void {
+  const configFor = harnessConfigFor(pi, config);
+  const declaredTools = installNativeDiscoveryBoundary(pi, configFor);
   const service = {
     agentDir: getAgentDir(),
     projectTrusted: false,
   };
-  const broker = createCapabilityBroker(createProviders(pi, service));
   pi.on("session_start", (_event, ctx) => { service.projectTrusted = ctx.isProjectTrusted(); });
 
   // Keep Pi's loaded Skill inventory for discovery, but do not advertise it
@@ -179,10 +183,13 @@ export default function capabilityExtension(pi: ExtensionAPI, { discovery = true
       let previouslyActive = new Set<string>();
       try {
         service.projectTrusted = ctx.isProjectTrusted();
+        const config = configFor(ctx);
         const snapshot = captureInheritedContext(pi, ctx, toolCallId);
         const engine = createCapabilityDiscovery({
-          broker,
+          broker: createCapabilityBroker(createProviders(pi, service), config.capability.search),
           openSession: (request) => openInternalSession(pi, service, ctx, request, snapshot),
+          budget: config.capability.budget,
+          noSelectionLimit: config.capability.noSelectionLimit,
         });
         result = await engine.discover(signal === undefined ? { cwd: ctx.cwd } : { cwd: ctx.cwd, signal });
         if (cancelled(signal, ctx.signal)) {

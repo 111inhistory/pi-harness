@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CAPABILITY_LIMITS } from "../../src/capability/contracts.ts";
+import { DEFAULT_HARNESS_CONFIG } from "../../src/harness-config.ts";
 import {
   createCapabilityBroker,
   type CapabilityProviders,
@@ -241,7 +241,7 @@ test("candidate limits count namespaces rather than their members for tools and 
 
     const result = await broker.search({ query: "CandidateLimitNeedle", src: "local" });
     const hits = mcp ? result.mcp : result.tools;
-    assert.equal(hits.length, mcp ? CAPABILITY_LIMITS.mcp : CAPABILITY_LIMITS.tools);
+    assert.equal(hits.length, mcp ? DEFAULT_HARNESS_CONFIG.capability.search.limits.mcp : DEFAULT_HARNESS_CONFIG.capability.search.limits.tools);
     assert.equal(new Set(hits.map((hit) => hit.ref)).size, hits.length);
     assert.ok(hits.every((hit) => hit.toolCount === 20 && hit.tools?.length === 20));
   }
@@ -328,7 +328,7 @@ test("exact ref lookup resolves tools, namespaces, mcp, and skills without fallb
 
 test("reads skill bodies through bounded reader capped at skillBodies limit", async () => {
   const openedFiles: string[] = [];
-  const candidateCount = CAPABILITY_LIMITS.skillBodies + 4;
+  const candidateCount = DEFAULT_HARNESS_CONFIG.capability.search.limits.skillBodies + 4;
   const broker = createCapabilityBroker({
     listTools: () => [],
     listActiveTools: () => [],
@@ -348,9 +348,9 @@ test("reads skill bodies through bounded reader capped at skillBodies limit", as
 
   const result = await broker.search({ query: "deployment pipeline", src: "local" });
   assert.equal(result.status, "ok");
-  assert.ok(openedFiles.length <= CAPABILITY_LIMITS.skillBodies);
-  assert.equal(openedFiles.length, CAPABILITY_LIMITS.skillBodies);
-  assert.ok(result.skills.length <= CAPABILITY_LIMITS.skills);
+  assert.ok(openedFiles.length <= DEFAULT_HARNESS_CONFIG.capability.search.limits.skillBodies);
+  assert.equal(openedFiles.length, DEFAULT_HARNESS_CONFIG.capability.search.limits.skillBodies);
+  assert.ok(result.skills.length <= DEFAULT_HARNESS_CONFIG.capability.search.limits.skills);
 });
 
 test("tolerates unreadable skill body and records normalized warning", async () => {
@@ -461,4 +461,120 @@ test("default tokenizer matches exact non-ASCII tokens delimited by whitespace o
 
   const unmatched = await broker.search({ query: "网络", src: "local" });
   assert.equal(unmatched.tools.length, 0);
+});
+
+test("custom BM25 k, b and d reach MiniSearch while exact refs and group ranking stay stable", async () => {
+  const tools = [
+    { name: "alpha_tool", description: "deploy deploy deploy deploy deploy deploy deploy pipeline alpha", exposure: "direct" },
+    { name: "beta_tool", description: "deploy pipeline beta", exposure: "direct" },
+    { name: "gamma_tool", description: "unrelated gamma", exposure: "direct" },
+  ];
+  const providers = { listTools: () => tools, listActiveTools: () => [], discoverSkills: () => ({ skills: [] }) };
+  const search = DEFAULT_HARNESS_CONFIG.capability.search;
+  const variants = {
+    default: search.bm25,
+    k: { k: 0.1, b: 0.9, d: 0 },
+    b: { k: 0.9, b: 0, d: 0 },
+    d: { k: 0.9, b: 0.9, d: 2 },
+  };
+  const scores = new Map<string, number>();
+  for (const [name, bm25] of Object.entries(variants)) {
+    const broker = createCapabilityBroker(providers, { ...search, bm25 });
+    const result = await broker.search({ query: "deploy pipeline alpha", src: "local" });
+    assert.deepEqual(result.tools.map((hit) => hit.name), ["alpha_tool", "beta_tool"],
+      `group ranking uses the highest member score for ${name}`);
+    scores.set(name, result.tools[0]!.score);
+    const exact = await broker.search({ query: "tool://beta_tool", src: "local" });
+    assert.equal(exact.tools.length, 1);
+    assert.equal(exact.tools[0]!.match, "ref");
+    assert.equal(exact.tools[0]!.score, 0, "exact ref lookup never consults BM25 parameters");
+  }
+  const base = scores.get("default")!;
+  assert.ok(scores.get("k")! < base, "lower k reduces repeated-term saturation");
+  assert.notEqual(scores.get("b"), base, "b changes length normalization");
+  assert.ok(scores.get("d")! > base, "positive d adds the BM25+ delta");
+});
+
+function limitedProviders(opened: string[]) {
+  const namespaceMembers = (namespace: string, label: string) => Array.from({ length: 2 }, (_, index) => ({
+    name: `${namespace}_op_${index}`,
+    description: `${label} member ${index}`,
+    namespace: { name: namespace, description: `${label} namespace description long enough to truncate` },
+    exposure: "direct",
+  }));
+  const mcpMembers = (server: string, label: string) => Array.from({ length: 2 }, (_, index) => ({
+    name: `mcp__${server}__op_${index}`,
+    description: `${label} member ${index}`,
+    namespace: { name: `mcp__${server}`, description: `${label} namespace description long enough to truncate` },
+    sourceInfo: { source: "mcp", path: `mcp:${server}/op_${index}` },
+    exposure: "direct",
+  }));
+  return {
+    listTools: () => [
+      ...namespaceMembers("alpha_ns", "LimitNeedle alpha"),
+      ...namespaceMembers("beta_ns", "LimitNeedle beta"),
+      ...mcpMembers("mcp_alpha", "McpLimitNeedle alpha"),
+      ...mcpMembers("mcp_beta", "McpLimitNeedle beta"),
+      { name: "beta_only", description: "BetaToken specialized tool", exposure: "direct" },
+    ],
+    listActiveTools: () => [],
+    discoverSkills: () => ({
+      skills: Array.from({ length: 3 }, (_, index) => ({
+        name: `skill-${index}`,
+        description: "SkillNeedle deployment workflow",
+        filePath: `/skills/deploy-${index}/SKILL.md`,
+      })),
+    }),
+    readSkillFile: async (filePath: string) => {
+      opened.push(filePath);
+      return "0123456789ABCDEF BODYNEEDLE";
+    },
+  };
+}
+
+test("custom search limits bound query terms, result groups, descriptions and body candidates", async () => {
+  const opened: string[] = [];
+  const search = DEFAULT_HARNESS_CONFIG.capability.search;
+  const limits = { ...search.limits, tools: 1, mcp: 1, skills: 1, skillBodies: 2, requestTokens: 1,
+    descriptionChars: 24, skillBodyChars: 12 };
+  const broker = createCapabilityBroker(limitedProviders(opened), { ...search, limits });
+
+  const tools = await broker.search({ query: "LimitNeedle", src: "local" });
+  assert.equal(tools.tools.length, limits.tools);
+  const namespace = tools.tools[0]!;
+  assert.equal(namespace.kind, "namespace");
+  assert.equal(namespace.tools?.length, 2, "a candidate limit never truncates selected namespace members");
+  assert.ok(namespace.description.length <= limits.descriptionChars);
+  assert.match(namespace.description, /…$/, "descriptionChars bounds the broker summary");
+
+  const mcp = await broker.search({ query: "McpLimitNeedle", src: "local" });
+  assert.equal(mcp.mcp.length, limits.mcp);
+  assert.equal(mcp.mcp[0]!.tools?.length, 2);
+
+  const skills = await broker.search({ query: "SkillNeedle", src: "local" });
+  assert.equal(skills.skills.length, limits.skills);
+  assert.equal(opened.length, limits.skillBodies, "only the metadata-ranked body candidates are read");
+
+  const custom = await broker.search({ query: "GammaToken BetaToken", src: "local" });
+  assert.deepEqual(custom.tools, [], "requestTokens limits the query to its first default-tokenizer term");
+  const defaults = createCapabilityBroker(limitedProviders(opened), search);
+  const unbounded = await defaults.search({ query: "GammaToken BetaToken", src: "local" });
+  assert.deepEqual(unbounded.tools.map((hit) => hit.name), ["beta_only"]);
+});
+
+test("custom skillBodyChars bounds the body text admitted to the index", async () => {
+  const search = DEFAULT_HARNESS_CONFIG.capability.search;
+  const providers = {
+    listTools: () => [],
+    listActiveTools: () => [],
+    discoverSkills: () => ({ skills: [{ name: "skill-0", description: "deployment workflow", filePath: "/skills/deploy/SKILL.md" }] }),
+    readSkillFile: async () => "0123456789ABCDEF BODYNEEDLE",
+  };
+  const custom = createCapabilityBroker(providers, { ...search, limits: { ...search.limits, skillBodyChars: 12 } });
+  const defaults = createCapabilityBroker(providers, search);
+  const bounded = await custom.search({ query: "deployment BODYNEEDLE", src: "local" });
+  const full = await defaults.search({ query: "deployment BODYNEEDLE", src: "local" });
+  assert.equal(bounded.skills.length, 1);
+  assert.equal(full.skills.length, 1);
+  assert.ok(bounded.skills[0]!.score < full.skills[0]!.score, "a truncated body cannot contribute the later term");
 });

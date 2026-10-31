@@ -5,6 +5,8 @@ import type { AgentTool } from '@earendil-works/pi-agent-core';
 import type { Message } from '@earendil-works/pi-ai';
 import { installCapabilityCodemode } from '../../src/capability/codemode.ts';
 import { installNativeDiscoveryBoundary } from '../../src/capability/native-discovery.ts';
+import { DEFAULT_HARNESS_CONFIG } from '../../src/harness-config.ts';
+import capabilityExtension from '../../extensions/capability.ts';
 import { waitFor } from '../../test-support/async.ts';
 
 function registrationFixture(mode: 'on' | 'only' = 'on') {
@@ -147,6 +149,46 @@ function returnedValue(result: unknown): unknown {
   assert.notEqual(start, -1, text);
   return JSON.parse(text.slice(start + '\nOutput:\n'.length));
 }
+
+test('capabilityExtension forwards its fixed config to the installed Codemode executor', { timeout: 20000 }, async () => {
+  const { pi, definitions } = registrationFixture();
+  const config = { ...DEFAULT_HARNESS_CONFIG,
+    codemode: { memoryLimitBytes: 8 * 1024 * 1024, defaultMaxOutputTokens: 2 } };
+  capabilityExtension(pi, { discovery: false, config });
+  const ctx = {
+    tools: [], sessionManager: { getBranch: () => [] }, modelRegistry: {},
+  } as unknown as ExtensionToolContext;
+  const result = await definitions.get('codemode')!.execute('fixed-config',
+    { code: 'return "0123456789ABCDEF";' }, undefined, undefined, ctx);
+  assert.match(scriptOutput(result), /…output truncated…/);
+  assert.doesNotMatch(scriptOutput(result), /0123456789ABCDEF/);
+});
+
+test('configured Codemode memory and output defaults apply per call while script options win', { timeout: 20000 }, async () => {
+  const { pi, definitions } = registrationFixture();
+  const config = { ...DEFAULT_HARNESS_CONFIG,
+    codemode: { memoryLimitBytes: 8 * 1024 * 1024, defaultMaxOutputTokens: 2 } };
+  installCapabilityCodemode(pi, () => true, () => true, () => config);
+  const ctx = {
+    tools: [], sessionManager: { getBranch: () => [] }, modelRegistry: {},
+  } as unknown as ExtensionToolContext;
+  const definition = definitions.get('codemode')!;
+
+  const bounded = await definition.execute('bounded-output', { code: 'return "0123456789ABCDEF";' }, undefined, undefined, ctx);
+  const text = scriptOutput(bounded);
+  assert.match(text, /…output truncated…/);
+  assert.doesNotMatch(text, /0123456789ABCDEF/);
+  assert.equal(typeof (bounded as { details?: { fullOutputPath?: unknown } }).details?.fullOutputPath, 'string');
+
+  const overridden = await definition.execute('overridden-output',
+    { code: '// @options: {"max_output_tokens": 10000}\nreturn "0123456789ABCDEF";' }, undefined, undefined, ctx);
+  assert.match(scriptOutput(overridden), /\nOutput:\n0123456789ABCDEF\n?$/);
+
+  const exhausted = await definition.execute('memory-limit',
+    { code: '// @options: {"max_output_tokens": 10000}\nreturn "x".repeat(16 * 1024 * 1024).length;' }, undefined, undefined, ctx);
+  assert.equal((exhausted as { isError?: boolean }).isError, true);
+  assert.match(scriptOutput(exhausted), /out of memory/i);
+});
 
 const BIG_PARAMETER_GUIDANCE = `BIG_PARAMETER_GUIDANCE ${'describe the query in detail. '.repeat(40)}`;
 const BIG_PROMPT_GUIDELINE = `BIG_PROMPT_GUIDELINE ${'prefer short queries. '.repeat(40)}`;
