@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createSubagentRuntime, SubagentError } from "../../src/subagent/runtime.ts";
+import { createSubagentRuntime, SubagentError, type DeliverMessageRequest } from "../../src/subagent/runtime.ts";
 import { ServiceLifecycle } from "../../src/subagent/lifecycle.ts";
 
 interface StartedJobHandle {
@@ -109,47 +109,37 @@ test("A7 regression: listDetailed isolates history lookup failure to its own ite
 // A4: Domain state protection vs adapter admission barrier
 // ---------------------------------------------------------------------------
 
-test("A4 regression: Runtime protects domain stopping state against revival", async () => {
+test("A4 regression: a late child notice never starts a continuation for a stopping parent", async () => {
   // Exercising SubagentRuntime directly:
-  // When cancelJob(jobId) is called, Runtime moves domain state to 'stopping'.
-  // While in 'stopping', reviveWithNotification is strictly refused.
-  // (In extensions/subagent.mjs:636, checking live.closed was a confused admission gate;
-  // Runtime never permits revival while the domain job is stopping.)
-  const jobHandle = deferredJob();
+  // once cancelJob(parentId) moves the parent Job to 'stopping', a late child
+  // notice has no live handoff target. Runtime delivers it with a null Job id,
+  // which the delivery router retains instead of allocating a continuation.
+  const parentHandle = deferredJob();
+  const deliveries: DeliverMessageRequest[] = [];
 
   const runtime = createSubagentRuntime({
-    startJob: () => ({
-      done: jobHandle.done,
-      cancel() {},
-    }),
+    startJob: (request) => request.parentAgentId === null
+      ? { done: parentHandle.done, cancel() {} }
+      : { done: Promise.resolve({ result: "child done" }), cancel() {} },
+    deliverMessage: (request) => { deliveries.push(request); return { accepted: true }; },
   });
 
-  const batch = runtime.create({ tasks: [{ name: "stop-test", task: "work" }] }) as BatchCreationResult;
-  const jobId = batch.items[0]?.id;
-  assert.ok(jobId);
+  const parent = runtime.create({ tasks: [{ name: "stop-test", task: "work" }] }).items[0] as { id: string };
+  const child = runtime.create({ tasks: [{ name: "child", task: "report" }] }, { parentAgentId: parent.id }).items[0] as { id: string };
 
   // Transition to domain stopping
-  runtime.cancelJob(jobId);
-  const jobsView = runtime.jobs({ jobIds: [jobId] }) as JobsQueryResult;
+  runtime.cancelJob(parent.id);
+  const jobsView = runtime.jobs({ jobIds: [parent.id] }) as JobsQueryResult;
   assert.equal(jobsView.jobs[0]?.status, "stopping", "Domain status is stopping");
 
-  // Runtime refuses revival with reason 'stopping'
-  const wake = runtime.reviveWithNotification(jobId, {
-    type: "notification",
-    from: jobId,
-    subagentId: jobId,
-    jobId,
-    round: 1,
-    status: "completed",
-    content: "done",
-    error: null,
-    history: null,
-  });
-  assert.equal(wake.woken, false);
-  assert.equal(wake.reason, "stopping", "Runtime protects stopping state against revival");
+  await runtime.jobDone(child.id);
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0]?.agentId, parent.id);
+  assert.equal(deliveries[0]?.jobId, null, "a stopping parent offers no live Job for a terminal notice");
+  assert.equal(runtime.jobs().jobs.length, 2, "the notice allocates no continuation Job");
 
-  jobHandle.resolve({ status: "cancelled" });
-  await runtime.jobDone(jobId);
+  parentHandle.resolve({ status: "cancelled" });
+  await runtime.jobDone(parent.id);
 });
 
 test("A4 regression: Runtime restoreState repairs unended jobs to job_interrupted", () => {

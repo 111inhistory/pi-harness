@@ -1,20 +1,83 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { NativeDeliveryRouter, type NativeDeliveryDeps } from '../../src/subagent/native-delivery.ts';
+import type { NativeCustomHandoff } from '../../src/subagent/native-types.ts';
 import { createSubagentRuntime } from '../../src/subagent/runtime.ts';
 import type { TerminalNotification } from '../../src/subagent/lifecycle.ts';
 
 const notice: TerminalNotification = { type: 'notification', from: 'sub_01', subagentId: 'sub_01', jobId: 'sub_01#r2', round: 2,
   status: 'completed', content: 'Job completed', error: null, history: null };
+const cancelled: TerminalNotification = { ...notice, status: 'cancelled', content: 'partial' };
+const failed: TerminalNotification = { ...notice, status: 'failed', content: '', error: 'provider failed' };
 
 function deps(overrides: Partial<NativeDeliveryDeps> = {}): NativeDeliveryDeps {
   return {
-    runtime: { reviveWithNotification: () => ({ woken: false, reason: 'running' }) },
-    runner: { handoff: async () => ({ accepted: true, mode: 'steered' }), handoffCustom: async () => ({ accepted: true, mode: 'steered' }) },
+    runner: { handoff: async () => ({ accepted: true, mode: 'steered' }), handoffCustom: async () => ({ accepted: true, mode: 'pending' }) },
     ownsContext: () => true, canWake: () => true,
     sendToMain() {}, appendRetained: async () => true, onError() {}, ...overrides,
   };
 }
+
+test('terminal notice is handed to the live parent job itself', async () => {
+  const handed: Array<{ jobId: string; message: NativeCustomHandoff }> = [];
+  const router = new NativeDeliveryRouter(deps({
+    runner: { handoff: async () => ({ accepted: true, mode: 'steered' }),
+      handoffCustom: async (jobId, message) => { handed.push({ jobId, message }); return { accepted: true, mode: 'pending' }; } },
+    appendRetained: async () => { throw new Error('a live parent must not retain'); },
+  }));
+  assert.deepEqual(await router.toAgent({ agentId: 'sub_02', jobId: 'sub_02#r1', message: notice }),
+    { accepted: true, mode: 'delivered' });
+  assert.equal(handed.length, 1);
+  assert.equal(handed[0]?.jobId, 'sub_02#r1');
+  assert.equal(handed[0]?.message.from, 'sub_01');
+  assert.equal((handed[0]?.message.details as { status: string }).status, 'completed');
+});
+
+test('late cancellation notice for a stopped parent is retained, never revived', async () => {
+  let handoffs = 0;
+  let retained: NativeCustomHandoff | undefined;
+  const router = new NativeDeliveryRouter(deps({
+    runner: { handoff: async () => ({ accepted: true, mode: 'steered' }),
+      handoffCustom: async () => { handoffs += 1; return { accepted: false, reason: 'job_closed' }; } },
+    appendRetained: async (_agentId, message) => { retained = message; return true; },
+  }));
+  assert.deepEqual(await router.toAgent({ agentId: 'sub_02', jobId: null, message: cancelled }),
+    { accepted: true, mode: 'retained' });
+  assert.equal(handoffs, 0);
+  assert.ok(retained);
+  assert.equal((retained.details as { status: string }).status, 'cancelled');
+});
+
+test('late failure notice for a stopping parent is retained once after the runner refuses', async () => {
+  let handoffs = 0;
+  let appends = 0;
+  let retained: NativeCustomHandoff | undefined;
+  const router = new NativeDeliveryRouter(deps({
+    runner: { handoff: async () => ({ accepted: true, mode: 'steered' }),
+      handoffCustom: async (jobId) => { handoffs += 1; assert.equal(jobId, 'sub_02#r1'); return { accepted: false, reason: 'job_closed' }; } },
+    appendRetained: async (_agentId, message) => { appends += 1; retained = message; return true; },
+  }));
+  assert.deepEqual(await router.toAgent({ agentId: 'sub_02', jobId: 'sub_02#r1', message: failed }),
+    { accepted: true, mode: 'retained' });
+  assert.equal(handoffs, 1);
+  assert.equal(appends, 1);
+  assert.ok(retained);
+  assert.equal((retained.details as { status: string }).status, 'failed');
+});
+
+test('a failed retained append is reported once and never replayed', async () => {
+  const errors: Error[] = [];
+  let appends = 0;
+  const router = new NativeDeliveryRouter(deps({
+    runner: { handoff: async () => ({ accepted: true, mode: 'steered' }), handoffCustom: async () => ({ accepted: false, reason: 'job_closed' }) },
+    appendRetained: async () => { appends += 1; throw new Error('session unavailable'); },
+    onError: (error) => errors.push(error),
+  }));
+  assert.deepEqual(await router.toAgent({ agentId: 'sub_02', jobId: null, message: failed }),
+    { accepted: false, reason: 'retained_append_failed' });
+  assert.equal(appends, 1);
+  assert.match(errors[0]?.message ?? '', /session unavailable/);
+});
 
 test('terminal native queue rejection is observed and is not blindly appended twice', async () => {
   let appends = 0;
@@ -40,20 +103,36 @@ test('definite closed-job refusal falls back to retained append once', async () 
   assert.equal(appends, 1);
 });
 
-test('root quiescence stores notice without reviving child or triggering Main model', async () => {
-  let wakeCalls = 0;
+test('explicit messages keep the normal peer handoff', async () => {
+  const handed: string[] = [];
+  let customs = 0;
+  const router = new NativeDeliveryRouter(deps({
+    runner: { handoff: async (jobId) => { handed.push(jobId); return { accepted: true, mode: 'steered' }; },
+      handoffCustom: async () => { customs += 1; return { accepted: true, mode: 'pending' }; } },
+  }));
+  assert.deepEqual(await router.toAgent({ agentId: 'sub_02', jobId: 'sub_02#r1', message: { type: 'message', from: 'Main', content: 'steer' } }),
+    { accepted: true, mode: 'steered' });
+  assert.deepEqual(await router.toAgent({ agentId: 'sub_02', jobId: null, message: { type: 'message', from: 'Main', content: 'late' } }),
+    { accepted: false, reason: 'job_closed' });
+  assert.deepEqual(handed, ['sub_02#r1']);
+  assert.equal(customs, 0);
+});
+
+test('root quiescence retains a terminal notice without steering Main again', async () => {
   let rootTriggered: boolean | undefined;
   let retained = 0;
+  let handoffs = 0;
   const router = new NativeDeliveryRouter(deps({
     canWake: () => false,
-    runtime: { reviveWithNotification: () => { wakeCalls += 1; return { woken: true, jobId: 'forbidden' }; } },
+    runner: { handoff: async () => ({ accepted: true, mode: 'steered' }),
+      handoffCustom: async () => { handoffs += 1; return { accepted: true, mode: 'pending' }; } },
     sendToMain: (_entry, trigger) => { rootTriggered = trigger; },
     appendRetained: async () => { retained += 1; return true; },
   }));
   await router.toMain(notice);
   await router.toAgent({ agentId: 'sub_02', jobId: null, message: notice });
   assert.equal(rootTriggered, false);
-  assert.equal(wakeCalls, 0);
+  assert.equal(handoffs, 0);
   assert.equal(retained, 1);
 });
 

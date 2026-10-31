@@ -1,10 +1,9 @@
 import { sendDelivery, deliveryEntryFor, type DeliveryCustomMessage } from './delivery.ts';
 import type { NativeJobRunner } from './native-runner.ts';
 import type { NativeCustomHandoff } from './native-types.ts';
-import { SubagentError, type DeliverMessageRequest, type DeliveryOutcome, type RuntimeDelivery, type SubagentRuntime } from './runtime.ts';
+import { SubagentError, type DeliverMessageRequest, type DeliveryOutcome, type RuntimeDelivery } from './runtime.ts';
 
 export interface NativeDeliveryDeps {
-  readonly runtime: Pick<SubagentRuntime, 'reviveWithNotification'>;
   readonly runner: Pick<NativeJobRunner, 'handoff' | 'handoffCustom'>;
   ownsContext(): boolean;
   canWake(): boolean;
@@ -39,11 +38,9 @@ export class NativeDeliveryRouter {
       if (jobId === null) return { accepted: false, reason: 'job_closed' };
       return this.#deps.runner.handoff(jobId, message);
     }
-    if (this.#deps.canWake()) {
-      // Only Runtime may decide the parent is idle and allocate a continuation.
-      const wake = this.#deps.runtime.reviveWithNotification(agentId, message);
-      if (wake.woken) return { accepted: true, mode: 'revived', ...(wake.jobId === undefined ? {} : { jobId: wake.jobId }) };
-    }
+    // A terminal notice belongs to the parent's current Job. It is handed to
+    // that live job when one exists and retained for a stopping/closed/stopped
+    // parent; a notice never allocates a continuation Job.
     const payloadEntry = deliveryEntryFor(message);
     let retained: NativeCustomHandoff | undefined;
     const result = sendDelivery(payloadEntry, {
@@ -51,7 +48,7 @@ export class NativeDeliveryRouter {
       send: async (payload) => {
         retained = { from: message.from, customType: payload.customType, content: payload.content,
           display: payload.display, details: payload.details };
-        if (!this.#deps.canWake() || jobId === null) throw new HandoffRefused('No active native handoff is available.');
+        if (!this.#deps.canWake() || jobId === null) throw new HandoffRefused('No live parent Job is available.');
         const outcome = await this.#deps.runner.handoffCustom(jobId, retained);
         if (!outcome.accepted) throw new HandoffRefused(outcome.reason ?? 'Native input is closed.');
       },
