@@ -20,9 +20,10 @@ JSON 仅为存储格式，不改变面向模型的排版、空白或装配方式
 
 ## 内容与逻辑的边界
 
-- 正文、标题和行为指引放在本目录的 JSON 资产中。参数类型、工具名、权限检查、终态裁定和动态数据装配留在代码中。
+- 内置正文、标题和行为指引放在本目录的 JSON 资产中。参数类型、工具名、权限检查、终态裁定和动态数据装配留在代码中。
 - `src/subagent/prompt.ts` 组装任务和续跑文本。路由与执行共用任务组装函数，避免两边文字不一致。
 - `subagent-turns.json` 中的 `context` 字符串只有三个固定占位符：`{agentId}`、`{parentId}`、`{parentSocket}`。代码逐项插入宿主数据，不解释数据中的替换符或代码。
+- `harness.json` 可逐层替换或追加 common、inherited 两段，见[Harness 提示词定制](../docs/harness-configuration.md#提示词定制)。自定义文本不展开占位符，宿主身份段和继承历史保持原装配边界。
 - 角色说明、路由分类指令和模型偏好继续来自用户的 `subagent-routing.json`。仓库示例在 `config/subagent-routing.json`，不另建一份角色正文。
 - 上游 SDK 或已选工具自身的动态说明，不复制到本目录。UI 标签、协议枚举和运行错误也不作为提示词外置。
 

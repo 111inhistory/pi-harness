@@ -6,10 +6,11 @@
 
 | 所有者 | 负责 | 不负责 |
 | --- | --- | --- |
+| `harness-config.ts` | 外部配置读取、合成与校验；根配置快照和指定提示词段落 | 路由角色、Pi 原生设置、运行中 Job 变更 |
 | `runtime.ts` | Actor 拓扑、Job 状态、名额、停止原因、续跑准入、中断恢复、终态事件与单一 Budget 监控（监控 lifetime 与 active hard 截止时间，`startActive` 时重置，`stop`/`finalize`/`end` 时清理） | SDK Session、Socket、原生文件解析 |
 | `native-runner.ts` | Session 执行句柄、输入准入、在途 steer、原生输入缓冲、本地就绪（local readiness）和清理 | 裁定 Job 状态、决定空闲唤醒、写根终态 |
 | `actor-sessions.ts` | Actor 的角色／模型身份、原生 manager 与已记录锚点、身份补丁 | Job 状态和停止排序 |
-| `native-session.ts` | Settings、ResourceLoader、子扩展装配及 SDK 会话创建（Fresh／Inherited 均独立加载扩展与 MCP 后端，Inherited 恢复捕获白名单并对异步 MCP 提供 10 秒有界等待） | 路由、任务结果裁决 |
+| `native-session.ts` | Settings、ResourceLoader、子扩展装配及 SDK 会话创建（Fresh／Inherited 均独立加载扩展与 MCP 后端，Inherited 恢复捕获白名单并对异步 MCP 提供有界等待，默认 10 秒） | 路由、任务结果裁决 |
 | `root-service.ts` | 组装上述模块，根事件写入、历史视图、内存超限临时文件管理（进程正常退出清理）和故障锁存 | 第二套 Job 状态机 |
 | `extension.ts`、`lifecycle.ts` | SDK 生命周期钩子、代次、退役期限和资源隔离 | 伪造物理退出、重跑已结束任务 |
 | `surface.ts`、`message-write.ts` | 工具声明、调用方身份、输入捕获、专用 `msg_write` 消息工具（`write` 为 SDK 原生文件工具完全不变） | 持有全局注册表或执行循环 |
@@ -21,11 +22,13 @@
 
 Runtime 的 `job.status` 是领域事实。Runner 的输入准入栅栏表示原生句柄是否还能接收消息，不表示 Job 已停止。取消后，Job 仍占用 Actor 与名额，直到原生执行退出并完成收尾。
 
+配置由 `harness-config.ts` 统一解析，按默认、全局、受信项目顺序合成。Root 使用配置快照并传给子会话；Subagent 深度、活跃名额、各层 Budget、重试和提示词段落，以及 Capability 检索与 Codemode 参数均从该快照读取。已有 Job 保留原 Budget。边界和字段见[Harness 参数配置](harness-configuration.md)。
+
 ## 创建、执行与恢复
 
 Fresh 在自己的 Job Budget 内路由。初始工具使用 Pi 默认工具与已配置扩展，并合并路由角色的 `enableTools`；`excludeTools` 始终排除，不另设内置工具白名单。Fresh 与 Inherited 均独立加载已配置的扩展与 MCP 后端（`noExtensions: false`），并运行扩展的启动与关闭钩子，仅排除 Root 装配入口，由子会话自己的 surface 替代。子会话的资源过滤保留用户与项目设置各自的路径作用域，不写回配置文件。
 
-Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定底层物理模型（`physicalModelForCall`），避免虚拟模型在子会话中重路由；Inherited 独立加载配置的扩展与 MCP 后端，恢复捕获的工具白名单（仅限可重新创建的文件型扩展工具与 MCP 工具，父会话专属诊断工具不传递）、系统提示词与思考强度。若继承的 MCP 工具尚未完成异步注册，设置最多 10 秒的有界等待，超时则抛出 `inherited_tool_unavailable`。路由完成的 Actor 在续跑时沿用已记录身份，不重新选择角色。
+Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定底层物理模型（`physicalModelForCall`），避免虚拟模型在子会话中重路由；Inherited 独立加载配置的扩展与 MCP 后端，恢复捕获的工具白名单（仅限可重新创建的文件型扩展工具与 MCP 工具，父会话专属诊断工具不传递）、系统提示词与思考强度。若继承的 MCP 工具尚未完成异步注册，按 `subagent.inheritedToolWaitMs` 有界等待，默认最多 10 秒，超时则抛出 `inherited_tool_unavailable`。路由完成的 Actor 在续跑时沿用已记录身份，不重新选择角色。
 
 Runner 通过 `openSubagentExecution` 获得 SDK Session。共享执行句柄负责 abort 和 cleanup；Root 不用超时竞争强制 dispose 一个仍在执行的 Session。
 
@@ -49,7 +52,7 @@ msg_write
   → 成功返回纯文本提示，或抛出工具错误
 ```
 
-`write` 是 SDK 原生文件工具，完全保持原生行为，不被 harness 拦截或覆写；IPC 消息发送由专用工具 `msg_write` 承担（在 subagent 命名空间中对 Main 和所有子节点默认启用）。
+`write` 是 SDK 原生文件工具，完全保持原生行为，不被 harness 拦截或覆写；IPC 消息发送由专用工具 `msg_write` 承担（在 subagent 命名空间中，Main 按需启用，所有子节点默认启用）。
 
 `msg_write` 仅限 IPC 地址（Unix Socket / Windows Named Pipe），非 IPC 目标直接报错拒绝。宿主消息不再绕本进程 Socket 回环；Runtime 交接结果只在内部检查，不作为工具回执返回。消息成功返回简洁的纯文本（`Successfully sent message to ...`），`details: undefined`，不增加 ACK、`to` 或 `jobId`。拒收、超时或广播部分失败使工具抛错，不自动重发；失败不保证消息尚未送达。
 
@@ -105,7 +108,7 @@ v1 转换只存在于独立离线脚本。生产运行时不转换、不恢复�
 
 Capability 通过共享执行句柄创建内部 SDK 会话，不要求公开 Subagent 工具激活。公共会话与检索会话共用 ModelRuntime 桥和 Budget 截止计时，但保留不同业务规则：Subagent 交付任务结果，Capability 交付验证过的 refs。
 
-内部引擎为 `src/capability/agent.ts`，外层装配为 `extensions/capability.ts`。唯一内部工具 `capability_step` 先增量接受已见 refs，再并行调用现有 Broker 搜索；旧的单查询／一次提交工具和 MJS 入口已删除。内部选择先留在本次 Run，外层结束后统一保存、激活和投影。没有新增选择的 step 累计计数，上限为 3 加一次首轮额度；显式 finish 或达到上限后不再发模型请求。异常结束仍可交付此前已选成果，状态为 `partial`。具体语义和 Budget 见[内部批量检索](interface-contract.md#内部批量检索与增量提交)。
+内部引擎为 `src/capability/agent.ts`，外层装配为 `extensions/capability.ts`。唯一内部工具 `capability_step` 先增量接受已见 refs，再并行调用现有 Broker 搜索；旧的单查询／一次提交工具和 MJS 入口已删除。内部选择先留在本次 Run，外层结束后统一保存、激活和投影。没有新增选择的 step 累计计数，上限默认为 3 加一次首轮额度，可配置 `capability.noSelectionLimit`；显式 finish 或达到上限后不再发模型请求。异常结束仍可交付此前已选成果，状态为 `partial`。具体语义和 Budget 见[内部批量检索](interface-contract.md#内部批量检索与增量提交)。
 
 本地来源由宿主固定，不再提供内部 `src` 参数。远端审批未实现前不搜索远端、不安装候选、不把远端未搜索解释成不存在资源。
 
@@ -113,9 +116,9 @@ Capability 通过共享执行句柄创建内部 SDK 会话，不要求公开 Sub
 
 `capability_step` 的模型正文与完整诊断分开：首次命中只返回 ref、名称、短描述、类型及必要的路径或工具数量；同次发现的重复命中只返回 `repeatedRefs`。完整成员、接口和共同指引保留在宿主，选择整个 namespace 的语义不变。去重不跨发现调用，不把重复命中解释成空搜索。
 
-本地检索由 `src/capability/broker.ts` 实现，复用 `minisearch@7.2.0`。排序使用标准 BM25（`k=0.9`、`b=0.9`、`d=0`），降低重复词的得分增益并加强字段长度归一化，不自行实现评分公式。切词和小写处理使用库默认行为；不附加 CJK 分词、停用词、前缀匹配或模糊兜底。连续中文不做语言分词，不保证中文子片段、同义词或跨语言召回。
+本地检索由 `src/capability/broker.ts` 实现，复用 `minisearch@7.2.0`。排序默认使用标准 BM25（`k=0.9`、`b=0.9`、`d=0`），可通过 `capability.search.bm25` 直接配置库参数；默认降低重复词的得分增益并加强字段长度归一化，不自行实现评分公式。切词和小写处理使用库默认行为；不附加 CJK 分词、停用词、前缀匹配或模糊兜底。连续中文不做语言分词，不保证中文子片段、同义词或跨语言召回。
 
-精确工具／命名空间／MCP 引用和 Skill 入口路径独立查找，不参与 BM25 排序。工具按成员建索引，按完整命名空间或 MCP 组返回，组分数取成员最高分；候选上限按组计数。Skill 先按名称和描述召回，最多打开 6 个候选文件，将每篇正文的前 60,000 字符加入索引后用同一检索库重排，不扫描整个 Skill 目录的正文。字符截断限制索引文本，不是文件读取的字节上限。
+精确工具／命名空间／MCP 引用和 Skill 入口路径独立查找，不参与 BM25 排序。工具按成员建索引，按完整命名空间或 MCP 组返回，组分数取成员最高分；候选上限按组计数。Skill 先按名称和描述召回，默认最多打开 6 个候选文件，将每篇正文的前 60,000 字符加入索引后用同一检索库重排；候选与正文上限由 `capability.search.limits` 配置。不扫描整个 Skill 目录的正文。字符截断限制索引文本，不是文件读取的字节上限。
 
 Harness 用 `result-rendering.ts` 为没有专用结果渲染器的工具提供统一折叠，包括 Capability、Subagent 控制工具和动态 MCP 工具；已有专用渲染器保持不变。折叠按 10 个终端视觉行计数，不让单行长 JSON 绕过限制；通过原生展开键查看全部已交付内容。全屏模式下，工具结果复用 SDK 的左键切换，Subagent 的 `agent-delivery` 通知通过 `MouseRegion` 支持同样的展开／收起。通知按消息保存显示状态，重绘不重置，展开键切换时以全局状态为准；滚轮和拖动继续交给原生界面。标题保留发送者、状态和轮次。GUI 只展示模型可见的 `content`，不展示完整 `details`；渲染不改写模型输入或历史记录。接口已由原生声明或当前启用的 Codemode 查询入口提供时，模型正文只返回资源引用、名称、数量和接口入口，不重复整组参数；两种入口都不存在时保留调用所需接口。是否已声明依据原生 Codemode `prepareLoadout` 返回的逐工具隐藏列表判断，不按全局 `codemode.mode` 推断。再次选中已激活工具时，正文省略重复接口。部分交付通过有界的 `partialReason` 说明原因，完整诊断保留在 details 中。
 
@@ -133,6 +136,6 @@ Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返�
 
 `src/` 与 `extensions/` 生产代码已全部迁移至严格 TypeScript（`storage.ts`、`view.ts`、`routing.ts`、`job-budget.ts`、`pi-job-budget.ts` 位于 `src/subagent/`，`inherited-context.ts` 负责原生继承捕获，`prompt-text.ts` 提供缓存 getter，`skills.ts` 位于 `src/capability/`，`shell-preflight.ts` 位于 `src/` 与 `extensions/`）；`scripts/` 与历史测试用例（`test/*.test.mjs`）仍保持 MJS。
 
-提示词正文在 `prompts/`；代码保留参数结构、动态装配、权限和生命周期判断。运行时只读取原命名的 `subagent-tools.json` 与 `subagent-turns.json`，不读取 `.new.json` 讨论稿。共同 namespace 指引随工具提供，`create.guideline` 仅挂到 create；所有子会话注入 turns 的 `context`，Fresh 添加路由角色，Inherited 添加非空的 `inheritedContext`。`native-runner.ts` 按已保留的路由身份识别模式，续跑不因当前 Job 是 continuation 而丢失 Inherited 定位。`prompt.ts` 负责原样拼装，参数说明按工具及数组项嵌套读取。字段与状态见[提示词装配](interface-contract.md#subagent-提示词装配)。正文在模块初始化时读取，修改后应重启 Pi，不承诺 `/reload` 刷新全部 ESM 依赖。
+提示词正文在 `prompts/`；代码保留参数结构、动态装配、权限和生命周期判断。运行时只读取原命名的 `subagent-tools.json` 与 `subagent-turns.json`，不读取 `.new.json` 讨论稿。共同 namespace 指引随工具提供，`create.guideline` 仅挂到 create；所有子会话注入 turns 的 `context`，Fresh 添加路由角色，Fresh 和 Inherited 均添加非空的 common，Inherited 另添加解析后的非空 inherited；后两段可在 `harness.json` 中逐层替换或追加。`native-runner.ts` 按已保留的路由身份识别模式，续跑不因当前 Job 是 continuation 而丢失 Inherited 定位。`prompt.ts` 负责原样拼装，参数说明按工具及数组项嵌套读取。字段与状态见[提示词装配](interface-contract.md#subagent-提示词装配)。正文在模块初始化时读取，修改后应重启 Pi，不承诺 `/reload` 刷新全部 ESM 依赖。
 
 Windows 11 虚拟机已验证 Shell Preflight、Named Pipe 和 36 项离线 SDK 场景。用户查看界面、远端审批、完整 Windows 场景和多用户验证仍未交付。默认回归、局部 SDK 场景和单次真实模型调用都不能替代完整边界审计或长时间压力验收。

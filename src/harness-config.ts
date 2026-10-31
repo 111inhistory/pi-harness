@@ -121,7 +121,7 @@ function requireNewBudget(value: unknown, source: string, field: string): void {
   }
 }
 
-/** Last layer index that wrote each field path, so later relations blame the right file. */
+/** Last layer that wrote each numeric field, for relation error messages. */
 type FieldOrigins = Map<string, number>;
 
 /** The default shape is also the field schema; special nodes are explicit. */

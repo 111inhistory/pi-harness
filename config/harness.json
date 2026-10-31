@@ -1,0 +1,53 @@
+{
+  "subagent": {
+    "maxDepth": 2,
+    "maxActiveChildren": 4,
+    "budgetsByDepth": {
+      "1": {
+        "modelCalls": { "soft": 160, "hard": 200 },
+        "activeTimeMs": { "soft": 5400000, "hard": 7200000 },
+        "lifetimeMs": 86400000
+      },
+      "2": {
+        "modelCalls": { "soft": 48, "hard": 64 },
+        "activeTimeMs": { "soft": 2700000, "hard": 3600000 },
+        "lifetimeMs": 43200000
+      }
+    },
+    "inheritedToolWaitMs": 10000,
+    "routingRetry": {
+      "maxAttempts": 3,
+      "baseDelayMs": 500,
+      "maxDelayMs": 8000,
+      "jitterRatio": 0.25
+    },
+    "prompts": {
+      "common": {},
+      "inherited": {}
+    }
+  },
+  "capability": {
+    "noSelectionLimit": 3,
+    "budget": {
+      "modelCalls": { "soft": 16, "hard": 20 },
+      "activeTimeMs": { "soft": 180000, "hard": 360000 },
+      "lifetimeMs": 600000
+    },
+    "search": {
+      "bm25": { "k": 0.9, "b": 0.9, "d": 0 },
+      "limits": {
+        "tools": 8,
+        "mcp": 8,
+        "skills": 6,
+        "skillBodies": 6,
+        "requestTokens": 128,
+        "descriptionChars": 240,
+        "skillBodyChars": 60000
+      }
+    }
+  },
+  "codemode": {
+    "memoryLimitBytes": 268435456,
+    "defaultMaxOutputTokens": 10000
+  }
+}

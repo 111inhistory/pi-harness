@@ -119,7 +119,7 @@ refs 去空白并去重；未知 ref 使本次提交整体拒绝，但不清除�
 
 模型正文的搜索候选只包含 ref、名称、短描述、类型和必要的 Skill 路径或工具数量。完整成员及共同指引保留在 details 和宿主候选集中，不按 JSON 字符截断。一次发现中首次命中返回候选正文，后续命中只返回 `repeatedRefs`；批次内重复查询也遵守此规则。之前出现的 ref 仍可选择，重复命中不计为没有匹配。新一次发现重新读取目录。
 
-`noSelectionCount` 统计没有新增接受 refs 的 step，不统计零命中关键词数量。搜索有候选但未选择、只重复已选 refs、提交被拒绝，都会增加计数；有新增选择时不增加，也不清零。首轮搜索尚无候选可选，因此内部上限使用 `3 + 1 = 4`。达到上限时结束，不再执行该 step 请求的新查询；不另设首次搜索状态。
+`noSelectionCount` 统计没有新增接受 refs 的 step，不统计零命中关键词数量。搜索有候选但未选择、只重复已选 refs、提交被拒绝，都会增加计数；有新增选择时不增加，也不清零。首轮搜索尚无候选可选，因此内部上限使用 `noSelectionLimit + 1`，默认 `3 + 1 = 4`。达到上限时结束，不再执行该 step 请求的新查询；不另设首次搜索状态。
 
 主动结束使用 `finish: true` 与空 `queries`，仍可提交最后一批 refs。完成一次本地搜索后允许正常空结束。工具返回 `terminate: true`，不追加模型总结。已接受的 finish 是完成边界；此后内部会话迟到的错误不推翻结果，调用方取消除外。模型自然结束但没有显式 finish，视为未完成协议。
 
@@ -133,7 +133,7 @@ refs 去空白并去重；未知 ref 使本次提交整体拒绝，但不清除�
 
 外层在内部会话结束后刷新注册与资格，筛掉失效成员，统一保存发现记录、激活工具并投影接口。正常空搜索仍为 `ok`；选中成员全部失效且没有保留 Skill 时为 `failed`；只损失部分成员时为 `partial`。调用方取消后不发布新选择。`endReason` 表达内部检索结束原因，候选目录、计数和完整诊断不返回 Main。`coverage` 与 `missingCapabilities` 沿用既有来源，不把零选择次数当作本地资源不存在的证据。
 
-内部 Budget 放宽为模型调用 soft 16／hard 20、活跃时间 soft 180 秒／hard 360 秒、总存活时间 600 秒。这些是宿主固定值，不是公开工具参数。
+内部 Budget 默认为模型调用 soft 16／hard 20、活跃时间 soft 180 秒／hard 360 秒、总存活时间 600 秒。`harness.json` 可覆盖 Budget 和零选择上限，见[Harness 参数配置](harness-configuration.md)。这些值不作为公开工具参数。
 
 ### 与 Subagent 的关系
 
@@ -160,9 +160,9 @@ Shell Preflight 独立配置和使用。本项目不要求三个功能各自作�
 | 通信 | `msg_write` 向返回的 IPC 地址写入消息；`write` 保持 SDK 原生文件工具完全不变，不用于消息发送 |
 | 续跑 | 向已停止的 Subagent 发消息，会启动同一 Subagent 的新一轮执行 |
 
-Fresh 初始工具按 Pi 默认配置加载，包括已配置的扩展工具与 MCP 后端，并合并角色 `enableTools`。角色 `excludeTools` 通过 SDK 始终排除，`enableTools` 和扩展主动激活都不能绕过。Root 装配入口由子会话 surface 替代，不重复加载。Fresh 与 Inherited 均独立加载已配置的扩展与 MCP 后端（`noExtensions: false`）；Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定底层物理模型（`physicalModelForCall`），避免虚拟模型在子会话中重路由，恢复捕获的工具白名单（仅限可重新创建的文件型扩展工具与 MCP 工具，父会话专属诊断工具不传递）、系统提示词与思考强度，对异步 MCP 提供最多 10 秒有界等待。
+Fresh 初始工具按 Pi 默认配置加载，包括已配置的扩展工具与 MCP 后端，并合并角色 `enableTools`。角色 `excludeTools` 通过 SDK 始终排除，`enableTools` 和扩展主动激活都不能绕过。Root 装配入口由子会话 surface 替代，不重复加载。Fresh 与 Inherited 均独立加载已配置的扩展与 MCP 后端（`noExtensions: false`）；Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定底层物理模型（`physicalModelForCall`），避免虚拟模型在子会话中重路由，恢复捕获的工具白名单（仅限可重新创建的文件型扩展工具与 MCP 工具，父会话专属诊断工具不传递）、系统提示词与思考强度，对异步 MCP 提供有界等待，默认最多 10 秒，由 `subagent.inheritedToolWaitMs` 配置。
 
-Subagent 当前共享工作目录。当前实现限制每个父节点最多 4 个活跃子节点，最多派生两层。
+Subagent 当前共享工作目录。默认限制每个父节点最多 4 个活跃子节点，最多派生两层；`subagent.maxActiveChildren`、`subagent.maxDepth` 和每层 Budget 可配置。根服务和子会话使用同一份配置快照，已运行 Job 不受文件修改影响。
 
 创建的等待边界是本批子会话本地就绪（local readiness：路由分配、会话创建、扩展与工具配置完成、初始输入就绪且 IPC 监听准备完毕），返回 `id`、`socket`、`role` 与 `model`；不再等待首次模型流分发（移除了 `firstModelCall` 和 `#starting` 拦截），也不等待响应或任务完成。本地准备阶段的失败会使 create 报错，运行阶段的失败由终态通知报告。
 
@@ -203,7 +203,7 @@ Agent 应通过提供的 `msg_write` 发送消息；`write` 保持 SDK 原生文
 
 **已实现纯文本通信接口与宿主分帧。** 调用方只提供接收地址和纯文本消息。`content` 就是消息正文，不要求调用方把正文封装成 JSON、拼接 NDJSON 或添加末尾换行。
 
-`msg_write` 位于 subagent 命名空间，对 Main 和所有子 Agent 默认启用，仅接受受管 IPC 地址。由宿主负责通信封装、消息分帧（`src/ipc/message.ts` 中的 `managedFrame`）和发送者绑定。内部传输格式不属于 Agent 的调用契约。
+`msg_write` 位于 subagent 命名空间。Main 默认不启用该工具；Capability 选中整个 subagent namespace 后，一并启用 `msg_write`。所有子 Agent 的 Harness 工具组仍默认包含该工具。`msg_write` 仅接受受管 IPC 地址。由宿主负责通信封装、消息分帧（`src/ipc/message.ts` 中的 `managedFrame`）和发送者绑定。内部传输格式不属于 Agent 的调用契约。
 
 以下是目标接口的工具参数示例，正文为纯文本，地址为接口返回的实际地址：
 
@@ -280,7 +280,10 @@ Harness 为没有专用结果渲染器的工具提供统一预览，包括 Capab
 | B：派生与协调 | tools 的 `create.guideline` | 仅追加到 `subagent_create.promptGuidelines`，不追加到 list／stop 的共同指引 |
 | C：子会话身份与交付 | turns 的 `context` | 所有子会话的 `appendSystemPrompt`；替换实际 Agent ID、Parent ID 与父端点 |
 | D1：Fresh 职责 | `subagent-routing.json` 的角色说明 | Fresh 路由后注入，续跑保留已记录角色 |
-| D2：Inherited 上下文定位 | turns 的 `inheritedContext` | 仅 Inherited 会话额外注入，续跑及重新打开原生会话时仍按该 Actor 身份装配 |
+| 共同工作指引 | `subagent.prompts.common`，内置为空 | Fresh 与 Inherited 的当前会话装配均追加一次非空正文 |
+| D2：Inherited 上下文定位 | `subagent.prompts.inherited`，默认来自 turns 的 `inheritedContext` | 仅 Inherited 会话额外注入，续跑及重新打开原生会话时仍按该 Actor 身份装配 |
+
+提示词配置逐层执行 replace 再 append，具体顺序见[提示词定制](harness-configuration.md#提示词定制)。宿主身份段与已捕获历史不属于可替换范围。
 
 `inheritedContext` 接线与正式正文已启用。空串或全空白时不产生额外指引；非空正文原样传递，不由代码补写默认措辞。装配不清洗继承历史，也不把它改写成新的 assignment。
 

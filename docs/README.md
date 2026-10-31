@@ -12,6 +12,7 @@
 | [接口契约](interface-contract.md) | 已确认的使用流程、当前接口、目标要求与已落地实现 |
 | [当前架构](architecture.md) | 状态所有权、依赖方向、模块职责与已确认行为 |
 | [存储 v2 与离线迁移](subagent-storage.md) | 当前事件字段、文件归属、历史视图、恢复和迁移边界 |
+| [Harness 参数配置](harness-configuration.md) | 全局和项目参数、Budget、检索限额及 Subagent 提示词定制 |
 | [提示词正文](../prompts/README.md) | 提示词文件清单、数据装配与修改生效方式 |
 | [能力提示词记忆规范](capability-prompt-memory.md) | 分支规范条目持久化、嵌套调用保留与动态权限过滤 |
 | [已知问题与待定事项](known-issues.md) | 问题状态与调查记录入口 |

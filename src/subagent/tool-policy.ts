@@ -30,7 +30,7 @@ export interface ToolPolicyTool {
 /** Harness tools a child keeps below the leaf depth, in registration order. */
 const HARNESS_TOOLS = ["subagent_create", "subagent_list", "subagent_stop", "capability", "msg_write"] as const;
 const HARNESS_TOOL_NAMES: ReadonlySet<string> = new Set(HARNESS_TOOLS);
-/** At the leaf depth a child may only list; it cannot create or stop. */
+/** At the leaf depth a child keeps listing and messaging, without create or stop. */
 const LEAF_HARNESS_TOOLS = ["subagent_list", "msg_write"] as const;
 
 /**
