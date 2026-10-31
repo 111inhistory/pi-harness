@@ -142,10 +142,11 @@ function mergeNode(base: object, value: unknown, source: string, field: string, 
     } else {
       const previous = merged[key];
       if (field === 'subagent.prompts') merged[key] = promptPatch(previous as string, item, source, child);
-      else if (typeof previous === 'number') merged[key] = numberValue(item, source, child);
-      else merged[key] = mergeNode(previous as object, item, source, child, origins, layer);
+      else if (typeof previous === 'number') {
+        merged[key] = numberValue(item, source, child);
+        origins.set(child, layer);
+      } else merged[key] = mergeNode(previous as object, item, source, child, origins, layer);
     }
-    origins.set(child, layer);
   }
   return merged;
 }
@@ -157,15 +158,7 @@ function mergeNode(base: object, value: unknown, source: string, field: string, 
  * either side of the relation.
  */
 function validateRelations(config: HarnessConfig, origins: FieldOrigins, sources: readonly string[]): void {
-  const layerOf = (field: string): number => {
-    for (let current = field; ;) {
-      const found = origins.get(current);
-      if (found !== undefined) return found;
-      const dot = current.lastIndexOf('.');
-      if (dot < 0) return -1;
-      current = current.slice(0, dot);
-    }
-  };
+  const layerOf = (field: string): number => origins.get(field) ?? -1;
   const fail = (fields: readonly string[], field: string, reason: string): never => {
     const layer = Math.max(...fields.map(layerOf));
     throw new HarnessConfigError(layer < 0 ? sources.at(-1) ?? '' : sources[layer]!, field, reason);

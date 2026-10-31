@@ -281,6 +281,14 @@ test('budget relations allow soft == hard and reject soft > hard at the layer th
   expectError(depth, 'project', 'subagent.budgetsByDepth.1.activeTimeMs.hard');
 });
 
+test('an empty project object does not take ownership of invalid global numeric fields', () => {
+  const error = resolveError([
+    { source: 'global', value: { capability: { budget: { modelCalls: { soft: 300 } } } } },
+    { source: 'project', value: { capability: { budget: { modelCalls: {} } } } },
+  ]);
+  expectError(error, 'global', 'capability.budget.modelCalls.hard');
+});
+
 test('maxDepth demands a final budget for every reachable depth across layers', () => {
   const missing = resolveError([{ source: 'global', value: { subagent: { maxDepth: 3 } } }]);
   expectError(missing, 'global', 'subagent.budgetsByDepth.3');
