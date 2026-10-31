@@ -223,8 +223,9 @@ function rank(query: string, entries: Candidate[]): Ranked[] {
   if (!entries.length) return [];
   const index = new MiniSearch<{ id: number; text: string }>({
     fields: ['text'],
-    // Delta zero selects standard BM25 rather than the library's BM25+ variant.
-    searchOptions: { bm25: { k: 1.2, b: 0.75, d: 0 } },
+    // Reduce repetition gains and strengthen field-length normalization.
+    // Delta zero keeps standard BM25 instead of the library's BM25+ variant.
+    searchOptions: { bm25: { k: 0.9, b: 0.9, d: 0 } },
   });
   const owners: Candidate[] = [];
   const documents = entries.flatMap((candidate) => candidate.documents.map((text) => {
