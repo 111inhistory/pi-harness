@@ -5,6 +5,9 @@
  * Runtime owns cancellation, Budget verdicts, finalization and terminal publication.
  * Messages received before an adapter is ready are buffered as startup input.
  * Explicit messages revive idle actors on their retained context or original seed.
+ * A parent with nonterminal direct children keeps its current Job: while its
+ * runner waits for them it pauses active-time accounting, then resumes it on
+ * the next wake. Active time does not accrue while waiting; the lifetime lease does.
  * Lifecycle events (`onEvent`) let the adapter persist topology and outcomes;
  * `restoreState` rebuilds them without replaying work.
  */
@@ -83,6 +86,17 @@ export interface JobRequest {
   pendingMessages: RuntimeDelivery[];
   checkBudget(): BudgetSnapshot;
   recordStart(startEntryId: string | null): void;
+  /**
+   * Stop charging active time while the runner waits for its direct children.
+   * The lifetime lease keeps running and is still watched.
+   */
+  pauseActive(): void;
+  /**
+   * Charge active time again and rearm the Budget deadline watch. Throws when
+   * this Job can no longer run (expired, cancelled or already stopping); the
+   * first recorded stop cause is preserved.
+   */
+  resumeActive(): void;
 }
 
 export interface StartedJobHandle {
@@ -166,6 +180,13 @@ export interface RuntimeOptions {
   deliverMessage?: (request: DeliverMessageRequest) => DeliveryOutcome | Promise<DeliveryOutcome> | null | undefined;
   deliverToMain?: (message: RuntimeDelivery) => unknown;
   onEvent?: (event: RuntimeEvent) => void;
+  /**
+   * Lightweight wake for a parent whose last direct child just became truly
+   * terminal. It runs after that child's terminal notice was queued or
+   * attempted, including when no delivery handler exists or delivery failed;
+   * it never schedules or revives anything by itself.
+   */
+  onChildrenSettled?: (parentId: string) => void;
   allowInherited?: boolean;
   socketDir?: string;
   historyPaths?: (jobId: string) => JobHistoryPaths | null;
@@ -265,12 +286,6 @@ export interface BroadcastReceipt {
   to: "all";
   sent: Array<{ to: string; jobId: string | null }>;
   errors: Array<{ to: string; code: string; message: string }>;
-}
-
-export interface ReviveResult {
-  woken: boolean;
-  jobId?: string;
-  reason?: string;
 }
 
 export interface RestoreResult {
@@ -749,6 +764,7 @@ export class SubagentRuntime {
   #deliverMessage: ((request: DeliverMessageRequest) => DeliveryOutcome | Promise<DeliveryOutcome> | null | undefined) | null;
   #deliverToMain: ((message: RuntimeDelivery) => unknown) | null;
   #onEvent: ((event: RuntimeEvent) => void) | null;
+  #onChildrenSettled: ((parentId: string) => void) | null;
   #allowInherited: boolean;
   #socketDir: string | undefined;
   #historyPaths: ((jobId: string) => JobHistoryPaths | null) | null;
@@ -768,6 +784,7 @@ export class SubagentRuntime {
   #childSequences = new Map<string, number>();
   #transitionDepth = 0;
   #completions: Job[] = [];
+  #settledParents = new Set<string>();
 
   constructor(options: RuntimeOptions) {
     const {
@@ -775,6 +792,7 @@ export class SubagentRuntime {
       deliverMessage,
       deliverToMain,
       onEvent,
+      onChildrenSettled,
       allowInherited = true,
       socketDir,
       historyPaths,
@@ -790,6 +808,7 @@ export class SubagentRuntime {
     this.#deliverMessage = deliverMessage ?? null;
     this.#deliverToMain = deliverToMain ?? null;
     this.#onEvent = onEvent ?? null;
+    this.#onChildrenSettled = onChildrenSettled ?? null;
     this.#allowInherited = allowInherited;
     this.#socketDir = socketDir;
     this.#historyPaths = historyPaths ?? null;
@@ -1078,6 +1097,23 @@ export class SubagentRuntime {
   }
 
   /**
+   * Whether an actor has any direct child whose current Job is still
+   * nonterminal (`running`, `stopping` or `finalizing`).
+   *
+   * Topology is direct-child only: a grandchild stays the responsibility of
+   * its own parent. This is a query, so an unknown actor simply has none.
+   * A cancelled or failed parent may still have active children; that is a
+   * legitimate late-notice case, not a state invariant to repair here.
+   */
+  hasActiveChildren(agentId: string): boolean {
+    if (typeof agentId !== "string" || agentId === "") return false;
+    for (const agent of this.#agents.values()) {
+      if (agent.parentAgentId === agentId && this.#hasActiveJob(agent)) return true;
+    }
+    return false;
+  }
+
+  /**
    * Accept a write for a same-runtime actor or for the reserved broadcast
    * target.
    *
@@ -1259,6 +1295,38 @@ export class SubagentRuntime {
   }
 
   /**
+   * Queue a parent wake when the just-ended Job was its last active direct
+   * child. The wake is deferred with terminal notifications, so it cannot
+   * overtake the notice that made the child terminal.
+   */
+  #queueChildrenSettled(job: Job): void {
+    if (this.#onChildrenSettled === null) return;
+    const parentId = this.#agents.get(job.agentId)?.parentAgentId ?? null;
+    // Main has no runner to wake.
+    if (parentId === null) return;
+    if (this.hasActiveChildren(parentId)) return;
+    this.#settledParents.add(parentId);
+    if (this.#transitionDepth > 0) return;
+    this.#flushChildrenSettled();
+  }
+
+  #flushChildrenSettled(): void {
+    if (this.#settledParents.size === 0 || this.#onChildrenSettled === null) {
+      this.#settledParents.clear();
+      return;
+    }
+    const parents = [...this.#settledParents];
+    this.#settledParents.clear();
+    const notify = this.#onChildrenSettled;
+    for (const parentId of parents) {
+      // A child admitted during the same transition may still be live. Then
+      // that child's own terminal transition owns the next wake.
+      if (this.hasActiveChildren(parentId)) continue;
+      this.#attempt(() => notify(parentId));
+    }
+  }
+
+  /**
    * Coalesce one synchronous transition: a batch that registers four Jobs,
    * starts them and fails one of them publishes its notification once the
    * whole batch is registered.
@@ -1269,7 +1337,10 @@ export class SubagentRuntime {
       return run();
     } finally {
       this.#transitionDepth -= 1;
-      if (this.#transitionDepth === 0) this.#flushCompletions();
+      if (this.#transitionDepth === 0) {
+        this.#flushCompletions();
+        this.#flushChildrenSettled();
+      }
     }
   }
 
@@ -1425,6 +1496,8 @@ export class SubagentRuntime {
       pendingMessages: pending,
       checkBudget: () => this.#checkBudget(job),
       recordStart: (startEntryId) => this.#recordStart(job, startEntryId),
+      pauseActive: () => this.#pauseActive(job),
+      resumeActive: () => this.#resumeActive(job),
     };
   }
 
@@ -1518,6 +1591,65 @@ export class SubagentRuntime {
     this.#budgetWatches.delete(jobId);
   }
 
+  /**
+   * Freeze active-time accounting while the runner waits for direct children.
+   * `#watchBudget` re-arms from the paused snapshot, so the lifetime lease is
+   * still observed; no active-time deadline remains while the Job is parked.
+   */
+  #pauseActive(job: Job): void {
+    this.#withTransition(() => {
+      if (job.status !== "running") return;
+      const budget = job.budget;
+      if (budget === null) throw stateError(`Job ${job.jobId} has no Budget.`);
+      budget.pauseActive();
+      this.#watchBudget(job);
+    });
+  }
+
+  /**
+   * Charge active time again after waiting and rearm its Budget deadline.
+   *
+   * A Job that expired while paused, was cancelled, or is already stopping
+   * cannot resume. Starting that stopping transition goes through
+   * `firstEffectiveStopping`, so an earlier cause is never rewritten; the
+   * caller receives that same cause as the thrown error.
+   */
+  #resumeActive(job: Job): void {
+    this.#withTransition(() => {
+      if (job.status !== "running") throw this.#resumeRefusal(job);
+      const budget = job.budget;
+      if (budget === null) throw stateError(`Job ${job.jobId} has no Budget.`);
+      const started = budget.startActive();
+      if (!started.ok) {
+        if (started.terminal === null) {
+          // already_running: the active window never closed; only rearm.
+          this.#watchBudget(job);
+          return;
+        }
+        const error = publicBudgetError(started.terminal.error);
+        const status: TerminalStatus = started.terminal.status === "cancelled" ? "cancelled" : "failed";
+        this.#beginStopping(job, status, error ?? { code: started.reason, message: "Job cannot resume active time." });
+        throw new SubagentError(
+          error?.code ?? started.reason,
+          `Job ${job.jobId} cannot resume active time: ${started.reason}.`,
+          { jobId: job.jobId, status: started.terminal.status, termination: started.terminal.termination },
+        );
+      }
+      this.#watchBudget(job);
+    });
+  }
+
+  #resumeRefusal(job: Job): SubagentError {
+    const stopping = job.stopping;
+    return new SubagentError(
+      stopping?.error?.code ?? stopping?.status ?? "agent_busy",
+      stopping === null
+        ? `Job ${job.jobId} cannot resume: it is ${job.status}.`
+        : `Job ${job.jobId} cannot resume: it is already stopping for ${stopping.status}.`,
+      { jobId: job.jobId, status: job.status, ...(stopping === null ? {} : { stopping: stopping.status }) },
+    );
+  }
+
   #watchBudget(job: Job): void {
     this.#clearBudgetWatch(job.jobId);
     if (job.budget === null) return;
@@ -1575,6 +1707,9 @@ export class SubagentRuntime {
     // The notification is the only thing a terminal transition sends outwards;
     // it is attempted after the terminal event of this transition was emitted.
     this.#queueCompletion(job);
+    // The parent wake is queued after its child's terminal notice, so a notice
+    // enqueued by the synchronous delivery attempt always precedes the wake.
+    this.#queueChildrenSettled(job);
   }
 
   #emitEnd(job: Job): void {
@@ -1619,8 +1754,8 @@ export class SubagentRuntime {
 
   #notifyTerminal(job: Job): void {
     // Completed, cancelled and failed rounds all publish one typed terminal
-    // event. The delivery coordinator decides how it delivers or wakes; the
-    // runtime never suppresses a normal completion.
+    // event. The delivery coordinator hands it to a live parent Job or appends
+    // it to retained history; the runtime never suppresses a normal completion.
     if (!TERMINAL_STATUSES.has(job.status)) return;
     const sourceAgent = this.#agents.get(job.agentId);
     // Host notifications follow topology, not whoever revived this round. A
@@ -1693,34 +1828,6 @@ export class SubagentRuntime {
   }
 
   /**
-   * Wake an idle agent with one host terminal notification.
-   *
-   * This uses the same admission and Budget path as an explicit write: the
-   * notification becomes the trigger of a normal continuation Job, so a
-   * completed child can wake a stopped/idle parent without a second execution
-   * orchestrator. A busy agent is not woken here; the caller appends the notice
-   * to its current conversation instead.
-   *
-   * @param {string} agentId
-   * @param {object} envelope host-owned terminal notification
-   * @returns {{ woken: boolean, jobId?: string, reason?: string }}
-   */
-  reviveWithNotification(agentId: string, envelope: RuntimeDelivery): ReviveResult {
-    const agent = this.#agents.get(agentId);
-    if (agent === undefined) return { woken: false, reason: "unknown_agent" };
-    return this.#withTransition(() => {
-      const live = this.#liveJobOf(agent);
-      if (live !== null) return { woken: false, reason: live.status };
-      const refusal = this.#reviveRefusal(agent);
-      if (refusal !== null) return { woken: false, reason: refusal.code };
-      agent.pending.push(cloneValue(envelope));
-      const revived = this.#scheduleContinuation(agent, agent.parentAgentId ?? MAIN_ACTOR_ID);
-      this.#start(revived);
-      return { woken: true, jobId: revived.jobId };
-    });
-  }
-
-  /**
    * Register the continuation Job for an idle agent that should wake.
    *
    * A continuation has no task of its own; it carries the agent's original
@@ -1746,9 +1853,17 @@ export class SubagentRuntime {
   #activeChildren(parentAgentId: string | null): number {
     let active = 0;
     for (const agent of this.#agents.values()) {
-      if (agent.parentAgentId === parentAgentId && agent.status === "running") active += 1;
+      if (agent.parentAgentId === parentAgentId && this.#hasActiveJob(agent)) active += 1;
     }
     return active;
+  }
+
+  /** A Job occupies its actor until it is truly terminal, finalizing included. */
+  #hasActiveJob(agent: Agent): boolean {
+    return agent.jobIds.some((jobId) => {
+      const job = this.#jobs.get(jobId);
+      return job !== undefined && LIVE_STATUSES.has(job.status);
+    });
   }
 
   #refreshAgent(agentId: string): void {
