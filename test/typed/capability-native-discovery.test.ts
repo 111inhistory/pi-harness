@@ -15,7 +15,7 @@ type McpTransport = ReturnType<McpTransportFactory>;
 type JsonRpcMessage = Parameters<Parameters<McpTransport['onMessage']>[0]>[0];
 import capabilityExtension from '../../extensions/capability.ts';
 import { CAPABILITY_STEP_TOOL_NAME } from '../../src/capability/contracts.ts';
-import type { CapabilityStepDetails } from '../../src/capability/agent.ts';
+import type { CapabilityStepFeedback } from '../../src/capability/agent.ts';
 import { installCapabilityMcp } from '../../src/capability/native-discovery.ts';
 import { setCapabilityParent } from '../../src/capability/scope.ts';
 import { waitFor } from '../../test-support/async.ts';
@@ -80,7 +80,7 @@ for (const nativeFirst of [false, true]) {
             assert.ok(result && result.role === 'toolResult');
             const body = result.content.find((part) => part.type === 'text');
             assert.ok(body?.type === 'text');
-            const stepDetails = JSON.parse(body.text) as CapabilityStepDetails;
+            const stepDetails = JSON.parse(body.text) as CapabilityStepFeedback;
             assert.equal(stepDetails.searches[0]?.mcp.length, 1);
             message = tool(CAPABILITY_STEP_TOOL_NAME, {
               queries: ['tool://read_mcp_resource', 'namespace://mcp__no_resources_fixture'],

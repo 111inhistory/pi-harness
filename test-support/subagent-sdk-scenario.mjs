@@ -63,7 +63,7 @@ assert.ok(model, "the installed Pi catalog must contain the offline fixture cand
 // Isolated Pi user config: no dependency on the real user's routing file or
 // third-party Antigravity extension. All calls use the scripted runtime below.
 const routing = JSON.parse(await fsp.readFile(new URL("../config/subagent-routing.json", import.meta.url), "utf8"));
-Object.assign(routing.models.find((candidate) => candidate.id === "gemini"), { provider: model.provider, model: model.id });
+for (const candidate of routing.models) Object.assign(candidate, { provider: model.provider, model: model.id });
 await fsp.writeFile(path.join(agentDir, "subagent-routing.json"), JSON.stringify(routing));
 const childManagers = [];
 const nativeOpen = SessionManager.open;

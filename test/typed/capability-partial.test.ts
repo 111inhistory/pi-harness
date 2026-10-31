@@ -501,30 +501,23 @@ test("the next native request declares the compacted interface with its argument
   assert.equal(declared.description, "Selected fixture for partial publication.");
 });
 
-test("an activation failure keeps fallback argument schemas and full details without duplicating memory guidance", async () => {
+test("an activation exception excludes inactive members from publication", async () => {
   const scenario = await runScenario("activation_error");
   const visible = publicResult(scenario.outcome.content);
-  assert.equal(scenario.outcome.isError, false, "the selected resource stays publishable as partial");
-  assert.equal(visible.status, "partial");
-  assert.match(visible.partialReason ?? "", /selected tools could not be activated: simulated activation failure/);
-  assert.deepEqual(visible.tools?.map((hit) => hit.ref), ["tool://fixture_partial"]);
-  assert.deepEqual(
-    visible.tools?.[0]?.parameters,
-    { type: "object", properties: {} },
-    "without a declaration or query path, the result keeps the argument schema",
-  );
-  assert.equal(visible.tools?.[0]?.interface, undefined);
-  assert.equal(visible.tools?.[0]?.instructions, undefined, "canonical branch memory owns shared guidance");
+  assert.equal(scenario.outcome.isError, true);
+  assert.equal(visible.status, "failed");
+  assert.match(visible.failureReason ?? "", /selected tools could not be activated: simulated activation failure/);
+  assert.deepEqual(visible.tools, [], "the failed activation must not advertise an interface for an inactive tool");
   assert.doesNotMatch(JSON.stringify(visible), /fixture_unrelated/);
 
   assert.ok(isRecord(scenario.outcome.details));
-  assert.equal(scenario.outcome.details["status"], "partial");
-  assert.equal(
-    (scenario.outcome.details["tools"] as Array<{ ref?: string }>)[0]?.ref,
-    "tool://fixture_partial",
-    "full details remain intact",
-  );
-  assert.ok(!scenario.activeTools.includes("fixture_partial"), "the failed activation did not add the tool");
+  assert.equal(scenario.outcome.details["status"], "failed");
+  assert.deepEqual(scenario.outcome.details["tools"], []);
+  assert.ok(!scenario.activeTools.includes("fixture_partial"));
+  // The pre-activation record is the same documented consistency limitation as
+  // SDK allowlist masking. No rollback or second record is introduced here.
+  assert.equal(scenario.persisted.length, 1);
+  assert.deepEqual(scenario.persisted[0]?.result.tools.map((hit) => hit.ref), ["tool://fixture_partial"]);
   const next = scenario.rootRequests[1];
   assert.ok(next);
   assert.equal(getCurrentTools(next.messages).some((tool) => tool.name === "fixture_partial"), false);

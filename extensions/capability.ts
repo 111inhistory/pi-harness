@@ -209,7 +209,7 @@ export default function capabilityExtension(pi: ExtensionAPI, { discovery = true
           try {
             previouslyActive = new Set(pi.getActiveTools());
             const activation = activateSelectedTools(pi, result);
-            createEligibleToolCatalog(pi);
+            const eligible = createEligibleToolCatalog(pi).names;
             // Publication follows what is actually active, not what the search
             // hoped to activate. This is a synchronous read of the SDK's state,
             // not a rollback path.
@@ -217,8 +217,9 @@ export default function capabilityExtension(pi: ExtensionAPI, { discovery = true
             if (activation.warnings.length > 0) {
               result = withOuterWarnings(result, activation.warnings);
             }
-            interfaceSources = capabilityInterfaceSources(activation.active, declaredTools);
+            interfaceSources = capabilityInterfaceSources(activation.active, declaredTools, eligible.has("codemode"));
           } catch (error) {
+            result = retainSelectedTools(pi, result, "activation", new Set(pi.getActiveTools()));
             result = withOuterWarnings(result, [`selected tools could not be activated: ${errorMessage(error)}`]);
           }
         } else if (result.status !== "failed") {
@@ -425,10 +426,11 @@ function retainSelectedTools(
 function capabilityInterfaceSources(
   active: ReadonlySet<string>,
   declaredTools: () => ReadonlySet<string>,
+  codemodeAllowed: boolean,
 ): CapabilityInterfaceSources {
   return {
     declared: declaredTools(),
-    ...(active.has("codemode")
+    ...(active.has("codemode") && codemodeAllowed
       ? { queryable: new Set([...active].filter((name) => name !== "codemode")) }
       : {}),
   };
