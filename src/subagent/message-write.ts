@@ -41,7 +41,7 @@ export function createMessageWriteTool(options: {
 }): ManagedWriteTool {
   return {
     name: 'msg_write',
-    defaultActive: true,
+    defaultActive: false,
     label: 'Send Agent Message',
     description: text.description,
     promptSnippet: text.snippet,

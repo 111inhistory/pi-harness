@@ -317,3 +317,60 @@ test("a budget refusal on a retry stops before dispatch and keeps honest physica
   assert.equal(registry.calls.length, 2, "the refused third attempt never reaches the provider");
   assert.deepEqual(budget.debits, [1, 2, 3]);
 });
+
+test("the supplied retry policy replaces attempts and the base backoff", async (t) => {
+  mockRetryClock(t, 0);
+  const registry = createRegistry([
+    failed("fetch failed"),
+    failed("fetch failed"),
+    stoppedRole(),
+  ]);
+  const budget = createBudget();
+
+  const pending = outcome(routeSubagent({
+    registry,
+    budget,
+    task: "TASK",
+    config: CONFIG,
+    retry: { maxAttempts: 3, baseDelayMs: 50, maxDelayMs: 60, jitterRatio: 0 },
+  }));
+  await flush();
+  assert.equal(registry.calls.length, 1);
+
+  t.mock.timers.tick(49);
+  await flush();
+  assert.equal(registry.calls.length, 1, "the configured 50ms base delay replaces the 500ms default");
+  t.mock.timers.tick(1);
+  await flush();
+  assert.equal(registry.calls.length, 2);
+
+  t.mock.timers.tick(59);
+  await flush();
+  assert.equal(registry.calls.length, 2, "the configured maxDelayMs bounds the second delay");
+  t.mock.timers.tick(1);
+  await flush();
+
+  const { value, error } = await pending;
+  assert.equal(error, undefined);
+  assert.equal(value.roleId, "executor");
+  assert.equal(registry.calls.length, 3);
+  assert.deepEqual(budget.debits, [1, 2, 3]);
+});
+
+test("a single-attempt retry policy surfaces the first transient failure", async () => {
+  const registry = createRegistry([failed("fetch failed"), stoppedRole()]);
+  const budget = createBudget();
+  await assert.rejects(
+    routeSubagent({
+      registry,
+      budget,
+      task: "TASK",
+      config: CONFIG,
+      retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 },
+    }),
+    routingError("routing_classification_failed"),
+  );
+  assert.equal(registry.calls.length, 1, "maxAttempts one never waits or dispatches a retry");
+  assert.deepEqual(budget.debits, [1]);
+  assert.equal(registry.calls[0]?.options.maxRetries, 0);
+});

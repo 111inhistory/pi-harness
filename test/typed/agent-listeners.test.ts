@@ -55,7 +55,7 @@ async function canConnect(address: string): Promise<boolean> {
 test('endpoint resolution accepts registered addresses and rejects unknown addresses uniformly', async () => {
   const root = path.join(os.tmpdir(), 'pi-listener-registry-fixture');
   const listeners = new AgentListeners({
-    socketDir: root, baseSocketDir: root,
+    socketDir: root, baseSocketDir: root, maxDepth: 2,
     actors: () => [{ agentId: 'sub_01', parentAgentId: null, depth: 1 }],
     isAccepting: () => true,
     send: async command => ({ ok: true, to: command.to, jobId: null }),
@@ -96,6 +96,7 @@ test("all registered stopped actor endpoints stay reachable beyond the display w
   const listeners = new AgentListeners({
     socketDir: root,
     baseSocketDir: root,
+    maxDepth: 2,
     actors: () => runtime.list().agents,
     isAccepting: () => true,
     send: async (command) => {
@@ -130,6 +131,7 @@ test("missing or invalid senders are rejected with onError and never reach runti
   const listeners = new AgentListeners({
     socketDir: root,
     baseSocketDir: root,
+    maxDepth: 2,
     actors: () => [{ agentId: "sub_01", parentAgentId: null, depth: 1 }],
     isAccepting: () => true,
     send: async (command) => {
@@ -172,6 +174,7 @@ test("one broadcast frame invokes the domain broadcast once and reports partial 
   const listeners = new AgentListeners({
     socketDir: root,
     baseSocketDir: root,
+    maxDepth: 2,
     actors: () => [],
     isAccepting: () => true,
     send: async (command) => {
@@ -203,6 +206,7 @@ test("close rejects new traffic and releases every registered socket", { skip: !
   const listeners = new AgentListeners({
     socketDir: root,
     baseSocketDir: root,
+    maxDepth: 2,
     actors: () => [],
     isAccepting: () => true,
     send: async (command) => ({ ok: true, to: command.to, jobId: null }),

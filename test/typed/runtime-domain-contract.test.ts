@@ -9,8 +9,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { DEFAULT_HARNESS_CONFIG, resolveHarnessConfig } from "../../src/harness-config.ts";
 import {
-  MAX_AGENT_DEPTH,
   SubagentError,
   createSubagentRuntime,
 } from "../../src/subagent/runtime.ts";
@@ -62,8 +62,9 @@ function handleFor(started: Handle[], jobId: string): Handle {
   return handle;
 }
 
-test("exports one MAX_AGENT_DEPTH and enforces it through the production topology", () => {
-  assert.equal(MAX_AGENT_DEPTH, 2);
+test("the configured maximum depth gates the production topology", () => {
+  const maxDepth = DEFAULT_HARNESS_CONFIG.subagent.maxDepth;
+  assert.equal(maxDepth, 2);
   const fake = adapter();
   const runtime = createSubagentRuntime({ startJob: fake.startJob });
 
@@ -75,7 +76,35 @@ test("exports one MAX_AGENT_DEPTH and enforces it through the production topolog
     () => runtime.create({ tasks: [{ task: "grandchild" }] }, { parentAgentId: child.id }),
     (error: unknown) => error instanceof SubagentError
       && error.code === "max_depth_exceeded"
-      && error.detail.maxDepth === MAX_AGENT_DEPTH,
+      && error.detail.maxDepth === maxDepth,
+  );
+
+  // A deeper resolved configuration admits one more generation and still stops
+  // at its own leaf.
+  const deep = createSubagentRuntime({
+    startJob: fake.startJob,
+    config: resolveHarnessConfig([{ source: "test", value: { subagent: {
+      maxDepth: 3,
+      budgetsByDepth: {
+        3: {
+          modelCalls: { soft: 5, hard: 7 },
+          activeTimeMs: { soft: 1_000, hard: 2_000 },
+          lifetimeMs: 5_000,
+        },
+      },
+    } } }]),
+  });
+  const first = deep.create({ tasks: [{ task: "depth one" }] }).items[0];
+  assert.ok(first);
+  const second = deep.create({ tasks: [{ task: "depth two" }] }, { parentAgentId: first.id }).items[0];
+  assert.ok(second);
+  const third = deep.create({ tasks: [{ task: "depth three" }] }, { parentAgentId: second.id }).items[0];
+  assert.ok(third);
+  assert.throws(
+    () => deep.create({ tasks: [{ task: "depth four" }] }, { parentAgentId: third.id }),
+    (error: unknown) => error instanceof SubagentError
+      && error.code === "max_depth_exceeded"
+      && error.detail.maxDepth === 3,
   );
 });
 

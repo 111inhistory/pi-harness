@@ -28,12 +28,12 @@ import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-age
 import { capabilityAllowsTool, capabilityAvailableTools } from "../capability/scope.ts";
 import { getAgentSocketPath } from "../ipc/socket.ts";
 import { installModelCallBudget } from "./pi-job-budget.ts";
-import { childContext, childPromptBlocks, composeAssignment, continuationControlPrompt, inheritedContextInstruction } from './prompt.ts';
+import { childContext, childPromptBlocks, composeAssignment, continuationControlPrompt } from './prompt.ts';
 import { readTranscript } from "./view.ts";
 import { deliveryEntryFor, deliveryMessage, peerDeliveryEntry } from "./delivery.ts";
 import { takeQueuedMessages } from "./lifecycle.ts";
 import { harnessToolsForDepth, inheritedToolNames } from "./tool-policy.ts";
-import { MAX_AGENT_DEPTH, SubagentError } from "./runtime.ts";
+import { SubagentError } from "./runtime.ts";
 import type {
   BudgetTerminal,
   FreshJobSpec,
@@ -250,6 +250,8 @@ export class NativeJobRunner {
     const deps = this.#deps;
     const isContinuation = request.continuedFromJobId !== null;
     const depth = request.depth ?? 0;
+    // One resolved snapshot decides this Job's depth boundary and guidance.
+    const { maxDepth, prompts } = deps.config.harness.subagent;
     const origin = readOrigin(request.origin);
     let sessionManager: SessionManager | null = null;
     let boundary: string | null = null;
@@ -331,7 +333,7 @@ export class NativeJobRunner {
         // catalog keeps the same identity on a refreshed catalog entry.
         model = deps.models.inherited(snapshot?.["model"] ?? null);
         thinkingLevel = typeof snapshot?.["thinkingLevel"] === "string" ? snapshot["thinkingLevel"] : null;
-        plannedTools = inheritedToolNames(deps.tools.catalog(), snapshot?.["tools"], depth);
+        plannedTools = inheritedToolNames(deps.tools.catalog(), snapshot?.["tools"], depth, maxDepth);
         identitySettled = true;
       } else if (!identitySettled) {
         const routingSpec = retained !== null ? seed : configSpec;
@@ -367,7 +369,7 @@ export class NativeJobRunner {
       request.recordStart(boundary);
       const sessionFile = deps.actors.durable ? manager.getSessionFile() ?? null : null;
       const allowInherited = retained === null ? fresh?.inheritContext !== true : retained.allowInherited;
-      const finalExcludedTools = [...(excludedTools ?? []), ...(depth >= MAX_AGENT_DEPTH
+      const finalExcludedTools = [...(excludedTools ?? []), ...(depth >= maxDepth
         ? ["capability", "subagent_create", "subagent_stop"]
         : [])];
 
@@ -412,12 +414,14 @@ export class NativeJobRunner {
         trusted,
         systemPrompt,
         appendSystemPrompt: childPromptBlocks({
+          roleInstructions,
+          // Common guidance applies to Fresh and Inherited alike; the inherited
+          // section belongs only to an actor that captured its parent context.
+          common: prompts.common,
+          inherited: roleId === null,
+          inheritedPrompt: prompts.inherited,
           context: childContext(request.agentId, origin.agentId ?? MAIN_AGENT_ID,
             getAgentSocketPath(origin.agentId ?? MAIN_AGENT_ID, deps.config.socketDir)),
-          roleInstructions,
-          // A routed role identifies Fresh actors, including their continuations.
-          inherited: roleId === null,
-          inheritedContext: inheritedContextInstruction,
         }),
         model,
         thinkingLevel,
@@ -428,6 +432,7 @@ export class NativeJobRunner {
           parentAgentId: request.agentId,
           capabilityParentId: origin.agentId,
           depth,
+          maxDepth,
           cwd,
           allowInherited,
           excludedTools: finalExcludedTools,
@@ -446,7 +451,7 @@ export class NativeJobRunner {
       plannedTools = [...new Set([
         ...(plannedTools ?? native.session.getActiveToolNames()),
         ...enabledTools,
-        ...harnessToolsForDepth(depth),
+        ...harnessToolsForDepth(depth, maxDepth),
       ])];
       native.session.setActiveToolsByName(
         plannedTools.filter((name) => capabilityAllowsTool(opened.capabilityScope, name)),

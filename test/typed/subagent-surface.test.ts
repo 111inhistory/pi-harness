@@ -48,13 +48,15 @@ import type {
   MessageReceipt,
   StopResult,
 } from "../../src/subagent/runtime.ts";
-import { MAX_AGENT_DEPTH } from "../../src/subagent/runtime.ts";
+
+const MAX_DEPTH = 2;
 
 const ROOT_SCOPE: SubagentSurfaceScope = {
   callerId: "Main",
   depth: 0,
   allowInherited: true,
   cwd: "/tmp/project",
+  maxDepth: MAX_DEPTH,
 };
 
 /** Derived from the exported context type: the SDK entry point does not export it. */
@@ -123,6 +125,7 @@ interface RecordedCreate {
 }
 
 class RecordingHost implements SubagentSurfaceHost {
+  maxDepth = MAX_DEPTH;
   readonly creates: RecordedCreate[] = [];
   readonly lists: Array<{ filter: unknown; callerId: string }> = [];
   readonly stops: unknown[] = [];
@@ -208,11 +211,10 @@ test("the root surface registers controls and messaging without overriding write
     assert.equal(tool.namespace?.name, "subagent");
     assert.ok((tool.namespace?.description ?? "") !== "");
     assert.ok((tool.namespace?.instructions ?? "") !== "");
-    assert.equal(tool.defaultActive, tool.name === 'msg_write');
+    assert.equal(tool.defaultActive, false, "Main activates messaging through the Capability/Subagent namespace");
     assert.ok((tool.promptSnippet ?? "") !== "");
     assert.ok((tool.promptGuidelines?.length ?? 0) > 0);
   }
-  assert.equal(registered[3]?.defaultActive, true);
   assert.ok(!registered.some(tool => tool.name === "write"));
 
   const create = schemaOf(registered[0] as ToolDefinition);
@@ -238,7 +240,7 @@ test("the leaf surface keeps list and messaging but no create/stop", () => {
   const tools = createSurfaceTools({
     api,
     resolveHost: async () => new RecordingHost(),
-    scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: MAX_AGENT_DEPTH },
+    scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: MAX_DEPTH },
   });
 
   assert.equal(tools.create, null);
@@ -246,6 +248,24 @@ test("the leaf surface keeps list and messaging but no create/stop", () => {
   assert.equal(tools.list.name, "subagent_list");
   assert.equal(tools.msg_write.name, "msg_write");
   assert.equal("message" in tools, false);
+});
+
+test("the configured maximum depth moves the surface leaf", () => {
+  const api = new FakeSurfaceApi();
+  const deep = createSurfaceTools({
+    api,
+    resolveHost: async () => new RecordingHost(),
+    scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: 1, maxDepth: 3 },
+  });
+  assert.ok(deep.create);
+  assert.ok(deep.stop);
+  const shallow = createSurfaceTools({
+    api,
+    resolveHost: async () => new RecordingHost(),
+    scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: 1, maxDepth: 1 },
+  });
+  assert.equal(shallow.create, null);
+  assert.equal(shallow.stop, null);
 });
 
 test("tool-owned parameter labels and create-only guidance follow the assets", () => {
@@ -273,7 +293,7 @@ test("tool-owned parameter labels and create-only guidance follow the assets", (
     assert.equal(propertyOf(schemaOf(tools.msg_write), key)["description"], asset.msg_write.parameters[key]);
   }
   const leaf = createSurfaceTools({ api: new FakeSurfaceApi(), resolveHost: async () => new RecordingHost(),
-    scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: MAX_AGENT_DEPTH } });
+    scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: MAX_DEPTH } });
   assert.equal(leaf.create, null);
   assert.deepEqual(leaf.list.promptGuidelines, common);
 });
@@ -328,7 +348,7 @@ test("a child surface reports its own actor id as the parent, never its parent's
   const tools = createSurfaceTools({
     api,
     resolveHost: async () => host,
-    scope: { callerId: "sub_01", depth: 1, allowInherited: false, cwd: "/tmp/project" },
+    scope: { callerId: "sub_01", depth: 1, allowInherited: false, cwd: "/tmp/project", maxDepth: MAX_DEPTH },
   });
   assert.ok(tools.create !== null);
   const ctx = sdkContext({ cwd: "/tmp/child" });
@@ -530,6 +550,34 @@ test("inherited capture warns about non-transplantable parent tools", async () =
   ]);
 });
 
+test("inherited capture uses the resolved host maximum depth", async () => {
+  const api = new FakeSurfaceApi();
+  api.catalog = [
+    { name: "read", sourceInfo: { source: "builtin" } },
+    // Real Harness tools are registered by a file-backed extension.
+    { name: "capability", sourceInfo: { source: "local", path: "/tmp/project/extensions/harness.ts" } },
+    { name: "subagent_create", sourceInfo: { source: "local", path: "/tmp/project/extensions/harness.ts" } },
+  ];
+  api.active = ["read", "subagent_create", "capability"];
+  const host = new RecordingHost();
+  // The root surface registered with the default depth, but the resolved
+  // snapshot says the first child is already a leaf.
+  host.maxDepth = 1;
+  assert.equal(ROOT_SCOPE.maxDepth, MAX_DEPTH);
+  const tools = createSurfaceTools({ api, resolveHost: async () => host, scope: ROOT_SCOPE });
+  assert.ok(tools.create);
+  const ctx = sdkContext({ cwd: "/tmp/project" });
+
+  await tools.create.execute("c1", { tasks: [{ task: "inherit" }] }, undefined, undefined, ctx);
+  const call = host.creates[0];
+  assert.ok(call);
+  const snapshot = call.options.captureInheritedContext();
+  assert.ok(isRecord(snapshot));
+  assert.deepEqual(snapshot["warnings"], [
+    inheritedToolsWarning(["subagent_create", "capability"]),
+  ]);
+});
+
 test("transplantability filters built-in and harness tools only", () => {
   const api = new FakeSurfaceApi();
   api.catalog = [
@@ -539,16 +587,16 @@ test("transplantability filters built-in and harness tools only", () => {
   ];
 
   assert.deepEqual(
-    [...transplantableToolNames(api.getAllTools(), 0)].sort(),
+    [...transplantableToolNames(api.getAllTools(), 0, MAX_DEPTH)].sort(),
     ["capability", "msg_write", "read", "subagent_create", "subagent_list", "subagent_stop", "write"],
   );
-  assert.deepEqual(droppedInheritedTools(api.getAllTools(), ["read", "extension_tool", "extension_tool"], 0), ["extension_tool"]);
+  assert.deepEqual(droppedInheritedTools(api.getAllTools(), ["read", "extension_tool", "extension_tool"], 0, MAX_DEPTH), ["extension_tool"]);
   assert.deepEqual(
-    inheritedToolNames(api.getAllTools(), ["read", "extension_tool", "write"], 0),
+    inheritedToolNames(api.getAllTools(), ["read", "extension_tool", "write"], 0, MAX_DEPTH),
     ["read", "write", "subagent_create", "subagent_list", "subagent_stop", "capability", "msg_write"],
   );
-  assert.deepEqual(harnessToolsForDepth(MAX_AGENT_DEPTH), ["subagent_list", "msg_write"]);
-  assert.deepEqual(harnessToolsForDepth(MAX_AGENT_DEPTH - 1), [
+  assert.deepEqual(harnessToolsForDepth(MAX_DEPTH, MAX_DEPTH), ["subagent_list", "msg_write"]);
+  assert.deepEqual(harnessToolsForDepth(MAX_DEPTH - 1, MAX_DEPTH), [
     "subagent_create",
     "subagent_list",
     "subagent_stop",
@@ -564,7 +612,7 @@ test("capture of an empty session adds no warnings and no fabricated fields", ()
   api.catalog = [];
   api.active = [];
   const ctx = sdkContext({ cwd: "/tmp/project" });
-  const snapshot = captureContextForChild(api, ctx, 1);
+  const snapshot = captureContextForChild(api, ctx, 1, MAX_DEPTH);
   assert.ok(isRecord(snapshot));
   const record = snapshot;
   assert.deepEqual(record["tools"], []);

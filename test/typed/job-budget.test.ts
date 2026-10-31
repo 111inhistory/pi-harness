@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { DEFAULT_HARNESS_CONFIG } from "../../src/harness-config.ts";
 import {
   BUDGET_WARNING_MESSAGE,
   JobBudgetError,
   createJobBudget,
+  profileForDepth,
 } from "../../src/subagent/job-budget.ts";
 
 const MINUTE = 60_000;
@@ -289,4 +291,27 @@ test("honours an explicit profile without a depth", () => {
     observed: 4,
     rejectedProjected: 5,
   });
+});
+
+test("an explicit profile admits a positive depth above the default table", () => {
+  const clock = createClock();
+  const profile = {
+    modelCalls: { soft: 1, hard: 2 },
+    activeTimeMs: { soft: 1_000, hard: 2_000 },
+    lifetimeMs: 60_000,
+  };
+  const budget = createJobBudget({ depth: 3, profile, now: clock.now });
+  assert.equal(budget.depth, 3);
+  assert.deepEqual(budget.snapshot({ detail: true }).profile, profile);
+  assert.equal(budget.beginModelCall().ok, true);
+
+  // A supplied profile never makes an invalid depth acceptable.
+  for (const depth of [0, -1, 1.5, Number.NaN]) {
+    assert.throws(() => createJobBudget({ depth, profile }), jobBudgetError("invalid_depth"), `depth ${depth}`);
+  }
+
+  // The default table still answers the depths it names and refuses others.
+  assert.deepEqual(profileForDepth(2), DEFAULT_HARNESS_CONFIG.subagent.budgetsByDepth[2]);
+  assert.deepEqual(profileForDepth(1), DEFAULT_HARNESS_CONFIG.subagent.budgetsByDepth[1]);
+  assert.throws(() => profileForDepth(3), jobBudgetError("invalid_depth"));
 });

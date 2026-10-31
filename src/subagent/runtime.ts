@@ -13,10 +13,11 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { DEFAULT_HARNESS_CONFIG, type HarnessConfig } from '../harness-config.ts';
 import { watchSubagentBudget } from './budget-watch.ts';
 import { terminalResultContent } from "./result.ts";
 
-import { createJobBudget, type BudgetPhase, type BudgetSnapshot, type BudgetSnapshotDetail, type BudgetTerminal, type BudgetTerminalError, type BudgetTermination, type JobBudgetPort } from './job-budget.ts';
+import { createJobBudget, profileForDepth, type BudgetPhase, type BudgetSnapshot, type BudgetSnapshotDetail, type BudgetTerminal, type BudgetTerminalError, type BudgetTermination, type JobBudgetPort } from './job-budget.ts';
 import {
   adjudicateTerminal,
   firstEffectiveStopping,
@@ -30,9 +31,12 @@ import type {
 } from "./lifecycle.ts";
 import { formatAgentSocketPath } from "./address.ts";
 
-/** Maximum nesting depth below Main; the host adapter reuses this constant. */
-export const MAX_AGENT_DEPTH = 2;
-const MAX_ACTIVE_CHILDREN = 4;
+/**
+ * How many sibling rows `list` shows per parent. This is a display window, not
+ * the admission limit: `subagent.maxActiveChildren` decides how many children a
+ * parent may have running.
+ */
+const LIST_SIBLING_WINDOW = 4;
 
 export type HistoryState = "ready" | "error";
 export type JobStatus = "running" | "stopping" | "finalizing" | TerminalStatus;
@@ -197,6 +201,11 @@ export interface RuntimeOptions {
   finalizeJob?: (input: FinalizeJobInput) => unknown;
   /** Pure address formatting port; the default is SDK/transport free. */
   agentSocketPath?: (id: string, socketDir?: string) => string;
+  /**
+   * The root's resolved Harness settings. Standalone runtimes fall back to the
+   * built-in defaults; a root service passes its own snapshot.
+   */
+  config?: HarnessConfig;
 }
 
 export interface CreatedAgentItem {
@@ -649,7 +658,9 @@ function planRestore(state: unknown): { actors: Agent[]; jobs: Array<Job & { int
     if (typeof agentId !== "string" || !AGENT_ID_PATTERN.test(agentId)) throw stateError(`${describe(agentId)} is not a subagent actor id.`);
     if (actors.has(agentId)) throw stateError(`Actor ${agentId} appears more than once.`);
     const depth = candidate.depth;
-    if (typeof depth !== "number" || !Number.isInteger(depth) || depth < 1 || depth > MAX_AGENT_DEPTH) {
+    // Historical topology stays readable even when the configured maximum depth
+    // is lower now; admission of new work refuses such an actor separately.
+    if (typeof depth !== "number" || !Number.isInteger(depth) || depth < 1) {
       throw stateError(`Actor ${agentId} has an invalid depth.`, { agentId });
     }
     const parentAgentId = candidate.parentAgentId ?? null;
@@ -774,6 +785,7 @@ export class SubagentRuntime {
   #onIdAllocated: ((id: string) => void) | null;
   #finalizeJob: ((input: FinalizeJobInput) => unknown) | null;
   #agentSocketPath: (id: string, socketDir?: string) => string;
+  #config: HarnessConfig;
 
   #agents = new Map<string, Agent>();
   #stoppedSequence = 0;
@@ -802,6 +814,7 @@ export class SubagentRuntime {
       onIdAllocated,
       finalizeJob,
       agentSocketPath,
+      config = DEFAULT_HARNESS_CONFIG,
     } = options;
 
     this.#startJob = startJob;
@@ -818,6 +831,7 @@ export class SubagentRuntime {
     this.#onIdAllocated = onIdAllocated ?? null;
     this.#finalizeJob = finalizeJob ?? null;
     this.#agentSocketPath = agentSocketPath ?? formatAgentSocketPath;
+    this.#config = config;
   }
 
   /** Validate, atomically register and start a batch; return the public Agent view. */
@@ -836,23 +850,25 @@ export class SubagentRuntime {
         throw new SubagentError("unknown_parent", `No parent agent registered as ${describe(parentAgentId)}.`);
       }
       const depth = (parent?.depth ?? 0) + 1;
-      if (depth > MAX_AGENT_DEPTH) {
+      const maxDepth = this.#config.subagent.maxDepth;
+      if (depth > maxDepth) {
         throw new SubagentError(
           "max_depth_exceeded",
-          `Agent depth ${depth} exceeds the maximum depth ${MAX_AGENT_DEPTH}; depth-${MAX_AGENT_DEPTH} agents cannot create children.`,
-          { parentAgentId, depth, maxDepth: MAX_AGENT_DEPTH },
+          `Agent depth ${depth} exceeds the maximum depth ${maxDepth}; depth-${maxDepth} agents cannot create children.`,
+          { parentAgentId, depth, maxDepth },
         );
       }
+      const maxActiveChildren = this.#config.subagent.maxActiveChildren;
       const activeChildren = this.#activeChildren(parentAgentId);
-      if (activeChildren + entries.length > MAX_ACTIVE_CHILDREN) {
+      if (activeChildren + entries.length > maxActiveChildren) {
         throw new SubagentError(
           "child_limit_exceeded",
-          `Agent ${parentAgentId ?? "Main"} already has ${activeChildren} active children; at most ${MAX_ACTIVE_CHILDREN} are allowed.`,
+          `Agent ${parentAgentId ?? "Main"} already has ${activeChildren} active children; at most ${maxActiveChildren} are allowed.`,
           {
             parentAgentId,
             activeChildren,
             requestedChildren: entries.length,
-            maxActiveChildren: MAX_ACTIVE_CHILDREN,
+            maxActiveChildren,
           },
         );
       }
@@ -915,7 +931,13 @@ export class SubagentRuntime {
   ): Job {
     const { index = null, spec, origin = null, createdBy, continuedFromJobId = null } = input;
     const jobId = continuedFromJobId === null ? agent.agentId : this.#allocateJobId(agent);
-    const budget = createJobBudget({ depth: agent.depth, jobId });
+    // Every new Job takes this depth's resolved profile. A Job that already
+    // exists never re-reads configuration.
+    const budget = createJobBudget({
+      depth: agent.depth,
+      jobId,
+      profile: profileForDepth(agent.depth, this.#config.subagent.budgetsByDepth),
+    });
     const job: Job = {
       jobId,
       agentId: agent.agentId,
@@ -1076,7 +1098,7 @@ export class SubagentRuntime {
       .sort((a, b) => (b.stoppedOrder ?? 0) - (a.stoppedOrder ?? 0));
     const self = siblings.find((agent) => agent.agentId === selfId);
     return [...(self ? [self] : []), ...active.filter((agent) => agent !== self), ...stopped.filter((agent) => agent !== self)]
-      .slice(0, MAX_ACTIVE_CHILDREN);
+      .slice(0, LIST_SIBLING_WINDOW);
   }
 
   /** Job-level snapshot, optionally restricted to specific job ids. */
@@ -1812,17 +1834,28 @@ export class SubagentRuntime {
    * caller rejects the whole write instead of holding a deferred revival.
    */
   #reviveRefusal(agent: Agent): SubagentError | null {
+    // A restored actor may sit deeper than the current limit. Its history stays
+    // readable, but reviving it would create a Job at an unconfigured depth.
+    const maxDepth = this.#config.subagent.maxDepth;
+    if (agent.depth > maxDepth) {
+      return new SubagentError(
+        "max_depth_exceeded",
+        `Agent ${agent.agentId} sits at depth ${agent.depth}, beyond the configured maximum depth ${maxDepth}; it cannot be revived.`,
+        { agentId: agent.agentId, depth: agent.depth, maxDepth },
+      );
+    }
+    const maxActiveChildren = this.#config.subagent.maxActiveChildren;
     const activeChildren = this.#activeChildren(agent.parentAgentId);
-    if (activeChildren + 1 <= MAX_ACTIVE_CHILDREN) return null;
+    if (activeChildren + 1 <= maxActiveChildren) return null;
     return new SubagentError(
       "child_limit_exceeded",
       `Agent ${agent.parentAgentId ?? "Main"} already has ${activeChildren} active children; reviving ${agent.agentId} ` +
-        `would exceed ${MAX_ACTIVE_CHILDREN}.`,
+        `would exceed ${maxActiveChildren}.`,
       {
         agentId: agent.agentId,
         parentAgentId: agent.parentAgentId,
         activeChildren,
-        maxActiveChildren: MAX_ACTIVE_CHILDREN,
+        maxActiveChildren,
       },
     );
   }

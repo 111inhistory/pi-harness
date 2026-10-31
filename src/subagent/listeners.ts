@@ -7,7 +7,7 @@ import {
   type EndpointResolverResult,
 } from '../ipc/socket.ts';
 import type { OwnedServer } from '../ipc/endpoint.ts';
-import { canonicalActorId, MAX_AGENT_DEPTH, SubagentError, type BroadcastReceipt, type MessageReceipt } from './runtime.ts';
+import { canonicalActorId, SubagentError, type BroadcastReceipt, type MessageReceipt } from './runtime.ts';
 
 interface ListenerActor {
   readonly agentId: string;
@@ -18,6 +18,8 @@ interface ListenerActor {
 export interface ListenerRegistryOptions {
   readonly socketDir: string;
   readonly baseSocketDir: string;
+  /** The root's resolved maximum nesting depth; a child at it has no broadcast endpoint. */
+  readonly maxDepth: number;
   actors(): readonly ListenerActor[];
   isAccepting(): boolean;
   send(command: { from: string; to: string; content: string }): Promise<MessageReceipt | BroadcastReceipt>;
@@ -43,7 +45,7 @@ export class AgentListeners {
     const actors = [{ agentId: 'Main', parentAgentId: null, depth: 0 }, ...this.#options.actors()];
     return actors.flatMap((actor) => {
       const receive: Destination = { address: getAgentSocketPath(actor.agentId, this.#options.socketDir), owner: actor.agentId, broadcast: false };
-      return actor.depth < MAX_AGENT_DEPTH
+      return actor.depth < this.#options.maxDepth
         ? [receive, { address: getBroadcastSocketPath(actor.agentId, this.#options.socketDir), owner: actor.agentId, broadcast: true }]
         : [receive];
     });

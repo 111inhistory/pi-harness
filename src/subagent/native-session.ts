@@ -29,12 +29,13 @@ import {
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
 
 import capabilityExtension from "../../extensions/capability.ts";
+import type { HarnessConfig } from "../harness-config.ts";
 import { setCapabilityParent } from "../capability/scope.ts";
 import { installCapabilityMcp } from "../capability/native-discovery.ts";
 import type { CapabilityToolCatalog } from "../capability/scope.ts";
 import { openSubagentExecution } from "./execution.ts";
 import { parentModelRuntime } from "./model-runtime.ts";
-import { MAX_AGENT_DEPTH, SubagentError } from "./runtime.ts";
+import { SubagentError } from "./runtime.ts";
 import type {
   NativeChildSurfaceScope,
   NativeOpenedSession,
@@ -57,9 +58,13 @@ const ROOT_EXTENSION = fileURLToPath(new URL("../../extensions/harness.ts", impo
  * - `installChildSurface` installs the protocol/harness tools for this depth and
  *   records the child Pi as that Job's live surface. It is not called for any
  *   Job whose request is rejected before setup.
+ * - `config` is the root's resolved snapshot: it decides whether this depth may
+ *   discover capability and how long inherited tools may take to register.
  */
 export interface NativeSessionFactoryDeps {
   readonly agentDir: string;
+  /** The root's resolved Harness settings, passed into the child capability surface. */
+  readonly config: HarnessConfig;
   readonly modelRegistry: () => unknown;
   readonly installChildSurface: (api: ExtensionAPI, scope: NativeChildSurfaceScope) => void;
   readonly parentCapabilityScope: (originActor: string | null) => CapabilityToolCatalog;
@@ -124,7 +129,10 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
           () => this.#deps.parentCapabilityScope(surface.capabilityParentId),
           request.excludedTools,
         );
-        capabilityExtension(childPi, { discovery: surface.depth < MAX_AGENT_DEPTH });
+        capabilityExtension(childPi, {
+          discovery: surface.depth < this.#deps.config.subagent.maxDepth,
+          config: this.#deps.config,
+        });
         this.#deps.installChildSurface(childPi, surface);
         installCapabilityMcp({
           ...childPi,
@@ -222,7 +230,7 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
             request.signal.removeEventListener('abort', abort);
             registrationChanged = undefined;
             reject(new SubagentError('inherited_tool_unavailable', `Inherited MCP tools did not register: ${[...missing].join(', ')}.`));
-          }, 10_000);
+          }, this.#deps.config.subagent.inheritedToolWaitMs);
           registrationChanged = finish;
           request.signal.addEventListener('abort', abort, { once: true });
           if (request.signal.aborted) abort();

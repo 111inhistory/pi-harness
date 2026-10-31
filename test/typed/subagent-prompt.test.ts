@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { childContext, childPromptBlocks, composeAssignment, continuationControlPrompt, formatPeerMessage } from '../../src/subagent/prompt.ts';
+import { DEFAULT_HARNESS_CONFIG } from '../../src/harness-config.ts';
 import { promptString } from '../../src/prompt-text.ts';
 
 test('routing and execution preserve assignment context bytes', () => {
@@ -36,21 +37,38 @@ test('child identity/path substitutions insert dollar syntax literally', () => {
   assert.doesNotMatch(result, /\{agentId\}|\{parentId\}|\{parentSocket\}/);
 });
 
-test('child prompt blocks select orientation without rewriting their text', () => {
-  const common = 'CHILD_IDENTITY_AND_PARENT_ENDPOINT';
+test('child prompt blocks keep host identity before common and inherited guidance', () => {
+  const host = 'CHILD_IDENTITY_AND_PARENT_ENDPOINT';
   const role = 'ROUTED_ROLE_INSTRUCTIONS';
-  const inheritedContext = '\n INHERITED_BACKGROUND_ORIENTATION $& \n';
+  const common = '\n COMMON_WORK_GUIDANCE $& \n';
+  const inheritedPrompt = '\n INHERITED_BACKGROUND_ORIENTATION $& \n';
+  // The default common section is empty, so Fresh keeps [role, host].
   assert.deepEqual(childPromptBlocks({
-    context: common, roleInstructions: role, inherited: false, inheritedContext,
-  }), [role, common]);
+    roleInstructions: role, context: host, common: '', inherited: false, inheritedPrompt,
+  }), [role, host]);
+  // Inherited keeps its existing [host, inherited] tail when common is empty.
   assert.deepEqual(childPromptBlocks({
-    context: common, roleInstructions: null, inherited: true, inheritedContext,
-  }), [common, inheritedContext]);
+    roleInstructions: null, context: host, common: '', inherited: true, inheritedPrompt,
+  }), [host, inheritedPrompt]);
+  // Common is its own block between host identity and inherited guidance.
+  assert.deepEqual(childPromptBlocks({
+    roleInstructions: null, context: host, common, inherited: true, inheritedPrompt,
+  }), [host, common, inheritedPrompt]);
+  assert.deepEqual(childPromptBlocks({
+    roleInstructions: role, context: host, common, inherited: false, inheritedPrompt,
+  }), [role, host, common]);
   for (const blank of ['', ' \n\t']) {
     assert.deepEqual(childPromptBlocks({
-      context: common, roleInstructions: null, inherited: true, inheritedContext: blank,
-    }), [common]);
+      roleInstructions: null, context: host, common: blank, inherited: true, inheritedPrompt: blank,
+    }), [host]);
   }
+});
+
+test('the default prompt sections stay one common empty and one inherited asset', () => {
+  const prompts = DEFAULT_HARNESS_CONFIG.subagent.prompts;
+  assert.equal(prompts.common, '');
+  assert.equal(prompts.inherited, promptString('subagent-turns.json', 'inheritedContext'));
+  assert.ok(prompts.inherited.trim() !== '');
 });
 
 test('missing prompt assets or invalid string fields fail instead of selecting fallback prose', () => {

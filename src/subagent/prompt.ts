@@ -4,24 +4,33 @@ const field = (name: string): string => promptString('subagent-turns.json', name
 const turns = { batchContext: field('batchContext'), task: field('task'), messageFrom: field('messageFrom'),
   originalAssignment: field('originalAssignment'), restatement: field('restatement'), control: field('control') };
 const context: string = promptString('subagent-turns.json', 'context');
-export const inheritedContextInstruction: string = field('inheritedContext');
 
 /** Insert protocol values literally, not as replacement patterns. */
 export function childContext(agentId: string, parentId: string, parentSocket: string): string {
   return context.replaceAll('{agentId}', () => agentId).replaceAll('{parentId}', () => parentId).replaceAll('{parentSocket}', () => parentSocket);
 }
 
-/** Assemble the current child identity without changing its inherited history. */
+/**
+ * Assemble the current child's guidance without changing its inherited history.
+ *
+ * One assembly for Fresh and Inherited: the routed role first, then the
+ * host-owned identity/delivery context, then the resolved common guidance, then
+ * the Inherited-only guidance. Each conceptual section is its own block; blank
+ * configured sections add nothing, so the default order stays [role, host,
+ * inherited] while `common` remains empty.
+ */
 export function childPromptBlocks(options: {
-  context: string;
   roleInstructions: string | null;
+  common: string;
   inherited: boolean;
-  inheritedContext: string;
+  inheritedPrompt: string;
+  context: string;
 }): string[] {
   return [
     ...(options.roleInstructions !== null ? [options.roleInstructions] : []),
     options.context,
-    ...(options.inherited && options.inheritedContext.trim() !== "" ? [options.inheritedContext] : []),
+    ...(options.common.trim() !== "" ? [options.common] : []),
+    ...(options.inherited && options.inheritedPrompt.trim() !== "" ? [options.inheritedPrompt] : []),
   ];
 }
 

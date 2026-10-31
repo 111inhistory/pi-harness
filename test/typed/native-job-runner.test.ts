@@ -15,6 +15,7 @@ import type { AgentSession, ExtensionAPI } from "@earendil-works/pi-coding-agent
 import type { Api, AssistantMessage, ImageContent, Model, Usage } from "@earendil-works/pi-ai";
 
 import { promptText } from "../../src/prompt-text.ts";
+import { DEFAULT_HARNESS_CONFIG, resolveHarnessConfig } from "../../src/harness-config.ts";
 import { childContext } from "../../src/subagent/prompt.ts";
 import { getAgentSocketPath } from "../../src/ipc/socket.ts";
 import { setCapabilityParent } from "../../src/capability/scope.ts";
@@ -534,6 +535,7 @@ function harness(options: {
   catalog?: readonly NativeToolDescriptor[];
   hasActiveChildren?: (agentId: string) => boolean;
   route?: NativeRouteResult | null;
+  config?: NativeJobRunnerDeps["config"]["harness"];
 } = {}): Harness {
   const actors = new RecordingActors();
   const factory = new RecordingSessionFactory(
@@ -548,7 +550,7 @@ function harness(options: {
   const notifications: string[] = [];
   const deps: NativeJobRunnerDeps = {
     root,
-    config: { socketDir: "/tmp/sockets" },
+    config: { socketDir: "/tmp/sockets", harness: options.config ?? DEFAULT_HARNESS_CONFIG },
     actors,
     sessions: factory,
     models,
@@ -677,6 +679,7 @@ test("a fresh Job routes, installs its child surface and completes with its own 
   // capability scope denies grep, so the active loadout is filtered.
   assert.ok(session.activeTools.includes("read"));
   assert.ok(session.activeTools.includes("subagent_create"));
+  assert.ok(session.activeTools.includes("msg_write"), "the harness loadout activates messaging for a Subagent");
   assert.ok(!session.activeTools.includes("grep"));
 
   const descriptor = h.actors.retained.at(-1);
@@ -1365,4 +1368,60 @@ test("an inherited Job keeps the captured identity and the transplantable loadou
   // The native manager owns the seed now; the Job registry keeps no second copy.
   assert.equal("entries" in snapshot, false);
   assert.deepEqual(h.actors.retained.at(-1)?.modelRef, { provider: "fake", id: "catalog-1" });
+});
+
+test("a configured maximum depth of one makes the first child a leaf", async () => {
+  const h = harness({
+    config: resolveHarnessConfig([{ source: "test", value: { subagent: { maxDepth: 1 } } }]),
+    route: routedIdentity(),
+  });
+  const outcome = await h.runner.start(jobRequest(freshSpec(), { depth: 1 })).done;
+  assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+  const open = h.factory.requests[0];
+  assert.ok(open);
+  assert.equal(open.surface.maxDepth, 1);
+  for (const name of ["capability", "subagent_create", "subagent_stop"]) {
+    assert.ok(open.excludedTools.includes(name), `${name} is excluded at the configured leaf`);
+  }
+  const session = h.factory.sessions[0];
+  assert.ok(session);
+  assert.ok(session.activeTools.includes("subagent_list"));
+  assert.ok(session.activeTools.includes("msg_write"));
+  assert.ok(!session.activeTools.includes("subagent_create"));
+  assert.ok(!session.activeTools.includes("subagent_stop"));
+  assert.ok(!session.activeTools.includes("capability"));
+});
+
+test("resolved prompt sections reach Fresh and Inherited without touching host context", async () => {
+  const config = resolveHarnessConfig([{ source: "test", value: { subagent: { prompts: {
+    common: { append: "COMMON_VALIDATION_GUIDANCE" },
+    inherited: { replace: "REPLACED_INHERITED_GUIDANCE" },
+  } } } }]);
+  const fresh = harness({ route: routedIdentity(), config });
+  const freshOutcome = await fresh.runner.start(jobRequest(freshSpec())).done;
+  assert.equal(freshOutcome.status, "completed", JSON.stringify(freshOutcome.error));
+  const freshOpen = fresh.factory.requests[0];
+  assert.ok(freshOpen);
+  const freshHost = childContext("sub_01", "Main", getAgentSocketPath("Main", "/tmp/sockets"));
+  assert.deepEqual(freshOpen.appendSystemPrompt, ["ROLE INSTRUCTIONS", freshHost, "COMMON_VALIDATION_GUIDANCE"]);
+
+  const inherited = harness({ route: routedIdentity(), config });
+  inherited.models.result = fakeModel();
+  const inheritedOutcome = await inherited.runner.start(jobRequest(freshSpec({
+    inheritContext: true,
+    inheritedContext: {
+      systemPrompt: "CAPTURED_PARENT_PROMPT",
+      model: { provider: "fake", id: "fake-1" },
+      tools: ["read"],
+      entries: [],
+    },
+  }))).done;
+  assert.equal(inheritedOutcome.status, "completed", JSON.stringify(inheritedOutcome.error));
+  const inheritedOpen = inherited.factory.requests[0];
+  assert.ok(inheritedOpen);
+  assert.deepEqual(inheritedOpen.appendSystemPrompt, [
+    freshHost,
+    "COMMON_VALIDATION_GUIDANCE",
+    "REPLACED_INHERITED_GUIDANCE",
+  ]);
 });

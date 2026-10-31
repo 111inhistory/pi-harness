@@ -1,3 +1,4 @@
+import { DEFAULT_HARNESS_CONFIG } from '../harness-config.ts';
 import { promptString } from '../prompt-text.ts';
 
 export interface BudgetLimit { readonly soft: number; readonly hard: number }
@@ -60,14 +61,8 @@ export interface JobBudgetPort {
   snapshot(options?: { readonly detail?: boolean }): BudgetSnapshot | BudgetSnapshotDetail;
 }
 
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
 export const BUDGET_PHASES = ['normal', 'warning', 'exhausted'] as const;
 export const BUDGET_WARNING_MESSAGE: string = promptString('execution-budget.json', 'warning');
-export const JOB_BUDGET_BY_DEPTH: Readonly<Record<number, BudgetProfile>> = {
-  1: { modelCalls: { soft: 160, hard: 200 }, activeTimeMs: { soft: 90 * MINUTE, hard: 120 * MINUTE }, lifetimeMs: 24 * HOUR },
-  2: { modelCalls: { soft: 48, hard: 64 }, activeTimeMs: { soft: 45 * MINUTE, hard: 60 * MINUTE }, lifetimeMs: 12 * HOUR },
-};
 export class JobBudgetError extends Error {
   readonly code: string;
   readonly detail: Readonly<Record<string, unknown>>;
@@ -78,9 +73,17 @@ export class JobBudgetError extends Error {
     this.detail = detail;
   }
 }
-export function profileForDepth(depth: number): BudgetProfile {
-  const profile = JOB_BUDGET_BY_DEPTH[depth];
-  if (!profile) throw new JobBudgetError('invalid_depth', `Budget depth must be 1 or 2, received ${depth}.`);
+/**
+ * The configured profile of one depth. The default table is only a convenience
+ * for callers that construct a standalone Budget; the runtime always passes the
+ * root's resolved `budgetsByDepth`.
+ */
+export function profileForDepth(
+  depth: number,
+  budgetsByDepth: Readonly<Record<number, BudgetProfile>> = DEFAULT_HARNESS_CONFIG.subagent.budgetsByDepth,
+): BudgetProfile {
+  const profile = budgetsByDepth[depth];
+  if (!profile) throw new JobBudgetError('invalid_depth', `No budget profile is configured for depth ${depth}.`);
   return profile;
 }
 function validateProfile(profile: BudgetProfile): void {
@@ -118,10 +121,14 @@ export class JobBudget implements JobBudgetPort {
   #settledElapsedMs = 0;
 
   constructor({ depth, jobId, now = () => performance.now(), profile }: JobBudgetOptions = {}) {
-    if (depth !== undefined) profileForDepth(depth);
+    if (depth !== undefined && (!Number.isSafeInteger(depth) || depth < 1)) {
+      throw new JobBudgetError('invalid_depth', `Budget depth must be a positive safe integer, received ${depth}.`);
+    }
     if (profile === undefined && depth === undefined) throw new JobBudgetError('invalid_depth', 'A depth or explicit budget profile is required.');
     this.depth = depth ?? null;
     this.jobId = jobId ?? null;
+    // An explicit profile is authoritative for any positive depth, including
+    // depths above the default table.
     this.profile = profile ?? profileForDepth(depth!);
     validateProfile(this.profile);
     this.#now = now;

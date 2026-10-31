@@ -18,6 +18,7 @@ import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-a
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
 
 import type { CapabilityToolCatalog } from "../capability/scope.ts";
+import type { HarnessConfig } from "../harness-config.ts";
 import type { InheritedContext, JobBudgetPort, StartedJobHandle } from "./runtime.ts";
 import type { QueueCapable, TerminalStatus } from "./lifecycle.ts";
 
@@ -101,9 +102,10 @@ export interface NativeRootGuards {
   readonly mayPersist: boolean;
 }
 
-/** Immutable root configuration a Job composes addresses from. */
+/** Immutable root configuration a Job composes addresses and guidance from. */
 export interface NativeRootConfig {
   readonly socketDir: string;
+  readonly harness: HarnessConfig;
 }
 
 /** The captured parent model an Inherited Job runs on. */
@@ -163,6 +165,8 @@ export interface NativeChildSurfaceScope {
    */
   readonly capabilityParentId: string | null;
   readonly depth: number;
+  /** The root's resolved maximum nesting depth; this child's tool set follows it. */
+  readonly maxDepth: number;
   readonly cwd: string;
   readonly allowInherited: boolean;
   /** Final exclusion list, including this depth's depth-gated harness tools. */

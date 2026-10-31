@@ -38,7 +38,6 @@ import {
   type ManagedWriteHost,
   type ManagedWriteTool,
 } from "./message-write.ts";
-import { MAX_AGENT_DEPTH } from "./runtime.ts";
 import { droppedInheritedTools, inheritedToolsWarning } from "./tool-policy.ts";
 import type { CreatedAgents, DetailedAgentItem, StopResult } from "./runtime.ts";
 
@@ -52,6 +51,8 @@ export interface SubagentSurfaceScope {
   readonly allowInherited: boolean;
   /** Working directory of the surface owner. */
   readonly cwd: string;
+  /** The root's resolved maximum nesting depth; a child at it is a leaf. */
+  readonly maxDepth: number;
 }
 
 /** Where a created Job comes from; host-owned, passed through unchanged. */
@@ -76,6 +77,12 @@ export interface SubagentSurfaceCreateOptions {
  * the same generation guard covers sends and Job admission.
  */
 export interface SubagentSurfaceHost extends ManagedWriteHost {
+  /**
+   * The host root's resolved maximum nesting depth. The lazy inherited capture
+   * uses it, so the capture and the runner share one snapshot even though the
+   * root surface's own registration was resolved earlier.
+   */
+  readonly maxDepth: number;
   create(batch: unknown, options: SubagentSurfaceCreateOptions, ctx: ExtensionContext): Promise<CreatedAgents>;
   list(filter: unknown, callerId: string): Promise<DetailedAgentItem | null>;
   stop(target: unknown): StopResult;
@@ -84,7 +91,7 @@ export interface SubagentSurfaceHost extends ManagedWriteHost {
 /** The only shape the surface needs from a registered tool. */
 export interface SubagentSurfaceToolInfo {
   readonly name: string;
-  readonly sourceInfo?: { readonly source?: string | undefined } | undefined;
+  readonly sourceInfo?: { readonly source?: string | undefined; readonly path?: string | undefined } | undefined;
 }
 
 /**
@@ -107,10 +114,11 @@ export function captureContextForChild(
   api: SubagentSurfaceApi,
   ctx: ExtensionContext,
   childDepth: number,
+  maxDepth: number,
   toolCallId?: string,
 ): InheritedSnapshot & { readonly warnings?: readonly string[] } {
   const snapshot = captureInheritedContext(api, ctx, toolCallId);
-  const dropped = droppedInheritedTools(api.getAllTools(), snapshot.tools, childDepth);
+  const dropped = droppedInheritedTools(api.getAllTools(), snapshot.tools, childDepth, maxDepth);
   return dropped.length === 0 ? snapshot : { ...snapshot, warnings: [inheritedToolsWarning(dropped)] };
 }
 
@@ -137,7 +145,7 @@ export interface SubagentSurfaceToolOptions {
 export function createSurfaceTools(options: SubagentSurfaceToolOptions): SubagentSurfaceTools {
   const { api, resolveHost, scope } = options;
   const caller = surfaceCaller(scope);
-  const shallow = scope.depth < MAX_AGENT_DEPTH;
+  const shallow = scope.depth < scope.maxDepth;
   const messageTemplate = createMessageWriteTool({ cwd: scope.cwd, senderId: caller.callerId, host: UNRESOLVED_HOST });
   const msg_write: ManagedWriteTool = {
     ...messageTemplate,
@@ -174,7 +182,7 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
               agentId: caller.parentAgentId,
               mode: ctx.mode,
             },
-            captureInheritedContext: () => captureContextForChild(api, ctx, scope.depth + 1, toolCallId),
+            captureInheritedContext: () => captureContextForChild(api, ctx, scope.depth + 1, host.maxDepth, toolCallId),
           }, ctx));
         },
       }

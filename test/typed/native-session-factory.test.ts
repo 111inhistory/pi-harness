@@ -25,6 +25,8 @@ import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-s
 import { fauxProvider, InMemoryCredentialStore, getCurrentTools } from "@earendil-works/pi-ai";
 import type { Api, Model, TranscriptContext } from "@earendil-works/pi-ai";
 
+import { DEFAULT_HARNESS_CONFIG, resolveHarnessConfig } from "../../src/harness-config.ts";
+import type { HarnessConfig } from "../../src/harness-config.ts";
 import { capabilityAllowsTool } from "../../src/capability/scope.ts";
 import type { CapabilityScopedTool, CapabilityToolCatalog } from "../../src/capability/scope.ts";
 import { ModelRuntimeBridgeError } from "../../src/subagent/model-runtime.ts";
@@ -58,7 +60,7 @@ interface Harness {
   };
 }
 
-async function harness(): Promise<Harness> {
+async function harness(options: { config?: HarnessConfig } = {}): Promise<Harness> {
   const root = await mkdtemp(path.join(tmpdir(), "native-session-factory-"));
   const cwd = path.join(root, "work");
   const agentDir = path.join(root, "agent");
@@ -85,6 +87,7 @@ async function harness(): Promise<Harness> {
   const mutable: Harness["mutable"] = { registry: { runtime }, surfaceHook: null };
   const factory = createNativeSessionFactory({
     agentDir,
+    config: options.config ?? DEFAULT_HARNESS_CONFIG,
     modelRegistry: () => mutable.registry,
     installChildSurface: (api, scope) => {
       surfaces.push({ api, scope });
@@ -126,6 +129,8 @@ async function harness(): Promise<Harness> {
 
 interface RequestOptions {
   readonly agentId?: string;
+  readonly inheritedTools?: readonly string[];
+  readonly maxDepth?: number;
   readonly cwd?: string;
   readonly trusted?: boolean;
   readonly systemPrompt?: string | null;
@@ -143,6 +148,7 @@ function request(h: Harness, options: RequestOptions = {}): NativeSessionRequest
   const excludedTools = options.excludedTools ?? ["bash"];
   return {
     agentId,
+    ...(options.inheritedTools === undefined ? {} : { inheritedTools: options.inheritedTools }),
     cwd,
     trusted: options.trusted ?? true,
     systemPrompt: options.systemPrompt === undefined ? "INHERITED SYSTEM PROMPT" : options.systemPrompt,
@@ -156,6 +162,7 @@ function request(h: Harness, options: RequestOptions = {}): NativeSessionRequest
       parentAgentId: agentId,
       capabilityParentId: "Main",
       depth: 1,
+      maxDepth: options.maxDepth ?? DEFAULT_HARNESS_CONFIG.subagent.maxDepth,
       cwd,
       allowInherited: false,
       excludedTools: [...excludedTools],
@@ -520,6 +527,81 @@ test("Inherited waits for deferred MCP registration, restores its declaration, a
   } finally {
     await opened.execution.dispose();
     if(previousAgentDir===undefined)delete process.env['PI_CODING_AGENT_DIR'];else process.env['PI_CODING_AGENT_DIR']=previousAgentDir;
+    await close(h);
+  }
+});
+
+test("capability discovery follows the configured maximum depth", async () => {
+  const shallowHarness = await harness();
+  try {
+    const shallow = await shallowHarness.factory.open(request(shallowHarness, {
+      surface: { ...request(shallowHarness).surface, depth: 1, maxDepth: 2 },
+    }));
+    try {
+      assert.ok(shallow.capabilityScope.getAllTools().some((tool) => tool.name === "capability"),
+        "a child below the configured leaf keeps discovery");
+    } finally {
+      await shallow.execution.dispose();
+    }
+  } finally {
+    await close(shallowHarness);
+  }
+
+  const leafHarness = await harness({ config: resolveHarnessConfig([{ source: "test", value: { subagent: { maxDepth: 1 } } }]) });
+  try {
+    const leaf = await leafHarness.factory.open(request(leafHarness, {
+      surface: { ...request(leafHarness).surface, depth: 1, maxDepth: 1 },
+    }));
+    try {
+      assert.ok(!leaf.capabilityScope.getAllTools().some((tool) => tool.name === "capability"),
+        "the configured leaf depth loses discovery");
+    } finally {
+      await leaf.execution.dispose();
+    }
+  } finally {
+    await close(leafHarness);
+  }
+
+  const deeperHarness = await harness({ config: resolveHarnessConfig([{ source: "test", value: { subagent: {
+    maxDepth: 3,
+    budgetsByDepth: {
+      3: {
+        modelCalls: { soft: 5, hard: 7 },
+        activeTimeMs: { soft: 1_000, hard: 2_000 },
+        lifetimeMs: 5_000,
+      },
+    },
+  } } }]) });
+  try {
+    const deeper = await deeperHarness.factory.open(request(deeperHarness, {
+      surface: { ...request(deeperHarness).surface, depth: 2, maxDepth: 3 },
+    }));
+    try {
+      assert.ok(deeper.capabilityScope.getAllTools().some((tool) => tool.name === "capability"),
+        "raising maxDepth moves the leaf boundary with it");
+    } finally {
+      await deeper.execution.dispose();
+    }
+  } finally {
+    await close(deeperHarness);
+  }
+});
+
+test("inherited MCP registration waits only the configured timeout", async () => {
+  const h = await harness({
+    config: resolveHarnessConfig([{ source: "test", value: { subagent: { inheritedToolWaitMs: 20 } } }]),
+  });
+  const started = performance.now();
+  try {
+    await assert.rejects(
+      h.factory.open({ ...request(h), inheritedTools: ["mcp__missing__probe"] }),
+      (error: unknown) => error instanceof SubagentError &&
+        error.code === "inherited_tool_unavailable" &&
+        error.message.includes("mcp__missing__probe"),
+    );
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed < 8_000, `the configured wait replaced the 10s default (elapsed ${Math.round(elapsed)}ms)`);
+  } finally {
     await close(h);
   }
 });

@@ -9,6 +9,7 @@ import {
   type ModelRegistry,
 } from '@earendil-works/pi-coding-agent';
 import type { Api, Model } from '@earendil-works/pi-ai';
+import { DEFAULT_HARNESS_CONFIG, type HarnessConfig } from '../harness-config.ts';
 import { createSubagentStore, EVENTS, SUBAGENT_SESSIONS_DIR, writeFileAtomic } from './storage.ts';
 import { hasJobView, jobViewPaths, writeJobView, readTranscript } from './view.ts';
 import { routeSubagent } from './routing.ts';
@@ -35,6 +36,12 @@ interface RootServiceOptions {
   readonly context: ExtensionContext;
   readonly agentDir: string;
   readonly allocatedIds: Set<string>;
+  /**
+   * The root's one resolved Harness snapshot. A direct programmatic
+   * construction without a snapshot uses the built-in defaults; the extension
+   * always passes the snapshot resolved for its session.
+   */
+  readonly config?: HarnessConfig;
   ownsContext(): boolean;
 }
 
@@ -69,9 +76,11 @@ function capturedModel(value: unknown, registry: ModelRegistry): Model<Api> | nu
   throw new SubagentError('model_unavailable', `The captured model ${value.provider}/${value.id} is not in the current catalog.`);
 }
 
+type ResolvedRootServiceOptions = RootServiceOptions & { readonly config: HarnessConfig };
+
 /** One root's domain, native resources and write ownership. */
 export class RootService implements ManagedWriteHost {
-  readonly #options: RootServiceOptions;
+  readonly #options: ResolvedRootServiceOptions;
   readonly runtime: SubagentRuntime;
   readonly actors: ActorSessionStore;
   readonly runner: NativeJobRunner;
@@ -90,7 +99,7 @@ export class RootService implements ManagedWriteHost {
   #retirement: Promise<void> | null = null;
 
   constructor(options: RootServiceOptions) {
-    this.#options = options;
+    this.#options = { ...options, config: options.config ?? DEFAULT_HARNESS_CONFIG };
     this.#registry = options.context.modelRegistry;
     const manager = options.context.sessionManager;
     const sessionId = manager.getSessionId();
@@ -124,6 +133,7 @@ export class RootService implements ManagedWriteHost {
     });
     this.listeners = new AgentListeners({
       socketDir, baseSocketDir: socketRoot,
+      maxDepth: this.#options.config.subagent.maxDepth,
       actors: () => this.runtime.list().agents,
       isAccepting: () => this.active,
       send: (command) => this.sendMessage(command),
@@ -131,12 +141,19 @@ export class RootService implements ManagedWriteHost {
     });
     const sessions = createNativeSessionFactory({
       agentDir: options.agentDir,
+      config: this.#options.config,
       modelRegistry: () => this.#registry,
       parentCapabilityScope: (id) => this.#parentScope(id),
       installChildSurface: (api, scope) => installSessionSurface(api, async () => {
         this.assertOperational();
         return this;
-      }, { callerId: scope.senderId, depth: scope.depth, allowInherited: scope.allowInherited, cwd: scope.cwd }),
+      }, {
+        callerId: scope.senderId,
+        depth: scope.depth,
+        allowInherited: scope.allowInherited,
+        cwd: scope.cwd,
+        maxDepth: scope.maxDepth,
+      }),
     });
     const owner = this;
     this.runner = new NativeJobRunner({
@@ -145,7 +162,7 @@ export class RootService implements ManagedWriteHost {
         get canStartJob() { return owner.active; },
         get mayPersist() { return owner.#mayPersist(); },
       },
-      config: { socketDir }, actors: this.actors, sessions,
+      config: { socketDir, harness: this.#options.config }, actors: this.actors, sessions,
       models: { inherited: (model) => capturedModel(model, this.#registry) },
       routing: { route: (input) => this.#route(input) },
       tools: { catalog: () => options.api.getAllTools() },
@@ -154,6 +171,7 @@ export class RootService implements ManagedWriteHost {
     });
     this.runtime = createSubagentRuntime({
       socketDir,
+      config: this.#options.config,
       isIdTaken: (id) => options.allocatedIds.has(id),
       onIdAllocated: (id) => options.allocatedIds.add(id),
       startJob: (request) => {
@@ -193,6 +211,8 @@ export class RootService implements ManagedWriteHost {
   }
 
   readonly #socketRoot: string;
+  /** The resolved nesting limit of this root's snapshot. */
+  get maxDepth(): number { return this.#options.config.subagent.maxDepth; }
   get active(): boolean { return this.#phase === 'open' && this.#failure === null && this.#options.ownsContext(); }
   get closed(): boolean { return this.#phase === 'detached'; }
 
@@ -435,7 +455,12 @@ export class RootService implements ManagedWriteHost {
   }
 
   #route(input: Parameters<NativeRoutingPort['route']>[0]): Promise<NativeRouteResult> {
-    return routeSubagent({ ...input, registry: this.#registry, configPath: path.join(this.#options.agentDir, 'subagent-routing.json') });
+    return routeSubagent({
+      ...input,
+      registry: this.#registry,
+      configPath: path.join(this.#options.agentDir, 'subagent-routing.json'),
+      retry: this.#options.config.subagent.routingRetry,
+    });
   }
   #report(error: Error): void {
     try { this.#options.context.ui?.notify(error.message, 'error'); } catch { /* error remains on the owning operation */ }

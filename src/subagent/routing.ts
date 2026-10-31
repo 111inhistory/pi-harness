@@ -8,6 +8,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { DEFAULT_HARNESS_CONFIG, type RoutingRetryConfig } from '../harness-config.ts';
 import { composeAssignment } from './prompt.ts';
 import { isRetryableAssistantError, retryDelayMs, type Api, type Model, type ClassifierApi, type ClassifierModel, type ClassifierContext, type ClassifierChoiceQuestion } from '@earendil-works/pi-ai';
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
@@ -202,6 +203,8 @@ export interface RouteSubagentInput {
   readonly budget: Pick<JobBudgetPort, 'beginModelCall'>;
   readonly configPath?: string;
   readonly config?: unknown;
+  /** The root's resolved classifier retry policy; defaults to the built-in one. */
+  readonly retry?: RoutingRetryConfig;
 }
 export interface SubagentRoute {
   readonly roleId: string;
@@ -303,20 +306,6 @@ function invalidAnswerError(stage: number, key: string, reason: string): Subagen
   return new SubagentRoutingError("routing_invalid_answer", `Classifier call ${stage} did not decide ${key}: ${reason}.`, { stage, key });
 }
 
-/**
- * Bounded retry policy for one idempotent routing classifier request. The SDK
- * provider retry is disabled for these calls (`maxRetries: 0`), so every
- * physical HTTP attempt is debited and timed here exactly once. The delays and
- * jitter mirror the SDK provider policy: 0.5s, 1s, ... capped at 8s, shortened
- * by up to 25%; a routing call makes at most three physical attempts.
- */
-const CLASSIFIER_RETRY = Object.freeze({
-  maxAttempts: 3,
-  baseDelayMs: 500,
-  maxDelayMs: 8_000,
-  jitterRatio: 0.25,
-});
-
 /** Whether the SDK's transient-provider classifier considers a failure retryable. */
 function transientClassifierFailure(nativeError: unknown): boolean {
   return typeof nativeError === "string"
@@ -325,13 +314,20 @@ function transientClassifierFailure(nativeError: unknown): boolean {
     && (isRetryableAssistantError as (message: { stopReason: 'error'; errorMessage: string }) => boolean)({ stopReason: "error", errorMessage: nativeError });
 }
 
-/** Exponential retry delay with SDK-style bounded jitter. `attempt` is 1-indexed. */
-function classifierRetryDelayMs(attempt: number): number {
+/**
+ * Bounded retry policy for one idempotent routing classifier request. The SDK
+ * provider retry is disabled for these calls (`maxRetries: 0`), so every
+ * physical HTTP attempt is debited and timed here exactly once. The default
+ * delays and jitter mirror the SDK provider policy (0.5s, 1s, ... capped at
+ * 8s, shortened by up to 25%) and the root's `subagent.routingRetry` replaces
+ * them. Exponential delay with bounded jitter; `attempt` is 1-indexed.
+ */
+function classifierRetryDelayMs(attempt: number, retry: RoutingRetryConfig): number {
   const delay = retryDelayMs(
-    { baseDelayMs: CLASSIFIER_RETRY.baseDelayMs, maxAgentDelayMs: CLASSIFIER_RETRY.maxDelayMs },
+    { baseDelayMs: retry.baseDelayMs, maxAgentDelayMs: retry.maxDelayMs },
     attempt,
   );
-  return Math.max(0, Math.round(delay * (1 - Math.random() * CLASSIFIER_RETRY.jitterRatio)));
+  return Math.max(0, Math.round(delay * (1 - Math.random() * retry.jitterRatio)));
 }
 
 /** Resolve after the backoff delay, or early when the Job is cancelled. */
@@ -391,13 +387,14 @@ function selectLabel(stage: number, key: string, answers: unknown, criteria: Rec
  * a transient provider/transport failure is retried; auth/config failures,
  * malformed answers and protocol/parse errors fail on their first attempt.
  */
-async function classifyChoice({ stage, key, registry, classifier, signal, budget, state, question }: {
+async function classifyChoice({ stage, key, registry, classifier, signal, budget, retry, state, question }: {
   stage: number; key: string; registry: RouteSubagentInput['registry']; classifier: ClassifierModel<ClassifierApi>;
-  signal: AbortSignal | undefined; budget: RouteSubagentInput['budget']; state: ClassifierContext['state']; question: ClassifierChoiceQuestion;
+  signal: AbortSignal | undefined; budget: RouteSubagentInput['budget']; retry: RoutingRetryConfig;
+  state: ClassifierContext['state']; question: ClassifierChoiceQuestion;
 }): Promise<string> {
   if (signal?.aborted) throw abortedError(stage);
 
-  for (let attempt = 1; attempt <= CLASSIFIER_RETRY.maxAttempts; attempt += 1) {
+  for (let attempt = 1; attempt <= retry.maxAttempts; attempt += 1) {
     if (signal?.aborted) throw abortedError(stage);
     const debit = budget.beginModelCall();
     if (!debit || debit.ok !== true) {
@@ -427,8 +424,8 @@ async function classifyChoice({ stage, key, registry, classifier, signal, budget
     }
 
     const finalError = nativeError ?? "the classifier returned no usable result";
-    if (attempt < CLASSIFIER_RETRY.maxAttempts && transientClassifierFailure(finalError)) {
-      if (!(await waitForRetry(classifierRetryDelayMs(attempt), signal))) throw abortedError(stage);
+    if (attempt < retry.maxAttempts && transientClassifierFailure(finalError)) {
+      if (!(await waitForRetry(classifierRetryDelayMs(attempt, retry), signal))) throw abortedError(stage);
       if (signal?.aborted) throw abortedError(stage);
       continue;
     }
@@ -450,9 +447,13 @@ async function classifyChoice({ stage, key, registry, classifier, signal, budget
  * @param {{beginModelCall: () => object}} input.budget The Job budget.
  * @param {string} [input.configPath] Pi user routing config path, supplied by the adapter.
  * @param {object} [input.config] Parsed config for tests/internal callers.
+ * @param {object} [input.retry] The root's resolved classifier retry policy.
  * @returns {Promise<{roleId: string, instructions: string, model: object, thinkingLevel: string, excludeTools: string[], enableTools: string[]}>}
  */
-export async function routeSubagent({ registry, task, context = "", signal, budget, config, configPath }: RouteSubagentInput): Promise<SubagentRoute> {
+export async function routeSubagent({
+  registry, task, context = "", signal, budget, config, configPath,
+  retry = DEFAULT_HARNESS_CONFIG.subagent.routingRetry,
+}: RouteSubagentInput): Promise<SubagentRoute> {
   const routing = config === undefined ? loadSubagentRoutingConfig(configPath) : validateConfig(config);
   const batchContext = context ?? "";
   if (typeof task !== "string" || task.trim() === "" || typeof batchContext !== "string") {
@@ -470,6 +471,7 @@ export async function routeSubagent({ registry, task, context = "", signal, budg
     classifier,
     signal,
     budget,
+    retry,
     state: { delegated_assignment: delegatedAssignment },
     question: {
       type: "choice",
@@ -487,6 +489,7 @@ export async function routeSubagent({ registry, task, context = "", signal, budg
     classifier,
     signal,
     budget,
+    retry,
     state: {
       delegated_assignment: delegatedAssignment,
       selected_role: { id: roleId, instructions: role.instructions },

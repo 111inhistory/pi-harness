@@ -21,8 +21,6 @@
  * - a dropped-tool list keeps the capture's order and never repeats a name.
  */
 
-import { MAX_AGENT_DEPTH } from "./runtime.ts";
-
 /** The only shape the transplantability filter needs from a registered tool. */
 export interface ToolPolicyTool {
   readonly name: string;
@@ -31,12 +29,16 @@ export interface ToolPolicyTool {
 
 /** Harness tools a child keeps below the leaf depth, in registration order. */
 const HARNESS_TOOLS = ["subagent_create", "subagent_list", "subagent_stop", "capability", "msg_write"] as const;
+const HARNESS_TOOL_NAMES: ReadonlySet<string> = new Set(HARNESS_TOOLS);
 /** At the leaf depth a child may only list; it cannot create or stop. */
 const LEAF_HARNESS_TOOLS = ["subagent_list", "msg_write"] as const;
 
-/** The harness tool names a child at `depth` may hold. */
-export function harnessToolsForDepth(depth: number): readonly string[] {
-  return depth < MAX_AGENT_DEPTH ? HARNESS_TOOLS : LEAF_HARNESS_TOOLS;
+/**
+ * The harness tool names a child at `depth` may hold. `maxDepth` is the root's
+ * one resolved nesting limit; a child at that depth is a leaf.
+ */
+export function harnessToolsForDepth(depth: number, maxDepth: number): readonly string[] {
+  return depth < maxDepth ? HARNESS_TOOLS : LEAF_HARNESS_TOOLS;
 }
 
 /**
@@ -48,9 +50,13 @@ export function harnessToolsForDepth(depth: number): readonly string[] {
 export function transplantableToolNames(
   tools: readonly ToolPolicyTool[],
   childDepth: number,
+  maxDepth: number,
 ): ReadonlySet<string> {
-  const names = new Set<string>([...harnessToolsForDepth(childDepth), "read", "write", "msg_write"]);
+  const names = new Set<string>([...harnessToolsForDepth(childDepth, maxDepth), "read", "write", "msg_write"]);
   for (const tool of tools) {
+    // Harness tool membership is depth-owned. The catalog must not re-add a
+    // leaf-gated tool merely because it is file-backed or built-in.
+    if (HARNESS_TOOL_NAMES.has(tool.name)) continue;
     const source = tool.sourceInfo;
     if (source?.source === "builtin" || (source?.path !== undefined && !source.path.startsWith('<'))) names.add(tool.name);
   }
@@ -66,8 +72,9 @@ export function droppedInheritedTools(
   tools: readonly ToolPolicyTool[],
   inheritedTools: unknown,
   childDepth: number,
+  maxDepth: number,
 ): string[] {
-  const transplantable = transplantableToolNames(tools, childDepth);
+  const transplantable = transplantableToolNames(tools, childDepth, maxDepth);
   const dropped: string[] = [];
   for (const name of toolNamesOf(inheritedTools)) {
     if (!transplantable.has(name) && !dropped.includes(name)) dropped.push(name);
@@ -94,13 +101,14 @@ export function inheritedToolNames(
   tools: readonly ToolPolicyTool[],
   inheritedTools: unknown,
   childDepth: number,
+  maxDepth: number,
 ): string[] {
-  const dropped = new Set(droppedInheritedTools(tools, inheritedTools, childDepth));
+  const dropped = new Set(droppedInheritedTools(tools, inheritedTools, childDepth, maxDepth));
   const names: string[] = [];
   for (const name of toolNamesOf(inheritedTools)) {
     if (!dropped.has(name) && !names.includes(name)) names.push(name);
   }
-  for (const name of harnessToolsForDepth(childDepth)) {
+  for (const name of harnessToolsForDepth(childDepth, maxDepth)) {
     if (!names.includes(name)) names.push(name);
   }
   return names;

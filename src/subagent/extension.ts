@@ -1,4 +1,5 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { DEFAULT_HARNESS_CONFIG, harnessConfigFor } from '../harness-config.ts';
 import { ServiceLifecycle } from './lifecycle.ts';
 import { RootService } from './root-service.ts';
 import { installSessionSurface } from './surface.ts';
@@ -6,6 +7,10 @@ import { SubagentError } from './runtime.ts';
 
 /** Composition and SDK lifecycle hooks only; no Job loop or transport logic. */
 export default function subagentExtension(api: ExtensionAPI): void {
+  // Acquire the root's config provider before registering any lifecycle hook:
+  // its own session reset listeners must be in place before this service starts
+  // activating. Every service of one Pi surface shares that snapshot.
+  const configFor = harnessConfigFor(api);
   const agentDir = getAgentDir();
   const idsByRoot = new Map<string, Set<string>>();
   const lifecycle = new ServiceLifecycle<RootService>({ retire: (service) => service.retire() });
@@ -23,7 +28,14 @@ export default function subagentExtension(api: ExtensionAPI): void {
       const id = ctx.sessionManager.getSessionId();
       let allocatedIds = idsByRoot.get(id);
       if (allocatedIds === undefined) { allocatedIds = new Set(); idsByRoot.set(id, allocatedIds); }
-      const service = new RootService({ api, context: ctx, agentDir, allocatedIds, ownsContext: () => epoch === ownEpoch });
+      const service = new RootService({
+        api,
+        context: ctx,
+        agentDir,
+        allocatedIds,
+        config: configFor(ctx),
+        ownsContext: () => epoch === ownEpoch,
+      });
       await service.initialize();
       return service;
     });
@@ -68,5 +80,13 @@ export default function subagentExtension(api: ExtensionAPI): void {
     // next real root run safely reopens the stopped registry, never old Jobs.
     if (transitionPending && !lifecycle.retiring) await activate(ctx);
   });
-  installSessionSurface(api, current, { callerId: 'Main', depth: 0, allowInherited: true, cwd: process.cwd() });
+  // The root surface is depth 0, below every valid configured maximum depth, so
+  // its own create/stop registration does not depend on the resolved value.
+  installSessionSurface(api, current, {
+    callerId: 'Main',
+    depth: 0,
+    allowInherited: true,
+    cwd: process.cwd(),
+    maxDepth: DEFAULT_HARNESS_CONFIG.subagent.maxDepth,
+  });
 }
