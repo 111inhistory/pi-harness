@@ -190,7 +190,7 @@ export async function runResponsesOnlyScenario(fixture: CapabilityScenarioFixtur
 
 export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixture): Promise<void> {
   const { session, cwd, model, chats, controls, call, toolAnswer, textAnswer } = fixture;
-  const members = ["subagent_create", "subagent_list", "subagent_stop"];
+  const members = ["subagent_create", "subagent_list", "subagent_stop", "msg_write"];
   session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
   await session.prompt("Seed a stable Responses transcript without calling tools.");
   const firstChat = chats[0];
@@ -305,7 +305,7 @@ export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixt
   assert.match(capabilityGuiText(fixture, repeated), /"guidance":/);
   const repeatedDetails = repeated.details as CapabilityDiscoveryResult;
   const repeatedToolsGroup = repeatedDetails.tools[0] as unknown as { tools: unknown[] };
-  assert.equal(repeatedToolsGroup.tools.length, 3, "full selection remains in details, not model text");
+  assert.equal(repeatedToolsGroup.tools.length, 4, "full selection remains in details, not model text");
   assert.equal(internalCalls, 8);
   await assert.rejects(fsp.stat(path.join(cwd, "forbidden.txt")), { code: "ENOENT" });
   await assert.rejects(fsp.stat(path.join(cwd, "forbidden-nested.txt")), { code: "ENOENT" });
@@ -406,9 +406,10 @@ export async function runCapabilityMissingScenario(fixture: CapabilityScenarioFi
 
 export async function runNamespaceScenario(fixture: CapabilityScenarioFixture): Promise<void> {
   const { session, cwd, controls, call, toolAnswer, create, stopped, chats } = fixture;
-  const members = ["subagent_create", "subagent_list", "subagent_stop"];
+  const members = ["subagent_create", "subagent_list", "subagent_stop", "msg_write"];
   const initial = session.getActiveToolNames();
-  assert.ok(members.every((name) => !initial.includes(name)));
+  assert.ok(members.filter(name => name !== "msg_write").every((name) => !initial.includes(name)));
+  assert.ok(initial.includes("msg_write"));
   assert.doesNotMatch(session.systemPrompt, /subagent_create|one JSON object per line/);
   const nativeWrite = createWriteToolDefinition(cwd);
   const sessionWrite = session.getToolDefinition("write");

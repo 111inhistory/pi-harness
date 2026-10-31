@@ -26,7 +26,6 @@ import type {
   ToolResultMessage,
 } from "@earendil-works/pi-ai";
 
-import { SocketWriteError } from "../../../src/ipc/socket.ts";
 import { SubagentError } from "../../../src/subagent/runtime.ts";
 import { treeNodes } from "./agent-tree.ts";
 
@@ -196,15 +195,15 @@ function textOfContent(content: readonly FixtureContent[]): string {
   throw new Error("The tool result message has no text content.");
 }
 
-/** Managed messages use the same public success result as native file writes. */
-export function assertWriteSuccess(result: FixtureToolResult): void {
+/** Managed message receipts stay internal to the host. */
+export function assertMessageSuccess(result: FixtureToolResult): void {
   assert.notEqual(result.isError, true);
   assert.equal(result.details, undefined);
-  assert.match(textOfContent(result.content), /^Successfully wrote to /);
+  assert.match(textOfContent(result.content), /^Successfully sent message to /);
 }
 
-export function assertWriteSuccessFromMessage(message: ToolResultMessage): void {
-  assertWriteSuccess({ content: message.content, details: message.details, isError: message.isError });
+export function assertMessageSuccessFromMessage(message: ToolResultMessage): void {
+  assertMessageSuccess({ content: message.content, details: message.details, isError: message.isError });
 }
 
 export async function deliverToActor(
@@ -212,7 +211,7 @@ export async function deliverToActor(
   actor: Pick<FixtureActor, "id" | "socket">,
   content: string,
 ): Promise<void> {
-  assertWriteSuccess(await fixture.call("msg_write", { path: actor.socket, content }));
+  assertMessageSuccess(await fixture.call("msg_write", { path: actor.socket, content }));
 }
 
 /** Fanout is verified in recipient transcripts, not in a public receipt. */
@@ -221,7 +220,7 @@ export async function deliverBroadcast(
   socket: string,
   content: string,
 ): Promise<void> {
-  assertWriteSuccess(await fixture.call("msg_write", { path: socket, content }));
+  assertMessageSuccess(await fixture.call("msg_write", { path: socket, content }));
 }
 
 /** A stopping write must be refused by the Runtime with its own busy state. */
@@ -238,9 +237,7 @@ export function isSubagentError(error: unknown, code: string): boolean {
   return error instanceof SubagentError && error.code === code;
 }
 
-export function isSocketWriteError(error: unknown, code: string): boolean {
-  return error instanceof SocketWriteError && error.code === code;
-}
+
 
 /** Read a Job's clean native transcript lines as typed fixture events. */
 export async function readTranscriptEvents(file: string): Promise<FixtureTranscriptEvent[]> {

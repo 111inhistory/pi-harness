@@ -10,8 +10,6 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -23,7 +21,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { promptText } from "../../src/prompt-text.ts";
-import { DEFAULT_SOCKET_DIR } from "../../src/ipc/socket.ts";
 import type { EndpointResolverResult } from "../../src/ipc/socket.ts";
 import {
   captureContextForChild,
@@ -190,7 +187,7 @@ function resolveWith(host: SubagentSurfaceHost, seen: ExtensionContext[]): (ctx:
   };
 }
 
-test("the root surface registers the legacy tool order and keeps parameter contracts", () => {
+test("the root surface registers controls and messaging without overriding write", () => {
   const registered: ToolDefinition[] = [];
   // Registration-only subset of ExtensionAPI; the assembly below is the SDK
   // boundary this test crosses.
@@ -211,19 +208,17 @@ test("the root surface registers the legacy tool order and keeps parameter contr
     "subagent_list",
     "subagent_stop",
     "msg_write",
-    "write",
   ]);
-  for (const tool of registered.slice(0, 3)) {
+  for (const tool of registered) {
     assert.equal(tool.namespace?.name, "subagent");
     assert.ok((tool.namespace?.description ?? "") !== "");
     assert.ok((tool.namespace?.instructions ?? "") !== "");
-    assert.equal(tool.defaultActive, false);
+    assert.equal(tool.defaultActive, tool.name === 'msg_write');
     assert.ok((tool.promptSnippet ?? "") !== "");
     assert.ok((tool.promptGuidelines?.length ?? 0) > 0);
   }
-  // msg_write stays inactive by default; the native write tool stays active.
-  assert.equal(registered[3]?.defaultActive, false);
-  assert.equal(registered[4]?.defaultActive, undefined);
+  assert.equal(registered[3]?.defaultActive, true);
+  assert.ok(!registered.some(tool => tool.name === "write"));
 
   const create = schemaOf(registered[0] as ToolDefinition);
   assert.deepEqual(create["required"], ["tasks"]);
@@ -243,7 +238,7 @@ test("the root surface registers the legacy tool order and keeps parameter contr
   assert.deepEqual(stop["required"], ["id"]);
 });
 
-test("the leaf surface keeps list and the write pair but no create/stop", () => {
+test("the leaf surface keeps list and messaging but no create/stop", () => {
   const api = new FakeSurfaceApi();
   const tools = createSurfaceTools({
     api,
@@ -256,7 +251,6 @@ test("the leaf surface keeps list and the write pair but no create/stop", () => 
   assert.equal(tools.list.name, "subagent_list");
   assert.equal(tools.msg_write.name, "msg_write");
   assert.equal("message" in tools, false);
-  assert.equal(tools.write.name, "write");
 });
 
 test("tool-owned parameter labels and create-only guidance follow the assets", () => {
@@ -382,7 +376,7 @@ test("list and stop resolve the host with the current execute context", async ()
   assert.deepEqual(first.stops, ["sub_02"]);
 });
 
-test("managed msg_write retains native write success and keeps routing metadata internal", async () => {
+test("msg_write sends messages and keeps routing metadata internal", async () => {
   const api = new FakeSurfaceApi();
   const host = new RecordingHost();
   const seen: ExtensionContext[] = [];
@@ -401,7 +395,7 @@ test("managed msg_write retains native write success and keeps routing metadata 
   assert.deepEqual(seen, [ctx]);
   assert.deepEqual(host.sends, [{ from: "Main", to: "sub_02", content: "hello agent" }]);
   assert.equal(result.details, undefined);
-  assert.match(JSON.stringify(result.content), /Successfully wrote/);
+  assert.match(JSON.stringify(result.content), /Successfully sent message/);
 });
 
 test("msg_write still rejects a non-IPC path without resolving the host", async () => {
@@ -422,65 +416,6 @@ test("msg_write still rejects a non-IPC path without resolving the host", async 
     /requires an IPC endpoint address/,
   );
   assert.deepEqual(seen, []);
-});
-
-test("a plain file write keeps SDK behavior even when the host cannot resolve", async () => {
-  const cwd = await mkdtemp(path.join(tmpdir(), "subagent-surface-"));
-  try {
-    const api = new FakeSurfaceApi();
-    const seen: ExtensionContext[] = [];
-    const tools = createSurfaceTools({
-      api,
-      resolveHost: async (ctx) => {
-        seen.push(ctx);
-        throw new Error("Subagent runtime is unavailable");
-      },
-      scope: { ...ROOT_SCOPE, cwd },
-    });
-    const ctx = sdkContext({ cwd });
-
-    const result = await tools.write.execute(
-      "w1",
-      { path: "nested/note.txt", content: "file body" },
-      undefined,
-      undefined,
-      ctx,
-    );
-
-    assert.equal(await readFile(path.join(cwd, "nested/note.txt"), "utf8"), "file body");
-    // The native file path never needed an operational Subagent host.
-    assert.deepEqual(seen, []);
-    assert.equal(result.details, undefined);
-    assert.match(JSON.stringify(result.content), /Successfully wrote/);
-  } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
-
-test("the reserved directory is rejected from the pure guard, not the host", async () => {
-  const cwd = await mkdtemp(path.join(tmpdir(), "subagent-surface-"));
-  try {
-    const api = new FakeSurfaceApi();
-    const seen: ExtensionContext[] = [];
-    const tools = createSurfaceTools({
-      api,
-      resolveHost: async (ctx) => {
-        seen.push(ctx);
-        throw new Error("the host must not be resolved for the reserved path guard");
-      },
-      scope: { ...ROOT_SCOPE, cwd },
-    });
-    const ctx = sdkContext({ cwd });
-    const reservedFile = path.join(path.resolve(cwd, DEFAULT_SOCKET_DIR), "note.txt");
-
-    await assert.rejects(
-      tools.write.execute("w2", { path: reservedFile, content: "x" }, undefined, undefined, ctx),
-      /IPC directories cannot contain files written by write/,
-    );
-    assert.deepEqual(seen, []);
-  } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
 });
 
 test("endpoint ownership and send share one cached resolution per execute", async () => {
@@ -511,37 +446,6 @@ test("endpoint ownership and send share one cached resolution per execute", asyn
   assert.deepEqual(first.sends, [{ from: "Main", to: "sub_02", content: "once" }]);
   assert.deepEqual(second.sends, []);
   assert.equal(result.details, undefined);
-});
-
-test("a managed path rejects a stale host while ordinary files still write", async () => {
-  const cwd = await mkdtemp(path.join(tmpdir(), "subagent-surface-"));
-  try {
-    const api = new FakeSurfaceApi();
-    const stale = new Error("runtime_closed: stale context");
-    let resolutions = 0;
-    const tools = createSurfaceTools({
-      api,
-      resolveHost: async () => {
-        resolutions += 1;
-        throw stale;
-      },
-      scope: { ...ROOT_SCOPE, cwd },
-    });
-    const ctx = sdkContext({ cwd });
-
-    await assert.rejects(
-      tools.write.execute("w3", { path: path.join(cwd, "sub_02.sock"), content: "x" }, undefined, undefined, ctx),
-      /stale context/,
-    );
-    assert.equal(resolutions, 1);
-
-    // The same execution path still writes ordinary files with no host.
-    await tools.write.execute("w4", { path: "after-failure.txt", content: "ok" }, undefined, undefined, ctx);
-    assert.equal(await readFile(path.join(cwd, "after-failure.txt"), "utf8"), "ok");
-    assert.equal(resolutions, 1);
-  } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
 });
 
 test("concurrent managed sends keep per-execution hosts isolated", async () => {

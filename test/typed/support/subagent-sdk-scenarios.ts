@@ -18,10 +18,9 @@ import {
   assertEndpointReachable,
   deliverToActor,
   detailsOf,
-  isSocketWriteError,
   isSubagentError,
   lastToolResult,
-  assertWriteSuccessFromMessage,
+  assertMessageSuccessFromMessage,
   occurrences,
   readTranscriptEvents,
   createdItems,
@@ -64,14 +63,9 @@ export async function runListenerCacheScenario(fixture: ScenarioFixture): Promis
   await deliverToActor(fixture, parent, "Resume historical parent");
   await waitForCondition(() => fixture.chats.length > before, "historical parent revival");
   await fixture.stopped(parent.id);
-  await assert.rejects(
-    fixture.call("write", { path: path.join(fixture.sessionSocketDir, "forbidden", "file.txt"), content: "must not exist" }),
-    (error: unknown) => isSocketWriteError(error, "ipc_directory_reserved"),
-  );
-  await assert.rejects(fsp.stat(path.join(fixture.sessionSocketDir, "forbidden")), { code: "ENOENT" });
   if (process.platform !== "win32") {
     await assert.rejects(
-      fixture.call("write", { path: path.join(fixture.sessionSocketDir, "ghost.sock"), content: '{"content":"unknown"}' }),
+      fixture.call("msg_write", { path: path.join(fixture.sessionSocketDir, "ghost.sock"), content: '{"content":"unknown"}' }),
       (error: unknown) => isSubagentError(error, "unknown_endpoint"),
     );
   }
@@ -130,7 +124,7 @@ export async function runExternalSocketScenario(fixture: ScenarioFixture): Promi
     const payload = '{"from":"external-client","content":"Own protocol payload","sequence":7}';
     await assert.rejects(
       fixture.call("msg_write", { path: externalPath, content: payload }),
-      (error: unknown) => isSocketWriteError(error, "unmanaged_endpoint"),
+      (error: unknown) => isSubagentError(error, "unmanaged_endpoint"),
     );
     assert.equal(connections.length, 0, "the host must not connect to an unmanaged endpoint");
     assert.deepEqual(frames, [], "the host must not write a raw payload to an unmanaged endpoint");
@@ -171,8 +165,8 @@ async function writeExternalFrame(address: string, payload: string): Promise<voi
 }
 
 /**
- * A child model's native `write` to a peer endpoint must produce a managed
- * file-write success result, and the peer's actual provider request must keep
+ * A child model's `msg_write` to a peer endpoint must produce a message
+ * success result, and the peer's actual provider request must keep
  * the host-attributed child sender.
  */
 export async function runPeerSenderScenario(fixture: ScenarioFixture): Promise<void> {
@@ -185,11 +179,11 @@ export async function runPeerSenderScenario(fixture: ScenarioFixture): Promise<v
   fixture.controls.chat = async (request) => {
     if (receiver === undefined) throw new Error("the peer receiver must exist before any model call");
     if (request.text.includes("SOCKET_SENDER_ACTOR")) {
-      const writeResult = lastToolResult(request.context.messages, "write");
+      const writeResult = lastToolResult(request.context.messages, "msg_write");
       if (writeResult === undefined) {
-        return fixture.toolAnswer("write", { path: receiver.socket, content: "PEER_SOURCE_MARKER" }, "peer-write");
+        return fixture.toolAnswer("msg_write", { path: receiver.socket, content: "PEER_SOURCE_MARKER" }, "peer-write");
       }
-      assertWriteSuccessFromMessage(writeResult);
+      assertMessageSuccessFromMessage(writeResult);
       peerWriteCompleted = true;
       return fixture.textAnswer("actor done");
     }
@@ -252,7 +246,7 @@ export async function runUpstreamParentSteerScenario(fixture: ScenarioFixture): 
         await send.promise;
         return fixture.toolAnswer("msg_write", { path: parentOwner().socket, content: "PARENT_MERGE_PROGRESS" }, "parent-merge-write");
       }
-      assertWriteSuccessFromMessage(wrote);
+      assertMessageSuccessFromMessage(wrote);
       progressWriteCompleted = true;
       return fixture.textAnswer("Leaf completed");
     }

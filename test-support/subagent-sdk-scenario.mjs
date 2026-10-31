@@ -18,7 +18,7 @@ import { deferred, waitFor } from "./async.mjs";
 import { treeNodes } from "../test/typed/support/agent-tree.ts";
 import { capabilityGuiText } from "../test/typed/support/capability-gui.ts";
 import {
-  isStoppingRefusal, isSubagentError, isSocketWriteError, deliverBroadcast, deliverToActor,
+  isStoppingRefusal, isSubagentError, deliverBroadcast, deliverToActor,
 } from "../test/typed/support/subagent-sdk-fixture.ts";
 import {
   runExternalSocketScenario, runListenerCacheScenario, runPeerSenderScenario,
@@ -293,7 +293,7 @@ try {
         for (const name of ["subagent_create", "subagent_stop", "capability"]) assert.equal(tools.includes(name), false);
         assert.ok(tools.includes("subagent_list"));
         assert.ok(tools.includes("write"));
-        assert.equal(tools.includes("msg_write"), false);
+        assert.equal(tools.includes("msg_write"), true);
         leafResult = true;
         return textAnswer("Leaf tools checked");
       }
@@ -683,9 +683,9 @@ try {
         return toolAnswer("subagent_create", { tasks: [{ name: "ChildOne", task: "Child assignment one" }, { name: "ChildTwo", task: "Child assignment two" }] }, "create-children");
       }
       if (request.text.includes("SPAWN_MARKER")) {
-        const broadcastSent = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "write");
+        const broadcastSent = request.context.messages.some((message) => message.role === "toolResult" && message.toolName === "msg_write");
         if (spawned && !broadcastSent) {
-          return toolAnswer("write", { path: getBroadcastSocketPath("sub_01", sessionSocketDir), content: "CHILD_BROADCAST_ONLY" }, "child-broadcast");
+          return toolAnswer("msg_write", { path: getBroadcastSocketPath("sub_01", sessionSocketDir), content: "CHILD_BROADCAST_ONLY" }, "child-broadcast");
         }
       }
       await exit.promise;
@@ -702,7 +702,7 @@ try {
         chats.filter((request) => request.text.includes("Child assignment")).length === 2 && found;
     }, { label: "depth-2 children run alongside four active parents" });
     assert.deepEqual(children.map((child) => child.id), ["sub_01_01", "sub_01_02"]);
-    await assert.rejects(call("msg_write", { path: getBroadcastSocketPath("sub_01", sessionSocketDir), content: "OVERSTEP" }), (err) => isSocketWriteError(err, "invalid_target"));
+    await assert.rejects(call("msg_write", { path: getBroadcastSocketPath("sub_01", sessionSocketDir), content: "OVERSTEP" }), (err) => isSubagentError(err, "invalid_target"));
     await deliverBroadcast(fixture, getBroadcastSocketPath("Main", sessionSocketDir), "ROOT_BROADCAST_ONLY");
     exit.resolve();
     await Promise.all([...roots, ...children].map((actor) => stopped(actor.id)));

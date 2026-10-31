@@ -98,7 +98,9 @@ export class AgentListeners {
             // not authenticated merely because it is a valid registered ID.
             const result = await this.#options.send({ from: sender, to: destination.broadcast ? 'all' : destination.owner, content: message.content });
             if ('errors' in result && result.errors.length !== 0) {
-              throw new SubagentError('broadcast_partial_failure', 'Some broadcast recipients rejected the message.', { errors: result.errors, sent: result.sent });
+              const failures = result.errors.map(error => `${error.to}: ${error.message}`).join('; ');
+              throw new SubagentError('broadcast_partial_failure', `Some broadcast recipients rejected the message. ${failures}`,
+                { errors: result.errors, sent: result.sent });
             }
           },
         });

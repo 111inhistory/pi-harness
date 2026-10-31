@@ -17,11 +17,8 @@
  * - `host.create` owns post-admission listener error reporting. The surface
  *   never invokes a listener operation itself.
  *
- * The message and file tools come from the shared managed-write factory, so a
- * managed send returns the runtime receipt instead of the SDK's filesystem
- * success message. The SDK's file mutation queue is keyed by absolute path at
- * module scope, so building the managed pair per execution keeps concurrent
- * writes serialized per file.
+ * Messaging has one dedicated tool. The SDK's native file write tool is never
+ * overridden or coupled to the Subagent service.
  */
 
 import type {
@@ -34,13 +31,10 @@ import type {
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "@earendil-works/pi-ai";
 
-import path from "node:path";
-
 import { captureInheritedContext } from "../inherited-context.mjs";
 import { promptString, promptText } from "../prompt-text.mjs";
-import { DEFAULT_SOCKET_DIR, isInSocketDirectory } from "../ipc/socket.ts";
 import {
-  createManagedWriteTools,
+  createMessageWriteTool,
   type ManagedWriteHost,
   type ManagedWriteTool,
 } from "./message-write.ts";
@@ -130,7 +124,6 @@ export interface SubagentSurfaceTools {
   /** null at the leaf depth, where a child may not stop other agents. */
   readonly stop: ToolDefinition<typeof stopParameters, StopResult> | null;
   readonly msg_write: ManagedWriteTool;
-  readonly write: ManagedWriteTool;
 }
 
 export interface SubagentSurfaceToolOptions {
@@ -147,7 +140,19 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
   const { api, resolveHost, scope } = options;
   const caller = surfaceCaller(scope);
   const shallow = scope.depth < MAX_AGENT_DEPTH;
-  const tools = managedWriteTools(scope.cwd, caller.callerId, resolveHost);
+  const messageTemplate = createMessageWriteTool({ cwd: scope.cwd, senderId: caller.callerId, host: UNRESOLVED_HOST });
+  const msg_write: ManagedWriteTool = {
+    ...messageTemplate,
+    namespace: SUBAGENT_NAMESPACE,
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      let resolved: Promise<SubagentSurfaceHost> | undefined;
+      const host = (): Promise<SubagentSurfaceHost> => resolved ??= resolveHost(ctx);
+      return createMessageWriteTool({ cwd: scope.cwd, senderId: caller.callerId, host: {
+        resolveEndpoint: async address => (await host()).resolveEndpoint(address),
+        sendMessage: async command => (await host()).sendMessage(command),
+      } }).execute(toolCallId, params, signal, onUpdate, ctx);
+    },
+  };
 
   const create: SubagentSurfaceTools["create"] = shallow
     ? {
@@ -209,7 +214,7 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
       }
     : null;
 
-  return { create, list, stop, msg_write: tools.msg_write, write: tools.write };
+  return { create, list, stop, msg_write };
 }
 
 /**
@@ -237,7 +242,6 @@ export function installSessionSurface(
   api.registerTool(tools.list);
   if (tools.stop !== null) api.registerTool(tools.stop);
   api.registerTool(tools.msg_write);
-  api.registerTool(tools.write);
 }
 
 /** `Main` is the root caller; every other caller is the child actor's own id. */
@@ -246,62 +250,9 @@ function surfaceCaller(scope: SubagentSurfaceScope): { callerId: string; parentA
   return { callerId, parentAgentId: callerId === "Main" ? null : callerId };
 }
 
-function managedWriteTools(
-  cwd: string,
-  senderId: string,
-  resolveHost: (ctx: ExtensionContext) => Promise<SubagentSurfaceHost>,
-): { msg_write: ManagedWriteTool; write: ManagedWriteTool } {
-  // Metadata (parameters, labels, prompt text) is host-independent; only the
-  // execute path needs a host, and only when the call actually reaches the
-  // managed transport. The template's host is unreachable.
-  const template = createManagedWriteTools({ cwd, senderId, host: UNRESOLVED_HOST });
-  // The reserved-directory guard is a pure platform fact, not a service: an
-  // ordinary file write must work even when the Subagent root cannot resolve
-  // Ordinary file writes remain independent of managed messaging.
-  const socketRoot = path.resolve(cwd, DEFAULT_SOCKET_DIR);
-
-  /**
-   * One lazy host per tool execution. The host is resolved on the first managed
-   * need and the Promise is cached, so an endpoint resolved by generation A is
-   * sent through that same generation A host; a root switch mid-call cannot mix
-   * the two, and a failed resolution is not retried fresh.
-   */
-  const lazyHost = (ctx: ExtensionContext): ManagedWriteHost => {
-    let resolution: Promise<SubagentSurfaceHost> | null = null;
-    const host = (): Promise<SubagentSurfaceHost> => {
-      resolution ??= resolveHost(ctx);
-      return resolution;
-    };
-    return {
-      resolveEndpoint: async (address) => (await host()).resolveEndpoint(address),
-      isReservedPath: async (address) => isInSocketDirectory(address, socketRoot),
-      sendMessage: async (command) => (await host()).sendMessage(command),
-    };
-  };
-
-  const write: ManagedWriteTool = {
-    ...template.write,
-    async execute(toolCallId, params, signal, onUpdate, ctx) {
-      return createManagedWriteTools({ cwd, senderId, host: lazyHost(ctx) })
-        .write.execute(toolCallId, params, signal, onUpdate, ctx);
-    },
-  };
-  const msg_write: ManagedWriteTool = {
-    ...template.msg_write,
-    async execute(toolCallId, params, signal, onUpdate, ctx) {
-      return createManagedWriteTools({ cwd, senderId, host: lazyHost(ctx) })
-        .msg_write.execute(toolCallId, params, signal, onUpdate, ctx);
-    },
-  };
-  return { msg_write, write };
-}
-
 /** Unreachable host of the metadata template: execute is always replaced. */
 const UNRESOLVED_HOST: ManagedWriteHost = {
   resolveEndpoint: async () => {
-    throw new Error("The Subagent surface host was not resolved for this tool execution.");
-  },
-  isReservedPath: async () => {
     throw new Error("The Subagent surface host was not resolved for this tool execution.");
   },
   sendMessage: async () => {

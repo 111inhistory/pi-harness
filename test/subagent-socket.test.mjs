@@ -8,7 +8,6 @@ import test from "node:test";
 
 import {
   createOwnedNdjsonServer,
-  createSocketAwareWriteOperations,
   getAgentSocketPath,
   isInSocketDirectory,
   isWindowsPipe,
@@ -147,49 +146,6 @@ test("unterminated NDJSON is not delivered", options, async (t) => {
   client.end('{"missing":"newline"}');
   await ended;
   assert.deepEqual(received, []);
-});
-
-test("write operations deliver to owned endpoints while delegating normal files and mkdir unchanged", options, async (t) => {
-  const fixture = await sockets(t);
-  const delivered = deferred();
-  const address = getAgentSocketPath("sub_03", fixture.root);
-  const server = fixture.server(address, { onMessage: delivered.resolve });
-  await server.ready;
-  const calls = [];
-  const operations = createSocketAwareWriteOperations({
-    senderId: "Main",
-    mkdir: async (dir) => { calls.push(["mkdir", dir]); await fsp.mkdir(dir, { recursive: true }); },
-    writeFile: async (file, content) => { calls.push(["write", file, content]); await fsp.writeFile(file, content); },
-    resolveEndpoint: async (candidate) => candidate === server.address ? { isManaged: true, targetId: "sub_03" } : null,
-  });
-  await operations.writeFile(server.address, "backend");
-  assert.deepEqual(await delivered.promise, { from: "Main", content: "backend" });
-  assert.deepEqual(calls, [], "a socket must never be passed to the filesystem writer");
-  const dir = path.join(fixture.root, "nested");
-  const file = path.join(dir, "regular.txt");
-  await operations.mkdir(dir);
-  await operations.writeFile(file, "regular content");
-  assert.deepEqual(calls, [["mkdir", dir], ["write", file, "regular content"]]);
-  assert.equal(await fsp.readFile(file, "utf8"), "regular content");
-});
-
-test("reserved IPC directories reject files and skip mkdir, including directory aliases", options, async (t) => {
-  const root = await fsp.mkdtemp(path.join(tmpdir(), "pi-reserved-"));
-  t.after(() => fsp.rm(root, { recursive: true, force: true }));
-  const ipcRoot = path.join(root, "ipc");
-  await fsp.mkdir(ipcRoot);
-  const alias = path.join(root, "alias");
-  await fsp.symlink(ipcRoot, alias, "junction");
-  const operations = createSocketAwareWriteOperations({ isReservedPath: (address) => isInSocketDirectory(address, ipcRoot) });
-  for (const dir of [path.join(ipcRoot, "nested"), path.join(alias, "nested")]) {
-    await operations.mkdir(dir);
-    await assert.rejects(operations.writeFile(path.join(dir, "bad.txt"), "bad"), { code: "ipc_directory_reserved" });
-    await assert.rejects(fsp.stat(dir), { code: "ENOENT" });
-  }
-  const ordinary = path.join(root, "ipc-other", "result.txt");
-  await operations.mkdir(path.dirname(ordinary));
-  await operations.writeFile(ordinary, "good");
-  assert.equal(await fsp.readFile(ordinary, "utf8"), "good");
 });
 
 test("missing socket rejects delivery with ENOENT", options, async (t) => {

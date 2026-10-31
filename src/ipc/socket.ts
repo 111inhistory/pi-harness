@@ -2,8 +2,8 @@
  * Local IPC transport for Agent endpoints.
  *
  * Servers own their endpoint through `createOwnedServer`; this module only
- * frames newline-delimited records, tracks accepted connections, and routes the
- * host's write tool. Ownership of a destination is an explicit registry result:
+ * frames newline-delimited records, tracks accepted connections, and reports
+ * receiver failures. Ownership of a destination is an explicit registry result:
  * an endpoint-shaped path without `{ isManaged: true }` is never connected to.
  */
 
@@ -14,7 +14,6 @@ import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
 import { createOwnedServer, type OwnedServer } from "./endpoint.ts";
-import { assertSender, managedFrame } from "./message.ts";
 import {
   DEFAULT_SOCKET_DIR,
   endpointKey,
@@ -262,113 +261,6 @@ export interface EndpointResolverResult {
   isBroadcast?: boolean | undefined;
   targetId?: string | undefined;
   parentId?: string | undefined;
-}
-
-export interface ManagedEndpointResult extends EndpointResolverResult {
-  isManaged: true;
-}
-
-export type ResolveEndpoint = (
-  address: string,
-) => EndpointResolverResult | null | undefined | Promise<EndpointResolverResult | null | undefined>;
-
-export type MaybePromise<T> = T | Promise<T>;
-
-export interface SocketTransport {
-  isEndpoint(address: unknown): boolean;
-  isNamespace(address: unknown): boolean;
-}
-
-export interface SocketWriteOperationOptions {
-  writeFile?: ((absolutePath: string, content: unknown) => MaybePromise<unknown>) | undefined;
-  mkdir?: ((directory: string) => MaybePromise<unknown>) | undefined;
-  senderId?: string | undefined;
-  resolveEndpoint?: ResolveEndpoint | undefined;
-  isReservedPath?: ((address: string) => MaybePromise<boolean>) | undefined;
-  sendManaged?: ((
-    endpoint: ManagedEndpointResult,
-    address: string,
-    frame: string,
-  ) => MaybePromise<unknown>) | undefined;
-}
-
-/** The subset of the SDK `WriteOperations` contract this adapter provides. */
-export interface SocketWriteOperations {
-  mkdir(directory: string): Promise<void>;
-  writeFile(absolutePath: string, content: string | Uint8Array): Promise<void>;
-}
-
-function isManagedEndpoint(
-  value: EndpointResolverResult | null | undefined,
-): value is ManagedEndpointResult {
-  return value !== null && value !== undefined && value.isManaged === true;
-}
-
-export function createSocketAwareWriteOperations(
-  baseOperations: SocketWriteOperationOptions = {},
-  transport: SocketTransport = ipc,
-): SocketWriteOperations {
-  const writeFile = baseOperations.writeFile ||
-    ((absolutePath: string, content: unknown) => fsp.writeFile(
-      absolutePath,
-      typeof content === "string" || content instanceof Uint8Array ? content : String(content),
-      "utf-8",
-    ));
-  const mkdir = baseOperations.mkdir ||
-    ((directory: string) => fsp.mkdir(directory, { recursive: true }));
-  const senderId = baseOperations.senderId;
-  const resolveEndpoint = baseOperations.resolveEndpoint;
-  const isReservedPath = baseOperations.isReservedPath;
-  const sendManaged = baseOperations.sendManaged;
-
-  return {
-    async mkdir(directory: string): Promise<void> {
-      if (transport.isNamespace(directory) || (isReservedPath && await isReservedPath(directory))) return;
-      await mkdir(directory);
-    },
-    async writeFile(absolutePath: string, content: string | Uint8Array): Promise<void> {
-      if (transport.isEndpoint(absolutePath)) {
-        const resolved = typeof resolveEndpoint === "function" ? await resolveEndpoint(absolutePath) : null;
-        if (!isManagedEndpoint(resolved)) {
-          throw new SocketWriteError(
-            "unmanaged_endpoint",
-            `Refusing to connect to an unmanaged IPC endpoint: ${absolutePath}`,
-          );
-        }
-
-        assertSender(senderId);
-        if (resolved.isBroadcast) {
-          const expectedParent = resolved.parentId;
-          const normExpected = (expectedParent === "Main" || expectedParent === "main") ? "main" : expectedParent;
-          const normSender = (senderId === "Main" || senderId === "main") ? "main" : senderId;
-          if (normSender !== normExpected) {
-            throw new SocketWriteError(
-              "invalid_target",
-              "invalid_target: Sender is not the parent of this broadcast endpoint.",
-            );
-          }
-        }
-
-        // The caller's text is content, never a transport frame. The host
-        // constructs one sender envelope even for multiline, JSON-looking or
-        // scalar-looking text.
-        const { frame } = managedFrame({ senderId, content });
-        if (typeof sendManaged === "function") {
-          await sendManaged(resolved, absolutePath, frame);
-        } else {
-          await writeSocket(absolutePath, frame);
-        }
-        return;
-      }
-      if (isReservedPath && await isReservedPath(absolutePath)) {
-        throw new SocketWriteError(
-          "ipc_directory_reserved",
-          "IPC directories cannot contain files written by write.",
-        );
-      }
-      await writeFile(absolutePath, content);
-    },
-  };
 }
 
 // Keep the platform contract available to typed callers without requiring them
