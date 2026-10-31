@@ -5,8 +5,8 @@
     "id": "~typesafe/jev-latest"
   },
   "instructions": {
-    "role": "Select the role whose responsibility and authority match the final deliverable requested in delegated_assignment. Use the complete task, including its scope, constraints, and acceptance conditions. The criteria contain the candidate role instructions. Generic startup instructions and available tools describe the environment, not permission to expand the assignment. Investigation or validation performed as part of an authorized change does not turn it into a research-only or review-only task. Select a role only; do not select a model or thinking level.",
-    "model": "Select the model best suited to complete delegated_assignment under selected_role. Use the supplied model Preferences as comparative evidence and prioritize the concrete deliverable and its quality requirements. The role is already selected and must not be changed. A model is not permanently associated with a role. Generic startup text, available tools, role labels, and prompt length must not substitute for the actual work. Do not invent missing capability or price differences, and do not predict task difficulty or select thinking."
+    "role": "Select the role whose responsibility and authority match the final deliverable requested in delegated_assignment. Use the complete task, including its scope, constraints, and acceptance conditions. The criteria contain the candidate role instructions. Generic startup instructions and available tools describe the environment. Investigation or validation performed as part of an authorized change does not turn it into a research-only or review-only task. ",
+    "model": "Select the model best suited to complete `delegated_assignment` under `selected_role`, according to the supplied model Preferences. Prioritize the concrete deliverable and its quality requirements. Generic startup text, available tools, role labels, and prompt length must not substitute for the actual work."
   },
   "roles": [
     {
@@ -77,21 +77,21 @@
   "models": [
     {
       "id": "gemini",
-      "provider": "antigravity",
+      "provider": "magpie",
       "model": "gemini-3.8-flash",
-      "preference": "# Evidence basis\nThese preferences summarize this user's prior observations about the Gemini candidate relative to the DeepSeek candidate. They are local routing evidence, not universal benchmark claims.\n\n# Observed strengths\nExceptional at natural-language explanation, broad repository reading, architectural diagnosis, and discovering subtle issues across interrelated components. Prefer when successful delivery depends primarily on accurate interpretation, finding relevant problems, synthesizing evidence, or authoring clear explanatory writing. This includes authoring, restructuring, or refining technical documentation, not only read-only research.\n\n# Relative limitations and tradeoffs\nThe user has found DeepSeek more reliable at concrete code implementation and bug repair. When correctness of actual code changes or adhering to strict implementation constraints is the central requirement, prefer DeepSeek's observed implementation advantage over Gemini's prose strength. Gemini's latency and cost are moderate; no comparative price rankings are supplied, so do not invent cost tiers.\n\n# Scope\nThis model is not bound to any role. Evaluate the concrete deliverable and the selected role together; a role label alone does not determine fit."
+      "preference": "# Advantages\nFast, with natural and readable prose, which is preferred by the user in text/documentation writing task. Good at straightforward to moderately complex investigation tasks, identifying possible causes. Also suited to information gathering and implementation within an established framework, especially when given explicit documentation, method guidance, or with sufficient constrains.\n\n# Limits\nComplicated investigation is not suitable. "
     },
     {
       "id": "deepseek",
-      "provider": "deepseek",
-      "model": "deepseek-flash",
-      "preference": "# Evidence basis\nThese preferences summarize this user's prior observations about the DeepSeek candidate relative to the Gemini candidate. They are local routing evidence, not universal benchmark claims.\n\n# Observed strengths\nThe user has found code implementation noticeably more dependable than Gemini's. Prefer when successful delivery depends primarily on making precise code modifications, preserving existing behavior, fixing concrete defects, and carrying a patch through verification. A small, mechanical code edit qualifies; do not require the task to appear mathematically complex or difficult.\n\n# Relative limitations and tradeoffs\nNatural-language prose and documentation synthesis are weaker in this user's experience. When the central deliverable is nuanced explanation, evidence synthesis, issue discovery, or polished prose, prefer the candidate with observed strengths in those areas. Editing a Markdown file is not by itself a code-implementation advantage. No comparative cost or latency evidence is provided.\n\n# Scope\nThis model is not bound to any role. Short result explanations accompanying code changes do not erase its implementation advantage. Evaluate the actual deliverable rather than the role label or prompt length."
+      "provider": "magpie",
+      "model": "auto/deepseek-v4.1-flash",
+      "preference": "# Advantages\nFast, broadly applicable to all task types. Useful for code implementation when documentation or constraints are incomplete.\n\n# Limits\nProse is not natural and readable for human. "
     },
     {
       "id": "sol",
-      "provider": "openai-codex",
+      "provider": "magpie",
       "model": "gpt-6.1-sol",
-      "preference": "Prefer for careful reasoning, correctness analysis, and checking complex claims against evidence. This is a user routing preference, not benchmark evidence. No comparative price or latency evidence is supplied. This Preference is shared across roles; model eligibility and thinking levels are defined separately in each role's candidate pool."
+      "preference": "# Advantages\nStrongest overall capability among the configured models. Well suited to substantial reasoning, difficult correctness questions, and rigorous independent review.\n\n# Limits\nProne to defensive programming and overengineering: unnecessary checks and complexity can outweigh their value on straightforward tasks."
     }
   ]
 }
