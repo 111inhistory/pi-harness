@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { childContext, childPromptBlocks, composeAssignment, continuationControlPrompt, formatPeerMessage } from '../../src/subagent/prompt.ts';
-import { promptString } from '../../src/prompt-text.mjs';
+import { promptString } from '../../src/prompt-text.ts';
 
 test('routing and execution preserve assignment context bytes', () => {
   assert.equal(composeAssignment('TASK', ' \n\t'), 'TASK');

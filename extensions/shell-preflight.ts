@@ -4,10 +4,16 @@ import {
   getAgentDir,
   getPowerShellConfig,
   getShellConfig,
+  type ExtensionAPI,
+  type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { checkShellSyntax } from "../src/shell-preflight.mjs";
+import { checkShellSyntax, type ShellPreflightResult } from "../src/shell-preflight.ts";
 
-function bashConfiguration(ctx, configurationCache) {
+interface ShellConfiguration { executable: string; prefix: string | undefined }
+type ConfigurationCache = Map<string, ShellConfiguration>;
+type PreflightResult = ShellPreflightResult | { ok: false; code: 'preflight_error'; toolName: string; diagnostic: string };
+
+function bashConfiguration(ctx: ExtensionContext, configurationCache: ConfigurationCache): ShellConfiguration {
   const cacheKey = `bash\u0000${ctx.cwd}\u0000${ctx.isProjectTrusted()}`;
   const cached = configurationCache.get(cacheKey);
   if (cached) return cached;
@@ -24,7 +30,7 @@ function bashConfiguration(ctx, configurationCache) {
   return configuration;
 }
 
-function commandConfiguration(toolName, ctx, configurationCache) {
+function commandConfiguration(toolName: string, ctx: ExtensionContext, configurationCache: ConfigurationCache): ShellConfiguration {
   if (toolName === "powershell") {
     const cached = configurationCache.get("powershell");
     if (cached) return cached;
@@ -36,17 +42,18 @@ function commandConfiguration(toolName, ctx, configurationCache) {
   return bashConfiguration(ctx, configurationCache);
 }
 
-function combineCommand(prefix, command) {
+function combineCommand(prefix: string | undefined, command: string): string {
   return prefix ? `${prefix}\n${command}` : command;
 }
 
-function failureReason(result) {
-  const checker = result.executable ?? result.toolName ?? "unknown shell";
+function failureReason(result: Extract<PreflightResult, { ok: false }>): string {
+  const checker = 'executable' in result ? result.executable : result.toolName;
   return `Command not executed: shell preflight failed (${checker}, ${result.code}): ${result.diagnostic}`;
 }
 
-async function preflight(toolName, command, ctx, configurationCache) {
+async function preflight(toolName: string, command: unknown, ctx: ExtensionContext, configurationCache: ConfigurationCache): Promise<PreflightResult> {
   try {
+    if (typeof command !== 'string') throw new TypeError('command must be a string');
     const { executable, prefix } = commandConfiguration(toolName, ctx, configurationCache);
     return checkShellSyntax({
       command: combineCommand(prefix, command),
@@ -63,8 +70,8 @@ async function preflight(toolName, command, ctx, configurationCache) {
   }
 }
 
-export default function shellPreflightExtension(pi) {
-  const configurationCache = new Map();
+export default function shellPreflightExtension(pi: ExtensionAPI): void {
+  const configurationCache: ConfigurationCache = new Map();
 
   pi.on("session_start", () => {
     configurationCache.clear();

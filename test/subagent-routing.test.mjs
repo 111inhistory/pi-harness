@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { SubagentRoutingError, routeSubagent, loadSubagentRoutingConfig } from "../src/subagent-routing.mjs";
+import { SubagentRoutingError, routeSubagent, loadSubagentRoutingConfig } from "../src/subagent/routing.ts";
 
 const CLASSIFIER = { type: "classifier", provider: "openrouter", id: "~typesafe/jev-latest" };
 const GEMINI = { type: "chat", provider: "openrouter", id: "~google/gemini-pro-latest" };

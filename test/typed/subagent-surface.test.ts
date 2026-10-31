@@ -22,7 +22,7 @@ import type {
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
-import { promptText } from "../../src/prompt-text.mjs";
+import { promptText } from "../../src/prompt-text.ts";
 import { DEFAULT_SOCKET_DIR } from "../../src/ipc/socket.ts";
 import type { EndpointResolverResult } from "../../src/ipc/socket.ts";
 import {

@@ -12,27 +12,11 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "@earendil-works/pi-ai";
 
-import { promptText } from "../prompt-text.mjs";
-
-interface CapabilityToolsPrompt {
-  readonly capability: {
-    readonly description: string;
-  };
-  readonly step: {
-    readonly description: string;
-    readonly parameters: {
-      readonly queries: string;
-      readonly refs: string;
-      readonly finish: string;
-    };
-  };
-}
-
-const toolsPrompt: CapabilityToolsPrompt = JSON.parse(promptText("capability-tools.json"));
+import { promptString } from "../prompt-text.ts";
 
 export const CAPABILITY_TOOL_NAME = "capability" as const;
 
-export const CAPABILITY_TOOL_DESCRIPTION: string = toolsPrompt.capability.description;
+export const CAPABILITY_TOOL_DESCRIPTION: string = promptString('capability-tools.json', 'capability', 'description');
 
 /**
  * Model-visible schema of the public tool. Empty on purpose: the request is the
@@ -55,16 +39,16 @@ export const CAPABILITY_STEP_PARAMETERS = Type.Object(
   {
     queries: Type.Optional(Type.Array(Type.String(), {
       default: [],
-      description: toolsPrompt.step.parameters.queries,
+      description: promptString('capability-tools.json', 'step', 'parameters', 'queries'),
     })),
     refs: Type.Optional(Type.Array(Type.String(), {
       default: [],
-      description: toolsPrompt.step.parameters.refs,
+      description: promptString('capability-tools.json', 'step', 'parameters', 'refs'),
     })),
     finish: Type.Optional(
       Type.Boolean({
         default: false,
-        description: toolsPrompt.step.parameters.finish,
+        description: promptString('capability-tools.json', 'step', 'parameters', 'finish'),
       }),
     ),
   },

@@ -1,13 +1,6 @@
-import { promptString, promptText } from '../prompt-text.mjs';
+import { promptString } from '../prompt-text.ts';
 
-const parsed: unknown = JSON.parse(promptText('subagent-turns.json'));
-if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new TypeError('subagent-turns.json must contain an object.');
-const text: Record<string, unknown> = Object.fromEntries(Object.entries(parsed));
-function field(name: string): string {
-  const value = text[name];
-  if (typeof value !== 'string') throw new TypeError(`subagent-turns.json must define string ${name}.`);
-  return value;
-}
+const field = (name: string): string => promptString('subagent-turns.json', name);
 const turns = { batchContext: field('batchContext'), task: field('task'), messageFrom: field('messageFrom'),
   originalAssignment: field('originalAssignment'), restatement: field('restatement'), control: field('control') };
 const context: string = promptString('subagent-turns.json', 'context');

@@ -1,6 +1,6 @@
 /** Project durable discovery records into permission-filtered system sections. */
 import { discoveryRecords, type CapabilityHit, type DiscoveryMemory } from './discovery-record.ts';
-import { promptString } from '../prompt-text.mjs';
+import { promptString } from '../prompt-text.ts';
 
 const memoryHeader: string = promptString('capability-policy.json', 'memoryHeader');
 export const CAPABILITY_SECTION = 'capabilities';

@@ -5,9 +5,9 @@ import { createCodemodeExtension, type ExtensionAPI, type ExtensionToolContext, 
 import { CodemodeSandbox, parseCodemodeSource, renderToolSample, type CodemodeTool, type CodemodeJsonSchema, toCodemodeIdentifier } from '@earendil-works/pi-codemode';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { ClassifierContext, ImagesContext, ModelType, Usage } from '@earendil-works/pi-ai';
-import { promptText } from '../prompt-text.mjs';
+import { promptString } from '../prompt-text.ts';
 
-const text = JSON.parse(promptText('native-discovery.json'));
+const codemodeScope = promptString('native-discovery.json', 'codemodeScope');
 
 const STORE = 'codemode-store';
 let workers = 0;
@@ -144,7 +144,7 @@ function modelGlobals(ctx: ExtensionToolContext, addUsage: (usage: Usage | undef
 }
 
 function scopeDescription(description: string): string {
-  return description.replace(/^.*searchTools.*$/gm, () => text.codemodeScope);
+  return description.replace(/^.*searchTools.*$/gm, () => codemodeScope);
 }
 
 /**

@@ -18,7 +18,19 @@ if ($errors.Count -gt 0) {
 }
 `;
 
-const SHELL_NAMES = new Map([
+type ShellType = 'bash' | 'sh' | 'dash' | 'ash' | 'ksh' | 'zsh' | 'fish' | 'powershell';
+export type ShellPreflightResult = {
+  readonly shellType: ShellType | null;
+  readonly executable: string;
+} & ({ readonly ok: true; readonly code: 'ok'; readonly diagnostic: '' } | {
+  readonly ok: false;
+  readonly code: 'unsupported_shell' | 'checker_timeout' | 'checker_unavailable' | 'checker_failed' | 'syntax_error';
+  readonly diagnostic: string;
+});
+type CheckerOutcome = Omit<Extract<ShellPreflightResult, { ok: false }>, 'shellType' | 'executable'>
+  | Omit<Extract<ShellPreflightResult, { ok: true }>, 'shellType' | 'executable'>;
+
+const SHELL_NAMES = new Map<string, ShellType>([
   ["bash", "bash"],
   ["sh", "sh"],
   ["dash", "dash"],
@@ -31,14 +43,14 @@ const SHELL_NAMES = new Map([
   ["powershell", "powershell"],
 ]);
 
-export function detectShellType(executable) {
+export function detectShellType(executable: unknown): ShellType | null {
   if (typeof executable !== "string" || executable.length === 0) return null;
 
   const filename = executable.split(/[\\/]/).at(-1)?.toLowerCase().replace(/\.exe$/, "");
   return filename ? (SHELL_NAMES.get(filename) ?? null) : null;
 }
 
-function syntaxCheckArgs(shellType) {
+function syntaxCheckArgs(shellType: ShellType | null): string[] | null {
   switch (shellType) {
     case "bash":
     case "sh":
@@ -57,7 +69,7 @@ function syntaxCheckArgs(shellType) {
   }
 }
 
-function diagnosticText(stderr, stdout, exitCode) {
+function diagnosticText(stderr: string, stdout: string, exitCode: number | null): string {
   const diagnostic = (stderr || stdout).trim();
   return diagnostic || `syntax checker exited with code ${exitCode ?? "unknown"}`;
 }
@@ -67,7 +79,7 @@ export async function checkShellSyntax({
   executable,
   cwd = process.cwd(),
   timeoutMs = DEFAULT_TIMEOUT_MS,
-}) {
+}: { command: string; executable: string; cwd?: string; timeoutMs?: number }): Promise<ShellPreflightResult> {
   if (typeof command !== "string") {
     throw new TypeError("command must be a string");
   }
@@ -84,7 +96,7 @@ export async function checkShellSyntax({
     };
   }
 
-  return new Promise((resolve) => {
+  return new Promise<ShellPreflightResult>((resolve) => {
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -99,18 +111,18 @@ export async function checkShellSyntax({
 
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
+    child.stdout.on("data", (chunk: string) => {
       if (stdout.length < MAX_DIAGNOSTIC_CHARS) {
         stdout += chunk.slice(0, MAX_DIAGNOSTIC_CHARS - stdout.length);
       }
     });
-    child.stderr.on("data", (chunk) => {
+    child.stderr.on("data", (chunk: string) => {
       if (stderr.length < MAX_DIAGNOSTIC_CHARS) {
         stderr += chunk.slice(0, MAX_DIAGNOSTIC_CHARS - stderr.length);
       }
     });
 
-    const finish = (result) => {
+    const finish = (result: CheckerOutcome): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { checkShellSyntax, detectShellType } from "../src/shell-preflight.mjs";
+import { checkShellSyntax, detectShellType } from "../src/shell-preflight.ts";
 
 async function findExecutable(names) {
   const suffixes = process.platform === "win32" ? [".exe", ".cmd", ""] : [""];

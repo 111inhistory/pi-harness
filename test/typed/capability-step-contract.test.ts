@@ -3,7 +3,7 @@ import test from "node:test";
 
 import type { TSchema } from "@earendil-works/pi-ai";
 
-import { promptText } from "../../src/prompt-text.mjs";
+import { promptText } from "../../src/prompt-text.ts";
 import {
   CAPABILITY_PARAMETERS,
   CAPABILITY_STEP_PARAMETERS,

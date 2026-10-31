@@ -1,17 +1,11 @@
-import crypto from "node:crypto";
 import path from "node:path";
 
 import type { IpcPlatform } from "./platform.ts";
 
-const PIPE_ROOT = "\\\\.\\pipe\\";
+import { PIPE_ROOT, pipePath } from './address.ts';
 
 export function isWindowsPipe(address: unknown): address is string {
   return typeof address === "string" && address.toLowerCase().startsWith(PIPE_ROOT.toLowerCase());
-}
-
-function pipePath(root: string, name: string): string {
-  const namespace = crypto.createHash("sha256").update(path.win32.resolve(root).toLowerCase()).digest("hex").slice(0, 12);
-  return `${PIPE_ROOT}pi-harness-${namespace}-${name}.sock`;
 }
 
 export const windowsIpc: IpcPlatform = {

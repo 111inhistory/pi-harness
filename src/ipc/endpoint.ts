@@ -11,7 +11,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
-import os from "node:os";
+import { defaultSocketRoot, effectiveUserId } from "./address.ts";
 import path from "node:path";
 
 export type EndpointKind = "missing" | "socket" | "symlink" | "file" | "directory" | "other";
@@ -82,36 +82,6 @@ export class IpcOwnershipError extends Error {
     this.code = code;
     this.detail = detail;
   }
-}
-
-export function effectiveUserId(): number | null {
-  if (process.platform === "win32") return null;
-  if (typeof process.geteuid === "function") return process.geteuid();
-  if (typeof process.getuid === "function") return process.getuid();
-  return null;
-}
-
-/**
- * Default root is private to the effective system user. The explicit
- * environment override is preserved so operators can still point at a test or
- * deployment directory. Windows keeps the existing user temp root because its
- * endpoints live in the kernel pipe namespace.
- */
-export function defaultSocketRoot({
-  platform = process.platform,
-  env = process.env,
-  tmpdir = os.tmpdir(),
-  userId = effectiveUserId(),
-}: {
-  platform?: NodeJS.Platform;
-  env?: NodeJS.ProcessEnv;
-  tmpdir?: string;
-  userId?: number | null;
-} = {}): string {
-  const override = env.PI_SUBAGENT_SOCKET_DIR;
-  if (typeof override === "string" && override !== "") return override;
-  if (platform === "win32") return path.join(tmpdir, "pi-subagents");
-  return path.join(tmpdir, `pi-subagents-${userId ?? 0}`);
 }
 
 function errorCode(error: unknown): string | undefined {

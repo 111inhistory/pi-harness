@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { hasJobView, jobViewPaths, writeJobView } from "../src/subagent-view.mjs";
+import { hasJobView, jobViewPaths, writeJobView } from "../src/subagent/view.ts";
 
 async function viewsFixture(t) {
   const cwd = await fsp.mkdtemp(path.join(tmpdir(), "pi-views-"));

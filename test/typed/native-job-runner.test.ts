@@ -14,7 +14,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AgentSession, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Api, AssistantMessage, ImageContent, Model, Usage } from "@earendil-works/pi-ai";
 
-import { promptText } from "../../src/prompt-text.mjs";
+import { promptText } from "../../src/prompt-text.ts";
 import { childContext } from "../../src/subagent/prompt.ts";
 import { getAgentSocketPath } from "../../src/ipc/socket.ts";
 import { setCapabilityParent } from "../../src/capability/scope.ts";

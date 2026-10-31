@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { promptText } from '../../src/prompt-text.mjs';
+import { promptText } from '../../src/prompt-text.ts';
 import {
   CAPABILITY_STEP_PARAMETERS,
   CAPABILITY_STEP_TOOL_NAME,

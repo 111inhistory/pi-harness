@@ -109,7 +109,7 @@ async function measureIsolated(filePath, subagentDir) {
     SCRIPT_DIR,
     "../node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js"
   );
-  const subagentStoragePath = resolve(SCRIPT_DIR, "../src/subagent-storage.mjs");
+  const subagentStoragePath = resolve(SCRIPT_DIR, "../src/subagent/storage.ts");
 
   const runnerScript = `
     const { performance } = await import("node:perf_hooks");

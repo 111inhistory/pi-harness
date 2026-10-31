@@ -9,7 +9,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { RootService } from "../../src/subagent/root-service.ts";
-import { SUBAGENT_SESSIONS_DIR } from "../../src/subagent-storage.mjs";
+import { SUBAGENT_SESSIONS_DIR } from "../../src/subagent/storage.ts";
 
 function createHarnessContext(options: {
   cwd: string;

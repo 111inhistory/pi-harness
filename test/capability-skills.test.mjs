@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { discoverSessionSkills } from "../src/capability-skills.mjs";
+import { discoverSessionSkills } from "../src/capability/skills.ts";
 import { createCapabilityBroker } from "../src/capability/broker.ts";
 
 async function workspace(t) {

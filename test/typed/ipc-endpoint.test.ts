@@ -1,3 +1,4 @@
+import { defaultSocketRoot, effectiveUserId } from '../../src/ipc/address.ts';
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -11,8 +12,6 @@ import test from "node:test";
 import {
   IpcOwnershipError,
   createOwnedServer,
-  defaultSocketRoot,
-  effectiveUserId,
   ensurePrivateDirectory,
   ensurePrivateSocketRoot,
   endpointInsideRoot,

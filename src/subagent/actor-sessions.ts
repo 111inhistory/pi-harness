@@ -39,7 +39,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { FileEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
 
-import { SubagentStoreError } from "../subagent-storage.mjs";
+import { SubagentStoreError } from "./storage.ts";
 import { SubagentError } from "./runtime.ts";
 import type { InheritedContext } from "./runtime.ts";
 import type { NativeActorStore, NativeModelRef, NativeRetainedActor } from "./native-types.ts";
@@ -160,16 +160,15 @@ export interface ActorSessionStoreDeps {
   readonly metadata: ActorMetadataSink;
 }
 
-const NO_TOOLS: readonly string[] = Object.freeze([]);
+const NO_TOOLS: readonly string[] = [];
 
 /**
  * The retained Actor descriptors of one root session.
  *
  * `NativeActorStore` is the surface the Job runner depends on; the remaining
  * public methods are the root lifecycle's restore, checkpoint, seal and probe
- * operations. Every stored descriptor is frozen and every array in it is a
- * frozen copy, so a caller cannot change the store's state by keeping or
- * mutating a snapshot.
+ * operations. The runner transfers descriptors to the store and replaces them
+ * when identity changes; readers do not mutate retained descriptors or arrays.
  */
 export class ActorSessionStore implements NativeActorStore {
   readonly #storage: ActorSessionStorage;
@@ -204,9 +203,8 @@ export class ActorSessionStore implements NativeActorStore {
    * actually changed become a patch.
    */
   retain(agentId: string, descriptor: NativeRetainedActor): void {
-    const next = freezeDescriptor(descriptor);
-    this.#retained.set(agentId, next);
-    this.#persistIdentity(agentId, next);
+    this.#retained.set(agentId, descriptor);
+    this.#persistIdentity(agentId, descriptor);
   }
 
   /**
@@ -237,7 +235,7 @@ export class ActorSessionStore implements NativeActorStore {
     const anchor = restoreAnchor(agentId, input.anchor);
     const routed = requireBoolean(agentId, record, "routed");
     const modelRef = identityModelRef(agentId, record, routed);
-    const descriptor = freezeDescriptor({
+    const descriptor: NativeRetainedActor = {
       sessionManager: null,
       sessionFile,
       anchor,
@@ -254,7 +252,7 @@ export class ActorSessionStore implements NativeActorStore {
       excludedTools: actorLoadout(agentId, record, "excludedTools"),
       assignment: nullableText(agentId, record, "assignment"),
       routed,
-    });
+    };
     this.#retained.set(agentId, descriptor);
     // The baseline is the identity exactly as it would be written, so a first
     // checkpoint after a restore does not re-write unchanged fields.
@@ -358,7 +356,7 @@ export class ActorSessionStore implements NativeActorStore {
     // or stale id would fail the next revival, or silently move the checkpoint
     // behind turns that are already in the file.
     if (input.manager.getLeafId() !== input.anchor) return;
-    const next = freezeDescriptor({ ...descriptor, sessionFile: file, anchor: input.anchor });
+    const next = { ...descriptor, sessionFile: file, anchor: input.anchor };
     this.#retained.set(input.agentId, next);
     this.#persistIdentity(input.agentId, next);
     if (!this.#mayPersist()) return;
@@ -382,11 +380,11 @@ export class ActorSessionStore implements NativeActorStore {
     // A live conversation whose entries never reached a file is still the only
     // copy: release nothing, but keep the sealed anchor for the next revival.
     const release = file !== null && existsSync(file);
-    this.#retained.set(agentId, freezeDescriptor({
+    this.#retained.set(agentId, {
       ...descriptor,
       anchor,
       sessionManager: release ? null : descriptor.sessionManager,
-    }));
+    });
   }
 
   /**
@@ -409,7 +407,7 @@ export class ActorSessionStore implements NativeActorStore {
       if (descriptor.assignment === null || descriptor.sessionFile === null) continue;
       const startEntryId = starts.get(agentId) ?? null;
       if (!this.#storage.hasRecordedTurn(descriptor.sessionFile, startEntryId, descriptor.anchor)) continue;
-      this.#retained.set(agentId, freezeDescriptor({ ...descriptor, assignment: null }));
+      this.#retained.set(agentId, { ...descriptor, assignment: null });
     }
   }
 
@@ -456,10 +454,10 @@ export class ActorSessionStore implements NativeActorStore {
   toolScope(agentId: string): ActorToolScope | null {
     const descriptor = this.#retained.get(agentId);
     if (descriptor === undefined) return null;
-    return Object.freeze({
+    return {
       tools: descriptor.tools,
       excludedTools: descriptor.excludedTools ?? NO_TOOLS,
-    });
+    };
   }
 
   #model(modelRef: NativeModelRef | null): Model<Api> | null {
@@ -526,20 +524,6 @@ export class ActorSessionStore implements NativeActorStore {
     }
     return this.#seedLeafId(agentId, seed);
   }
-}
-
-/**
- * The descriptor stored by the map: a frozen copy whose tool arrays cannot be
- * mutated by whoever retained it.
- */
-function freezeDescriptor(descriptor: NativeRetainedActor): NativeRetainedActor {
-  const modelRef = descriptor.modelRef;
-  return Object.freeze({
-    ...descriptor,
-    modelRef: modelRef === null ? null : Object.freeze({ provider: modelRef.provider, id: modelRef.id }),
-    tools: descriptor.tools === null ? null : Object.freeze([...descriptor.tools]),
-    excludedTools: descriptor.excludedTools === null ? null : Object.freeze([...descriptor.excludedTools]),
-  });
 }
 
 /** The JSON-safe identity record this module writes. */

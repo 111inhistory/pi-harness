@@ -8,9 +8,13 @@ import {
 import { discoveryRecords } from './discovery-record.ts';
 import { installCapabilityCodemode } from './codemode.ts';
 import { createCapabilityScopeView } from './scope.ts';
-import { promptText } from '../prompt-text.mjs';
+import { promptString } from '../prompt-text.ts';
 
-const text = JSON.parse(promptText('native-discovery.json'));
+const text = {
+  disabledDescription: promptString('native-discovery.json', 'disabledDescription'),
+  codemodeFallback: promptString('native-discovery.json', 'codemodeFallback'),
+  resourceReadRequirement: promptString('native-discovery.json', 'resourceReadRequirement'),
+};
 
 const DISABLED = new Set(['tool_search', 'list_mcp_resources', 'list_mcp_resource_templates']);
 

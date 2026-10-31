@@ -1,5 +1,5 @@
+import { defaultSocketRoot } from './address.ts';
 import {
-  defaultSocketRoot,
   ensurePrivateSocketRoot,
   type EndpointIdentity,
 } from "./endpoint.ts";

@@ -13,7 +13,7 @@ import { resolveTranscriptTools } from "../../../node_modules/@earendil-works/pi
 import { convertResponsesMessages } from "../../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 
 import { deferred } from "../../../test-support/async.mjs";
-import { promptString } from "../../../src/prompt-text.mjs";
+import { promptString } from "../../../src/prompt-text.ts";
 import { CAPABILITY_STEP_TOOL_NAME } from "../../../src/capability/contracts.ts";
 import type { CapabilityDiscoveryResult, CapabilityStepDetails } from "../../../src/capability/agent.ts";
 import { deliverToActor, type FixtureChat, type ScenarioFixture } from "./subagent-sdk-fixture.ts";

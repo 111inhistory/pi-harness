@@ -7,7 +7,7 @@ import {
   createSubagentRuntime as createRuntime,
 } from "../src/subagent/runtime.ts";
 import { getAgentSocketPath } from "../src/ipc/socket.ts";
-import { foldEvents } from "../src/subagent-storage.mjs";
+import { foldEvents } from "../src/subagent/storage.ts";
 
 const recordedEvents = new WeakMap();
 function createSubagentRuntime(options) {

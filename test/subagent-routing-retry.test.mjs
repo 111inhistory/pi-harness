@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { routeSubagent } from "../src/subagent-routing.mjs";
+import { routeSubagent } from "../src/subagent/routing.ts";
 
 const CLASSIFIER = { type: "classifier", provider: "openrouter", id: "~typesafe/jev-latest" };
 const GEMINI = { type: "chat", provider: "openrouter", id: "~google/gemini-pro-latest" };

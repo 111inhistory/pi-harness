@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
-import { EVENTS, createSubagentStore, foldEvents, withoutEntries, writeJsonlAtomic } from '../src/subagent-storage.mjs';
+import { EVENTS, createSubagentStore, foldEvents, withoutEntries, writeJsonlAtomic } from '../src/subagent/storage.ts';
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'pi-storage-v2-'));
