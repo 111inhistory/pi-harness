@@ -51,6 +51,41 @@ export interface CapabilityStepDetails {
   endReason: CapabilityEndReason | null;
   error?: string;
 }
+/**
+ * One model-facing search candidate. Ranking, availability and the full
+ * namespace body stay in `CapabilityStepDetails`, which keeps every original
+ * member selectable.
+ */
+export interface CapabilityStepCandidate {
+  ref: string;
+  name: string;
+  description: string;
+  kind: CapabilitySearchHit['kind'];
+  /** Skill entry path; reading the body is a separate native `read`. */
+  filePath?: string;
+  toolCount?: number;
+}
+/** One model-facing search: candidates seen for the first time, then refs. */
+export interface CapabilityStepSearchFeedback {
+  query: string;
+  status: CapabilitySearchResult['status'];
+  tools: CapabilityStepCandidate[];
+  mcp: CapabilityStepCandidate[];
+  skills: CapabilityStepCandidate[];
+  /** Ref-only repeats of candidates already returned earlier in this run. */
+  repeatedRefs: string[];
+  missingCapabilities: string[];
+  warnings: string[];
+}
+/** The serialized `capability_step` content; diagnostic `details` differ. */
+export interface CapabilityStepFeedback {
+  selection: CapabilityStepDetails['selection'];
+  searches: CapabilityStepSearchFeedback[];
+  noSelectionCount: number;
+  noSelectionLimit: number;
+  endReason: CapabilityEndReason | null;
+  error?: string;
+}
 export type CapabilityStepTool = ToolDefinition<typeof CAPABILITY_STEP_PARAMETERS, CapabilityStepDetails>;
 export type CapabilityBudget = ReturnType<typeof createJobBudget>;
 export interface CapabilityRunSession {
@@ -115,23 +150,53 @@ function stop(run: Run, reason: CapabilityEndReason, message: string): void {
 function budgetMessage(terminal: BudgetTerminalView): string {
   return terminal.error?.code === 'job_expired' ? 'Capability discovery time limit expired.' : 'Capability discovery budget was exhausted.';
 }
-function recordHits(run: Run, result: CapabilitySearchResult): number {
-  let count = 0;
+/** Keep every original candidate for selection; `fresh` marks this run's first sighting. */
+function recordHits(run: Run, result: CapabilitySearchResult): { total: number; fresh: Set<string> } {
+  const fresh = new Set<string>();
+  let total = 0;
   for (const group of ['tools', 'mcp', 'skills'] as const) {
     for (const hit of result[group]) {
+      total += 1;
+      if (!run.hits.has(hit.ref)) fresh.add(hit.ref);
       run.hits.set(hit.ref, { group, hit: structuredClone(hit) });
-      count += 1;
     }
   }
-  return count;
+  return { total, fresh };
+}
+function compactCandidate(hit: CapabilitySearchHit): CapabilityStepCandidate {
+  return { ref: hit.ref, name: hit.name, description: hit.description, kind: hit.kind,
+    ...(hit.filePath === undefined ? {} : { filePath: hit.filePath }),
+    ...(hit.toolCount === undefined ? {} : { toolCount: hit.toolCount }) };
+}
+function compactSearch(result: CapabilitySearchResult & { query: string }, fresh: ReadonlySet<string>): CapabilityStepSearchFeedback {
+  const feedback: CapabilityStepSearchFeedback = { query: result.query, status: result.status, tools: [], mcp: [], skills: [],
+    repeatedRefs: [], missingCapabilities: [...result.missingCapabilities], warnings: [...result.warnings] };
+  for (const group of ['tools', 'mcp', 'skills'] as const) {
+    for (const hit of result[group]) {
+      if (fresh.has(hit.ref)) feedback[group].push(compactCandidate(hit));
+      else feedback.repeatedRefs.push(hit.ref);
+    }
+  }
+  return feedback;
+}
+interface StepSearches {
+  details: CapabilityStepDetails['searches'];
+  content: CapabilityStepSearchFeedback[];
+}
+function noSearches(): StepSearches {
+  return { details: [], content: [] };
 }
 function emptySelection(): CapabilityStepDetails['selection'] {
   return { accepted: [], alreadySelected: [], rejected: [] };
 }
-function feedback(run: Run, selection: CapabilityStepDetails['selection'], searches: CapabilityStepDetails['searches'] = [], error?: string): AgentToolResult<CapabilityStepDetails> {
-  const details: CapabilityStepDetails = { selection, searches, noSelectionCount: run.noSelectionCount,
-    noSelectionLimit: CAPABILITY_NO_SELECTION_LIMIT, endReason: run.end?.reason ?? null, ...(error === undefined ? {} : { error }) };
-  return { content: [{ type: 'text', text: JSON.stringify(details) }], details,
+function stepFields(run: Run, selection: CapabilityStepDetails['selection'], error?: string): Omit<CapabilityStepDetails, 'searches'> {
+  return { selection, noSelectionCount: run.noSelectionCount, noSelectionLimit: CAPABILITY_NO_SELECTION_LIMIT,
+    endReason: run.end?.reason ?? null, ...(error === undefined ? {} : { error }) };
+}
+function feedback(run: Run, selection: CapabilityStepDetails['selection'], searches: StepSearches = noSearches(), error?: string): AgentToolResult<CapabilityStepDetails> {
+  const details: CapabilityStepDetails = { ...stepFields(run, selection, error), searches: searches.details };
+  const content: CapabilityStepFeedback = { ...stepFields(run, selection, error), searches: searches.content };
+  return { content: [{ type: 'text', text: JSON.stringify(content) }], details,
     ...(error === undefined ? {} : { isError: true }), ...(run.end === null ? {} : { terminate: true }) };
 }
 function countSelection(run: Run, count: number): void {
@@ -145,17 +210,17 @@ function reachedLimit(run: Run): boolean {
 function rejectedStep(run: Run, selection: CapabilityStepDetails['selection'], error: string): AgentToolResult<CapabilityStepDetails> {
   countSelection(run, 0);
   reachedLimit(run);
-  return feedback(run, selection, [], error);
+  return feedback(run, selection, noSearches(), error);
 }
 function stepTool(run: Run): CapabilityStepTool {
   return {
     name: CAPABILITY_STEP_TOOL_NAME, label: stepLabel, description: stepDescription,
     parameters: CAPABILITY_STEP_PARAMETERS, executionMode: 'sequential',
     async execute(_id, params, signal) {
-      if (run.end !== null) return feedback(run, emptySelection(), [], 'This discovery run has ended.');
+      if (run.end !== null) return feedback(run, emptySelection(), noSearches(), 'This discovery run has ended.');
       if (run.signal?.aborted || signal?.aborted) {
         stop(run, 'cancelled', 'Capability discovery was cancelled.');
-        return feedback(run, emptySelection(), [], run.end!.message);
+        return feedback(run, emptySelection(), noSearches(), run.end!.message);
       }
       const queries = (params.queries ?? []).map(query => query.trim());
       const refs = [...new Set((params.refs ?? []).map(ref => ref.trim()).filter(Boolean))];
@@ -185,20 +250,27 @@ function stepTool(run: Run): CapabilityStepTool {
       const searchSignal = signal ?? run.signal;
       const outcomes = await Promise.allSettled(queries.map(query => Promise.resolve().then(() => run.broker.search({ query, src: 'local', cwd: run.cwd,
         ...(searchSignal === undefined ? {} : { signal: searchSignal }) }))));
-      const searches: CapabilityStepDetails['searches'] = [];
+      const searches = noSearches();
       for (const [index, outcome] of outcomes.entries()) {
         const query = queries[index]!;
         const result: CapabilitySearchResult = outcome.status === 'fulfilled' ? outcome.value
           : { status: 'failed', tools: [], mcp: [], skills: [], remote: [], missingCapabilities: [], warnings: [`Search ${JSON.stringify(query)} failed: ${errorMessage(outcome.reason)}`] };
-        searches.push({ ...result, query });
+        const entry = { ...result, query };
+        searches.details.push(entry);
         addWarnings(run, result.warnings);
-        if (result.status === 'failed') continue;
+        if (result.status === 'failed') {
+          searches.content.push({ query, status: result.status, tools: [], mcp: [], skills: [], repeatedRefs: [],
+            missingCapabilities: [...result.missingCapabilities], warnings: [...result.warnings] });
+          continue;
+        }
         run.completedSearches += 1;
-        if (recordHits(run, result) === 0 && !run.emptyQueries.includes(query)) run.emptyQueries.push(query);
+        const recorded = recordHits(run, result);
+        if (recorded.total === 0 && !run.emptyQueries.includes(query)) run.emptyQueries.push(query);
+        searches.content.push(compactSearch(entry, recorded.fresh));
       }
       // Completed queries still count as searched when another query cancels the batch.
       if (run.signal?.aborted || signal?.aborted) stop(run, 'cancelled', 'Capability discovery was cancelled.');
-      const error = searches.every(search => search.status === 'failed') ? 'All queries in this batch failed.' : undefined;
+      const error = searches.details.every(search => search.status === 'failed') ? 'All queries in this batch failed.' : undefined;
       return feedback(run, selection, searches, error);
     },
   };
