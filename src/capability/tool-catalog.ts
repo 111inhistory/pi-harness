@@ -59,14 +59,115 @@ export interface CapabilityInterfaceTool extends CapabilityScopedTool {
   readonly promptGuidelines?: readonly unknown[] | undefined;
 }
 
-/** A selected hit may be a tool or a group of nested hits. */
+/** A selected hit may be a tool, a group of members, or a non-tool identity. */
 export interface SelectedToolHit {
   readonly name?: unknown;
+  readonly ref?: unknown;
+  readonly kind?: unknown;
   readonly tools?: readonly unknown[] | undefined;
+}
+
+/** One refreshed selection plus the members that lost current eligibility. */
+export interface RetainedSelectedTools<TResult> {
+  readonly result: TResult;
+  /** Selected tool names dropped because they are no longer eligible. */
+  readonly dropped: readonly string[];
+  /** Selected tool members before the refresh; skills are not counted. */
+  readonly selected: number;
+  /** Selected tool members kept by the refresh. */
+  readonly retained: number;
+}
+
+/**
+ * The current eligible catalog, optionally narrowed to the tools that are
+ * actually active after activation. Already-active selection semantics are
+ * preserved: a tool that is active may stay published even when it was active
+ * before this call.
+ */
+export interface RetainedSelectionOptions {
+  readonly active?: ReadonlySet<string>;
 }
 
 function isSelectedToolHit(value: unknown): value is SelectedToolHit {
   return typeof value === "object" && value !== null;
+}
+
+function selectedName(hit: SelectedToolHit): string {
+  if (typeof hit.name === "string" && hit.name !== "") return hit.name;
+  return typeof hit.ref === "string" ? hit.ref : "unknown selected tool";
+}
+
+/**
+ * Re-read current eligibility for a completed selection before it is persisted
+ * or activated.
+ *
+ * The search result is a snapshot. A tool can be unregistered, hidden or denied
+ * between the search and publication, so every selected tool member is checked
+ * against one fresh eligible catalog. Group hits lose the members that no longer
+ * qualify and keep a recomputed `toolCount`; a group without members is dropped.
+ * Non-tool identities (for example a server-level ref) and skills are not tool
+ * members and stay untouched.
+ */
+export function retainEligibleSelectedTools<
+  TResult extends {
+    readonly tools: readonly THit[];
+    readonly mcp: readonly THit[];
+  },
+  THit extends SelectedToolHit,
+  TTool extends CapabilityScopedTool,
+>(
+  result: TResult,
+  catalog: TypedToolCatalog<TTool>,
+  options: RetainedSelectionOptions = {},
+): RetainedSelectedTools<TResult> {
+  const eligible = createEligibleToolCatalog(catalog).byName;
+  const active = options.active;
+  const dropped: string[] = [];
+  let selected = 0;
+  let retainedCount = 0;
+  const qualifies = (hit: SelectedToolHit): boolean => {
+    if (typeof hit.name !== "string" || !eligible.has(hit.name)) return false;
+    return active === undefined || active.has(hit.name);
+  };
+  const retainHit = (hit: THit): THit | null => {
+    if (Array.isArray(hit.tools)) {
+      const tools = hit.tools.filter((member) => {
+        selected += 1;
+        if (isSelectedToolHit(member) && qualifies(member)) {
+          retainedCount += 1;
+          return true;
+        }
+        dropped.push(isSelectedToolHit(member) ? selectedName(member) : "unknown selected tool");
+        return false;
+      });
+      if (tools.length === 0) return null;
+      return { ...hit, tools, toolCount: tools.length } as THit;
+    }
+    if (hit.kind !== "tool") return hit;
+    selected += 1;
+    if (qualifies(hit)) {
+      retainedCount += 1;
+      return hit;
+    }
+    dropped.push(selectedName(hit));
+    return null;
+  };
+  return {
+    result: {
+      ...result,
+      tools: result.tools.flatMap((hit) => {
+        const kept = retainHit(hit);
+        return kept === null ? [] : [kept];
+      }),
+      mcp: result.mcp.flatMap((hit) => {
+        const kept = retainHit(hit);
+        return kept === null ? [] : [kept];
+      }),
+    },
+    dropped,
+    selected,
+    retained: retainedCount,
+  };
 }
 
 function enrichSelectedHit<THit extends SelectedToolHit>(

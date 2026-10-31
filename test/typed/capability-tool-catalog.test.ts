@@ -16,6 +16,7 @@ import { CAPABILITY_DISCOVERY_RECORD } from "../../src/capability/discovery-reco
 import { capabilityAllowsTool, setCapabilityParent } from "../../src/capability/scope.ts";
 import {
   createEligibleToolCatalog,
+  retainEligibleSelectedTools,
   supplySelectedToolInterfaces,
   type CapabilityInterfaceTool,
   type TypedToolCatalog,
@@ -42,8 +43,11 @@ interface TestTool extends CapabilityInterfaceTool {
 
 interface SelectionHit {
   readonly name?: string;
+  readonly ref?: string;
   readonly kind?: string;
   readonly description?: string;
+  readonly toolCount?: number;
+  readonly server?: string;
   readonly parameters?: TestSchema;
   readonly outputSchema?: TestSchema;
   readonly promptGuidelines?: readonly string[];
@@ -54,6 +58,7 @@ interface SelectionResult {
   readonly status: string;
   readonly tools: readonly SelectionHit[];
   readonly mcp: readonly SelectionHit[];
+  readonly skills: readonly { readonly ref: string; readonly name?: string }[];
   readonly warnings: readonly string[];
 }
 
@@ -236,6 +241,7 @@ test("selectedInterfaces supply enriches qualified metadata, preserves groups, a
       },
     ],
     mcp: [{ name: "server", kind: "server", tools: [{ name: "read", kind: "tool" }] }],
+    skills: [],
     warnings: ["keep"],
   };
 
@@ -254,6 +260,66 @@ test("selectedInterfaces supply enriches qualified metadata, preserves groups, a
   assert.equal(supplied.tools[3]?.tools?.[0]?.parameters, OBJECT_SCHEMA, "nested group hits are enriched");
   assert.equal(supplied.tools[3]?.tools?.[1]?.parameters, undefined);
   assert.equal(supplied.mcp[0]?.tools?.[0]?.parameters, OBJECT_SCHEMA);
+});
+
+test("a completed selection is refreshed against the current eligible catalog before publication", () => {
+  const read = interfaceTool("read");
+  const denied = interfaceTool("denied");
+  const root = fixture([read, denied]);
+  const child = fixture([read, denied]);
+  setCapabilityParent(child.catalog, root.catalog, ["denied"]);
+
+  const result: SelectionResult = {
+    status: "ok",
+    tools: [
+      { ref: "tool://read", name: "read", kind: "tool" },
+      { ref: "tool://denied", name: "denied", kind: "tool" },
+      { ref: "tool://missing", name: "missing", kind: "tool" },
+      {
+        ref: "namespace://mixed",
+        name: "mixed",
+        kind: "namespace",
+        toolCount: 3,
+        tools: [
+          { ref: "tool://read", name: "read", kind: "tool", description: "Read" },
+          { ref: "tool://denied", name: "denied", kind: "tool", description: "Denied" },
+          { ref: "tool://missing", name: "missing", kind: "tool", description: "Missing" },
+        ],
+      },
+      {
+        ref: "namespace://lost",
+        name: "lost",
+        kind: "namespace",
+        toolCount: 2,
+        tools: [
+          { ref: "tool://denied", name: "denied", kind: "tool" },
+          { ref: "tool://hidden", name: "hidden", kind: "tool" },
+        ],
+      },
+      { ref: "mcp://server", name: "server", kind: "mcp", server: "server" },
+    ],
+    mcp: [],
+    skills: [{ ref: "/skills/keep/SKILL.md", name: "keep" }],
+    warnings: ["search diagnostic"],
+  };
+
+  const retained = retainEligibleSelectedTools(result, child.catalog);
+  assert.deepEqual(retained.result.tools.map((hit) => hit.ref), ["tool://read", "namespace://mixed", "mcp://server"]);
+  assert.equal(retained.result.tools[1]?.toolCount, 1, "the group count reflects only retained members");
+  assert.deepEqual(retained.result.tools[1]?.tools?.map((hit) => hit.name), ["read"]);
+  assert.deepEqual(retained.dropped, ["denied", "missing", "denied", "missing", "denied", "hidden"]);
+  assert.equal(retained.selected, 8, "single tools and group members are all considered");
+  assert.equal(retained.retained, 2, "only eligible members count as retained");
+  assert.deepEqual(retained.result.skills, result.skills, "successful skills are independent of tool eligibility");
+  assert.deepEqual(retained.result.warnings, ["search diagnostic"]);
+  assert.equal(result.tools.length, 6, "the earlier search snapshot is never mutated");
+
+  const active = retainEligibleSelectedTools(result, child.catalog, { active: new Set(["read"]) });
+  assert.deepEqual(active.result.tools.map((hit) => hit.ref), ["tool://read", "namespace://mixed", "mcp://server"]);
+  const inactive = retainEligibleSelectedTools(result, child.catalog, { active: new Set() });
+  assert.deepEqual(inactive.result.tools.map((hit) => hit.ref), ["mcp://server"], "server identities are not activatable members");
+  assert.equal(inactive.retained, 0);
+  assert.equal(inactive.selected, 8);
 });
 
 test("the real context_with_system handler resolves one view instead of one per tool", () => {

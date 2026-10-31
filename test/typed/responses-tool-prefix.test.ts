@@ -140,17 +140,29 @@ test("Capability emits only new tool interfaces, preserving existing namespace g
   assert.deepEqual(result, original, "full details remain unchanged");
 });
 
-test("compact only actually declared interfaces; retain guidance, deferred refs and errors", () => {
+test("compact only when a native declaration or Codemode query path supplies the interface; retain guidance, count and errors", () => {
   const group = { ref: "namespace://subagent", name: "subagent", kind: "namespace", status: "available", description: "generic", instructions: "Task guidance", toolCount: 2, tools: [tool("create"), tool("list")] };
   const deferred = { ...group, ref: "namespace://deferred", tools: [tool("deferred")] };
   const result = { status: "partial", tools: [group, deferred], mcp: [], skills: [{ ref: "/skills/rules/SKILL.md", filePath: "/skills/rules/SKILL.md" }], warnings: ["warning"], missingCapabilities: ["gap"] };
   const original = structuredClone(result);
-  const compact = capabilityModelResult(result, new Set(["create", "list"]));
+  const compact = capabilityModelResult(result, { declared: new Set(["create", "list"]) });
   assert.equal(compact.tools[0]!.tools, undefined);
   assert.equal(compact.tools[0]!.description, undefined);
   assert.equal(compact.tools[0]!.instructions, "Task guidance");
-  assert.match(String(compact.tools[0]!.interface), /tool loadout/);
-  assert.deepEqual(compact.tools[1], deferred);
+  assert.equal(compact.tools[0]!.ref, "namespace://subagent", "the stable group ref survives compaction");
+  assert.equal(compact.tools[0]!.name, "subagent", "the stable group name survives compaction");
+  assert.equal(compact.tools[0]!.toolCount, 2, "the selected member count survives compaction");
+  assert.equal(compact.tools[0]!.status, undefined, "availability is implied and not repeated");
+  assert.match(String(compact.tools[0]!.interface), /tool declaration/);
+  assert.deepEqual(compact.tools[1], deferred, "a hit without a supplied interface stays fully expanded");
+
+  const queried = capabilityModelResult(result, { declared: new Set(), queryable: new Set(["create", "list"]) });
+  assert.equal(queried.tools[0]!.tools, undefined);
+  assert.match(String(queried.tools[0]!.interface), /describeTool/);
+  assert.deepEqual(queried.tools[1], deferred, "an inactive or undiscoverable member keeps its definition");
+
+  const fallback = capabilityModelResult(result, { declared: new Set() });
+  assert.deepEqual(fallback.tools, result.tools, "without either interface source the full definitions remain");
   for (const field of ["skills", "warnings", "missingCapabilities", "status"] as const) assert.deepEqual(compact[field], result[field]);
   assert.deepEqual(result, original);
 });

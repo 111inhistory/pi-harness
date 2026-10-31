@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -20,10 +20,11 @@ import capabilityExtension from "../../extensions/capability.ts";
 import { CAPABILITY_STEP_TOOL_NAME } from "../../src/capability/contracts.ts";
 import type { CapabilityStepDetails } from "../../src/capability/agent.ts";
 import { discoveryRecords, type StoredDiscovery } from "../../src/capability/discovery-record.ts";
+import { setCapabilityParent } from "../../src/capability/scope.ts";
 import type { CapabilityPublicResult } from "../../src/capability/result.ts";
 
 type ToolResultMessage = Extract<Message, { role: "toolResult" }>;
-type ScenarioMode = "provider_error" | "cancelled";
+type ScenarioMode = "provider_error" | "cancelled" | "denied_all" | "denied_mixed" | "denied_skill";
 
 interface ObservedOutcome {
   readonly isError: boolean;
@@ -40,6 +41,7 @@ interface Scenario {
   readonly outcome: ObservedOutcome;
   readonly persisted: readonly StoredDiscovery[];
   readonly activeTools: readonly string[];
+  readonly rootRequests: readonly { readonly messages: readonly Message[] }[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -118,6 +120,15 @@ async function runScenario(mode: ScenarioMode): Promise<Scenario> {
   const cwd = await mkdtemp(path.join(tmpdir(), "pi-capability-partial-"));
   const agentDir = path.join(cwd, "agent");
   await mkdir(agentDir, { recursive: true });
+  if (mode === "denied_skill") {
+    const skillDir = path.join(agentDir, "skills", "survivor");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(
+      path.join(skillDir, "SKILL.md"),
+      "---\nname: survivor\ndescription: Survives tool eligibility loss\n---\n# Survivor skill\n",
+      "utf8",
+    );
+  }
   const originalFetch = globalThis.fetch;
   const originalAgentDir = process.env["PI_CODING_AGENT_DIR"];
   process.env["PI_CODING_AGENT_DIR"] = agentDir;
@@ -129,6 +140,7 @@ async function runScenario(mode: ScenarioMode): Promise<Scenario> {
   let nestedOutcome: ObservedOutcome | undefined;
   let rootCalls = 0;
   let internalCalls = 0;
+  const rootRequests: { messages: readonly Message[] }[] = [];
   try {
     const runtime = await ModelRuntime.create({
       authPath: path.join(cwd, "auth.json"),
@@ -153,7 +165,10 @@ async function runScenario(mode: ScenarioMode): Promise<Scenario> {
         if (internalCalls === 1) {
           const message = assistantMessage(
             model,
-            toolCall("internal-search", CAPABILITY_STEP_TOOL_NAME, { queries: ["fixture_partial"], refs: [] }),
+            toolCall("internal-search", CAPABILITY_STEP_TOOL_NAME, {
+              queries: [mode === "denied_mixed" ? "fixture" : "fixture_partial"],
+              refs: [],
+            }),
             "toolUse",
           );
           stream.push({ type: "done", reason: "toolUse", message });
@@ -167,11 +182,14 @@ async function runScenario(mode: ScenarioMode): Promise<Scenario> {
             firstSearch.tools.some((hit) => hit.ref === "tool://fixture_partial"),
             "the selected fixture must be returned by the local search",
           );
+          const refs = mode === "denied_mixed"
+            ? ["tool://fixture_partial", "tool://fixture_survivor"]
+            : ["tool://fixture_partial"];
           const message = assistantMessage(
             model,
             toolCall("internal-continue", CAPABILITY_STEP_TOOL_NAME, {
-              queries: ["second_pass"],
-              refs: ["tool://fixture_partial"],
+              queries: [mode === "denied_skill" ? "survivor" : "second_pass"],
+              refs,
             }),
             "toolUse",
           );
@@ -190,12 +208,35 @@ async function runScenario(mode: ScenarioMode): Promise<Scenario> {
         assert.deepEqual(discoveryRecords(session.sessionManager.getBranch()), [],
           "internal selection must not persist before outer publication");
         const continuedSearch = stepDetails(toolResult(context.messages, CAPABILITY_STEP_TOOL_NAME)).searches[0];
-        assert.equal(continuedSearch?.query, "second_pass");
+        assert.equal(continuedSearch?.query, mode === "denied_skill" ? "survivor" : "second_pass");
 
         if (mode === "cancelled") {
           controller.abort();
           const message = assistantMessage(model, [{ type: "text", text: "after caller abort" }], "stop");
           stream.push({ type: "done", reason: "stop", message });
+          stream.end();
+          return stream;
+        }
+
+        if (mode !== "provider_error") {
+          // Lose current eligibility between the search snapshot and publication.
+          setCapabilityParent(pi, null, ["fixture_partial"]);
+          const skillRef = mode === "denied_skill"
+            ? continuedSearch?.skills[0]?.ref
+            : undefined;
+          if (mode === "denied_skill") {
+            assert.ok(skillRef, "the survival skill must be searchable before selection");
+          }
+          const message = assistantMessage(
+            model,
+            toolCall("internal-finish", CAPABILITY_STEP_TOOL_NAME, {
+              queries: [],
+              refs: skillRef === undefined ? [] : [skillRef],
+              finish: true,
+            }),
+            "toolUse",
+          );
+          stream.push({ type: "done", reason: "toolUse", message });
           stream.end();
           return stream;
         }
@@ -207,6 +248,7 @@ async function runScenario(mode: ScenarioMode): Promise<Scenario> {
       }
 
       rootCalls += 1;
+      rootRequests.push({ messages: structuredClone(context.messages) });
       const message = rootCalls === 1
         ? assistantMessage(
             model,
@@ -229,7 +271,7 @@ async function runScenario(mode: ScenarioMode): Promise<Scenario> {
       agentDir,
       settingsManager,
       noExtensions: true,
-      noSkills: true,
+      noSkills: mode !== "denied_skill",
       noThemes: true,
       noPromptTemplates: true,
       noContextFiles: true,
@@ -258,6 +300,18 @@ async function runScenario(mode: ScenarioMode): Promise<Scenario> {
               return { content: [{ type: "text", text: "unexpected execution" }], details: {} };
             },
           });
+          if (mode === "denied_mixed") {
+            extension.registerTool({
+              name: "fixture_survivor",
+              label: "Fixture survivor",
+              description: "Selected fixture that keeps its current eligibility.",
+              parameters: { type: "object", properties: {} },
+              defaultActive: false,
+              async execute() {
+                return { content: [{ type: "text", text: "survivor executed" }], details: {} };
+              },
+            });
+          }
           if (mode === "cancelled") {
             extension.registerTool({
               name: "invoke_capability",
@@ -317,6 +371,7 @@ async function runScenario(mode: ScenarioMode): Promise<Scenario> {
       outcome,
       persisted: discoveryRecords(session.sessionManager.getBranch()),
       activeTools: [...pi.getActiveTools()],
+      rootRequests,
     };
   } finally {
     globalThis.fetch = originalFetch;
@@ -333,7 +388,11 @@ test("provider failure after selection publishes a partial result and activates 
   assert.equal(scenario.outcome.isError, false, "a partial result with selected resources remains publishable");
   assert.equal(visible.status, "partial");
   assert.equal(visible.endReason, "provider_error");
+  assert.match(visible.partialReason ?? "", /Capability retrieval model failed: scripted internal provider failure/);
   assert.deepEqual(visible.tools?.map((hit) => hit.ref), ["tool://fixture_partial"]);
+  assert.equal(visible.tools?.[0]?.ref, "tool://fixture_partial", "the stable ref survives compaction");
+  assert.equal(visible.tools?.[0]?.parameters, undefined, "the native declaration supplies the arguments");
+  assert.match(String(visible.tools?.[0]?.interface), /tool declaration/);
   assert.doesNotMatch(JSON.stringify(visible), /fixture_unrelated|Private unrelated operation/);
 
   assert.ok(isRecord(scenario.outcome.details));
@@ -366,4 +425,70 @@ test("caller abort before publication fails closed without persisting or activat
   assert.deepEqual(scenario.persisted, [], "caller cancellation must not write the canonical branch record");
   assert.ok(!scenario.activeTools.includes("fixture_partial"), "caller cancellation must not activate the fixture");
   assert.ok(!scenario.activeTools.includes("fixture_unrelated"), "an unselected candidate is never activated");
+});
+
+test("a selected tool that loses eligibility before publication fails closed without a record or activation", async () => {
+  const scenario = await runScenario("denied_all");
+  const visible = publicResult(scenario.outcome.content);
+  assert.equal(scenario.outcome.isError, true);
+  assert.equal(visible.status, "failed");
+  assert.match(visible.failureReason ?? "", /selected tool "fixture_partial" is no longer available/);
+  assert.deepEqual([visible.tools, visible.mcp, visible.skills], [[], [], []], "a stale member is not published");
+  assert.doesNotMatch(JSON.stringify(visible), /fixture_unrelated/);
+
+  assert.ok(isRecord(scenario.outcome.details));
+  assert.equal(scenario.outcome.details["status"], "failed");
+  assert.deepEqual(scenario.outcome.details["tools"], [], "the full details exclude the stale member too");
+  assert.equal(scenario.persisted.length, 0, "nothing durable is written when the whole selection is stale");
+  assert.ok(!scenario.activeTools.includes("fixture_partial"), "a stale member is never activated");
+});
+
+test("mixed eligibility loss persists and activates only the surviving members", async () => {
+  const scenario = await runScenario("denied_mixed");
+  const visible = publicResult(scenario.outcome.content);
+  assert.equal(scenario.outcome.isError, false);
+  assert.equal(visible.status, "partial");
+  assert.match(visible.partialReason ?? "", /1 selected tool is no longer available/);
+  assert.deepEqual(visible.tools?.map((hit) => hit.ref), ["tool://fixture_survivor"]);
+  assert.equal(visible.tools?.[0]?.parameters, undefined, "the declared interface is compact");
+  assert.equal(visible.tools?.[0]?.interface !== undefined, true);
+
+  assert.ok(isRecord(scenario.outcome.details));
+  assert.equal(scenario.outcome.details["status"], "partial");
+  assert.deepEqual(
+    (scenario.outcome.details["tools"] as Array<{ ref?: string }>).map((hit) => hit.ref),
+    ["tool://fixture_survivor"],
+    "the branch-facing details never advertise the stale member",
+  );
+  assert.equal(scenario.persisted.length, 1);
+  assert.deepEqual(scenario.persisted[0]?.result.tools.map((hit) => hit.ref), ["tool://fixture_survivor"]);
+  assert.ok(scenario.activeTools.includes("fixture_survivor"));
+  assert.ok(!scenario.activeTools.includes("fixture_partial"), "a stale member is never activated");
+  assert.ok(!scenario.activeTools.includes("fixture_unrelated"), "an unselected candidate is never activated");
+});
+
+test("a valid Skill selection survives losing every selected tool", async () => {
+  const scenario = await runScenario("denied_skill");
+  const visible = publicResult(scenario.outcome.content);
+  assert.equal(scenario.outcome.isError, false, "a retained Skill keeps the publication successful");
+  assert.equal(visible.status, "partial");
+  assert.match(visible.partialReason ?? "", /1 selected tool is no longer available/);
+  assert.deepEqual(visible.tools ?? [], []);
+  assert.deepEqual(visible.skills?.map((hit) => hit.name), ["survivor"]);
+  assert.equal(typeof visible.skills?.[0]?.filePath, "string");
+
+  assert.equal(scenario.persisted.length, 1);
+  assert.deepEqual(scenario.persisted[0]?.result.tools, []);
+  assert.deepEqual(scenario.persisted[0]?.result.skills.map((hit) => hit.name), ["survivor"]);
+  assert.ok(!scenario.activeTools.includes("fixture_partial"), "losing every tool activates nothing");
+});
+
+test("the next native request declares the compacted interface with its arguments", async () => {
+  const scenario = await runScenario("provider_error");
+  const next = scenario.rootRequests[1];
+  assert.ok(next);
+  const declared = getCurrentTools(next.messages).find((tool) => tool.name === "fixture_partial");
+  assert.ok(declared, "activation declares the selected tool on the next request");
+  assert.equal((declared.parameters as { type?: string }).type, "object");
+  assert.equal(declared.description, "Selected fixture for partial publication.");
 });

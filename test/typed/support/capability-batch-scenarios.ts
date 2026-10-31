@@ -173,19 +173,25 @@ export async function runResponsesOnlyScenario(fixture: CapabilityScenarioFixtur
       ? firstContent.text
       : "";
   const parsed = JSON.parse(rawText) as {
-    tools: Array<{ tools: Array<{ name: string; parameters?: { type?: string } }> }>;
+    tools: Array<{ interface?: string; toolCount?: number; tools?: unknown[]; parameters?: unknown }>;
   };
-  const selectedInterfaces = parsed.tools[0]?.tools ?? [];
-  assert.equal(selectedInterfaces.length, 3, "hidden direct declarations must not imply supplied interfaces");
-  assert.ok(
-    selectedInterfaces.every((tool) => tool.parameters?.type === "object"),
-    "selected interfaces must be supplied without a resource-read protocol",
-  );
+  const selectedInterfaces = parsed.tools[0];
+  assert.ok(selectedInterfaces);
+  assert.equal(selectedInterfaces.toolCount, 3, "the compact interface keeps the selected member count");
+  assert.equal(selectedInterfaces.tools, undefined, "compact interfaces omit members hidden from native declarations");
+  assert.equal(selectedInterfaces.parameters, undefined, "argument schemas stay in the Codemode query path");
+  assert.match(selectedInterfaces.interface ?? "", /describeTool/);
   controls.chat = () => textAnswer("Only mode continued");
   await session.prompt("Continue without directly declared Subagent interfaces.");
   const lastChat = chats.at(-1);
   assert.ok(lastChat);
-  assert.deepEqual(getCurrentTools(lastChat.context.messages).map((tool) => tool.name), ["codemode"]);
+  const declared = getCurrentTools(lastChat.context.messages);
+  assert.deepEqual(declared.map((tool) => tool.name), ["codemode"]);
+  assert.match(
+    declared[0]?.description ?? "",
+    /subagent_create/,
+    "the active Codemode catalog remains the query path for hidden direct declarations",
+  );
 }
 
 export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixture): Promise<void> {
@@ -433,13 +439,13 @@ export async function runNamespaceScenario(fixture: CapabilityScenarioFixture): 
     const found = JSON.parse(textPart.text) as CapabilityStepDetails;
     const searchResult = found.searches[0];
     assert.ok(searchResult);
-    const namespaces = (
-      searchResult.tools as Array<{ namespace?: string; ref: string; tools: Array<{ name: string }> }>
-    ).filter((hit) => hit.namespace === "subagent");
-    assert.equal(namespaces.length, 1, "matching members must collapse to one namespace candidate");
-    const matchedNamespace = namespaces[0]!;
-    assert.equal(matchedNamespace.ref, "namespace://subagent");
-    assert.deepEqual(matchedNamespace.tools.map((tool) => tool.name), members);
+    const matchedNamespace = (
+      searchResult.tools as Array<{ ref: string; name: string; toolCount?: number; namespace?: unknown; tools?: unknown }>
+    ).find((hit) => hit.ref === "namespace://subagent");
+    assert.ok(matchedNamespace, "matching members must collapse to one namespace candidate");
+    assert.equal(matchedNamespace.toolCount, members.length);
+    assert.equal(matchedNamespace.namespace, undefined, "the compact step body omits the namespace field");
+    assert.equal(matchedNamespace.tools, undefined, "the compact step body omits the member array");
     return toolAnswer(CAPABILITY_STEP_TOOL_NAME, { queries: [], refs: [matchedNamespace.ref], finish: true });
   };
   const discoveryResult = await call("capability", {});
@@ -447,8 +453,11 @@ export async function runNamespaceScenario(fixture: CapabilityScenarioFixture): 
     tools: Array<{ kind: string; namespace: string; tools: Array<{ name: string }>; instructions: string; description: string }>;
   };
   const expandedGui = capabilityGuiText(fixture, discoveryResult);
-  assert.match(expandedGui, /"parameters":/);
-  assert.doesNotMatch(expandedGui, /"interface":/);
+  assert.doesNotMatch(expandedGui, /"parameters":/, "declared interfaces are not duplicated in the result");
+  assert.match(expandedGui, /"interface":/);
+  assert.match(expandedGui, /"ref":"namespace:\/\/subagent"/);
+  const newlyDeclared = members.filter((name) => !initial.includes(name)).length;
+  assert.match(expandedGui, new RegExp(`"toolCount":${newlyDeclared}`), "the delta keeps the newly declared member count");
   assert.equal(discovery.tools.length, 1, JSON.stringify(discovery));
   const toolEntry = discovery.tools[0]!;
   assert.equal(toolEntry.kind, "namespace");

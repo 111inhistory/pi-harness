@@ -148,6 +148,10 @@ export interface CapabilityProjectionHit {
   readonly toolCount?: number;
   readonly description?: string;
   readonly exposure?: string;
+  readonly status?: string;
+  readonly server?: string;
+  readonly tool?: string;
+  readonly namespace?: string;
   readonly parameters?: unknown;
   readonly outputSchema?: unknown;
   readonly promptGuidelines?: readonly string[];
@@ -205,25 +209,46 @@ export interface CapabilityModelHit extends CapabilityProjectionHit {
   readonly interface?: string;
 }
 
+/** Where the model can read the selected tools' current interfaces. */
+export interface CapabilityInterfaceSources {
+  /** Tools with a native declaration in this session's current loadout. */
+  readonly declared: ReadonlySet<string>;
+  /** Active tools that Codemode's describeTool/describeNamespace can inspect. */
+  readonly queryable?: ReadonlySet<string> | undefined;
+}
+
 export type CapabilityModelResult<T extends CapabilityProjectionResult> =
   Omit<T, "tools" | "mcp"> & {
     readonly tools: readonly CapabilityModelHit[];
     readonly mcp: readonly CapabilityModelHit[];
   };
 
-/** Compact only interfaces actually enabled for direct declaration, not deferred refs. */
+/**
+ * Compact one hit when every selected member's interface is already available
+ * through a native declaration or an active Codemode query path. Stable
+ * refs/names/count and the group's shared instructions stay; duplicate argument
+ * schemas, output schemas, per-member descriptions and ranking/implementation
+ * fields are omitted, because repeating them costs tokens without adding a
+ * usable interface. Hits without such a source stay fully expanded.
+ */
 export function capabilityModelResult<T extends CapabilityProjectionResult>(
   result: T,
-  declaredNames: ReadonlySet<string>,
+  sources: CapabilityInterfaceSources,
 ): CapabilityModelResult<T> {
   const compact = (hit: CapabilityProjectionHit): CapabilityModelHit => {
     const members = Array.isArray(hit.tools) ? hit.tools : [hit];
-    if (!members.length || !members.every((tool) => tool.name !== undefined && declaredNames.has(tool.name))) return hit;
+    if (!members.length) return hit;
+    const names = members.flatMap((member) => typeof member.name === "string" ? [member.name] : []);
+    if (names.length !== members.length) return hit;
+    const declared = names.every((name) => sources.declared.has(name));
+    const queryable = sources.queryable;
+    const queried = !declared && queryable !== undefined && names.every((name) => queryable.has(name));
+    if (!declared && !queried) return hit;
     const {
       tools: _tools,
-      toolCount: _toolCount,
       description: _description,
       exposure: _exposure,
+      status: _status,
       parameters: _parameters,
       outputSchema: _outputSchema,
       promptGuidelines: _promptGuidelines,
@@ -232,9 +257,17 @@ export function capabilityModelResult<T extends CapabilityProjectionResult>(
       reason: _reason,
       source: _source,
       path: _path,
-      ...guidance
+      server: _server,
+      tool: _tool,
+      namespace: _namespace,
+      ...stable
     } = hit;
-    return { ...guidance, interface: "Declared through the session's tool loadout; use the tool declaration for arguments." };
+    return {
+      ...stable,
+      interface: declared
+        ? "Declared through the session's current tool loadout; use the tool declaration for arguments."
+        : "Query the current interface with codemode describeTool; describeNamespace lists the group's members.",
+    };
   };
   return { ...result, tools: result.tools.map(compact), mcp: result.mcp.map(compact) } as CapabilityModelResult<T>;
 }

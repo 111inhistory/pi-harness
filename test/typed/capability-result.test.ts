@@ -25,7 +25,7 @@ function failure(warnings: readonly string[], extra: Record<string, unknown> = {
 
 function assertNoDiagnostics(hits: readonly CapabilityPublicHit[]): void {
   for (const hit of hits) {
-    for (const field of ["match", "score", "reason", "warnings"]) {
+    for (const field of ["match", "score", "reason", "warnings", "status", "available", "exposure", "source", "path"]) {
       assert.equal(field in hit, false, `hit exposes ${field}`);
     }
     if (hit.tools) assertNoDiagnostics(hit.tools);
@@ -86,6 +86,7 @@ test("Main receives selected resources without ranking or warning diagnostics", 
   assert.deepEqual(output.missingCapabilities, ["gap"]);
   assert.equal(output.status, "partial");
   assert.equal(output.failureReason, undefined, "only a failed discovery exposes a failure reason");
+  assert.equal(output.partialReason, "search degraded", "a partial publication carries one short visible reason");
   assert.deepEqual(result, original, "details and internal ranking cannot be mutated");
 });
 
@@ -102,6 +103,7 @@ test("a failed discovery explains itself with one compact reason, not the warnin
     const output = capabilityPublicResult(failure([`${name} diagnostic: internal ranking follows`, reason]));
     assert.equal(output.status, "failed", name);
     assert.equal(output.failureReason, reason, name);
+    assert.equal(output.partialReason, undefined, name);
     assert.equal("warnings" in output, false, name);
     assert.deepEqual(output.remote, [], name);
     assert.deepEqual([output.tools, output.mcp, output.skills], [[], [], []], name);
@@ -130,4 +132,21 @@ test("failure reasons are first-line, bounded and control-character free", () =>
 test("a failed discovery without warnings still has a public reason", () => {
   const output = capabilityPublicResult(failure([]));
   assert.equal(output.failureReason, "capability discovery failed.");
+});
+
+test("a partial discovery always carries a bounded visible reason", () => {
+  const output = capabilityPublicResult({ status: "partial", tools: [], mcp: [], skills: [], warnings: [] });
+  assert.equal(
+    output.partialReason,
+    "capability discovery is partial; some selected resources were not published.",
+  );
+  const long = capabilityPublicResult({
+    status: "partial",
+    tools: [],
+    mcp: [],
+    skills: [],
+    warnings: [`capability discovery is partial: ${"z".repeat(500)}`],
+  });
+  assert.equal(long.partialReason?.length, FAILURE_REASON_LIMIT);
+  assert.match(long.partialReason ?? "", /…$/);
 });

@@ -10,10 +10,17 @@
  * session entries, system prompt, physical model — so provider-returned blocks
  * such as thinking with their signatures survive verbatim. Compatible Responses
  * keep the parent's thinking level and declaration prefix; other models use
- * thinking low. The tool returns full grouped metadata in details, compact
- * model-facing refs/guidance where native incremental declarations supply the
- * interfaces, and declares the selected already-registered tools active in this
- * session. It never installs, enables or executes anything.
+ * thinking low. The tool returns full grouped metadata in details and a compact
+ * model-facing selection where the next request supplies the interfaces through
+ * native declarations or an active Codemode query path. It declares the selected
+ * already-registered tools active in this session. It never installs, enables or
+ * executes anything.
+ *
+ * The search sees only the tools registered at call time; it never waits for an
+ * MCP backend or another asynchronous registration to become ready. Immediately
+ * before persistence and activation the current eligible catalog is read again,
+ * so a member that was unregistered, hidden or denied during retrieval is left
+ * out of both the branch record and the published result.
  *
  * The internal agent only searches local tools, MCP servers and skills. The
  * result always reports that remote was not searched, and no remote candidate
@@ -72,9 +79,10 @@ import { appendDiscoveryRecord } from "../src/capability/discovery-record.ts";
 import { openSubagentExecution } from "../src/subagent/execution.ts";
 import { parentModelRuntime } from "../src/subagent/model-runtime.ts";
 import { installNativeDiscoveryBoundary } from "../src/capability/native-discovery.ts";
-import { createEligibleToolCatalog, supplySelectedToolInterfaces } from "../src/capability/tool-catalog.ts";
+import { createEligibleToolCatalog, retainEligibleSelectedTools, supplySelectedToolInterfaces } from "../src/capability/tool-catalog.ts";
 import {
   additiveToolTranscript, capabilityModelResult, capabilityToolDelta, retrievalToolLoadout, supportsAdditiveResponses,
+  type CapabilityInterfaceSources,
 } from "../src/responses-tool-prefix.ts";
 
 const toolsPrompt = readToolsPrompt();
@@ -102,6 +110,8 @@ interface ActivationHit {
 interface Activation {
   readonly activated: readonly string[];
   readonly warnings: readonly string[];
+  /** The session's actual active set after the synchronous activation call. */
+  readonly active: ReadonlySet<string>;
 }
 
 type DiscoveryRecordWriter = Parameters<typeof appendDiscoveryRecord>[0];
@@ -163,15 +173,13 @@ export default function capabilityExtension(pi: ExtensionAPI, { discovery = true
     promptSnippet: toolsPrompt.capability.snippet,
     promptGuidelines: [...toolsPrompt.capability.guidelines],
     parameters: CAPABILITY_PARAMETERS,
-    reachesTools: () => "all",
     async execute(toolCallId, _params, signal, _onUpdate, ctx) {
       let result: CapabilityDiscoveryResult;
-      let compactNames: ReadonlySet<string> | null = null;
+      let interfaceSources: CapabilityInterfaceSources | null = null;
       let previouslyActive = new Set<string>();
       try {
         service.projectTrusted = ctx.isProjectTrusted();
         const snapshot = captureInheritedContext(pi, ctx, toolCallId);
-        const physicalModel = snapshot.model;
         const engine = createCapabilityDiscovery({
           broker,
           openSession: (request) => openInternalSession(pi, service, ctx, request, snapshot),
@@ -179,15 +187,22 @@ export default function capabilityExtension(pi: ExtensionAPI, { discovery = true
         result = await engine.discover(signal === undefined ? { cwd: ctx.cwd } : { cwd: ctx.cwd, signal });
         if (cancelled(signal, ctx.signal)) {
           result = cancelledBeforePublication(result);
-        } else if (result.status !== "failed") {
-          // Persist before activation. Memory is the durability contract, so a
-          // failed record write fails closed: nothing is advertised as selected
-          // and nothing is activated, because the next request could not restore
-          // it. The thrown detail stays in the internal warnings audit.
-          try {
-            appendDiscoveryRecord(pi as DiscoveryRecordWriter, toolCallId, result, result.coverage);
-          } catch (error) {
-            result = discoveryNotDurable(result, error);
+        } else {
+          // The search result is a snapshot. Re-read the current registered,
+          // permitted catalog before persisting or activating anything, so a
+          // tool that was unregistered, hidden or denied during retrieval never
+          // enters the branch record or the published selection.
+          result = retainSelectedTools(pi, result, "catalog");
+          if (result.status !== "failed") {
+            // Persist before activation. Memory is the durability contract, so a
+            // failed record write fails closed: nothing is advertised as selected
+            // and nothing is activated, because the next request could not restore
+            // it. The thrown detail stays in the internal warnings audit.
+            try {
+              appendDiscoveryRecord(pi as DiscoveryRecordWriter, toolCallId, result, result.coverage);
+            } catch (error) {
+              result = discoveryNotDurable(result, error);
+            }
           }
         }
         if (result.status !== "failed" && !cancelled(signal, ctx.signal)) {
@@ -195,12 +210,14 @@ export default function capabilityExtension(pi: ExtensionAPI, { discovery = true
             previouslyActive = new Set(pi.getActiveTools());
             const activation = activateSelectedTools(pi, result);
             createEligibleToolCatalog(pi);
-            if (supportsAdditiveResponses(physicalModel)) {
-              compactNames = declaredTools();
-            }
+            // Publication follows what is actually active, not what the search
+            // hoped to activate. This is a synchronous read of the SDK's state,
+            // not a rollback path.
+            result = retainSelectedTools(pi, result, "activation", activation.active);
             if (activation.warnings.length > 0) {
               result = withOuterWarnings(result, activation.warnings);
             }
+            interfaceSources = capabilityInterfaceSources(activation.active, declaredTools);
           } catch (error) {
             result = withOuterWarnings(result, [`selected tools could not be activated: ${errorMessage(error)}`]);
           }
@@ -212,7 +229,7 @@ export default function capabilityExtension(pi: ExtensionAPI, { discovery = true
       }
       const delta = capabilityToolDelta(result, previouslyActive);
       const withInterfaces = supplySelectedToolInterfaces(delta, pi);
-      const projected = compactNames === null ? withInterfaces : capabilityModelResult(withInterfaces, compactNames);
+      const projected = interfaceSources === null ? withInterfaces : capabilityModelResult(withInterfaces, interfaceSources);
       const publicResult = capabilityPublicResult(projected);
       return {
         content: [{ type: "text", text: JSON.stringify(publicResult) }],
@@ -352,7 +369,69 @@ function activateSelectedTools(pi: ExtensionAPI, result: CapabilityDiscoveryResu
     activate.push(name);
   }
   if (activate.length > 0) pi.setActiveTools([...active, ...activate]);
-  return { activated: activate, warnings };
+  // Read back the SDK's authoritative set instead of assuming the request took
+  // effect; Pi ignores unknown/hidden names and can mask an activatable tool.
+  const actual = new Set(pi.getActiveTools());
+  return { activated: activate, warnings, active: actual };
+}
+
+/**
+ * Drop selected tool members that are no longer in the current eligible
+ * catalog (before persistence) or that did not become active (after the SDK
+ * activation call). Successful Skill selections are independent of tool
+ * eligibility and stay published; a selection that loses every tool while
+ * keeping no other successful resource fails closed.
+ */
+function retainSelectedTools(
+  pi: ExtensionAPI,
+  result: CapabilityDiscoveryResult,
+  stage: "catalog" | "activation",
+  active?: ReadonlySet<string>,
+): CapabilityDiscoveryResult {
+  if (result.status === "failed") return result;
+  const retained = retainEligibleSelectedTools(
+    result,
+    pi,
+    active === undefined ? {} : { active },
+  );
+  if (retained.dropped.length === 0) return result;
+  const names = [...new Set(retained.dropped)];
+  const detail = names.map((name) => stage === "catalog"
+    ? `selected tool "${name}" is no longer available in this session; it was not published.`
+    : `selected tool "${name}" did not become active in this session; it was not published.`);
+  if (retained.selected > 0 && retained.retained === 0 && result.skills.length === 0) {
+    const reason = names.length === 1
+      ? stage === "catalog"
+        ? `capability discovery failed: the selected tool "${names[0]}" is no longer available in this session.`
+        : `capability discovery failed: the selected tool "${names[0]}" did not become active in this session.`
+      : stage === "catalog"
+        ? `capability discovery failed: none of the ${names.length} selected tools are still available in this session.`
+        : `capability discovery failed: none of the ${names.length} selected tools became active in this session.`;
+    const failed = capabilityFailureResult(reason, [...result.warnings, ...detail], result.coverage);
+    return result.endReason === undefined ? failed : { ...failed, endReason: result.endReason };
+  }
+  const count = names.length;
+  const reason = stage === "catalog"
+    ? `capability discovery is partial: ${count} selected tool${count === 1 ? " is" : "s are"} no longer available in this session.`
+    : `capability discovery is partial: ${count} selected tool${count === 1 ? " did" : "s did"} not become active in this session.`;
+  return {
+    ...retained.result,
+    status: "partial",
+    warnings: [...result.warnings, ...detail, reason],
+  };
+}
+
+/** Interfaces the next request can supply without repeating them in this result. */
+function capabilityInterfaceSources(
+  active: ReadonlySet<string>,
+  declaredTools: () => ReadonlySet<string>,
+): CapabilityInterfaceSources {
+  return {
+    declared: declaredTools(),
+    ...(active.has("codemode")
+      ? { queryable: new Set([...active].filter((name) => name !== "codemode")) }
+      : {}),
+  };
 }
 
 /**

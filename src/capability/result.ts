@@ -7,7 +7,9 @@
  * A failed discovery still needs one model-facing explanation. Its warnings are
  * diagnostic data, so Main gets only a compact `failureReason` taken from the
  * final failure warning: first line, bounded, no control characters and no
- * diagnostic arrays or resource catalog.
+ * diagnostic arrays or resource catalog. A partial publication exposes the same
+ * kind of short `partialReason`, so a lost member or a degraded search is not
+ * hidden solely in the internal warning list.
  *
  * Broker/discovery results cross a dynamic provider boundary, so this module
  * normalizes records instead of trusting a concrete runtime shape.
@@ -17,9 +19,14 @@
 export const FAILURE_REASON_LIMIT = 240;
 
 const FALLBACK_FAILURE_REASON = "capability discovery failed.";
+const FALLBACK_PARTIAL_REASON = "capability discovery is partial; some selected resources were not published.";
 
 /** Fields that never reach Main, stripped from every hit at any depth. */
-const DIAGNOSTIC_HIT_FIELDS = new Set(["match", "score", "reason", "warnings"]);
+const DIAGNOSTIC_HIT_FIELDS = new Set([
+  "match", "score", "reason", "warnings",
+  // Availability is implied by publication; these are host implementation data.
+  "status", "available", "exposure", "source", "path",
+]);
 
 /** Result groups whose entries are hits rather than plain values. */
 const HIT_GROUPS = new Set(["tools", "mcp", "skills", "guidance"]);
@@ -43,13 +50,15 @@ export interface CapabilityPublicResult {
   /** Discovery is local-only, so this is always empty. */
   readonly remote: readonly never[];
   readonly failureReason?: string;
+  /** Why a partial publication is not complete, bounded to one line. */
+  readonly partialReason?: string;
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function publicFailureReason(warnings: unknown): string {
+function publicReason(warnings: unknown, fallback: string): string {
   const list = Array.isArray(warnings) ? warnings : [];
   for (let index = list.length - 1; index >= 0; index -= 1) {
     const value: unknown = list[index];
@@ -65,7 +74,7 @@ function publicFailureReason(warnings: unknown): string {
     if (clean === "") continue;
     return clean.length <= FAILURE_REASON_LIMIT ? clean : `${clean.slice(0, FAILURE_REASON_LIMIT - 1)}…`;
   }
-  return FALLBACK_FAILURE_REASON;
+  return fallback;
 }
 
 function publicHit(candidate: unknown): CapabilityPublicHit {
@@ -94,6 +103,11 @@ export function capabilityPublicResult(result: unknown): CapabilityPublicResult 
   return {
     ...visible,
     remote: [],
-    ...(source["status"] === "failed" ? { failureReason: publicFailureReason(source["warnings"]) } : {}),
+    ...(source["status"] === "failed"
+      ? { failureReason: publicReason(source["warnings"], FALLBACK_FAILURE_REASON) }
+      : {}),
+    ...(source["status"] === "partial"
+      ? { partialReason: publicReason(source["warnings"], FALLBACK_PARTIAL_REASON) }
+      : {}),
   };
 }
