@@ -68,6 +68,7 @@ const D1_RESULT = 'CONFIG_DEPTH1_RESULT: depth-1 answer.';
 
 const HELD_A_TASK = 'CONFIG_HELD_A_TASK: hold the first root child open.';
 const HELD_B_TASK = 'CONFIG_HELD_B_TASK: hold the inherited second child open.';
+const HELD_C_TASK = 'CONFIG_HELD_C_TASK: complete beside the inherited child.';
 const HELD_RESULT = 'CONFIG_HELD_RESULT: released child answer.';
 
 const budgetProfile = (soft: number, hard: number): JsonRecord => ({
@@ -109,7 +110,7 @@ function usage(): AssistantMessage['usage'] {
   };
 }
 
-type Role = 'Main' | 'd1' | 'd2' | 'd3' | 'heldA' | 'heldB';
+type Role = 'Main' | 'd1' | 'd2' | 'd3' | 'heldA' | 'heldB' | 'heldC';
 
 interface Scenario {
   readonly cwd: string;
@@ -233,6 +234,7 @@ async function startScenario(options: ScenarioOptions): Promise<Scenario> {
     if (text.includes(D2_TASK)) return 'd2';
     if (text.includes(D1_TASK)) return 'd1';
     if (text.includes(HELD_B_TASK)) return 'heldB';
+    if (text.includes(HELD_C_TASK)) return 'heldC';
     if (text.includes(HELD_A_TASK)) return 'heldA';
     throw new Error(`Unrecognized scripted session ${String(sessionId)}`);
   }
@@ -512,9 +514,9 @@ test('a root config snapshot survives project rewrites, governs child caps, and 
     },
     respond: async (role, turn, _text, reply) => {
       if (role === 'Main') return reply.text(MAIN_ACK);
-      // Both children stay inside their first model request until the file has
-      // been rewritten and the cap has been exercised.
-      if ((role === 'heldA' || role === 'heldB') && turn === 1) {
+      // The held children stay inside their first model request until the file
+      // has been rewritten and both pools have been exercised.
+      if ((role === 'heldA' || role === 'heldB' || role === 'heldC') && turn === 1) {
         await releaseChildren.promise;
         // One local tool round forces a second model request, so the active
         // child's prompt snapshot stays observable after the file rewrite.
@@ -550,14 +552,22 @@ test('a root config snapshot survives project rewrites, governs child caps, and 
     await mkdir(path.dirname(projectPath), { recursive: true });
     await writeFile(projectPath, JSON.stringify(rewritten));
 
-    // The next child is admitted against the original root snapshot: with the
-    // rewritten cap of one it would be rejected because heldA is active.
+    // The next batch is admitted against the original root snapshot: the
+    // rewritten fresh cap of one would refuse it, because heldA already holds
+    // one of the two fresh slots.
     const second = await scenario.execute('subagent_create', {
-      tasks: [{ name: 'HeldInherited', task: HELD_B_TASK, inheritContext: true }],
+      tasks: [
+        { name: 'HeldInherited', task: HELD_B_TASK, inheritContext: true },
+        { name: 'HeldAfterRewrite', task: HELD_C_TASK },
+      ],
     });
     const secondItems = asRecord(second.details)?.['items'];
     assert.ok(Array.isArray(secondItems));
     assert.equal(asRecord(secondItems[0])?.['id'], 'sub_02');
+    assert.equal(asRecord(secondItems[1])?.['id'], 'sub_03', 'the mixed batch is admitted under the root snapshot');
+    await waitFor(() => scenario.inputs.get('heldC')?.length === 1, {
+      label: 'the batch fresh child to reach its held model request', timeoutMs: 15000,
+    });
     await waitFor(() => scenario.inputs.get('heldB')?.length === 1, {
       label: 'the inherited child to reach its held model request', timeoutMs: 15000,
     });
@@ -577,8 +587,9 @@ test('a root config snapshot survives project rewrites, governs child caps, and 
     assert.match(inheritedInput, /Your direct parent is Main\b/);
     assert.ok(inheritedInput.includes(HELD_B_TASK), 'the inherited child receives its assigned task');
 
-    // The configured active-child cap is two, not the built-in four. A third
-    // direct child must be refused without touching the running pair.
+    // The configured fresh cap is two, not the built-in four, and both fresh
+    // slots are held by heldA and the batch's fresh child. A third direct fresh
+    // child must be refused without touching the running pair.
     await assert.rejects(
       scenario.execute('subagent_create', {
         tasks: [{ name: 'OverCap', task: 'CONFIG_OVER_CAP_TASK: must be refused.' }],
@@ -587,23 +598,26 @@ test('a root config snapshot survives project rewrites, governs child caps, and 
         const record = asRecord(error);
         assert.equal(record?.['code'], 'child_limit_exceeded');
         const detail = asRecord(record?.['detail']);
+        assert.equal(detail?.['kind'], 'fresh');
         assert.equal(detail?.['maxActiveChildren'], 2, 'the refusal reports the resolved configured cap');
         assert.equal(detail?.['activeChildren'], 2);
         return true;
       },
     );
 
-    // Release both children. Their second turn still observes the original
+    // Release the held children. Their second turn still observes the original
     // prompt snapshot, and the running first child is not mutated by the file.
     releaseChildren.resolve();
-    await waitFor(() => scenario.inputs.get('heldA')?.length === 2 && scenario.inputs.get('heldB')?.length === 2, {
-      label: 'both held children to finish their released turn', timeoutMs: 15000,
+    await waitFor(() => scenario.inputs.get('heldA')?.length === 2
+      && scenario.inputs.get('heldB')?.length === 2
+      && scenario.inputs.get('heldC')?.length === 2, {
+      label: 'the held children to finish their released turn', timeoutMs: 15000,
     });
     await waitFor(() => {
       const branch = scenario.branchEntries();
-      return jobEntries(branch, 'subagent-job-end').some((data) => data['jobId'] === 'sub_01')
-        && jobEntries(branch, 'subagent-job-end').some((data) => data['jobId'] === 'sub_02');
-    }, { label: 'both held child Jobs to terminate', timeoutMs: 15000 });
+      return ['sub_01', 'sub_02', 'sub_03'].every((jobId) =>
+        jobEntries(branch, 'subagent-job-end').some((data) => data['jobId'] === jobId));
+    }, { label: 'the held child Jobs to terminate', timeoutMs: 15000 });
     await scenario.session.waitForIdle();
     assert.deepEqual(scenario.scriptErrors, []);
 
@@ -625,8 +639,8 @@ test('a root config snapshot survives project rewrites, governs child caps, and 
     assert.equal(asRecord(heldBEnd['budget'])?.['depth'], 1);
     assert.deepEqual(
       jobEntries(scenario.branchEntries(), 'subagent-job-end').map((data) => data['jobId']).sort(),
-      ['sub_01', 'sub_02'],
-      'the rejected third child never allocates a Job',
+      ['sub_01', 'sub_02', 'sub_03'],
+      'the rejected fourth child never allocates a Job',
     );
   } finally {
     releaseChildren.resolve();

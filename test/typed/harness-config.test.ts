@@ -102,6 +102,7 @@ test('absent config files resolve to the built-in defaults', async (t) => {
   assert.deepEqual(config, DEFAULT_HARNESS_CONFIG);
   assert.equal(config.subagent.maxDepth, 2);
   assert.equal(config.subagent.maxActiveChildren, 4);
+  assert.equal(config.subagent.maxActiveInheritedChildren, 3);
   assert.deepEqual(config.subagent.budgetsByDepth[1]?.modelCalls, { soft: 160, hard: 200 });
   assert.deepEqual(config.subagent.budgetsByDepth[2]?.modelCalls, { soft: 80, hard: 100 });
   assert.deepEqual(config.capability.search.bm25, { k: 0.9, b: 0.9, d: 0 });
@@ -240,6 +241,7 @@ test('BM25 and retry bounds accept their documented ranges and reject the rest',
 test('positive integer limits reject zero, fractions and non-finite values', () => {
   for (const [field, value] of [
     ['maxActiveChildren', 0],
+    ['maxActiveInheritedChildren', 0],
     ['maxDepth', 0],
     ['maxDepth', 2.5],
     ['inheritedToolWaitMs', -1],

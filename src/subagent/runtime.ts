@@ -565,6 +565,12 @@ function inheritedContextOf(spec: JobSpec | null | undefined): InheritedContext 
   return spec.inheritedContext;
 }
 
+function childKindOfSpec(spec: JobSpec | null | undefined): "fresh" | "inherited" {
+  if (spec === null || spec === undefined) return "fresh";
+  if (spec.kind === "continuation") return childKindOfSpec(spec.seed);
+  return spec.inheritContext === true ? "inherited" : "fresh";
+}
+
 /**
  * Non-fatal warnings that belong to a Job's entry (for example inherited tools
  * that Pi's public API cannot transplant). A continuation reads its seed's.
@@ -859,16 +865,39 @@ export class SubagentRuntime {
         );
       }
       const maxActiveChildren = this.#config.subagent.maxActiveChildren;
-      const activeChildren = this.#activeChildren(parentAgentId);
-      if (activeChildren + entries.length > maxActiveChildren) {
+      const maxActiveInheritedChildren = this.#config.subagent.maxActiveInheritedChildren;
+      const active = this.#activeChildren(parentAgentId);
+
+      let requestedFresh = 0;
+      let requestedInherited = 0;
+      for (const entry of entries) {
+        if (entry.spec.inheritContext) requestedInherited += 1;
+        else requestedFresh += 1;
+      }
+
+      if (requestedFresh > 0 && active.fresh + requestedFresh > maxActiveChildren) {
         throw new SubagentError(
           "child_limit_exceeded",
-          `Agent ${parentAgentId ?? "Main"} already has ${activeChildren} active children; at most ${maxActiveChildren} are allowed.`,
+          `Agent ${parentAgentId ?? "Main"} already has ${active.fresh} active fresh children; at most ${maxActiveChildren} are allowed.`,
           {
             parentAgentId,
-            activeChildren,
-            requestedChildren: entries.length,
+            kind: "fresh",
+            activeChildren: active.fresh,
+            requestedChildren: requestedFresh,
             maxActiveChildren,
+          },
+        );
+      }
+      if (requestedInherited > 0 && active.inherited + requestedInherited > maxActiveInheritedChildren) {
+        throw new SubagentError(
+          "child_limit_exceeded",
+          `Agent ${parentAgentId ?? "Main"} already has ${active.inherited} active inherited children; at most ${maxActiveInheritedChildren} are allowed.`,
+          {
+            parentAgentId,
+            kind: "inherited",
+            activeChildren: active.inherited,
+            requestedChildren: requestedInherited,
+            maxActiveChildren: maxActiveInheritedChildren,
           },
         );
       }
@@ -1844,18 +1873,24 @@ export class SubagentRuntime {
         { agentId: agent.agentId, depth: agent.depth, maxDepth },
       );
     }
-    const maxActiveChildren = this.#config.subagent.maxActiveChildren;
-    const activeChildren = this.#activeChildren(agent.parentAgentId);
-    if (activeChildren + 1 <= maxActiveChildren) return null;
+    const kind = this.#childKind(agent);
+    const limit = kind === "inherited"
+      ? this.#config.subagent.maxActiveInheritedChildren
+      : this.#config.subagent.maxActiveChildren;
+    const activeCounts = this.#activeChildren(agent.parentAgentId);
+    const activeChildren = kind === "inherited" ? activeCounts.inherited : activeCounts.fresh;
+    if (activeChildren + 1 <= limit) return null;
     return new SubagentError(
       "child_limit_exceeded",
-      `Agent ${agent.parentAgentId ?? "Main"} already has ${activeChildren} active children; reviving ${agent.agentId} ` +
-        `would exceed ${maxActiveChildren}.`,
+      `Agent ${agent.parentAgentId ?? "Main"} already has ${activeChildren} active ${kind} children; reviving ${agent.agentId} ` +
+        `would exceed ${limit}.`,
       {
         agentId: agent.agentId,
         parentAgentId: agent.parentAgentId,
+        kind,
         activeChildren,
-        maxActiveChildren,
+        requestedChildren: 1,
+        maxActiveChildren: limit,
       },
     );
   }
@@ -1883,12 +1918,22 @@ export class SubagentRuntime {
     });
   }
 
-  #activeChildren(parentAgentId: string | null): number {
-    let active = 0;
+  #childKind(agent: Agent): "fresh" | "inherited" {
+    const seedId = agent.jobIds[0];
+    const seedSpec = seedId === undefined ? undefined : this.#jobs.get(seedId)?.spec;
+    return childKindOfSpec(seedSpec);
+  }
+
+  #activeChildren(parentAgentId: string | null): { fresh: number; inherited: number } {
+    let fresh = 0;
+    let inherited = 0;
     for (const agent of this.#agents.values()) {
-      if (agent.parentAgentId === parentAgentId && this.#hasActiveJob(agent)) active += 1;
+      if (agent.parentAgentId === parentAgentId && this.#hasActiveJob(agent)) {
+        if (this.#childKind(agent) === "inherited") inherited += 1;
+        else fresh += 1;
+      }
     }
-    return active;
+    return { fresh, inherited };
   }
 
   /** A Job occupies its actor until it is truly terminal, finalizing included. */

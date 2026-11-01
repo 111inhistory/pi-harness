@@ -24,6 +24,7 @@ export interface HarnessConfig {
   readonly subagent: {
     readonly maxDepth: number;
     readonly maxActiveChildren: number;
+    readonly maxActiveInheritedChildren: number;
     readonly budgetsByDepth: Readonly<Record<number, BudgetProfile>>;
     readonly inheritedToolWaitMs: number;
     readonly routingRetry: RoutingRetryConfig;
@@ -48,6 +49,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
   subagent: {
     maxDepth: 2,
     maxActiveChildren: 4,
+    maxActiveInheritedChildren: 3,
     budgetsByDepth: {
       1: { modelCalls: { soft: 160, hard: 200 }, activeTimeMs: { soft: 5_400_000, hard: 7_200_000 }, lifetimeMs: 86_400_000 },
       2: { modelCalls: { soft: 80, hard: 100 }, activeTimeMs: { soft: 2_700_000, hard: 3_600_000 }, lifetimeMs: 43_200_000 },
