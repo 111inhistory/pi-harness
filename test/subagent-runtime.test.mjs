@@ -517,8 +517,8 @@ test("keeps agent state and job state in separate snapshots", async () => {
   const items = runtime.create({ tasks: [spec("a"), spec("b")] }).items;
 
   assert.deepEqual(runtime.list({ status: "running" }).agents, [
-    { agentId: items[0].id, name: "a", parentAgentId: null, status: "running", depth: 1 },
-    { agentId: items[1].id, name: "b", parentAgentId: null, status: "running", depth: 1 },
+    { agentId: items[0].id, name: "a", parentAgentId: null, status: "running", depth: 1, kind: "fresh" },
+    { agentId: items[1].id, name: "b", parentAgentId: null, status: "running", depth: 1, kind: "fresh" },
   ]);
   assert.equal(runtime.list({ status: "idle" }).agents.length, 0);
   for (const agent of runtime.list().agents) {

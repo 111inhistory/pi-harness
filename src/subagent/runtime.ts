@@ -228,6 +228,8 @@ export interface AgentView {
   parentAgentId: string | null;
   status: "running" | "idle" | "stopped";
   depth: number;
+  /** Which admission pool the actor belongs to; derived from its first Job spec. */
+  kind: "fresh" | "inherited";
 }
 
 export interface DetailedAgentItem {
@@ -235,6 +237,8 @@ export interface DetailedAgentItem {
   status: string;
   socket: string;
   children: DetailedAgentItem[];
+  /** Absent for the Main node. */
+  kind?: "fresh" | "inherited";
   history?: { jobId: string } & JobHistoryPaths;
   historyError?: LifecycleError;
   historyDir?: string;
@@ -282,6 +286,8 @@ export interface StopResult {
   ok: boolean;
   id: string;
   status: string;
+  /** Present when the stop was refused by `cancelJob`. */
+  reason?: string;
 }
 
 export interface MessageReceipt {
@@ -1036,6 +1042,7 @@ export class SubagentRuntime {
         parentAgentId: agent.parentAgentId,
         status: agent.status,
         depth: agent.depth,
+        kind: this.#childKind(agent),
       });
     }
     return { agents };
@@ -1092,6 +1099,7 @@ export class SubagentRuntime {
         id: agent.agentId,
         status: currentStatus,
         socket: this.#agentSocketPath(agent.agentId, this.#socketDir),
+        kind: this.#childKind(agent),
         children: [],
       };
       const latest = [...agent.jobIds]
@@ -1257,7 +1265,7 @@ export class SubagentRuntime {
     const liveJob = this.#liveJobOf(agent);
     if (liveJob) {
       const res = this.cancelJob(liveJob.jobId);
-      return { ok: res.ok, id, status: res.job?.status ?? "stopping" };
+      return { ok: res.ok, id, status: res.job?.status ?? "stopping", ...(res.reason === undefined ? {} : { reason: res.reason }) };
     }
     return { ok: true, id, status: agent.status };
   }
