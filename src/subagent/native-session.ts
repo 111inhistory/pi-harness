@@ -21,7 +21,6 @@
 
 import { fileURLToPath } from "node:url";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
 import {
   DefaultResourceLoader,
   SettingsManager,
@@ -71,6 +70,16 @@ export interface NativeSessionFactoryDeps {
 }
 
 /**
+ * The SDK's persisted-value validator cannot import its private module: packaged
+ * extensions resolve only the host's exported entrypoints. The `satisfies`
+ * check keeps every listed value a real `ThinkingLevel`, so a removed level
+ * fails the build instead of silently widening the accepted values.
+ */
+const THINKING_LEVELS = [
+  "off", "minimal", "low", "medium", "high", "xhigh", "max",
+] as const satisfies readonly ThinkingLevel[];
+
+/**
  * Narrow one recorded string to the SDK's ThinkingLevel union. The recorded
  * actor field is deliberately a plain string because it survives persistence;
  * an invalid value must fail explicitly instead of reaching the SDK through a
@@ -78,7 +87,7 @@ export interface NativeSessionFactoryDeps {
  */
 function narrowThinkingLevel(value: string | null): ThinkingLevel | undefined {
   if (value === null) return undefined;
-  for (const level of MODEL_THINKING_LEVELS) {
+  for (const level of THINKING_LEVELS) {
     if (level === value) return level;
   }
   throw new SubagentError(
