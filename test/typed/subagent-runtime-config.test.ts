@@ -92,7 +92,7 @@ test("every reachable depth uses its configured Budget profile", () => {
   assert.deepEqual(runtime.list().agents.map((agent) => agent.depth), [1, 2, 3]);
   assert.deepEqual(
     fake.handles.map((handle) => handle.request.budget.snapshot({ detail: true }).profile.modelCalls.hard),
-    [200, 64, 7],
+    [200, 100, 7],
     "each Job uses the profile resolved for its own depth",
   );
   assert.deepEqual(

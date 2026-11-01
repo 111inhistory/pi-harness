@@ -80,8 +80,11 @@ npm run test:typed
 # 完整门禁（类型检查 + 全套测试）
 npm run check
 
-# 配置与提示词 JSON 有效性自检
-node --input-type=module -e 'import {readFileSync} from "node:fs"; for (const f of ["config/harness.json","config/subagent-routing.json","prompts/subagent-tools.json","prompts/subagent-turns.json","prompts/capability-tools.json"]) JSON.parse(readFileSync(f,"utf8"))'
+# 提示词与配置 JSON 有效性自检
+npm run check:json
+
+# 文档链接有效性与技术语言规范自检
+npm run check:docs
 ```
 
 ## 现有限制

@@ -103,7 +103,7 @@ test('absent config files resolve to the built-in defaults', async (t) => {
   assert.equal(config.subagent.maxDepth, 2);
   assert.equal(config.subagent.maxActiveChildren, 4);
   assert.deepEqual(config.subagent.budgetsByDepth[1]?.modelCalls, { soft: 160, hard: 200 });
-  assert.deepEqual(config.subagent.budgetsByDepth[2]?.modelCalls, { soft: 48, hard: 64 });
+  assert.deepEqual(config.subagent.budgetsByDepth[2]?.modelCalls, { soft: 80, hard: 100 });
   assert.deepEqual(config.capability.search.bm25, { k: 0.9, b: 0.9, d: 0 });
   assert.deepEqual(config.capability.search.limits, {
     tools: 8, mcp: 8, skills: 6, skillBodies: 6, requestTokens: 128, descriptionChars: 240, skillBodyChars: 60_000,
@@ -263,10 +263,10 @@ test('positive integer limits reject zero, fractions and non-finite values', () 
 test('budget relations allow soft == hard and reject soft > hard at the layer that made it invalid', () => {
   const equal = resolveHarnessConfig([
     { source: 'global', value: { capability: { budget: budget(20, 20) } } },
-    { source: 'project', value: { subagent: { budgetsByDepth: { 2: { modelCalls: { soft: 64 } } } } } },
+    { source: 'project', value: { subagent: { budgetsByDepth: { 2: { modelCalls: { soft: 100 } } } } } },
   ]);
   assert.deepEqual(equal.capability.budget.modelCalls, { soft: 20, hard: 20 });
-  assert.deepEqual(equal.subagent.budgetsByDepth[2]?.modelCalls, { soft: 64, hard: 64 });
+  assert.deepEqual(equal.subagent.budgetsByDepth[2]?.modelCalls, { soft: 100, hard: 100 });
 
   const globalOnly = resolveError([{ source: 'global', value: { capability: { budget: budget(300, 200) } } }]);
   expectError(globalOnly, 'global', 'capability.budget.modelCalls.hard');
@@ -324,7 +324,7 @@ test('a new depth needs a complete budget while existing depths accept partial o
     { source: 'global', value: { subagent: { budgetsByDepth: { 2: { modelCalls: { soft: 10 }, lifetimeMs: 5_000 } } } } },
   ]);
   assert.deepEqual(overridden.subagent.budgetsByDepth[2], {
-    modelCalls: { soft: 10, hard: 64 },
+    modelCalls: { soft: 10, hard: 100 },
     activeTimeMs: { soft: 2_700_000, hard: 3_600_000 },
     lifetimeMs: 5_000,
   });

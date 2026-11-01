@@ -32,16 +32,16 @@ test("counts Model Calls before dispatch and warns exactly once at soft", () => 
   const clock = createClock();
   const budget = createJobBudget({ depth: 2, now: clock.now });
 
-  for (let call = 1; call <= 47; call += 1) {
+  for (let call = 1; call <= 79; call += 1) {
     assert.deepEqual(budget.beginModelCall(), { ok: true, sequence: call });
   }
   assert.equal(budget.snapshot().phase, "normal");
   assert.equal(budget.takeWarning(), null);
 
-  assert.deepEqual(budget.beginModelCall(), { ok: true, sequence: 48 });
+  assert.deepEqual(budget.beginModelCall(), { ok: true, sequence: 80 });
   const warned = budget.snapshot();
   assert.equal(warned.phase, "warning");
-  assert.equal(warned.modelCalls, 48);
+  assert.equal(warned.modelCalls, 80);
   assert.equal(warned.terminal, null);
   assert.equal(warned.warningTaken, false);
 
@@ -49,7 +49,7 @@ test("counts Model Calls before dispatch and warns exactly once at soft", () => 
   assert.equal(budget.takeWarning(), null);
   assert.equal(budget.snapshot().warningTaken, true);
 
-  for (let call = 49; call <= 64; call += 1) {
+  for (let call = 81; call <= 100; call += 1) {
     assert.equal(budget.beginModelCall().ok, true);
   }
   assert.equal(budget.snapshot().phase, "warning");
@@ -59,10 +59,10 @@ test("counts Model Calls before dispatch and warns exactly once at soft", () => 
 test("allows the hard-th Model Call and rejects the projected hard+1", () => {
   const clock = createClock();
   const budget = createJobBudget({ depth: 2, now: clock.now });
-  for (let call = 1; call <= 64; call += 1) {
+  for (let call = 1; call <= 100; call += 1) {
     assert.equal(budget.beginModelCall().ok, true);
   }
-  assert.equal(budget.snapshot().modelCalls, 64);
+  assert.equal(budget.snapshot().modelCalls, 100);
 
   const rejected = budget.beginModelCall();
   assert.deepEqual(rejected, {
@@ -74,18 +74,18 @@ test("allows the hard-th Model Call and rejects the projected hard+1", () => {
       truncated: true,
       error: {
         code: "budget_exceeded",
-        detail: { dimension: "model_calls", soft: 48, hard: 64, observed: 64, rejectedProjected: 65 },
+        detail: { dimension: "model_calls", soft: 80, hard: 100, observed: 100, rejectedProjected: 101 },
       },
     },
     error: {
       code: "budget_exceeded",
-      detail: { dimension: "model_calls", soft: 48, hard: 64, observed: 64, rejectedProjected: 65 },
+      detail: { dimension: "model_calls", soft: 80, hard: 100, observed: 100, rejectedProjected: 101 },
     },
   });
 
   const frozen = budget.snapshot();
-  assert.equal(frozen.modelCalls, 64);
-  assert.equal(frozen.rejectedProjectedModelCalls, 65);
+  assert.equal(frozen.modelCalls, 100);
+  assert.equal(frozen.rejectedProjectedModelCalls, 101);
   assert.equal(frozen.phase, "exhausted");
   assert.deepEqual(frozen.terminal, rejected.terminal);
 
@@ -193,7 +193,7 @@ for (const [depth, lifetimeMs] of [
 test("freezes monotonically at the terminal state", () => {
   const clock = createClock();
   const finished = createJobBudget({ depth: 2, now: clock.now });
-  for (let call = 1; call <= 48; call += 1) {
+  for (let call = 1; call <= 80; call += 1) {
     finished.beginModelCall();
   }
 
@@ -204,7 +204,7 @@ test("freezes monotonically at the terminal state", () => {
 
   const frozen = finished.snapshot();
   assert.equal(frozen.phase, "warning");
-  assert.equal(frozen.modelCalls, 48);
+  assert.equal(frozen.modelCalls, 80);
   assert.equal(finished.takeWarning(), null);
 
   clock.advance(24 * HOUR);
@@ -229,7 +229,7 @@ test("freezes monotonically at the terminal state", () => {
 
   // A budget failure is equally final: a later model_final cannot overwrite it.
   const blown = createJobBudget({ depth: 2, now: clock.now });
-  for (let call = 1; call <= 65; call += 1) {
+  for (let call = 1; call <= 101; call += 1) {
     blown.beginModelCall();
   }
   const failure = blown.snapshot().terminal;

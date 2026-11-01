@@ -9,7 +9,7 @@
         "lifetimeMs": 86400000
       },
       "2": {
-        "modelCalls": { "soft": 48, "hard": 64 },
+        "modelCalls": { "soft": 80, "hard": 100 },
         "activeTimeMs": { "soft": 2700000, "hard": 3600000 },
         "lifetimeMs": 43200000
       }

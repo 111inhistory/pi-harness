@@ -15,6 +15,9 @@
     "test": "node --import tsx scripts/test.mjs",
     "test:typed": "node --import tsx scripts/test.mjs typed",
     "check": "npm run typecheck && npm test",
+    "check:json": "node scripts/check-json.mjs",
+    "check:docs": "node scripts/check-docs.mjs",
+    "prepare": "git config core.hooksPath .githooks || true",
     "test:subagent": "node --import tsx --test test/subagent-runtime.test.mjs",
     "test:shell-preflight": "node --import tsx --test test/shell-preflight.test.mjs test/shell-preflight-extension.test.mjs"
   },

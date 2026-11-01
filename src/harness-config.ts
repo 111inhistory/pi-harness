@@ -50,7 +50,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
     maxActiveChildren: 4,
     budgetsByDepth: {
       1: { modelCalls: { soft: 160, hard: 200 }, activeTimeMs: { soft: 5_400_000, hard: 7_200_000 }, lifetimeMs: 86_400_000 },
-      2: { modelCalls: { soft: 48, hard: 64 }, activeTimeMs: { soft: 2_700_000, hard: 3_600_000 }, lifetimeMs: 43_200_000 },
+      2: { modelCalls: { soft: 80, hard: 100 }, activeTimeMs: { soft: 2_700_000, hard: 3_600_000 }, lifetimeMs: 43_200_000 },
     },
     inheritedToolWaitMs: 10_000,
     routingRetry: { maxAttempts: 3, baseDelayMs: 500, maxDelayMs: 8_000, jitterRatio: 0.25 },
