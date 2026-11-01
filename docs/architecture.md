@@ -14,6 +14,7 @@
 | `root-service.ts` | 组装上述模块，根事件写入、历史视图、内存超限临时文件管理（进程正常退出清理）和故障锁存 | 第二套 Job 状态机 |
 | `extension.ts`、`lifecycle.ts` | SDK 生命周期钩子、代次隔离、退役期限和资源隔离 | 伪造物理退出、重跑已结束任务 |
 | `surface.ts`、`message-write.ts` | 工具声明、调用方身份绑定、输入捕获、专用 `msg_write` 消息工具（`write` 为 SDK 原生文件工具完全保持不变） | 持有全局注册表或执行循环 |
+| `command.ts`、`status-view.ts` | `/subagent` 命令注册、参数解析、错误呈现与列表文本渲染 | Job 状态、准入或消息投递 |
 | `listeners.ts`、`ipc/` | 端点目录、监听、NDJSON 分帧与平台资源归属校验 | 用显示窗口决定可达性、另写广播状态机 |
 | `native-delivery.ts`、`delivery.ts` | 独立通知封装、检查原生交接结果、明确拒收后的保留会话追加 | 模型已读回执、自动重发或消息合并 |
 | `inherited-context.ts` | 共享分支捕获，在清理未决工具前通过 spawning assistant 锁定物理模型 | 伪造身份或跨分支泄漏 |

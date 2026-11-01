@@ -150,7 +150,7 @@ Capability 调用仍等待检索完成，再返回筛选后的资源。复用执
 | 创建 | `subagent_create({context?, tasks: [{task, name?, inheritContext?}]})`；等待本批各子 Agent 本地就绪（路由分配、会话创建、扩展与工具配置完成、初始输入就绪且 IPC 监听准备就绪），不等待首次模型调用或第一轮任务完成 |
 | 创建返回 | `items` 按输入顺序包含 `id`、`socket`、`role` 与 `model`，不返回 `status` 或历史路径；启动前失败以工具错误报告失败 ID，已注册节点保留，不自动重建 |
 | 上下文 | 默认不继承聊天历史；`inheritContext: true` 复制父会话快照 |
-| 查询 | `subagent_list({id?, all?})`；返回嵌套 `children` 树，不返回 `parentId` 或外层 `items`；默认视图有范围限制，`all: true` 查询完整树，`id` 返回可见子树或 `null`；持久化存储启用时返回的树根附带 `historyDir` |
+| 查询 | `subagent_list({id?, all?})`；返回嵌套 `children` 树，不返回 `parentId` 或外层 `items`；默认视图有范围限制，`all: true` 查询完整树，`id` 返回可见子树或 `null`；节点附带 `kind`（`fresh`／`inherited`）；持久化存储启用时返回的树根附带 `historyDir` |
 | 取消 | `subagent_stop({id})`；请求取消，不等待执行退出与历史写入结束 |
 | 结果读取 | 终态通知直接携带本轮最终输出；超限时附完整结果路径。`history.result` 指向原始结果，`history.summary` 与 `history.cleanJsonl` 用于按需回顾该轮任务和记录 |
 | 通信 | `msg_write` 向返回的 IPC 地址写入消息；`write` 保持 SDK 原生文件工具完全不变，不用于消息发送 |
@@ -167,6 +167,21 @@ Fresh 初始工具按 Pi 默认配置加载，包括已配置的扩展工具与 
 Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）、活跃直接子节点上限（Fresh 对应的 `subagent.maxActiveChildren`，默认 4；Inherited 对应的 `subagent.maxActiveInheritedChildren`，默认 3；两类直接子节点使用独立的父节点名额池）以及每层 Budget 通过 `harness.json` 配置，详见[Harness 参数配置](harness-configuration.md)。根服务和子会话使用同一份配置快照，已运行 Job 不受文件修改影响。这些配置不作为公开工具参数。
 
 `subagent_create` 在本批子会话本地就绪后返回。本地就绪包括路由分配、会话创建、扩展与工具配置完成、初始输入就绪和 IPC 监听准备就绪。返回项包含 `id`、`socket`、`role` 与 `model`。它不等待首次模型流分发，也不等待任务完成。本地准备阶段的失败会使 create 报错，运行阶段的失败由终态通知报告。
+
+### `/subagent` 命令
+
+扩展命令 `/subagent` 提供同一根代次的观察与停止入口，不经过模型轮次，也不消耗 Job Budget。
+
+| 子命令 | 行为 |
+| --- | --- |
+| `/subagent`、`/subagent list` | 打印当前根的 Actor 树；`--all` 展开完整树，`--id <actorId>` 只看指定子树 |
+| `/subagent stop <actorId>` | 请求取消该 Actor 的当前 Job；返回 `ok` 与 `status`，被拒绝时附带 `reason`（`already_finished`、`stopping`、`finalizing`、`budget_exceeded`）；Actor 没有运行中的 Job 时保持幂等 `ok`，视图提示无运行任务 |
+| `/subagent stop --all` | 对当前根所有 `running` Job 请求取消，立即汇总已请求／拒绝／失败数量，不等待终态 |
+
+- 列表输出为纯文本：树形缩进，`●` 活跃、`◐` 正在停止或收尾、`○` 空闲；列固定为 ID、深度、种类（`fresh`／`inherited`）、角色、状态与调用数。标题给出当前根的全部 Actor 数；活跃数与 Fresh／Inherited 分项只统计运行中的 Actor。窗口隐藏节点时给出提示。
+- 命令只读与停止：不发送消息、不 steer、不唤醒；消息仍由 `msg_write` 与 IPC 提供。
+- 命令与 Root 同代次：退役或切换期间以 `runtime_transitioning` 拒绝。列表在异步读取后重新核对根代次，根已切换时不渲染旧快照。停止请求不等于终态，Job 仍占 Actor 与名额，直到原生执行退出。
+- 交互式详情尚未实现。
 
 默认查询以 Main 或调用者的直接父节点为根。每个同父组最多 4 项，活跃优先、最近停止节点补齐；Main 展开可见活跃子节点，子 Agent 只展开自己，不展开 peers 的孩子。停止节点不展开，即使仍有活跃后代。节点保留状态、Socket 和可用的最近已结束 Job 历史；运行中的节点可同时带上一轮历史。`all: true` 不作窗口裁剪或停止节点折叠。持久化存储启用时，返回的树根节点（含 id 选中的子树根）附带 `historyDir` 指针，指向包含各轮 `<jobId>/summary.md` 与 `transcript.jsonl` 的持久化历史目录；内存会话不附带该字段。
 

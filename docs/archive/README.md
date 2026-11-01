@@ -10,6 +10,7 @@
 | [Capability 反馈精简与交付筛选](capability-mcp-readiness.md) | 反馈投影、交付筛选与沙箱规则已实现，使用[接口契约](../interface-contract.md) |
 | [父 Subagent 等待保活设计](subagent-parent-hold-design.md) | parent-hold 已实现，使用[当前架构](../architecture.md) |
 | [Capability 与 MCP 现场排查](capability-mcp-registration-investigation.md) | 保存脱敏现象与被后续核对修正的推断，未修复项见[已知问题](../known-issues.md) |
+| [Subagent 状态命令提案](subagent-status-command-proposal.md) | `/subagent` 命令已实现，使用[接口契约](../interface-contract.md) |
 | [已修复问题记录](resolved-issues.md) | 保存修复时的证据和验证范围；当前缺陷见[已知问题](../known-issues.md) |
 
 ## 旧契约与候选设计
@@ -17,7 +18,6 @@
 | 文档 | 主题 |
 | --- | --- |
 | [Capability 与 Job Budget 初稿](capability-and-job-budget-design.md) | 执行预算和内部检索的早期方案 |
-| [Subagent 状态命令提案](subagent-status-command-proposal.md) | 状态命令入口、状态变更来源与提示词边界 |
 | [Capability 与 Job Budget 第二稿](capability-and-job-budget-design-v2.md) | 后续候选预算方案 |
 | [Capability 批量协议草案](capability-batch-draft.md) | 批量检索协议讨论 |
 | [Subagent 生命周期设计](subagent-lifecycle-design.md) | 早期生命周期和职责划分 |
