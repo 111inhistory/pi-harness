@@ -20,6 +20,8 @@ to the session branch:
   `toolResult.details` or reconstruct memory from older result messages.
 - Visible results anchor updates by `toolCallId`. Discoveries outside visible
   context fold into the leading checkpoint.
+- Persist-before-activate: Capability appends the discovery record to the
+  branch before calling synchronous tool activation.
 
 ## Contents
 
@@ -27,13 +29,13 @@ to the session branch:
   and selected group members. Native declarations, Codemode interface queries,
   or fallback result metadata provide argument schemas; branch records do not
   duplicate schemas.
-- Shared instructions are injected by this section. Capability tool-result text
-  omits them, including fallback results, so the same guidance is not copied into
-  both the tool result and its anchored memory section.
+- Shared instructions: this section injects shared instructions. Capability tool-result
+  text omits them, including fallback results, so the same guidance is not copied
+  into both the tool result and its anchored memory section.
 - Skills: absolute entry paths, names, and descriptions. The host does not infer
   constraints or associations from Skill prose. A Skill ref is its entry path;
-  the model uses native file read to understand the guidance.
-  No resource protocol router or read/write override is installed.
+  the model uses native file read to understand the guidance. The host installs
+  no resource protocol router or file tool override.
 - Shared guidance: retained across discoveries, even when a selection adds no tools.
 - Remote coverage: discovery searches local resources only.
   Coverage explicitly marks remote search as `not_searched`. Remote candidates
@@ -45,7 +47,7 @@ scope disallows a tool, the projection excludes that tool.
 
 ## Native discovery boundary
 
-The paired `extensions/harness.ts` entry also installs the native discovery
+The paired `extensions/harness.ts` entry installs the native discovery
 boundary. It replaces the native MCP discovery surface, not its transport or
 authentication. The paired entry disables native `tool_search`, global resource
 listing, and default `<mcp_servers>` injection.
@@ -55,9 +57,10 @@ register `searchTools`. `ALL_TOOLS`, `describeTool`, and `describeNamespace` see
 only currently enabled, permitted tools. `ALL_TOOLS` carries short descriptions;
 `describeTool` returns the full interface when requested. A sandbox keeps the tool
 snapshot captured at its start, so newly activated tools require a new Codemode
-call. Catalog queries do not wait for MCP backends. Actual nested calls still pass
-through Pi's tool pipeline. Generic MCP resource reads also require a currently enabled,
-permitted member of the selected server namespace.
+call. Catalog queries do not wait for MCP backends; the host adds no active MCP
+reconnection. Actual nested calls still pass through Pi's tool pipeline. Generic
+MCP resource reads require a currently enabled, permitted member of the selected
+server namespace.
 
 Old native Codemode declarations can embed a catalog in their description. The
 request projection replaces those descriptions with the safe registered
@@ -89,6 +92,23 @@ conversion path. This feature prevents an additional cache invalidation during
 normal discovery updates, but does not alter cache invalidation caused by
 compaction itself.
 
+## Unresolved SDK allowlist discrepancy
+
+Under SDK `1.4.0`, a strict tool allowlist can retain MCP registration while
+rejecting activation of members that do not match it. The absence of hidden
+`tool_search` alone does not predict failure: an allowlist that matches the MCP
+member names can still permit activation.
+
+Capability writes the canonical branch record before it activates tools. The host
+filters public results by the actual active set, but the earlier record can retain
+unactivated members. Later request projections can advertise those members again.
+An activation exception can leave the same discrepancy.
+
+This is an unresolved defect in the requirement to accumulate successfully obtained
+capabilities, not a policy that permits failed activation to count as success.
+The record does not grant execution permission. Conditions and recovery options
+are in [known issues](known-issues.md#严格工具-allowlist-下的激活记忆不一致).
+
 ## Regression coverage
 
 - `test/typed/capability-prompt.test.ts`: checks immediate availability, request
@@ -108,4 +128,6 @@ compaction itself.
 - `test/typed/capability-feedback-sdk.test.ts`: checks complete, compact feedback
   in real SDK model requests and full namespace selection after ref-only repeats.
 - `test/typed/capability-allowlist-mask.test.ts`: reproduces the unresolved SDK
-  allowlist case where activation fails after the selection record was written.
+  allowlist case where activation fails after the host writes the selection record.
+- `test/typed/capability-main-default-activation.test.ts`: checks that Main starts
+  without `msg_write` and Capability activates the Subagent namespace.

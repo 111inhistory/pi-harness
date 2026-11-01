@@ -1,5 +1,7 @@
 # 提示词正文外置
 
+> 历史审查记录：结论仅覆盖检查时的代码与环境。当前行为见[接口契约](../interface-contract.md)，未修复项见[已知问题](../known-issues.md)。
+
 ## 结果
 
 2026-10-25，Capability 与 Subagent 的提示词正文从执行代码移至 `prompts/`。工具描述、参数说明、检索规则、续跑说明、分支记忆指引和 Budget 收尾文字也使用独立文件。文件清单见 [`prompts/README.md`](../../prompts/README.md)。

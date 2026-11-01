@@ -1,5 +1,7 @@
 # Subagent 存储 v2 半成品复核
 
+> 历史审查记录：结论仅覆盖检查时的代码与环境。当前行为见[接口契约](../interface-contract.md)，未修复项见[已知问题](../known-issues.md)。
+
 > 本文保留接入前的检查结论，不代表最新工作树。后续接入与验证见[插件内存收敛](subagent-memory-review.md)。
 
 ## 范围与结论

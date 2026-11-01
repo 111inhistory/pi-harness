@@ -1,5 +1,7 @@
 # Subagent 插件内存收敛
 
+> 历史审查记录：结论仅覆盖检查时的代码与环境。当前行为见[接口契约](../interface-contract.md)，未修复项见[已知问题](../known-issues.md)。
+
 本文记录存储适配与内存收敛阶段。后续真实历史转换见[批量迁移](subagent-migration-batch.md)，最新默认回归与提示词状态见[正文外置记录](prompt-extraction-review.md)。下述“不处理真实会话文件”是该阶段的边界，不代表后续未执行迁移。
 
 ## 边界

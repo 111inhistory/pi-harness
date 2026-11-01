@@ -1,12 +1,12 @@
 # JEV-Based Subagent Routing 实验与评测记录（英文测试集）
 
-本目录包含针对 Subagent 两阶段自动路由（Task → Role → Model）的 JEV 实验体系、从本机 OMP 历史中提取的子任务数据集、自行编写的模型 Preference 以及针对真实英文历史任务的 Jev 实测结果。
+本目录保留 Subagent 两阶段路由（Task → Role → Model）的 JEV 评估脚本、配置和历史汇总。原始会话提取数据，以及包含任务原文的请求、响应、抽样和日志，已从工作树与 Git 历史移除。复跑需自行准备本地输入，仓库不附带这些历史数据集。
 
 ---
 
 ## 1. 架构与边界规范
 
-依据 `docs/subagent-routing-experiment.md` 与 `docs/subagent-contract.md`：
+依据历史设计 `docs/archive/subagent-routing-experiment.md` 与 `docs/archive/subagent-contract.md`；当前运行契约见 `docs/interface-contract.md`。
 
 1. **两阶段串行调用**：
    - **阶段 1（Role 选择）**：输入完整的任务说明（`delegated_assignment = # Batch context + # Task`，以及可选的 `startup_context`），在候选角色（`researcher`、`executor`、`reviewer`）中单选。
@@ -66,11 +66,11 @@
 
 ## 3. 运行指南
 
-测试已内置于测试脚本中，支持自定义运行：
+脚本依赖已移除的历史输入。按脚本约定在本地准备自己的数据集与启动上下文后再运行；以下命令说明历史调用方式，当前仓库不能直接复现该评估。认证由 `OPENROUTER_API_KEY` 环境变量提供。
 ```bash
 # 测试 20 个英文基准用例（assignment_only）
-OPENROUTER_API_KEY="sk-or-v1-..." python3 experiments/jev-routing/run_jev_routing.py --dataset english_benchmark --variant assignment_only
+python3 experiments/jev-routing/run_jev_routing.py --dataset english_benchmark --variant assignment_only
 
 # 测试 20 个英文基准用例（full_startup）
-OPENROUTER_API_KEY="sk-or-v1-..." python3 experiments/jev-routing/run_jev_routing.py --dataset english_benchmark --variant full_startup
+python3 experiments/jev-routing/run_jev_routing.py --dataset english_benchmark --variant full_startup
 ```

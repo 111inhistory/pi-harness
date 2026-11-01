@@ -1,5 +1,7 @@
 # 旧历史批量迁移记录
 
+> 历史审查记录：结论仅覆盖检查时的代码与环境。当前行为见[接口契约](../interface-contract.md)，未修复项见[已知问题](../known-issues.md)。
+
 ## 备份
 
 先完整复制 `$PI_CODING_AGENT_DIR/sessions`、`subagent-sessions`，包括已有备份文件。

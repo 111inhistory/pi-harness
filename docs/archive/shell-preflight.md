@@ -25,7 +25,7 @@ Shell Preflight 是附加功能，不是项目核心目标。
 开发时直接加载：
 
 ```bash
-/home/skwj111/pi-harness/pi --extension /code/pi-harness/extensions/shell-preflight.mjs
+pi --extension /tmp/project/extensions/shell-preflight.mjs
 ```
 
 ## 行为

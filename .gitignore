@@ -5,3 +5,16 @@ coverage/
 .DS_Store
 .pi/
 
+# Private routing inputs and outputs that contain original conversation text.
+/experiments/jev-routing/original_cases.json
+/experiments/jev-routing/recovered_english_cases.json
+/experiments/jev-routing/omp_english_benchmark.json
+/experiments/jev-routing/omp_subagent_benchmark_cases.json
+/experiments/jev-routing/omp_subagent_prompts_all.json
+/experiments/jev-routing/startup_context.json
+/experiments/jev-routing/results/**/*.gz
+/experiments/jev-routing/results/run_*.json
+/experiments/jev-routing/results/**/results.json*
+/experiments/jev-routing/results/**/random-sample.json*
+/experiments/jev-routing/results/**/role-pass.json*
+/experiments/jev-routing/results/**/prompt-features.*

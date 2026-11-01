@@ -1,5 +1,7 @@
 # 核心实现验证记录
 
+> 历史审查记录：结论仅覆盖检查时的代码与环境。当前行为见[接口契约](../interface-contract.md)，未修复项见[已知问题](../known-issues.md)。
+
 **历史检查点：** 本文记录存储 v2 开工前的结果。当时 JSONL 膨胀和 OOM 阻断了 Subagent 与 Capability；下述 RED 用例和合并实验不是当前待办。后续已完成存储接入、撤回消息合并和历史迁移，见[插件内存收敛](subagent-memory-review.md)、[批量迁移](subagent-migration-batch.md)及[提示词外置与当前回归](prompt-extraction-review.md)。
 
 ## 验证范围
