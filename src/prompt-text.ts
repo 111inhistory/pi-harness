@@ -51,3 +51,14 @@ export function promptStrings(name: string, ...fields: readonly string[]): reado
   }
   return value;
 }
+
+/** Replace `{key}` placeholders in prompt text with caller-supplied values. */
+export function fillPrompt(text: string, values: Readonly<Record<string, string | number>>): string {
+  let filled = text;
+  for (const [key, value] of Object.entries(values)) {
+    filled = filled.replaceAll(`{${key}}`, String(value));
+  }
+  const missing = filled.match(/\{[a-z][a-z0-9_]*\}/);
+  if (missing) throw new TypeError(`Prompt placeholder ${missing[0]} has no value.`);
+  return filled;
+}

@@ -32,7 +32,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "@earendil-works/pi-ai";
 
 import { captureInheritedContext, type InheritedSnapshot } from "../inherited-context.ts";
-import { promptString } from "../prompt-text.ts";
+import { fillPrompt, promptString } from "../prompt-text.ts";
 import {
   createMessageWriteTool,
   type ManagedWriteHost,
@@ -40,6 +40,12 @@ import {
 } from "./message-write.ts";
 import { droppedInheritedTools, inheritedToolsWarning } from "./tool-policy.ts";
 import type { CreatedAgents, DetailedAgentItem, StopResult } from "./runtime.ts";
+
+/** Resolved active-child caps reported to the model in the prompt section. */
+export interface ChildCapacity {
+  readonly maxActiveChildren: number;
+  readonly maxActiveInheritedChildren: number;
+}
 
 /** The caller-facing scope of one installed surface. */
 export interface SubagentSurfaceScope {
@@ -53,6 +59,12 @@ export interface SubagentSurfaceScope {
   readonly cwd: string;
   /** The root's resolved maximum nesting depth; a child at it is a leaf. */
   readonly maxDepth: number;
+  /**
+   * Read per run so the section follows the snapshot that governs admission.
+   * The root resolves it from its config provider; a child closes over the
+   * config it was created with.
+   */
+  readonly capacityFor: (ctx: ExtensionContext) => ChildCapacity;
 }
 
 /** Where a created Job comes from; host-owned, passed through unchanged. */
@@ -248,6 +260,13 @@ export function installSessionSurface(
   api.registerTool(tools.list);
   if (tools.stop !== null) api.registerTool(tools.stop);
   api.registerTool(tools.msg_write);
+  api.on("before_agent_start", (event, ctx) => {
+    const limits = scope.capacityFor(ctx);
+    event.systemPromptOptions.sections.subagent_capacity = fillPrompt(TOOL_TEXT.create.capacity, {
+      fresh: limits.maxActiveChildren,
+      inherited: limits.maxActiveInheritedChildren,
+    });
+  });
 }
 
 /** `Main` is the root caller; every other caller is the child actor's own id. */
@@ -275,6 +294,7 @@ const TOOL_TEXT: SurfaceToolText = {
   namespace: text('namespace'),
   create: {
     description: text('create', 'description'), snippet: text('create', 'snippet'), guideline: text('create', 'guideline'),
+    capacity: text('create', 'capacity'),
     parameters: {
       context: text('create', 'parameters', 'context'),
       tasks: {
@@ -331,6 +351,7 @@ interface SurfaceToolText {
     readonly description: string;
     readonly snippet: string;
     readonly guideline: string;
+    readonly capacity: string;
     readonly parameters: {
       readonly context: string;
       readonly tasks: {

@@ -15,7 +15,8 @@
           "inheritContext": "Inherit this session's conversation and capabilities. Default false: start with clean context."
         }
       }
-    }
+    },
+    "capacity": "Active-children caps: at most {fresh} fresh and {inherited} inherited children per parent. A batch or revival that would exceed either cap is refused; running children are not stopped when a cap changes."
   },
   "list": {
     "description": "Returns a scoped tree of related agents, non-blocking (parent, peers, and direct children; capped at 4 per group, active first). Active direct children are expanded; stopped nodes are folded. Nodes carry latest history paths, and durable roots include historyDir (<jobId>/summary.md for outcomes, transcript.jsonl for logs; inspect via read).",

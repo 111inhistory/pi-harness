@@ -88,5 +88,6 @@ export default function subagentExtension(api: ExtensionAPI): void {
     allowInherited: true,
     cwd: process.cwd(),
     maxDepth: DEFAULT_HARNESS_CONFIG.subagent.maxDepth,
+    capacityFor: (ctx) => configFor(ctx).subagent,
   });
 }

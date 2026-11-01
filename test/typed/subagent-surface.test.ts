@@ -57,6 +57,7 @@ const ROOT_SCOPE: SubagentSurfaceScope = {
   allowInherited: true,
   cwd: "/tmp/project",
   maxDepth: MAX_DEPTH,
+  capacityFor: () => ({ maxActiveChildren: 4, maxActiveInheritedChildren: 2 }),
 };
 
 /** Derived from the exported context type: the SDK entry point does not export it. */
@@ -185,21 +186,67 @@ function resolveWith(host: SubagentSurfaceHost, seen: ExtensionContext[]): (ctx:
   };
 }
 
+test("the capacity section follows the resolved caps without rewriting tool text", async () => {
+  const registered: ToolDefinition[] = [];
+  const handlers: Array<{ event: string; handler: (...args: never[]) => unknown }> = [];
+  interface SurfaceApiSubset {
+    registerTool(tool: ToolDefinition): void;
+    on(event: string, handler: (...args: never[]) => unknown): void;
+    getAllTools(): ExtensionAPI["getAllTools"] extends () => infer T ? T : never;
+    getActiveTools(): string[];
+  }
+  const api: SurfaceApiSubset = {
+    registerTool: (tool) => { registered.push(tool); },
+    on: (event, handler) => { handlers.push({ event, handler }); },
+    getAllTools: () => [],
+    getActiveTools: () => [],
+  };
+  let limits = { maxActiveChildren: 4, maxActiveInheritedChildren: 2 };
+  installSessionSurface(api as unknown as ExtensionAPI, async () => new RecordingHost(), {
+    ...ROOT_SCOPE,
+    capacityFor: () => limits,
+  });
+
+  const handler = handlers.find((entry) => entry.event === "before_agent_start")?.handler;
+  assert.ok(handler);
+  const options = { sections: {} as Record<string, string> };
+  const event = { type: "before_agent_start", systemPrompt: "", systemPromptOptions: options };
+  const ctx = sdkContext({ cwd: "/tmp/project" });
+
+  await handler(event as never, ctx as never);
+  const first = options.sections["subagent_capacity"];
+  assert.match(first ?? "", /at most 4 fresh and 2 inherited children per parent/);
+  assert.equal(
+    registered.find((tool) => tool.name === "subagent_create")?.description,
+    JSON.parse(promptText("subagent-tools.json")).create.description,
+    "tool text stays static so a cap change does not move the prompt prefix",
+  );
+
+  await handler(event as never, ctx as never);
+  assert.equal(options.sections["subagent_capacity"], first, "an unchanged snapshot produces identical text");
+
+  limits = { maxActiveChildren: 1, maxActiveInheritedChildren: 3 };
+  await handler(event as never, ctx as never);
+  assert.match(options.sections["subagent_capacity"] ?? "", /at most 1 fresh and 3 inherited children per parent/);
+});
+
 test("the root surface registers controls and messaging without overriding write", () => {
   const registered: ToolDefinition[] = [];
   // Registration-only subset of ExtensionAPI; the assembly below is the SDK
   // boundary this test crosses.
   interface SurfaceApiSubset {
     registerTool(tool: ToolDefinition): void;
+    on(event: string, handler: (...args: never[]) => unknown): void;
     getAllTools(): ExtensionAPI["getAllTools"] extends () => infer T ? T : never;
     getActiveTools(): string[];
   }
   const api: SurfaceApiSubset = {
     registerTool: (tool) => { registered.push(tool); },
+    on: () => {},
     getAllTools: () => [],
     getActiveTools: () => [],
   };
-  installSessionSurface(api as ExtensionAPI, async () => new RecordingHost(), ROOT_SCOPE);
+  installSessionSurface(api as unknown as ExtensionAPI, async () => new RecordingHost(), ROOT_SCOPE);
 
   assert.deepEqual(registered.map((tool) => tool.name), [
     "subagent_create",
@@ -348,7 +395,10 @@ test("a child surface reports its own actor id as the parent, never its parent's
   const tools = createSurfaceTools({
     api,
     resolveHost: async () => host,
-    scope: { callerId: "sub_01", depth: 1, allowInherited: false, cwd: "/tmp/project", maxDepth: MAX_DEPTH },
+    scope: {
+      callerId: "sub_01", depth: 1, allowInherited: false, cwd: "/tmp/project", maxDepth: MAX_DEPTH,
+      capacityFor: () => ({ maxActiveChildren: 4, maxActiveInheritedChildren: 2 }),
+    },
   });
   assert.ok(tools.create !== null);
   const ctx = sdkContext({ cwd: "/tmp/child" });

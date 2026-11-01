@@ -153,6 +153,7 @@ export class RootService implements ManagedWriteHost {
         allowInherited: scope.allowInherited,
         cwd: scope.cwd,
         maxDepth: scope.maxDepth,
+        capacityFor: () => this.#options.config.subagent,
       }),
     });
     const owner = this;
