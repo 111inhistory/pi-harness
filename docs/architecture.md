@@ -7,7 +7,7 @@
 | 所有者 | 负责 | 不负责 |
 | --- | --- | --- |
 | `harness-config.ts` | 外部配置读取、合成与校验；根配置快照和指定提示词段落 | 路由角色、Pi 原生设置、运行中 Job 变更 |
-| `runtime.ts` | Actor 拓扑、Job 状态机、活跃名额控制、停止原因、续跑准入、中断恢复、终态事件与单一 Budget 监控（监控 lifetime 与 active hard 截止时间，`startActive` 时重置，`stop`/`finalize`/`end` 时清理） | SDK Session、Socket、原生文件解析 |
+| `runtime.ts` | Actor 拓扑、Job 状态机、活跃名额控制（Fresh 与 Inherited 独立父节点名额池）、停止原因、续跑准入、中断恢复、终态事件与单一 Budget 监控（监控 lifetime 与 active hard 截止时间，`startActive` 时重置，`stop`/`finalize`/`end` 时清理） | SDK Session、Socket、原生文件解析 |
 | `native-runner.ts` | Session 执行句柄生命周期、输入准入、在途 steer 协调、原生输入缓冲、本地就绪（local readiness）判定与资源清理 | 裁定 Job 状态、决定空闲唤醒、写根终态 |
 | `actor-sessions.ts` | Actor 角色／模型身份记录、原生 manager 引用与已记录锚点、身份补丁 | Job 状态和停止排序 |
 | `native-session.ts` | Settings、ResourceLoader、子扩展装配及 SDK 会话创建（Fresh／Inherited 均独立加载扩展与 MCP 后端，Inherited 恢复捕获白名单并对异步 MCP 提供有界等待，默认 10 秒） | 路由、任务结果裁决 |
@@ -22,7 +22,7 @@
 
 Runtime 的 `job.status` 是领域事实。Runner 的输入准入栅栏表示原生句柄是否还能接收消息，不表示 Job 已停止。取消后，Job 仍占用 Actor 与名额，直到原生执行退出并完成收尾。
 
-配置由 `harness-config.ts` 统一解析，按默认、全局、受信项目顺序合成。Root 使用配置快照并传给子会话；Subagent 深度、活跃名额、各层 Budget、重试和提示词段落，以及 Capability 检索与 Codemode 参数均从该快照读取。已有 Job 保留原 Budget。边界和字段见[Harness 参数配置](harness-configuration.md)。
+配置由 `harness-config.ts` 统一解析，按默认、全局、受信项目顺序合成。Root 使用配置快照并传给子会话；Subagent 深度、Fresh 与 Inherited 独立父节点活跃名额、各层 Budget、重试和提示词段落，以及 Capability 检索与 Codemode 参数均从该快照读取。已有 Job 保留原 Budget。边界和字段见[Harness 参数配置](harness-configuration.md)。
 
 ## 创建、执行与恢复
 

@@ -164,7 +164,7 @@ Capability 调用仍等待检索完成，再返回筛选后的资源。复用执
 
 Fresh 初始工具按 Pi 默认配置加载，包括已配置的扩展工具与 MCP 后端，并合并角色 `enableTools`。角色 `excludeTools` 通过 SDK 始终排除，`enableTools` 和扩展主动激活都不能绕过。Root 装配入口由子会话 surface 替代，不重复加载。Fresh 与 Inherited 均独立加载已配置的扩展与 MCP 后端（`noExtensions: false`）；Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定底层物理模型（`physicalModelForCall`），避免虚拟模型在子会话中重路由。它恢复捕获的工具白名单、系统提示词与思考强度。白名单仅限可重新创建的文件型扩展工具与 MCP 工具，父会话专属诊断工具不传递。若继承的异步 MCP 尚未完成注册，按 `subagent.inheritedToolWaitMs` 有界等待，默认最多 10 秒。
 
-Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）、活跃直接子节点上限（`subagent.maxActiveChildren`，默认 4）以及每层 Budget 通过 `harness.json` 配置，详见[Harness 参数配置](harness-configuration.md)。根服务和子会话使用同一份配置快照，已运行 Job 不受文件修改影响。这些配置不作为公开工具参数。
+Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）、活跃直接子节点上限（Fresh 对应的 `subagent.maxActiveChildren`，默认 4；Inherited 对应的 `subagent.maxActiveInheritedChildren`，默认 3；两类直接子节点使用独立的父节点名额池）以及每层 Budget 通过 `harness.json` 配置，详见[Harness 参数配置](harness-configuration.md)。根服务和子会话使用同一份配置快照，已运行 Job 不受文件修改影响。这些配置不作为公开工具参数。
 
 `subagent_create` 在本批子会话本地就绪后返回。本地就绪包括路由分配、会话创建、扩展与工具配置完成、初始输入就绪和 IPC 监听准备就绪。返回项包含 `id`、`socket`、`role` 与 `model`。它不等待首次模型流分发，也不等待任务完成。本地准备阶段的失败会使 create 报错，运行阶段的失败由终态通知报告。
 
@@ -280,6 +280,7 @@ Harness 为没有专用结果渲染器的工具提供统一预览，包括 Capab
 | D1：Fresh 职责 | `subagent-routing.json` 的角色说明 | Fresh 路由后注入，续跑保留已记录角色 |
 | 共同工作指引 | `subagent.prompts.common`，内置为空 | Fresh 与 Inherited 的当前会话装配均追加一次非空正文 |
 | D2：Inherited 上下文定位 | `subagent.prompts.inherited`，默认来自 turns 的 `inheritedContext` | 仅 Inherited 会话额外注入，续跑及重新打开原生会话时仍按该 Actor 身份装配 |
+| E：活跃名额 | tools 的 `create.capacity` | 作为 system prompt 段落 `subagent_capacity` 注入；`{fresh}`、`{inherited}` 按当前配置快照替换 |
 
 提示词定制边界：
 
@@ -287,6 +288,7 @@ Harness 为没有专用结果渲染器的工具提供统一预览，包括 Capab
 - 宿主上下文固定：`subagent-turns.json` 中的 `context` 包含三个固定占位符 `{agentId}`、`{parentId}`、`{parentSocket}`，由宿主直接插入，不展开变量或代码。
 - 提示词段落装配不改写已捕获的历史，也不把历史重写为新的任务正文。快照捕获仍会移除 Harness 内部条目和末尾尚未完成的工具调用，并为子会话分配独立 session ID。
 - 子会话装配顺序：依次为路由角色指引、宿主身份段（`childContext`）、非空 `common`，以及仅用于 Inherited 模式的非空 `inherited`。`common` 默认为空时，装配顺序保持为角色、宿主身份与继承指引。
+- `create.capacity` 通过 `before_agent_start` 写入 `sections.subagent_capacity`，值来自当前配置快照。同一快照下文本逐字节一致；配置变化只产生一条段落补丁，工具描述保持静态。
 
 参数说明按所属工具与实际嵌套位置保存：
 

@@ -17,6 +17,7 @@
 | 文档 | 主题 |
 | --- | --- |
 | [Capability 与 Job Budget 初稿](capability-and-job-budget-design.md) | 执行预算和内部检索的早期方案 |
+| [Subagent 状态命令提案](subagent-status-command-proposal.md) | 状态命令入口、状态变更来源与提示词边界 |
 | [Capability 与 Job Budget 第二稿](capability-and-job-budget-design-v2.md) | 后续候选预算方案 |
 | [Capability 批量协议草案](capability-batch-draft.md) | 批量检索协议讨论 |
 | [Subagent 生命周期设计](subagent-lifecycle-design.md) | 早期生命周期和职责划分 |
