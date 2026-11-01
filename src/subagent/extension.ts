@@ -2,6 +2,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil
 import { DEFAULT_HARNESS_CONFIG, harnessConfigFor } from '../harness-config.ts';
 import { ServiceLifecycle } from './lifecycle.ts';
 import { RootService } from './root-service.ts';
+import { installSubagentCommand } from './command.ts';
 import { installSessionSurface } from './surface.ts';
 import { SubagentError } from './runtime.ts';
 
@@ -82,6 +83,7 @@ export default function subagentExtension(api: ExtensionAPI): void {
   });
   // The root surface is depth 0, below every valid configured maximum depth, so
   // its own create/stop registration does not depend on the resolved value.
+  installSubagentCommand(api, current);
   installSessionSurface(api, current, {
     callerId: 'Main',
     depth: 0,

@@ -81,6 +81,8 @@ type ResolvedRootServiceOptions = RootServiceOptions & { readonly config: Harnes
 /** One root's domain, native resources and write ownership. */
 export class RootService implements ManagedWriteHost {
   readonly #options: ResolvedRootServiceOptions;
+  /** Session this root was created for; identifies the data the service owns. */
+  readonly sessionId: string;
   readonly runtime: SubagentRuntime;
   readonly actors: ActorSessionStore;
   readonly runner: NativeJobRunner;
@@ -103,6 +105,7 @@ export class RootService implements ManagedWriteHost {
     this.#registry = options.context.modelRegistry;
     const manager = options.context.sessionManager;
     const sessionId = manager.getSessionId();
+    this.sessionId = sessionId;
     const sessionFile = manager.getSessionFile();
     const cwd = options.context.cwd;
     const durable = typeof sessionFile === 'string' && sessionFile !== '';

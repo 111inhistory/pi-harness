@@ -647,3 +647,30 @@ test('a root config snapshot survives project rewrites, governs child caps, and 
     await scenario.dispose();
   }
 });
+
+test('registers /subagent and keeps argument errors service-free through the SDK command context', { timeout: 30000 }, async () => {
+  const scenario = await startScenario({
+    config: {
+      global: harnessConfig({
+        maxDepth: 2, maxActiveChildren: 4,
+        commonAppend: 'Global guidance.', inheritedReplace: 'Inherited guidance.',
+        d1ModelCalls: { soft: 2, hard: 8 },
+      }),
+      project: {},
+    },
+    respond: (_role, _turn, _text, reply) => reply.text('ack'),
+  });
+  try {
+    const command = scenario.session.extensionRunner.getRegisteredCommands().find((entry) => entry.name === 'subagent');
+    assert.ok(command, 'the harness extension registers /subagent on the real SDK session');
+    const notices: Array<{ text: string; type: string }> = [];
+    const ctx = scenario.session.extensionRunner.createCommandContext();
+    Object.defineProperty(ctx, 'ui', {
+      value: { notify: (text: string, type: string = 'info') => { notices.push({ text, type }); } },
+    });
+    await command.handler('stop --bogus', ctx);
+    assert.deepEqual(notices, [{ text: 'invalid_command_args: stop requires one actor id or --all.', type: 'error' }]);
+  } finally {
+    await scenario.dispose();
+  }
+});
