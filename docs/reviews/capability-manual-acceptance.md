@@ -36,6 +36,8 @@ node --import tsx --test test/typed/capability-manual-sdk.test.ts
 
 入口：`scripts/verify-capability-manual-online.mjs`。它用真实 `createAgentSession`、真实提供方模型与 `mcp.json` 中真实 MCP 服务器运行同一契约；manual 名单以内存配置注入，不修改 `harness.json`；MCP 日志写入临时目录；不写会话文件；默认只列出并激活 MCP 工具，`--call` 时额外让模型对指定工具做一次调用，由执行者决定这次运行是否产生服务器副作用。
 
+MCP 的 manual 名单在服务器注册完成后按**实际注册的工具名**重建（`computer-use-linux` 注册的是 `mcp__computer_use_linux__*`，直接用服务器名拼前缀不会命中），并在首次 prompt 与 `/capability enable` 之前生效；脚本断言所选 `--call` 名字被 `manualToolMatcher` 命中、且会话上的 root-only 策略同样命中，因此该次调用验证的是 manual 分类本身，而不只是普通 MCP 选择门禁。
+
 ```sh
 node --import tsx scripts/verify-capability-manual-online.mjs [--agent-dir DIR] [--model PROVIDER/ID] [--server NAME]
 ```
@@ -44,6 +46,7 @@ node --import tsx scripts/verify-capability-manual-online.mjs [--agent-dir DIR] 
 
 ```text
 [info] provider=deepseek model=deepseek-flash server=video_ffmpeg agentDir=...
+[info] manual policy covers mcp__video_ffmpeg__export by exact registered name
 [info] before enable: active=6 fixtureActive=false
 [info] /capability enable -> info
 [info] manual_fixture executed through the real model
@@ -62,11 +65,13 @@ node --import tsx scripts/verify-capability-manual-online.mjs [--agent-dir DIR] 
 | `screenshot`、`list_windows`、`focused_window`、`list_apps` | 无参数或窗口目标 | 只读，但会暴露屏幕内容或本机窗口/应用清单 | 拒绝，不调用（隐私） |
 | `video_ffmpeg` 的 `audio`/`caption`/`check`/`cut`/`export`（非 list）/`fit`/`graphics`/`look` 等 | 需要 `input` 路径 | 会读写媒体文件 | 拒绝，不调用 |
 
-两次调用的脱敏证据（只记录形状与大小，不记录服务器返回的值）：
+两次调用的脱敏证据（只记录形状与大小，不记录服务器返回的值；失败分支也只报告形状与字节数，不打印正文）：
 
 ```text
+[info] manual policy covers mcp__computer_use_linux__doctor by exact registered name
 [info] call mcp__computer_use_linux__doctor args={} ok parts=text bytes=9957
        keys=accessibility,capabilities,input,platform,portals,readiness,windowing
+[info] manual policy covers mcp__video_ffmpeg__export by exact registered name
 [info] call mcp__video_ffmpeg__export args={"list":true} ok parts=text bytes=777 keys=non-json
 ```
 

@@ -8,8 +8,10 @@
  * with a scripted model and a synthetic stdio server; this entry repeats it
  * against the user's own providers and MCP servers.
  *
- * The manual policy is passed to this session in memory, so the script never
- * edits `harness.json`. It never creates, edits or deletes configuration, never
+ * The manual policy is passed to this session in memory (and, for MCP tools,
+ * rebuilt from the names that actually registered, so a server name with a
+ * hyphen still maps to its sanitized tool prefix), so the script never edits
+ * `harness.json`. It never creates, edits or deletes configuration, never
  * prints credentials, URLs, headers, environment values or tool result values,
  * and writes no session file. By default it only lists and activates MCP tools;
  * `--call` makes the model call one explicitly chosen read-only tool once, so the
@@ -47,7 +49,9 @@ import {
 } from '@earendil-works/pi-coding-agent';
 
 import capabilityExtension from '../extensions/capability.ts';
+import { manualToolMatcher } from '../src/capability/manual-tools.ts';
 import { installCapabilityMcp } from '../src/capability/native-discovery.ts';
+import { capabilityRootOnlyPolicy, setCapabilityRootOnlyPolicy } from '../src/capability/scope.ts';
 import { loadHarnessConfig } from '../src/harness-config.ts';
 import { installResultRendering } from '../src/result-rendering.ts';
 import subagentExtension from '../src/subagent/extension.ts';
@@ -128,12 +132,16 @@ const manualConfig = {
   ...config,
   capability: {
     ...config.capability,
-    manualTools: [toolName, 'read_mcp_resource', `mcp__${server}__*`],
+    // The MCP entries are added after registration, from the names the server
+    // really registered: a raw server name is not the tool prefix (for example
+    // computer-use-linux registers mcp__computer_use_linux__*).
+    manualTools: [toolName, 'read_mcp_resource'],
   },
 };
 
 const workDir = await mkdtemp(path.join(tmpdir(), 'pi-manual-online-'));
 process.env['PI_SUBAGENT_SOCKET_DIR'] = path.join(workDir, 'uds');
+let harnessApi;
 const settingsManager = SettingsManager.inMemory({
   compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: 'off',
 });
@@ -169,6 +177,7 @@ try {
         // a temporary MCP log, so the user's agent directory is not written.
         name: 'harness',
         factory: (api) => {
+          harnessApi = api;
           installResultRendering(api);
           // Capability goes first so its fixed config becomes this surface's
           // provider; the other installs reuse it instead of reading the disk.
@@ -198,6 +207,23 @@ try {
   }
   const mcpTools = session.getAllTools().filter(belongsToServer);
   if (mcpTools.length === 0) throw new Error(`MCP server "${server}" registered no tools; pick another with --server`);
+  const resourceReader = session.getAllTools().some((tool) => tool.name === 'read_mcp_resource');
+  if (harnessApi === undefined) throw new Error('the harness extension factory did not run');
+
+  // Register the manual policy from the names that actually registered, before
+  // the first prompt and before enablement, and prove it covers the call target.
+  const manualNames = [toolName, ...(resourceReader ? ['read_mcp_resource'] : []), ...mcpTools.map((tool) => tool.name)];
+  const manualPolicy = manualToolMatcher(manualNames);
+  setCapabilityRootOnlyPolicy(harnessApi, manualPolicy);
+  if (manualPolicy(toolName) !== true) failures.push(`the manual policy does not cover ${toolName}`);
+  if (options.call !== undefined) {
+    if (!mcpTools.some((tool) => tool.name === options.call)) {
+      throw new Error(`--call ${options.call} is not a tool of server "${server}"; choose one of: ${mcpTools.map((tool) => tool.name).join(',')}`);
+    }
+    if (manualPolicy(options.call) !== true) failures.push(`the manual policy does not cover ${options.call}`);
+    if (capabilityRootOnlyPolicy(harnessApi)?.(options.call) !== true) failures.push(`the session policy does not cover ${options.call}`);
+    report(`[info] manual policy covers ${options.call} by exact registered name`);
+  }
 
   await session.prompt('Reply with the single word READY. Do not call any tool.');
   if (session.getActiveToolNames().includes(toolName)) failures.push(`${toolName} stayed active before /capability enable`);
@@ -212,10 +238,6 @@ try {
   Object.defineProperty(commandContext, 'ui', {
     value: { notify: (text, type = 'info') => { notices.push({ text, type }); } },
   });
-  const resourceReader = session.getAllTools().some((tool) => tool.name === 'read_mcp_resource');
-  if (options.call !== undefined && !mcpTools.some((tool) => tool.name === options.call)) {
-    throw new Error(`--call ${options.call} is not a tool of server "${server}"; choose one of: ${mcpTools.map((tool) => tool.name).join(',')}`);
-  }
   const enableNames = [toolName, ...(resourceReader ? ['read_mcp_resource'] : []), ...mcpTools.map((tool) => tool.name)];
   await command.handler(`enable ${enableNames.join(' ')}`, commandContext);
   report(`[info] /capability enable -> ${notices.map((notice) => notice.type).join(',') || 'no notice'}`);
@@ -238,16 +260,20 @@ try {
     await session.prompt(`Call the tool ${options.call} exactly once with these arguments: ${JSON.stringify(callArgs)}. Reply with its raw output.`);
     const result = session.messages.findLast((message) => message.role === 'toolResult' && message.toolName === options.call);
     if (result === undefined) failures.push(`the model did not call ${options.call}`);
-    else if (result.isError === true) failures.push(`${options.call} failed: ${JSON.stringify(result.content).slice(0, 200)}`);
     else {
       // Redacted evidence: shape and size only, never the server's values.
       const text = result.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
-      let keys = null;
-      try {
-        const parsed = JSON.parse(text);
-        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) keys = Object.keys(parsed);
-      } catch { /* not JSON */ }
-      report(`[info] call ${options.call} args=${JSON.stringify(callArgs)} ok parts=${[...new Set(result.content.map((part) => part.type))].join('+')} bytes=${text.length} keys=${keys === null ? 'non-json' : keys.join(',')}`);
+      const parts = [...new Set(result.content.map((part) => part.type))].join('+');
+      if (result.isError === true) {
+        failures.push(`${options.call} failed (parts=${parts} bytes=${text.length}); the result body is not printed`);
+      } else {
+        let keys = null;
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) keys = Object.keys(parsed);
+        } catch { /* not JSON */ }
+        report(`[info] call ${options.call} args=${JSON.stringify(callArgs)} ok parts=${parts} bytes=${text.length} keys=${keys === null ? 'non-json' : keys.join(',')}`);
+      }
     }
   }
 
