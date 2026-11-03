@@ -8,6 +8,8 @@ export interface NativeDeliveryDeps {
   ownsContext(): boolean;
   canWake(): boolean;
   sendToMain(message: DeliveryCustomMessage, triggerTurn: boolean): void | Promise<void>;
+  /** Make the reply tool available before an external peer message wakes Main. */
+  activateReply(): void;
   appendRetained(agentId: string, message: NativeCustomHandoff): Promise<boolean>;
   onError(error: Error): void;
 }
@@ -22,6 +24,9 @@ export class NativeDeliveryRouter {
   constructor(deps: NativeDeliveryDeps) { this.#deps = deps; }
 
   async toMain(message: RuntimeDelivery): Promise<void> {
+    // A cross-session peer addresses Main directly. Load the reply tool before
+    // the triggered turn builds its loadout; failure must not drop the message.
+    if (message.type === 'message' && message.external !== undefined) this.#deps.activateReply();
     const result = sendDelivery(deliveryEntryFor(message), {
       isActive: () => this.#deps.ownsContext(),
       send: (payload) => this.#deps.sendToMain(payload, this.#deps.canWake()),

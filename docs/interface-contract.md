@@ -186,7 +186,7 @@ Capability 调用仍等待检索完成，再返回筛选后的资源。复用执
 
 初始工具集与激活状态按调用方深度确定：
 
-- Main 会话：基础工具沿用 Pi 的工具配置。`subagent_create`、`subagent_list`、`subagent_stop` 和 `msg_write` 均已注册，但默认不激活；Capability 选中整个 `subagent` 命名空间后一起激活。
+- Main 会话：基础工具沿用 Pi 的工具配置。`subagent_create`、`subagent_list`、`subagent_stop` 和 `msg_write` 均已注册，但默认不激活；Capability 选中整个 `subagent` 命名空间后一起激活。收到跨 session 消息时，宿主在触发模型轮次前自动激活 `msg_write`，使 Main 可以直接回复；该激活不写能力记录，也不加载命名空间的其余工具。
 - 子会话（Subagents）：非叶节点加载 `subagent_create`、`subagent_list`、`subagent_stop`、`capability` 与 `msg_write`；叶节点（`depth === maxDepth`）仅保留 `subagent_list` 与 `msg_write`。所有子节点显式保持激活 `msg_write`。
 - `write` 是 SDK 原生文件工具，完全保持原生行为，不被拦截或覆写，不承担 IPC 消息发送。
 
