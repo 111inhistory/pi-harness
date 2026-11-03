@@ -36,7 +36,7 @@ node --import tsx --test test/typed/capability-manual-sdk.test.ts
 
 入口：`scripts/verify-capability-manual-online.mjs`。它用真实 `createAgentSession`、真实提供方模型与 `mcp.json` 中真实 MCP 服务器运行同一契约；manual 名单以内存配置注入，不修改 `harness.json`；MCP 日志写入临时目录；不写会话文件；默认只列出并激活 MCP 工具，`--call` 时额外让模型对指定工具做一次调用，由执行者决定这次运行是否产生服务器副作用。
 
-MCP 的 manual 名单在服务器注册完成后按**实际注册的工具名**重建（`computer-use-linux` 注册的是 `mcp__computer_use_linux__*`，直接用服务器名拼前缀不会命中），并在首次 prompt 与 `/capability enable` 之前生效；脚本断言所选 `--call` 名字被 `manualToolMatcher` 命中、且会话上的 root-only 策略同样命中，因此该次调用验证的是 manual 分类本身，而不只是普通 MCP 选择门禁。
+MCP 的 manual 名单在服务器注册完成后按**实际注册的工具名**重建（`computer-use-linux` 注册的是 `mcp__computer_use_linux__*`，直接用服务器名拼前缀不会命中），并写回**命令 prepare 读取的同一个配置对象**，再同步应用到当前会话；`/capability enable` 的 prepare 会用同一份名单重新应用策略，不额外叠加恢复钩子。脚本在启用前断言所选 `--call` 名字被 `manualToolMatcher` 与 root-only 策略命中，并在命令之后、实际调用之前再次断言配置源与运行时策略仍覆盖它，因此该次调用验证的是 manual 分类本身，而不只是普通 MCP 选择门禁。
 
 ```sh
 node --import tsx scripts/verify-capability-manual-online.mjs [--agent-dir DIR] [--model PROVIDER/ID] [--server NAME]
@@ -49,6 +49,7 @@ node --import tsx scripts/verify-capability-manual-online.mjs [--agent-dir DIR] 
 [info] manual policy covers mcp__video_ffmpeg__export by exact registered name
 [info] before enable: active=6 fixtureActive=false
 [info] /capability enable -> info
+[info] after /capability enable the manual policy still covers mcp__video_ffmpeg__export
 [info] manual_fixture executed through the real model
 [info] MCP tools activated: 12; resource reader not registered by this server
 [info] call mcp__video_ffmpeg__export args={"list":true} ok parts=text bytes=777 keys=non-json
@@ -69,9 +70,11 @@ node --import tsx scripts/verify-capability-manual-online.mjs [--agent-dir DIR] 
 
 ```text
 [info] manual policy covers mcp__computer_use_linux__doctor by exact registered name
+[info] after /capability enable the manual policy still covers mcp__computer_use_linux__doctor
 [info] call mcp__computer_use_linux__doctor args={} ok parts=text bytes=9957
        keys=accessibility,capabilities,input,platform,portals,readiness,windowing
 [info] manual policy covers mcp__video_ffmpeg__export by exact registered name
+[info] after /capability enable the manual policy still covers mcp__video_ffmpeg__export
 [info] call mcp__video_ffmpeg__export args={"list":true} ok parts=text bytes=777 keys=non-json
 ```
 

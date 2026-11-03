@@ -8,10 +8,11 @@
  * with a scripted model and a synthetic stdio server; this entry repeats it
  * against the user's own providers and MCP servers.
  *
- * The manual policy is passed to this session in memory (and, for MCP tools,
- * rebuilt from the names that actually registered, so a server name with a
- * hyphen still maps to its sanitized tool prefix), so the script never edits
- * `harness.json`. It never creates, edits or deletes configuration, never
+ * The manual policy is passed to this session in memory. For MCP tools the list
+ * is resolved from the names that actually registered (a server name with a
+ * hyphen maps to a sanitized tool prefix) and written into the same config
+ * object the command's prepare reads, so `/capability enable` re-applies the
+ * identical list. The script never edits `harness.json`. It never creates, edits or deletes configuration, never
  * prints credentials, URLs, headers, environment values or tool result values,
  * and writes no session file. By default it only lists and activates MCP tools;
  * `--call` makes the model call one explicitly chosen read-only tool once, so the
@@ -210,10 +211,13 @@ try {
   const resourceReader = session.getAllTools().some((tool) => tool.name === 'read_mcp_resource');
   if (harnessApi === undefined) throw new Error('the harness extension factory did not run');
 
-  // Register the manual policy from the names that actually registered, before
-  // the first prompt and before enablement, and prove it covers the call target.
+  // Resolve the manual names from what actually registered, write them into the
+  // config source the command's prepare reads, and apply the same policy now.
+  // Mutating the one config object (not adding a restore hook) keeps the runtime
+  // policy and the command's re-application identical.
   const manualNames = [toolName, ...(resourceReader ? ['read_mcp_resource'] : []), ...mcpTools.map((tool) => tool.name)];
   const manualPolicy = manualToolMatcher(manualNames);
+  manualConfig.capability.manualTools = manualNames;
   setCapabilityRootOnlyPolicy(harnessApi, manualPolicy);
   if (manualPolicy(toolName) !== true) failures.push(`the manual policy does not cover ${toolName}`);
   if (options.call !== undefined) {
@@ -243,6 +247,17 @@ try {
   report(`[info] /capability enable -> ${notices.map((notice) => notice.type).join(',') || 'no notice'}`);
   for (const name of enableNames) {
     if (!session.getActiveToolNames().includes(name)) failures.push(`${name} was not activated by /capability enable`);
+  }
+  if (options.call !== undefined) {
+    // The command re-applies the policy from the config source; prove that source
+    // and the resulting runtime policy still classify the target as manual.
+    if (!manualConfig.capability.manualTools.includes(options.call)) {
+      failures.push(`the config source does not list ${options.call} as manual`);
+    }
+    if (capabilityRootOnlyPolicy(harnessApi)?.(options.call) !== true) {
+      failures.push(`the command re-application dropped ${options.call} from the manual policy`);
+    }
+    report(`[info] after /capability enable the manual policy still covers ${options.call}`);
   }
 
   await session.prompt(`Call the tool ${toolName} exactly once and reply with its output verbatim.`);
