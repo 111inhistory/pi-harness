@@ -40,13 +40,8 @@
       "Provide the message body as plain text content; do not add from/to, JSON/NDJSON framing, a trailing newline, or a custom Socket client."
     ],
     "parameters": {
-      "path": "Returned Unix Socket or Windows Named Pipe address, including another live session's Main endpoint from session_list.",
+      "path": "Returned Unix Socket or Windows Named Pipe address, including another live session's Main endpoint from /subagent sessions.",
       "content": "Plain-text message body. The host frames the transport and binds the sender."
     }
-  },
-  "session_list": {
-    "description": "List the live Pi sessions reachable on this machine (same user, same socket root), including this one. Each item carries the session's name, its working directory, and the managed Unix Socket address of its Main, which you can pass to msg_write for Main-to-Main coordination. Use it before delegating cross-session work or when you need to know which sessions are running. `available: false` means this platform does not support cross-session coordination; the list is then empty.",
-    "snippet": "Discover other running Pi sessions for cross-session coordination",
-    "parameters": {}
   }
 }

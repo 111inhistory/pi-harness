@@ -76,7 +76,7 @@ Main 默认不激活 `msg_write`（`defaultActive: false`）；Capability 选中
 
 跨 session 消息走同一条接收路径，且只做 Main 之间的交互。发送侧由 `session-directory.ts` 解析目标 session 的 Socket 目录并写入一帧 `{from: "Main", session, content}`；接收侧 `listeners.ts` 只在该根的 `Main` 端点接受此类帧，用共享目录核对 `session` 是否为存活 session，按该记录推导回复地址后交给 Runtime。Runtime 只接受宿主解析出的外部发送者描述，不自行读目录；外部发送者只能是 Main，接收者也只能是 Main。
 
-发现由同一目录提供：`RootService.initialize` 在监听就绪后发布记录（含原生 session name），`retire` 按记录归属删除。`crossSessionSupported()` 把平台范围收在一处：Windows 不发布记录，`session_list` 报告不可用，跨 session 发送以 `unsupported_platform` 拒绝。跨 session 没有独立地址协议：目标就是对方 `Main` 的受管 Socket 路径，接收端在 IPC 边界解析 `<uid>:Main` 复合身份。
+发现由同一目录提供：`RootService.initialize` 在监听就绪后发布记录（含原生 session name），`retire` 按记录归属删除。`crossSessionSupported()` 把平台范围收在一处：Windows 不发布记录，`/subagent sessions` 提示不可用，跨 session 发送以 `unsupported_platform` 拒绝。跨 session 没有独立地址协议：目标就是对方 `Main` 的受管 Socket 路径，接收端在 IPC 边界解析 `<uid>:Main` 复合身份。
 
 `subagent_list` 将筛选后的拓扑投影为 `children` 树，省去 `parentId` 和外层 `items`；窗口和展开规则见[接口契约](interface-contract.md#当前调用形态-1)。监听由当前根注册表决定，覆盖已停止但可续跑的 Actor，不复用 `subagent_list` 的每组四项显示窗口。大量累计 Actor 会增加监听资源占用；系统资源不足会报告错误，不把它解释成 Actor 不存在。
 

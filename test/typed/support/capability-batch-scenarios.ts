@@ -167,7 +167,7 @@ export async function runPackageSkillsScenario(
  * group, so every count in these scenarios is derived from this one list.
  */
 const SUBAGENT_MEMBERS = [
-  "session_list", "subagent_create", "subagent_list", "subagent_stop", "msg_write",
+  "subagent_create", "subagent_list", "subagent_stop", "msg_write",
 ] as const;
 
 export async function runResponsesOnlyScenario(fixture: CapabilityScenarioFixture): Promise<void> {
