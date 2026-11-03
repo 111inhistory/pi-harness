@@ -40,7 +40,6 @@ import {
 } from "./message-write.ts";
 import { droppedInheritedTools, inheritedToolsWarning } from "./tool-policy.ts";
 import type { CreatedAgents, DetailedAgentItem, StopResult } from "./runtime.ts";
-import { crossSessionSupported, sessionMainAddress, type LiveSession } from "./session-directory.ts";
 
 /** Resolved active-child caps reported to the model in the prompt section. */
 export interface ChildCapacity {
@@ -99,8 +98,6 @@ export interface SubagentSurfaceHost extends ManagedWriteHost {
   create(batch: unknown, options: SubagentSurfaceCreateOptions, ctx: ExtensionContext): Promise<CreatedAgents>;
   list(filter: unknown, callerId: string): Promise<DetailedAgentItem | null>;
   stop(target: unknown): StopResult;
-  /** Live sessions of this user, for cross-session coordination. */
-  listSessions(): Promise<readonly LiveSession[]>;
 }
 
 /** The only shape the surface needs from a registered tool. */
@@ -145,25 +142,6 @@ export interface SubagentSurfaceTools {
   /** null at the leaf depth, where a child may not stop other agents. */
   readonly stop: ToolDefinition<typeof stopParameters, StopResult> | null;
   readonly msg_write: ManagedWriteTool;
-  /** Cross-session discovery; null below Main, where sessions are not coordinated. */
-  readonly sessions: ToolDefinition<typeof sessionListParameters, SessionListView> | null;
-}
-
-/** One reachable session as the discovery tool reports it. */
-export interface SessionListView {
-  /** False where cross-session coordination is unavailable on this platform. */
-  readonly available: boolean;
-  readonly sessions: readonly {
-    readonly uid: string;
-    readonly sessionId: string;
-    readonly name: string | null;
-    readonly cwd: string;
-    readonly pid: number;
-    readonly startedAt: number;
-    readonly current: boolean;
-    /** The managed Main endpoint of that session, usable as a msg_write path. */
-    readonly address: string;
-  }[];
 }
 
 export interface SubagentSurfaceToolOptions {
@@ -256,42 +234,7 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
       }
     : null;
 
-  // Cross-session coordination is Main-only: a subagent has no session view and
-  // cannot reach another session's Main.
-  const mainOnly = caller.callerId === "Main";
-  const sessions: SubagentSurfaceTools["sessions"] = mainOnly
-    ? {
-        name: "session_list",
-        namespace: SUBAGENT_NAMESPACE,
-        defaultActive: false,
-        label: "List Sessions",
-        description: TOOL_TEXT.session_list.description,
-        promptSnippet: TOOL_TEXT.session_list.snippet,
-        promptGuidelines: [...SUBAGENT_NAMESPACE.instructions?.split("\n") ?? []],
-        parameters: sessionListParameters,
-        async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-          const host = await resolveHost(ctx);
-          const current = ctx.sessionManager.getSessionId();
-          const available = crossSessionSupported();
-          const live = await host.listSessions();
-          return respond({
-            available,
-            sessions: live.map((session) => ({
-              uid: session.uid,
-              sessionId: session.sessionId,
-              name: session.name,
-              cwd: session.cwd,
-              pid: session.pid,
-              startedAt: session.startedAt,
-              current: session.sessionId === current,
-              address: sessionMainAddress(session),
-            })),
-          } satisfies SessionListView);
-        },
-      }
-    : null;
-
-  return { create, list, stop, msg_write, sessions };
+  return { create, list, stop, msg_write };
 }
 
 /**
@@ -318,7 +261,6 @@ export function installSessionSurface(
   if (tools.create !== null) api.registerTool(tools.create);
   api.registerTool(tools.list);
   if (tools.stop !== null) api.registerTool(tools.stop);
-  if (tools.sessions !== null) api.registerTool(tools.sessions);
   api.registerTool(tools.msg_write);
   api.on("before_agent_start", (event, ctx) => {
     const limits = scope.capacityFor(ctx);
@@ -381,7 +323,6 @@ const TOOL_TEXT: SurfaceToolText = {
     description: text('stop', 'description'), snippet: text('stop', 'snippet'),
     parameters: { id: text('stop', 'parameters', 'id') },
   },
-  session_list: { description: text('session_list', 'description'), snippet: text('session_list', 'snippet') },
 };
 
 export const SUBAGENT_NAMESPACE: ToolNamespace = Object.freeze({
@@ -411,8 +352,6 @@ const stopParameters = Type.Object({
   id: Type.String({ description: TOOL_TEXT.stop.parameters.id }),
 });
 
-const sessionListParameters = Type.Object({}, { additionalProperties: false });
-
 /** The parts of `prompts/subagent-tools.json` this module renders. */
 interface SurfaceToolText {
   readonly namespace: string;
@@ -431,7 +370,6 @@ interface SurfaceToolText {
   };
   readonly list: { readonly description: string; readonly snippet: string; readonly parameters: { readonly all: string; readonly id: string } };
   readonly stop: { readonly description: string; readonly snippet: string; readonly parameters: { readonly id: string } };
-  readonly session_list: { readonly description: string; readonly snippet: string };
 }
 
 // The declared tool parameter types, exported so callers can name a batch.

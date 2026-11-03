@@ -237,10 +237,10 @@ Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）�
 
 跨 session 消息用于让一个 Pi session 的 Main 联系同一用户、同一 Socket 根下另一个存活 session 的 Main。它不建立跨主机调度，也不自动广播到其他 session。
 
-**平台范围：当前只实现 POSIX（Linux、macOS）。Windows 明确不支持**：不发布 session 记录，`session_list` 返回 `available: false` 与空列表，`/subagent sessions` 提示不可用，跨 session 发送以 `unsupported_platform` 拒绝。Windows 命名管道的寻址与端点归属校验尚未实现与验收。
+**平台范围：当前只实现 POSIX（Linux、macOS）。Windows 明确不支持**：不发布 session 记录，`/subagent sessions` 提示不可用，跨 session 发送以 `unsupported_platform` 拒绝。Windows 命名管道的寻址与端点归属校验尚未实现与验收。
 
-- **地址**：目标 session 的受管 `Main` Socket 路径，与本地 `msg_write` 使用同一地址空间，没有第二套 scheme。`session_list` 与 `/subagent sessions` 直接返回/显示该路径；指向其他 session 非 `Main` 端点的路径以 `invalid_target` 拒绝，因此拿到任意子 Actor Socket 也不能越界。
-- **发现**：`session_list` 是模型侧的发现入口，`/subagent sessions` 是用户侧入口。两者读取同一份共享目录：`socketRoot/sessions/<uid>.json` 由各 session 在 `initialize` 后发布，`retire` 时按记录归属删除；读取时按 `pid` 存活与记录自洽过滤，畸形或残留记录被忽略且不由他人删除。记录只含稳定 uid、session id、原生 session name、工作目录、`pid` 与起始时间，不含拓扑或对话内容。`subagent_list` 仍只描述当前根。
+- **地址**：目标 session 的受管 `Main` Socket 路径，与本地 `msg_write` 使用同一地址空间，没有第二套 scheme。`/subagent sessions` 直接显示该路径；外部编排者读取目录记录的 `socketDir` 推导同一路径。指向其他 session 非 `Main` 端点的路径以 `invalid_target` 拒绝，因此拿到任意子 Actor Socket 也不能越界。
+- **发现**：`/subagent sessions` 是用户侧发现入口；模型侧不注册 session 工具，外部编排者直接读取同一份共享目录：`socketRoot/sessions/<uid>.json` 由各 session 在 `initialize` 后发布，`retire` 时按记录归属删除；读取时按 `pid` 存活与记录自洽过滤，畸形或残留记录被忽略且不由他人删除。记录只含稳定 uid、session id、原生 session name、工作目录、`pid` 与起始时间，不含拓扑或对话内容。`subagent_list` 仍只描述当前根。
 - **发送**：`msg_write` 接受上述路径，且只有 `Main` 可发送。宿主先按本 root 的受管端点解析：属于本 session 的路径走原有本地写入（`Main` 写给自己的 `Main` 由 Runtime 的 self-send 规则拒绝）；不属于本 root 时，只有目标为已发布 session 的 `Main` 才按跨 session 写入。线上帧只有 `from` 与 `content`，`from` 由发送宿主绑定为 `<session-uid>:Main`，模型不提供发送者或独立 session 字段。
 - **接收**：目标根只在其 `Main` 端点接受复合身份的帧。IPC 边界解析 `from` 的 `<uid>:Main`，要求该 uid 是当前存活的已发布 session；发送者自身的 uid 映射为本地 `Main`，交由 Runtime 的 self-send 规则拒绝。通过后把复合身份映射为 Runtime 的外部发送者描述（session id、完整 `from`、回复地址），不把复合身份当作本地 Actor ID。
 - **呈现**：接收方消息沿用统一的 `Message from` 标签，跨 session 的 `from` 显示完整身份 `<uid>:Main`；回复提示使用发送方真实的受管 `Main` Socket 地址，不再出现 `session:` 协议。普通消息不显示发送方的执行状态，只有终态通知带状态与轮次。
@@ -259,7 +259,7 @@ session 生命周期（创建、恢复、停止、轮询、定时检查）与 `/
 - **平台与信任**：仅 POSIX；同一用户本机；记录与 `from` 都是声明，不是认证。
 - **非目标**：进程创建/停止/托管、stop/poll 的宿主请求协议、cron、管理范围、`/session`/`/cron`、transcript 读取与 `session_*` 工具。
 
-`session_list` 与 `/subagent sessions` 只是只读发现视图，不是管理入口。
+`/subagent sessions` 只是只读发现视图，不是管理入口。
 
 ### 思考强度
 

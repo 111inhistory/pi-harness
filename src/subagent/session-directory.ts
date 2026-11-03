@@ -42,7 +42,7 @@ export const SESSION_DIRECTORY = 'sessions';
  * Whether this build may publish and reach cross-session endpoints.
  *
  * Linux and other POSIX platforms are supported. Windows is explicitly not:
- * `session_list` reports the feature as unavailable, and cross-session sends
+ * `/subagent sessions` reports the feature as unavailable, and cross-session sends
  * refuse with `unsupported_platform`.
  */
 export function crossSessionSupported(platform: NodeJS.Platform = process.platform): boolean {

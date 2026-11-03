@@ -147,13 +147,6 @@ class RecordingHost implements SubagentSurfaceHost {
     return address.startsWith("/tmp/sockets/aaaaaa") ? { kind: "local" } : { kind: "local" };
   }
 
-  async listSessions() {
-    return [{
-      sessionId: "current", uid: "aaaaaa", socketDir: "/tmp/sockets/aaaaaa", pid: 1,
-      cwd: "/tmp/project", name: "reviewing", startedAt: 1,
-    }];
-  }
-
   readonly crossSessions: unknown[] = [];
 
   async sendMessage(command: Parameters<SubagentSurfaceHost["sendMessage"]>[0]): Promise<MessageReceipt | BroadcastReceipt> {
@@ -270,7 +263,6 @@ test("the root surface registers controls and messaging without overriding write
     "subagent_create",
     "subagent_list",
     "subagent_stop",
-    "session_list",
     "msg_write",
   ]);
   for (const tool of registered) {
@@ -364,28 +356,13 @@ test("tool-owned parameter labels and create-only guidance follow the assets", (
   assert.deepEqual(leaf.list.promptGuidelines, common);
 });
 
-test("the root session_list reports the discovery view with addresses and the current marker", async () => {
-  const host = new RecordingHost();
-  const tools = createSurfaceTools({ api: new FakeSurfaceApi(), resolveHost: async () => host, scope: ROOT_SCOPE });
-  assert.ok(tools.sessions);
-  const ctx = sdkContext({ cwd: "/tmp/project", sessionId: "current" });
-  const result = await tools.sessions.execute("call-sessions", {}, undefined, undefined, ctx);
-  assert.deepEqual(result.details, {
-    available: true,
-    sessions: [{
-      uid: "aaaaaa", sessionId: "current", name: "reviewing", cwd: "/tmp/project", pid: 1, startedAt: 1,
-      current: true, address: "/tmp/sockets/aaaaaa/Main.sock",
-    }],
-  });
-});
-
-test("a subagent surface has no cross-session discovery or intent tools", () => {
+test("the surface registers no session management tool", () => {
   const tools = createSurfaceTools({
     api: new FakeSurfaceApi(),
     resolveHost: async () => new RecordingHost(),
     scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: 1 },
   });
-  assert.equal(tools.sessions, null);
+  assert.equal("sessions" in tools, false);
 });
 
 test("the root create tool maps Main to no parent and passes origin and lazy capture", async () => {
