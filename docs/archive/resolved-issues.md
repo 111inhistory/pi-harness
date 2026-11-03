@@ -22,7 +22,7 @@ Windows 11 虚拟机已验证中文命令、检查阶段不执行命令，以及
 
 已修复。根会话执行原生压缩时，子 Agent 消息、跨 session 消息与终态通知原先会立即以 `deliverAs: "steer"` 交给 SDK，可能落在压缩重写的上下文边界内，或与重试轮次交错。
 
-`RootService` 现在维护一个压缩门：`session_before_compact` 打开，`session_compact` 与 `session_compact_failed` 关闭；`sendToMain` 在投递前等待该门。退役时释放该门，等待中的投递以 `delivery_failed`（根不再接受操作）失败，不挂起、不重放。回归见 [delivery-compaction.test.ts](../../test/typed/delivery-compaction.test.ts)。
+`RootService` 现在维护一个压缩门：`session_before_compact` 打开，`session_compact` 与 `session_compact_failed` 关闭；`sendToMain` 在投递前等待该门。退役时释放该门：旧根仍保有写入归属（quiescing）时终态通知可以保留，但不唤醒旧根；失去写入归属后投递被拒绝。等待本身不会挂起，也不自动重放。回归见 [delivery-compaction.test.ts](../../test/typed/delivery-compaction.test.ts) 与 [root-service-boundary.test.ts](../../test/typed/root-service-boundary.test.ts)。
 
 ## 本机 Socket 信任与资源保护
 
