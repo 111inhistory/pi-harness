@@ -20,6 +20,7 @@ import {
   type LiveSession,
 } from './session-directory.ts';
 import { ensurePrivateSocketRoot } from '../ipc/platform.ts';
+import { activateToolNames } from '../capability/activation.ts';
 import { setCapabilityParent, type CapabilityToolCatalog } from '../capability/scope.ts';
 import { ActorSessionStore } from './actor-sessions.ts';
 import { AgentListeners } from './listeners.ts';
@@ -210,6 +211,7 @@ export class RootService implements ManagedWriteHost {
       runner: this.runner,
       ownsContext: () => this.#mayPersist(),
       canWake: () => this.active,
+      activateReply: () => this.#activateReplyTool(),
       sendToMain: async (message, triggerTurn) => {
         const gate = this.#compaction;
         if (gate !== null) await gate.promise;
@@ -396,6 +398,18 @@ export class RootService implements ManagedWriteHost {
       if (address.startsWith(session.socketDir + prefix)) return { kind: 'foreign' };
     }
     return { kind: 'local' };
+  }
+
+  /**
+   * A peer session addressed this Main; make the reply tool callable before the
+   * triggered turn starts. This is receipt-scoped activation, not a grant: it
+   * writes no capability record and does not load the rest of the namespace.
+   */
+  #activateReplyTool(): void {
+    const outcome = activateToolNames(this.#options.api, ['msg_write']);
+    if (outcome.activated.length > 0 || outcome.alreadyActive.length > 0) return;
+    const reason = outcome.skipped.find((skip) => skip.name === 'msg_write')?.reason ?? 'not_activated';
+    this.#report(new Error(`The cross-session reply tool is unavailable: ${reason}.`));
   }
 
   /**

@@ -14,9 +14,29 @@ function deps(overrides: Partial<NativeDeliveryDeps> = {}): NativeDeliveryDeps {
   return {
     runner: { handoff: async () => ({ accepted: true, mode: 'steered' }), handoffCustom: async () => ({ accepted: true, mode: 'pending' }) },
     ownsContext: () => true, canWake: () => true,
-    sendToMain() {}, appendRetained: async () => true, onError() {}, ...overrides,
+    sendToMain() {}, activateReply() {}, appendRetained: async () => true, onError() {}, ...overrides,
   };
 }
+
+test('an external Main message activates the reply tool before delivery', async () => {
+  const order: string[] = [];
+  const router = new NativeDeliveryRouter(deps({
+    activateReply: () => order.push('activate'),
+    sendToMain: () => { order.push('send'); },
+  }));
+  await router.toMain({
+    type: 'message', from: 'Main', content: 'peer ping',
+    external: { sessionId: 'peer', sender: 'peer:Main', replyTo: '/tmp/peer/Main.sock' },
+  });
+  assert.deepEqual(order, ['activate', 'send']);
+});
+
+test('a local child message does not activate the reply tool', async () => {
+  let activations = 0;
+  const router = new NativeDeliveryRouter(deps({ activateReply: () => { activations += 1; } }));
+  await router.toMain({ type: 'message', from: 'sub_01', content: 'child update' });
+  assert.equal(activations, 0);
+});
 
 test('terminal notice is handed to the live parent job itself', async () => {
   const handed: Array<{ jobId: string; message: NativeCustomHandoff }> = [];

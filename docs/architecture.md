@@ -58,7 +58,7 @@ msg_write
 
 `write` 是 SDK 原生文件工具，完全保持原生行为，不被 harness 拦截或覆写；IPC 消息发送由专用工具 `msg_write` 承担。
 
-Main 默认不激活 `msg_write`（`defaultActive: false`）；Capability 选中并激活 `subagent` 命名空间后，在 Main 会话中激活 `msg_write`。所有子会话依据深度分配工具集，显式保持激活 `msg_write`。非叶子深度子节点拥有 `subagent_create`、`subagent_list`、`subagent_stop`、`capability` 与 `msg_write`；叶子深度子节点仅保留 `subagent_list` 与 `msg_write`。
+Main 默认不激活 `msg_write`（`defaultActive: false`）。收到跨 session 消息时，宿主在触发模型轮次前自动激活 `msg_write`，让 Main 能直接回复；这只加载回复工具，不写能力记录，其余 `subagent` 工具仍由 Capability 选中命名空间后激活。所有子会话依据深度分配工具集，显式保持激活 `msg_write`。非叶子深度子节点拥有 `subagent_create`、`subagent_list`、`subagent_stop`、`capability` 与 `msg_write`；叶子深度子节点仅保留 `subagent_list` 与 `msg_write`。
 
 `msg_write` 仅限 IPC 地址（Unix Socket / Windows Named Pipe），非 IPC 目标直接报错拒绝。宿主消息不再绕本进程 Socket 回环；Runtime 交接结果只在内部检查，不作为工具回执返回。消息成功返回纯文本（`Successfully sent message to ...`），`details: undefined`，不增加 ACK、`to` 或 `jobId`。拒收、超时或广播部分失败使工具抛错，不自动重发；失败不保证消息尚未送达。
 
