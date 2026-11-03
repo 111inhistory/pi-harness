@@ -139,6 +139,8 @@ Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返�
 
 `capability.manualTools` 的门禁收在 `scope.ts`：根作用域保存名单谓词，任何带父节点的视图在计算 `effective` 与 `allows` 时都排除名单内名字，因此子会话既看不到也不能继承。`tool-catalog.ts` 默认排除名单内工具，只有命令与执行守卫传 `includeManual`；`activation.ts` 对发现路径返回 `manual_only`。
 
+授权判定在 `manual.ts` 的 `manualToolAllowed`：必须处于根作用域，且当前分支存在 `manual` 记录。三个边界都调用它：`before_agent_start` 把未授权的 manual 工具从激活集与 `selectedTools` 中移除（覆盖 `defaultActive`、历史恢复和其他扩展的激活），`tool_call` 拒绝未授权调用，`native-discovery.ts` 的 Codemode 准入 `permits` 同样要求授权。`selectedNames` 把 `manual` 记录计入选择，因此手动启用的 MCP 工具通过原生 MCP 准入并可作为资源读取的服务器依据。请求投影用 `includeManual` 的目录解析执行视图，Main 可见、子会话仍被作用域排除。
+
 工具资格按设计只增不减，角色排除仍优先。每次同步目录投影只解析一次资格视图；不把快照跨请求或工具调用缓存。资格、注册和激活是三件不同的事。
 
 发现记录按当前分支保存，不重复存储参数 schema；请求投影依据当前声明提供接口。严格工具 allowlist 可能拒绝不匹配的 MCP 成员。当前先写记录、再激活的顺序会让未激活成员残留在规范记忆中，后续投影可能再次展示它们。这是与成功获得能力才应累积的要求不一致的已知缺陷，详见[已知问题](known-issues.md#严格工具-allowlist-下的激活记忆不一致)。

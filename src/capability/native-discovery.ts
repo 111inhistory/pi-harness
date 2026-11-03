@@ -7,6 +7,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import { discoveryRecords } from './discovery-record.ts';
 import { installCapabilityCodemode } from './codemode.ts';
+import { manualToolAllowed } from './manual.ts';
 import { createCapabilityScopeView } from './scope.ts';
 import { DEFAULT_HARNESS_CONFIG, type HarnessConfigProvider } from '../harness-config.ts';
 import { promptString } from '../prompt-text.ts';
@@ -27,12 +28,17 @@ function isMcpExecutionTool(name: string): boolean {
   return name.startsWith('mcp__') || name === 'read_mcp_resource';
 }
 
-/** Read selection from canonical branch records, never from a process-wide allowlist. */
+/**
+ * Read selection from canonical branch records, never from a process-wide
+ * allowlist. The `manual` category counts: a tool the user enabled with
+ * `/capability enable` is a selection for native MCP admission and resource
+ * reads, exactly like a discovered one.
+ */
 function selectedNames(ctx: ExtensionContext): Set<string> {
   const names = new Set<string>();
   for (const result of discoveryRecords(ctx.sessionManager.getBranch()).map((record) => record.result)) {
-    for (const category of ['tools', 'mcp'] as const) {
-      for (const hit of result[category]) {
+    for (const category of ['tools', 'mcp', 'manual'] as const) {
+      for (const hit of result[category] ?? []) {
         if (hit.status && hit.status !== 'available') continue;
         for (const member of hit.tools ?? [hit]) {
           if (typeof member.name === 'string') names.add(member.name);
@@ -77,7 +83,10 @@ export function installNativeDiscoveryBoundary(
 
   const permits = (ctx: ExtensionContext, name: string) => !isNativeDiscoveryTool(name) &&
     createCapabilityScopeView(pi).allows(name) &&
-    (!isMcpExecutionTool(name) || selectedNames(ctx).has(name));
+    (!isMcpExecutionTool(name) || selectedNames(ctx).has(name)) &&
+    // A manual tool is permitted only in the root session and only after the
+    // user enabled it; active state alone is not authority.
+    manualToolAllowed(pi, ctx.sessionManager.getBranch(), name);
   const declaredTools = installCapabilityCodemode(pi, permits, (name) => currentContext
     ? permits(currentContext, name)
     : !isNativeDiscoveryTool(name) && !isMcpExecutionTool(name), configFor);

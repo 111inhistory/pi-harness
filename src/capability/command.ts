@@ -12,7 +12,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 
 import { createEligibleToolCatalog } from './tool-catalog.ts';
-import { discoveryRecords, type CapabilityHit } from './discovery-record.ts';
+import { discoveryRecords, manualEnabledTools, type CapabilityHit } from './discovery-record.ts';
 import { enableManualTools } from './manual.ts';
 
 export type CapabilityCommand =
@@ -136,7 +136,9 @@ async function run(
     ctx.ui.notify(renderSearch(command.query, pi), 'info');
     return;
   }
-  ctx.ui.notify(renderEnable(enableManualTools(pi, command.names)), 'info');
+  ctx.ui.notify(renderEnable(enableManualTools(pi, command.names, {
+    recorded: manualEnabledTools(ctx.sessionManager.getBranch()),
+  })), 'info');
 }
 
 function completions(prefix: string, pi: ExtensionAPI): { value: string; label: string; description?: string }[] | null {

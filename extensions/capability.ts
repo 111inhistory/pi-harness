@@ -84,6 +84,7 @@ import { createEligibleToolCatalog, retainEligibleSelectedTools, supplySelectedT
 import { activateToolNames } from "../src/capability/activation.ts";
 import { installCapabilityCommand } from "../src/capability/command.ts";
 import { manualToolMatcher } from "../src/capability/manual-tools.ts";
+import { manualToolAllowed } from "../src/capability/manual.ts";
 import { setCapabilityRootOnlyPolicy } from "../src/capability/scope.ts";
 import {
   additiveToolTranscript, capabilityModelResult, capabilityToolDelta, retrievalToolLoadout, supportsAdditiveResponses,
@@ -160,15 +161,28 @@ export default function capabilityExtension(
 
   // Keep Pi's loaded Skill inventory for discovery, but do not advertise it
   // eagerly in the base prompt. Mutate the native section, not the full prompt.
-  pi.on("before_agent_start", (event) => {
+  pi.on("before_agent_start", (event, ctx) => {
     event.systemPromptOptions.skills = [];
+    // A manual tool is not declared merely because it is `defaultActive`,
+    // restored from the transcript or activated by another extension. The user
+    // command is the only activation path, so drop it until the branch records
+    // the user's enablement.
+    const branch = ctx.sessionManager.getBranch();
+    const active = pi.getActiveTools();
+    const next = active.filter((name) => manualToolAllowed(pi, branch, name));
+    if (next.length !== active.length) pi.setActiveTools(next);
+    event.systemPromptOptions.selectedTools = event.systemPromptOptions.selectedTools
+      .filter((name) => manualToolAllowed(pi, branch, name));
   });
 
   // Discovery memory follows the branch, not the lossy summary. Append native
   // section updates at their original result anchors; only compaction checkpoints
   // receive the accumulated older discoveries. Exposure and execution stay separate.
   pi.on("context_with_system", (event, ctx) => {
-    const available = createEligibleToolCatalog(pi).names;
+    // The projection answers "what may this session use", not "what may
+    // discovery propose". A manual tool the user enabled belongs in the
+    // request memory; a child scope still drops it in the scope view.
+    const available = createEligibleToolCatalog(pi, { includeManual: true }).names;
     const messages = capabilityPromptTranscript(
       event.messages as unknown as readonly ProjectionMessage[],
       ctx.sessionManager.getBranch(),
@@ -178,12 +192,15 @@ export default function capabilityExtension(
       messages: (supportsAdditiveResponses(ctx.model) ? additiveToolTranscript(messages) : messages) as unknown as AgentMessage[],
     };
   });
-  pi.on("tool_call", (event) => {
-    // Execution permission includes manual tools: the user already enabled
-    // them. Discovery never reaches this catalog with them included.
+  pi.on("tool_call", (event, ctx) => {
+    // Execution permission includes manual tools, but only in the root session
+    // and only after `/capability enable` recorded the user's decision.
     const tool = createEligibleToolCatalog(pi, { includeManual: true }).tools.find((entry) => entry.name === event.toolName);
     if (!tool || (!pi.getActiveTools().includes(event.toolName) && !["codemode", "deferred"].includes(tool.exposure ?? ""))) {
       return { block: true, reason: `Tool ${event.toolName} is unavailable in this session; retained declarations do not enable execution.` };
+    }
+    if (!manualToolAllowed(pi, ctx.sessionManager.getBranch(), event.toolName)) {
+      return { block: true, reason: `Tool ${event.toolName} is manual and requires /capability enable in this session.` };
     }
     return undefined;
   });

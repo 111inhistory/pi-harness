@@ -197,6 +197,11 @@ export function setCapabilityRootOnlyPolicy(
   stateFor(pi).rootOnly = policy;
 }
 
+/** Whether this catalog is the root of its scope chain (it has no parent). */
+export function capabilityScopeIsRoot(pi: CapabilityToolCatalog): boolean {
+  return resolvedParent(stateFor(pi)) === null;
+}
+
 /** The root-only policy that governs this catalog's chain, or null. */
 export function capabilityRootOnlyPolicy(pi: CapabilityToolCatalog): CapabilityRootOnlyPolicy | null {
   return ancestorChain(pi)[0]?.state.rootOnly ?? null;

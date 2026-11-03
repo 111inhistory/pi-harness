@@ -15,9 +15,10 @@ import {
   appendManualRecord,
   CAPABILITY_DISCOVERY_RECORD,
   discoveryRecords,
+  manualEnabledTools,
 } from "../../src/capability/discovery-record.ts";
 import { CAPABILITY_SECTION, capabilityPromptTranscript } from "../../src/capability/prompt.ts";
-import { enableManualTools, type ManualEnableHost } from "../../src/capability/manual.ts";
+import { enableManualTools, manualToolAllowed, type ManualEnableHost } from "../../src/capability/manual.ts";
 import { parseCapabilityCommand, installCapabilityCommand } from "../../src/capability/command.ts";
 import { setCapabilityParent, setCapabilityRootOnlyPolicy } from "../../src/capability/scope.ts";
 import { createEligibleToolCatalog } from "../../src/capability/tool-catalog.ts";
@@ -109,11 +110,40 @@ test("a tool outside the current qualification is refused, not activated", () =>
 test("a repeated enable is idempotent and never removes existing memory", () => {
   const api = host(tools, []);
   enableManualTools(api, ["deck_pages"]);
-  const again = enableManualTools(api, ["deck_pages"]);
+  const again = enableManualTools(api, ["deck_pages"], { recorded: new Set(["deck_pages"]) });
   assert.deepEqual(again.enabled, []);
   assert.deepEqual(again.alreadyActive, ["deck_pages"]);
-  assert.equal(api.entries.length, 1);
+  assert.equal(api.entries.length, 1, "an already recorded tool is not recorded again");
   assert.deepEqual(api.activeNames(), ["deck_pages"]);
+});
+
+test("an already-active manual tool is authorized by the user command", () => {
+  const api = host(tools, ["deck_pages"]);
+  setCapabilityRootOnlyPolicy(api, manualToolMatcher(["deck_pages"]));
+  const result = enableManualTools(api, ["deck_pages"]);
+  assert.deepEqual(result.enabled, ["deck_pages"], "activation alone never authorizes a manual tool");
+  assert.deepEqual(result.alreadyActive, ["deck_pages"]);
+  assert.equal(api.entries.length, 1);
+  const record = api.entries[0]?.data as { result: { manual: { name: string }[] } };
+  assert.deepEqual(record.result.manual.map((hit) => hit.name), ["deck_pages"]);
+});
+
+test("manual usage needs the root session and a user enablement record", () => {
+  const root = host(tools, []);
+  setCapabilityRootOnlyPolicy(root, manualToolMatcher(["deck_pages"]));
+  const branch: unknown[] = [];
+  assert.equal(manualToolAllowed(root, branch, "deck_pages"), false, "active or registered alone is not authority");
+  assert.equal(manualToolAllowed(root, branch, "read"), true, "other tools are unaffected");
+
+  enableManualTools(root, ["deck_pages"]);
+  const record = root.entries[0]?.data;
+  const enabledBranch = [{ type: "custom", customType: CAPABILITY_DISCOVERY_RECORD, data: record }];
+  assert.deepEqual([...manualEnabledTools(enabledBranch)], ["deck_pages"]);
+  assert.equal(manualToolAllowed(root, enabledBranch, "deck_pages"), true);
+
+  const child = host(tools, []);
+  setCapabilityParent(child, root);
+  assert.equal(manualToolAllowed(child, enabledBranch, "deck_pages"), false, "a subagent never holds a manual tool");
 });
 
 test("a failed branch write is reported instead of claiming durable memory", () => {

@@ -46,6 +46,12 @@ the `manual` category and no tool call anchor.
   discovery activation, and the scope view drops them from every node below the
   root, so a child cannot inherit one. The user command opts back in with
   `includeManual`; execution then follows the normal active-tool guard.
+- Manual authorization: the `manual` record is the authority, not the active
+  set. `before_agent_start` removes a manual tool that is active without a record
+  (`defaultActive`, a restored transcript, another extension), `tool_call`
+  refuses it, and Codemode admission applies the same predicate. The request
+  projection resolves the execution view, so an enabled manual entry appears in
+  Main's section and is still filtered out for a child scope.
 - Shared guidance: retained across discoveries, even when a selection adds no tools.
 - Remote coverage: discovery searches local resources only.
   Coverage explicitly marks remote search as `not_searched`. Remote candidates

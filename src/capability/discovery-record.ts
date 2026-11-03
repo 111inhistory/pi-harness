@@ -219,6 +219,26 @@ export function appendDiscoveryRecord(
 }
 
 /**
+ * Tool names the user enabled through `/capability enable` on this branch.
+ *
+ * This is the only authority that makes a manual tool usable. The command writes
+ * the record after activation, so a tool that is active only because it is
+ * `defaultActive`, restored from the transcript or enabled by another extension
+ * stays unauthorized until the user enables it here.
+ */
+export function manualEnabledTools(branch: readonly unknown[] | null | undefined): Set<string> {
+  const names = new Set<string>();
+  for (const record of discoveryRecords(branch)) {
+    for (const hit of record.result.manual ?? []) {
+      for (const member of hit.tools ?? [hit]) {
+        if (typeof member.name === "string" && member.name !== "") names.add(member.name);
+      }
+    }
+  }
+  return names;
+}
+
+/**
  * Persist resources the user enabled directly. No retrieval ran, so the record
  * carries no tool call anchor: the projection folds it into the leading
  * checkpoint instead of anchoring it to a tool result.
