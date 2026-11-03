@@ -81,6 +81,12 @@ import { openSubagentExecution } from "../src/subagent/execution.ts";
 import { parentModelRuntime } from "../src/subagent/model-runtime.ts";
 import { installNativeDiscoveryBoundary } from "../src/capability/native-discovery.ts";
 import { createEligibleToolCatalog, retainEligibleSelectedTools, supplySelectedToolInterfaces } from "../src/capability/tool-catalog.ts";
+import { activateToolNames } from "../src/capability/activation.ts";
+import { argumentCompletionProvider } from "../src/autocomplete.ts";
+import { installCapabilityCommand } from "../src/capability/command.ts";
+import { manualToolMatcher } from "../src/capability/manual-tools.ts";
+import { createToolAdmission } from "../src/capability/admission.ts";
+import { setCapabilityRootOnlyPolicy } from "../src/capability/scope.ts";
 import {
   additiveToolTranscript, capabilityModelResult, capabilityToolDelta, retrievalToolLoadout, supportsAdditiveResponses,
   type CapabilityInterfaceSources,
@@ -135,14 +141,36 @@ export default function capabilityExtension(
 ): void {
   const configFor = harnessConfigFor(pi, config);
   const declaredTools = installNativeDiscoveryBoundary(pi, configFor);
+  /**
+   * Publish the configured manual-tool policy on this surface. The root sets it
+   * once per session; a child surface reads the root's policy through the scope
+   * chain, so a manual tool never becomes eligible below Main.
+   */
+  const applyManualPolicy = (patterns: readonly string[]): void => {
+    setCapabilityRootOnlyPolicy(pi, manualToolMatcher(patterns));
+  };
+  if (config !== undefined) applyManualPolicy(config.capability.manualTools);
+  installCapabilityCommand(pi, { prepare: (ctx) => applyManualPolicy(configFor(ctx).capability.manualTools) });
+  let autocompleteInstalled = false;
   const service = {
     agentDir: getAgentDir(),
     projectTrusted: false,
   };
-  pi.on("session_start", (_event, ctx) => { service.projectTrusted = ctx.isProjectTrusted(); });
+  pi.on("session_start", (_event, ctx) => {
+    service.projectTrusted = ctx.isProjectTrusted();
+    applyManualPolicy(configFor(ctx).capability.manualTools);
+    // The editor's Tab request skips slash-command arguments; this wrapper only
+    // restores them for /capability (see argumentCompletionProvider).
+    if (!autocompleteInstalled) {
+      autocompleteInstalled = true;
+      ctx.ui.addAutocompleteProvider((base) => argumentCompletionProvider(base, "capability"));
+    }
+  });
 
   // Keep Pi's loaded Skill inventory for discovery, but do not advertise it
   // eagerly in the base prompt. Mutate the native section, not the full prompt.
+  // The active-set and selectedTools prune, including the manual gate, belongs
+  // to the one declaration-admission path in `native-discovery.ts`.
   pi.on("before_agent_start", (event) => {
     event.systemPromptOptions.skills = [];
   });
@@ -151,7 +179,10 @@ export default function capabilityExtension(
   // section updates at their original result anchors; only compaction checkpoints
   // receive the accumulated older discoveries. Exposure and execution stay separate.
   pi.on("context_with_system", (event, ctx) => {
-    const available = createEligibleToolCatalog(pi).names;
+    // The projection answers "what may this session use", not "what may
+    // discovery propose". A manual tool the user enabled belongs in the
+    // request memory; a child scope still drops it in the scope view.
+    const available = createEligibleToolCatalog(pi, { includeManual: true }).names;
     const messages = capabilityPromptTranscript(
       event.messages as unknown as readonly ProjectionMessage[],
       ctx.sessionManager.getBranch(),
@@ -161,10 +192,16 @@ export default function capabilityExtension(
       messages: (supportsAdditiveResponses(ctx.model) ? additiveToolTranscript(messages) : messages) as unknown as AgentMessage[],
     };
   });
-  pi.on("tool_call", (event) => {
-    const tool = createEligibleToolCatalog(pi).tools.find((entry) => entry.name === event.toolName);
+  pi.on("tool_call", (event, ctx) => {
+    // This entry owns declaration/activation; the shared admission view owns the
+    // common rule (scope, MCP selection, manual authorization).
+    const tool = createEligibleToolCatalog(pi, { includeManual: true }).tools.find((entry) => entry.name === event.toolName);
     if (!tool || (!pi.getActiveTools().includes(event.toolName) && !["codemode", "deferred"].includes(tool.exposure ?? ""))) {
       return { block: true, reason: `Tool ${event.toolName} is unavailable in this session; retained declarations do not enable execution.` };
+    }
+    const admission = createToolAdmission(pi, ctx.sessionManager.getBranch());
+    if (!admission.admitsManual(event.toolName)) {
+      return { block: true, reason: `Tool ${event.toolName} is manual and requires /capability enable in this session.` };
     }
     return undefined;
   });
@@ -338,49 +375,29 @@ function internalSettings(pi: ExtensionAPI, trusted: boolean): SettingsManager {
 /**
  * Declare the selected, already-registered tools active in this session.
  *
- * `getActiveTools`/`setActiveTools` is Pi's active-tool API: it declares the
- * named registered tools to the model, records the change in the transcript,
- * and ignores unknown and hidden names. This is tool activation — not
- * installation or enablement: nothing is downloaded, loaded or connected and
- * the current active set (read/write and everything else) is preserved. Every
- * registered, non-hidden tool is loadable this way, including `direct` and
- * `model-only` tools that were left inactive by the caller's tool allowlist or
- * by `defaultActive: false`; a `hidden` tool is unreachable and skipped.
+ * The per-name activation is shared with the `/capability enable` command
+ * (`activation.ts`); this function only maps the discovery selection onto tool
+ * names and turns the skipped names into discovery warnings. A server-level
+ * `mcp://<server>` ref names no single registered tool, so only a tool ref that
+ * lost its registration is reported.
  */
 function activateSelectedTools(pi: ExtensionAPI, result: CapabilityDiscoveryResult): Activation {
-  const registered = new Map(pi.getAllTools().map((tool) => [tool.name, tool]));
-  const active = new Set(pi.getActiveTools());
-  const activate: string[] = [];
-  const seen = new Set<string>();
-  const warnings: string[] = [];
   const selected: ActivationHit[] = [];
   for (const hit of [...result.tools, ...result.mcp]) {
     if (Array.isArray(hit.tools)) selected.push(...hit.tools);
     else selected.push(hit);
   }
-  for (const hit of selected) {
-    const name = typeof hit.name === "string" ? hit.name : "";
-    if (name === "" || seen.has(name)) continue;
-    seen.add(name);
-    const tool = registered.get(name);
-    if (tool === undefined) {
-      // A server-level `mcp://<server>` ref names no single registered tool;
-      // only a tool ref that lost its registration is reported.
-      if (hit.kind === "tool") warnings.push(`selected tool "${name}" is not registered in this session`);
-      continue;
+  const named = selected.flatMap((hit) => typeof hit.name === "string" && hit.name !== "" ? [{ name: hit.name, kind: hit.kind }] : []);
+  const outcome = activateToolNames(pi, named.map((hit) => hit.name));
+  const kindOf = new Map(named.map((hit) => [hit.name, hit.kind]));
+  const warnings: string[] = [];
+  for (const skip of outcome.skipped) {
+    if (skip.reason === "not_registered" && kindOf.get(skip.name) === "tool") {
+      warnings.push(`selected tool "${skip.name}" is not registered in this session`);
     }
-    if (tool.exposure === "hidden") {
-      warnings.push(`selected tool "${name}" is hidden and cannot be activated`);
-      continue;
-    }
-    if (active.has(name)) continue;
-    activate.push(name);
+    if (skip.reason === "hidden") warnings.push(`selected tool "${skip.name}" is hidden and cannot be activated`);
   }
-  if (activate.length > 0) pi.setActiveTools([...active, ...activate]);
-  // Read back the SDK's authoritative set instead of assuming the request took
-  // effect; Pi ignores unknown/hidden names and can mask an activatable tool.
-  const actual = new Set(pi.getActiveTools());
-  return { activated: activate, warnings, active: actual };
+  return { activated: outcome.activated, warnings, active: outcome.active };
 }
 
 /**

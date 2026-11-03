@@ -5,9 +5,8 @@ import {
   type McpExtensionOptions,
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
-import { discoveryRecords } from './discovery-record.ts';
+import { createToolAdmission, isMcpExecutionTool, isNativeDiscoveryTool } from './admission.ts';
 import { installCapabilityCodemode } from './codemode.ts';
-import { createCapabilityScopeView } from './scope.ts';
 import { DEFAULT_HARNESS_CONFIG, type HarnessConfigProvider } from '../harness-config.ts';
 import { promptString } from '../prompt-text.ts';
 
@@ -16,42 +15,6 @@ const text = {
   codemodeFallback: promptString('native-discovery.json', 'codemodeFallback'),
   resourceReadRequirement: promptString('native-discovery.json', 'resourceReadRequirement'),
 };
-
-const DISABLED = new Set(['tool_search', 'list_mcp_resources', 'list_mcp_resource_templates']);
-
-export function isNativeDiscoveryTool(name: string): boolean {
-  return DISABLED.has(name);
-}
-
-function isMcpExecutionTool(name: string): boolean {
-  return name.startsWith('mcp__') || name === 'read_mcp_resource';
-}
-
-/** Read selection from canonical branch records, never from a process-wide allowlist. */
-function selectedNames(ctx: ExtensionContext): Set<string> {
-  const names = new Set<string>();
-  for (const result of discoveryRecords(ctx.sessionManager.getBranch()).map((record) => record.result)) {
-    for (const category of ['tools', 'mcp'] as const) {
-      for (const hit of result[category]) {
-        if (hit.status && hit.status !== 'available') continue;
-        for (const member of hit.tools ?? [hit]) {
-          if (typeof member.name === 'string') names.add(member.name);
-        }
-      }
-    }
-  }
-  return names;
-}
-
-function selectedServer(pi: ExtensionAPI, ctx: ExtensionContext, server: unknown): boolean {
-  if (typeof server !== 'string') return false;
-  const selected = selectedNames(ctx);
-  const active = new Set(pi.getActiveTools());
-  const view = createCapabilityScopeView(pi);
-  return pi.getAllTools().some((tool) => selected.has(tool.name) && active.has(tool.name) &&
-    tool.exposure !== 'hidden' && tool.exposure !== 'model-only' && view.allows(tool.name) && tool.name.startsWith('mcp__') &&
-    tool.namespace?.name.startsWith('mcp__') && tool.namespace.aliases?.includes(server));
-}
 
 /** Disable discovery as executable tools, not just as prompt recommendations. */
 export function installNativeDiscoveryBoundary(
@@ -75,42 +38,52 @@ export function installNativeDiscoveryBoundary(
     });
   }
 
-  const permits = (ctx: ExtensionContext, name: string) => !isNativeDiscoveryTool(name) &&
-    createCapabilityScopeView(pi).allows(name) &&
-    (!isMcpExecutionTool(name) || selectedNames(ctx).has(name));
-  const declaredTools = installCapabilityCodemode(pi, permits, (name) => currentContext
-    ? permits(currentContext, name)
-    : !isNativeDiscoveryTool(name) && !isMcpExecutionTool(name), configFor);
+  // One admission view per operation: the scope chain and the branch records
+  // are resolved once, then every tool in that operation reuses the answer.
+  const admissionFor = (ctx: ExtensionContext) => createToolAdmission(pi, ctx.sessionManager.getBranch());
+  const declaredTools = installCapabilityCodemode(
+    pi,
+    (ctx) => admissionFor(ctx).admits,
+    () => currentContext === undefined
+      ? (name: string) => !isNativeDiscoveryTool(name) && !isMcpExecutionTool(name)
+      : admissionFor(currentContext).admits,
+    configFor,
+  );
 
   pi.on('tool_call', (event, ctx) => {
     if (isNativeDiscoveryTool(event.toolName)) {
       return { block: true, reason: `${event.toolName} is disabled; use capability.` };
     }
+    const admission = admissionFor(ctx);
     if (isMcpExecutionTool(event.toolName) &&
-        (!selectedNames(ctx).has(event.toolName) || !pi.getActiveTools().includes(event.toolName))) {
+        (!admission.declares(event.toolName) || !pi.getActiveTools().includes(event.toolName))) {
       return { block: true, reason: 'This MCP tool has not been selected and activated by Capability on this branch.' };
     }
-    if (event.toolName === 'read_mcp_resource' && !selectedServer(pi, ctx, event.input['server'])) {
+    if (event.toolName === 'read_mcp_resource' && !admission.admitsServer(event.input['server'])) {
       return { block: true, reason: 'Reading resources requires a selected, enabled MCP server permitted in the current scope.' };
     }
     return undefined;
   });
 
+  // The one declaration prune. It drops disabled native tools, unselected MCP
+  // tools and manual tools the user has not enabled, so no second hook repeats
+  // the same active-set and selectedTools filtering. Scope is an execution
+  // check, not a declaration rewrite.
   pi.on('before_agent_start', (event, ctx) => {
     currentContext = ctx;
-    const selected = selectedNames(ctx);
-    const allowed = (name: string) => !isNativeDiscoveryTool(name) && (!isMcpExecutionTool(name) || selected.has(name));
+    const admission = admissionFor(ctx);
     const active = pi.getActiveTools();
-    const next = active.filter(allowed);
+    const next = active.filter((name) => admission.declares(name));
     if (next.length !== active.length) pi.setActiveTools(next);
-    event.systemPromptOptions.selectedTools = event.systemPromptOptions.selectedTools.filter(allowed);
+    event.systemPromptOptions.selectedTools = event.systemPromptOptions.selectedTools
+      .filter((name) => admission.declares(name));
     delete event.systemPromptOptions.sections['mcp_servers'];
   });
 
   pi.on('context_with_system', (event, ctx) => {
     currentContext = ctx;
-    const selected = selectedNames(ctx);
-    const allowed = (name: string) => !isNativeDiscoveryTool(name) && (!isMcpExecutionTool(name) || selected.has(name));
+    const admission = admissionFor(ctx);
+    const allowed = (name: string) => admission.declares(name);
     // Old branch checkpoints can contain catalogs/declarations from before this
     // boundary was installed. Filter structured state, not arbitrary user text.
     const messages = event.messages.map((message) => {

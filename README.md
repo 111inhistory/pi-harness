@@ -66,6 +66,10 @@ Fresh 子任务需要 Pi 用户目录中的 `subagent-routing.json`。默认用�
 
 任务完成后，宿主会自动向父 Agent 发送终态通知，携带本轮最终执行文本。
 
+用户也可直接管理已启用工具：`/capability` 或 `/capability list [tool|mcp|namespace] [filter]` 按类别与 MCP 服务器／命名空间分组浏览当前可选工具；`/capability enable` 打开原生可筛选选择列表，选中即启用；`/capability enable <name...>` 保留按名字启用的快捷形式。该入口只增不减，没有停用、移除或重置子命令。
+
+`capability.manualTools` 名单内的工具只允许通过这条命令启用：模型侧检索看不到它们，发现路径不能激活它们，子会话也不继承。名单与命令只作用于 Main 会话。
+
 ## 开发与验证
 
 项目提供以下代码、类型与配置验证脚本：

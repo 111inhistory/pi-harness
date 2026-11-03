@@ -33,6 +33,12 @@ export interface HarnessConfig {
   };
   readonly capability: {
     readonly noSelectionLimit: number;
+    /**
+     * Tool name patterns (exact, or a trailing `*` prefix) that only the user
+     * may enable. They are invisible to model discovery and never inherited by
+     * a subagent session; `/capability enable` is the only activation path.
+     */
+    readonly manualTools: readonly string[];
     readonly budget: BudgetProfile;
     readonly search: {
       readonly bm25: { readonly k: number; readonly b: number; readonly d: number };
@@ -60,6 +66,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
   },
   capability: {
     noSelectionLimit: 3,
+    manualTools: [],
     budget: { modelCalls: { soft: 16, hard: 20 }, activeTimeMs: { soft: 180_000, hard: 360_000 }, lifetimeMs: 600_000 },
     search: {
       bm25: { k: 0.9, b: 0.9, d: 0 },
@@ -132,7 +139,13 @@ function mergeNode(base: object, value: unknown, source: string, field: string, 
   const merged: Record<string, unknown> = { ...base };
   for (const [key, item] of Object.entries(patch)) {
     const child = field === '' ? key : `${field}.${key}`;
-    if (field === 'subagent.budgetsByDepth') {
+    if (child === 'capability.manualTools') {
+      if (!Array.isArray(item) || item.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
+        throw new HarnessConfigError(source, child, 'must be an array of non-empty tool name patterns.');
+      }
+      merged[key] = [...item];
+      origins.set(child, layer);
+    } else if (field === 'subagent.budgetsByDepth') {
       const depth = /^[1-9][0-9]*$/.test(key) ? Number(key) : Number.NaN;
       if (!Number.isSafeInteger(depth)) throw new HarnessConfigError(source, child, 'must name a positive integer depth.');
       const previous = merged[key];

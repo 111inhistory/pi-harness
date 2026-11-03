@@ -15,6 +15,8 @@
 | `extension.ts`、`lifecycle.ts` | SDK 生命周期钩子、代次隔离、退役期限和资源隔离 | 伪造物理退出、重跑已结束任务 |
 | `surface.ts`、`message-write.ts` | 工具声明、调用方身份绑定、输入捕获、专用 `msg_write` 消息工具（`write` 为 SDK 原生文件工具完全保持不变） | 持有全局注册表或执行循环 |
 | `command.ts`、`status-view.ts` | `/subagent` 命令注册、参数解析、错误呈现与列表文本渲染 | Job 状态、准入或消息投递 |
+| `capability/command.ts`、`capability/manual.ts`、`capability/activation.ts` | `/capability` 命令解析与呈现、用户直接启用的校验与分支记录、工具激活的单一实现（发现与命令共用） | 检索会话、路由、Subagent 状态 |
+| `capability/admission.ts` | 单次操作的工具准入视图：一次解析作用域链与分支记录，提供 `declares`（声明）、`admits`（执行）、`admitsManual` 与 `admitsServer` | 跨请求缓存、第二套权限服务、改写激活集 |
 | `listeners.ts`、`ipc/` | 端点目录、监听、NDJSON 分帧与平台资源归属校验 | 用显示窗口决定可达性、另写广播状态机 |
 | `native-delivery.ts`、`delivery.ts` | 独立通知封装、检查原生交接结果、明确拒收后的保留会话追加 | 模型已读回执、自动重发或消息合并 |
 | `inherited-context.ts` | 共享分支捕获，在清理未决工具前通过 spawning assistant 锁定物理模型 | 伪造身份或跨分支泄漏 |
@@ -128,6 +130,14 @@ Harness 用 `result-rendering.ts` 为没有专用结果渲染器的工具提供�
 Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返回完整参数和指导，`describeNamespace` 返回 namespace 元数据与成员名。目录查询不等待 MCP 就绪；实际嵌套调用继续经过原生 `tool_call` 管线，由原生后端等待对应服务器。沙箱在执行开始时固定工具集合，期间新启用的工具从下一次 Codemode 调用使用。
 
 宿主不从 Skill 文本猜测禁止事项、前置条件、静默失败、绑定关系或执行优先级，也不按未命中词项推断能力缺口。Skill 返回元数据和绝对入口路径，由 Agent 使用原生 `read` 阅读并理解正文。`src/capability/result.ts` 移除模型可见结果中的排序诊断；`src/capability/prompt.ts` 投影分支发现记忆。
+
+用户直接启用走独立入口：`src/capability/command.ts` 解析 `/capability`，`src/capability/manual.ts` 先调用共享的 `activation.ts` 激活工具，再把实际激活的成员以 `manual` 分类写入同一 `capability-discovery` 记录。先激活后记录使记录不会包含被激活阶段静默遮掉的成员；记录写入失败不回滚激活，命令单独报告该失败。
+
+`capability.manualTools` 的门禁收在 `scope.ts`：根作用域保存名单谓词，任何带父节点的视图在计算 `effective` 与 `allows` 时都排除名单内名字，因此子会话既看不到也不能继承。`tool-catalog.ts` 默认排除名单内工具，只有命令与执行守卫传 `includeManual`；`activation.ts` 对发现路径返回 `manual_only`。
+
+授权判定集中在 `admission.ts` 的单次操作视图：它一次解析作用域链、分支记录（一次扫描同时得到「已选择」与「用户已启用」两个集合）与当前激活集，再提供逐名字谓词。`declares` 用于声明准入（禁用原生工具、MCP 选择、manual 授权，不含作用域），`admits` 在声明规则上叠加作用域，供 Codemode 准入使用，`admitsServer` 判定资源读取。manual 工具必须处于根作用域且当前分支存在 `manual` 记录。
+
+声明裁剪只有一处：`native-discovery.ts` 的 `before_agent_start` 用 `declares` 过滤激活集与 `selectedTools`，同时覆盖 `defaultActive`、历史恢复和其他扩展的激活；`extensions/capability.ts` 的同一钩子只处理 Skill 段。执行仍分别检查：原生 MCP 的 `tool_call` 用 `declares` 加激活状态，能力侧 `tool_call` 用目录/激活状态加 `admitsManual`。作用域拒绝只关闭执行，不改写分支选择或历史声明。请求投影用 `includeManual` 的目录解析执行视图，Main 可见、子会话仍被作用域排除。
 
 工具资格按设计只增不减，角色排除仍优先。每次同步目录投影只解析一次资格视图；不把快照跨请求或工具调用缓存。资格、注册和激活是三件不同的事。
 

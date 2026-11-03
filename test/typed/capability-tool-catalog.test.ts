@@ -111,6 +111,7 @@ function fixture(initial: readonly TestTool[]): CatalogFixture {
     on(event: string, handler: unknown): void {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
+    registerCommand(): void {},
     registerTool(definition: unknown): void {
       if (definition && typeof definition === "object" && "name" in definition) {
         registered.set(String(definition.name), definition);

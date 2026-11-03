@@ -11,7 +11,8 @@ canonical `capability-discovery` custom entry appended to the branch through
 ## Durable branch storage
 
 Every successful or partial discovery writes one `capability-discovery` entry
-to the session branch:
+to the session branch. User-driven enablement writes the same entry shape with
+the `manual` category and no tool call anchor.
 
 - Nested calls: When an outer tool calls `ctx.executeTool("capability", ...)`,
   the inner discovery record writes directly to the branch. The record survives
@@ -36,6 +37,21 @@ to the session branch:
   constraints or associations from Skill prose. A Skill ref is its entry path;
   the model uses native file read to understand the guidance. The host installs
   no resource protocol router or file tool override.
+- Manual entries: `/capability enable` records the tools it actually activated
+  under the `manual` category. A manual record carries no tool call anchor, so
+  the projection folds it into the leading checkpoint. Manual and discovered
+  entries share one ref namespace and the same permission check.
+- Manual-only tools: `capability.manualTools` names tools that discovery must not
+  see. They are excluded from the eligible catalog used by search and by
+  discovery activation, and the scope view drops them from every node below the
+  root, so a child cannot inherit one. The user command opts back in with
+  `includeManual`; execution then follows the normal active-tool guard.
+- Manual authorization: the `manual` record is the authority, not the active
+  set. `before_agent_start` removes a manual tool that is active without a record
+  (`defaultActive`, a restored transcript, another extension), `tool_call`
+  refuses it, and Codemode admission applies the same predicate. The request
+  projection resolves the execution view, so an enabled manual entry appears in
+  Main's section and is still filtered out for a child scope.
 - Shared guidance: retained across discoveries, even when a selection adds no tools.
 - Remote coverage: discovery searches local resources only.
   Coverage explicitly marks remote search as `not_searched`. Remote candidates

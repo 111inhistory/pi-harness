@@ -58,6 +58,12 @@ export interface DiscoveryMemory {
   readonly mcp: readonly CapabilityHit[];
   readonly skills: readonly CapabilityHit[];
   readonly guidance?: readonly CapabilityHit[];
+  /**
+   * Resources the user enabled directly through `/capability enable`, never
+   * through retrieval. The category is what distinguishes a user decision from
+   * a model discovery in the projected section; both share the branch record.
+   */
+  readonly manual?: readonly CapabilityHit[];
   readonly coverage: CapabilitySearchCoverage;
 }
 
@@ -149,12 +155,14 @@ export function normalizeDiscoveryMemory(result: unknown, coverage: unknown): Di
   const source = isRecord(result) ? result : {};
   const status: DiscoveryStatus = source["status"] === "partial" ? "partial" : "ok";
   const guidance = normalizeHits(source["guidance"]);
+  const manual = normalizeHits(source["manual"]);
   return {
     status,
     tools: normalizeHits(source["tools"]),
     mcp: normalizeHits(source["mcp"]),
     skills: normalizeHits(source["skills"]),
     ...(guidance.length > 0 ? { guidance } : {}),
+    ...(manual.length > 0 ? { manual } : {}),
     coverage: normalizeCoverage(coverage),
   };
 }
@@ -206,6 +214,53 @@ export function appendDiscoveryRecord(
     ...(typeof toolCallId === "string" && toolCallId !== "" ? { toolCallId } : {}),
     result: memory,
   };
+  pi.appendEntry(CAPABILITY_DISCOVERY_RECORD, record);
+  return memory;
+}
+
+/**
+ * Tool names the user enabled through `/capability enable` on this branch.
+ *
+ * This is the only authority that makes a manual tool usable. The command writes
+ * the record after activation, so a tool that is active only because it is
+ * `defaultActive`, restored from the transcript or enabled by another extension
+ * stays unauthorized until the user enables it here.
+ */
+export function manualEnabledTools(branch: readonly unknown[] | null | undefined): Set<string> {
+  const names = new Set<string>();
+  for (const record of discoveryRecords(branch)) {
+    for (const hit of record.result.manual ?? []) {
+      for (const member of hit.tools ?? [hit]) {
+        if (typeof member.name === "string" && member.name !== "") names.add(member.name);
+      }
+    }
+  }
+  return names;
+}
+
+/**
+ * Persist resources the user enabled directly. No retrieval ran, so the record
+ * carries no tool call anchor: the projection folds it into the leading
+ * checkpoint instead of anchoring it to a tool result.
+ *
+ * The caller supplies the hits already verified as active in this session, so a
+ * record can never advertise a tool that the session did not activate.
+ */
+export function appendManualRecord(
+  pi: DiscoveryRecordWriter,
+  hits: readonly CapabilityHit[],
+): DiscoveryMemory {
+  const manual = normalizeHits(hits);
+  if (manual.length === 0) throw new TypeError("A manual capability record requires at least one resource with a ref.");
+  const memory: DiscoveryMemory = {
+    status: "ok",
+    tools: [],
+    mcp: [],
+    skills: [],
+    manual,
+    coverage: { local: "not_searched", remote: "not_searched" },
+  };
+  const record: CapabilityDiscoveryRecord = { version: CAPABILITY_DISCOVERY_RECORD_VERSION, result: memory };
   pi.appendEntry(CAPABILITY_DISCOVERY_RECORD, record);
   return memory;
 }

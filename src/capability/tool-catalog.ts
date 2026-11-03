@@ -32,6 +32,17 @@ export interface EligibleToolCatalog<T extends CapabilityScopedTool> {
   readonly byName: ReadonlyMap<string, T>;
 }
 
+/** Discovery excludes manual tools; the user command and execution opt in. */
+export interface EligibleCatalogOptions {
+  /**
+   * Include tools that only the user may enable. Discovery never sets this, so
+   * a manual tool cannot become a search candidate or an activation request;
+   * `/capability` and the execution guard do, because by then the user has
+   * already authorized it.
+   */
+  readonly includeManual?: boolean;
+}
+
 /**
  * Resolve the scope once and return the qualified catalog for this operation.
  *
@@ -40,9 +51,13 @@ export interface EligibleToolCatalog<T extends CapabilityScopedTool> {
  */
 export function createEligibleToolCatalog<T extends CapabilityScopedTool>(
   catalog: TypedToolCatalog<T>,
+  options: EligibleCatalogOptions = {},
 ): EligibleToolCatalog<T> {
   const view = createCapabilityScopeView(catalog);
-  const tools = catalog.getAllTools().filter((tool) => tool.exposure !== "hidden" && view.allows(tool.name));
+  // One scope resolution answers qualification and the root-only policy.
+  const rootOnly = options.includeManual === true ? null : view.rootOnly;
+  const tools = catalog.getAllTools().filter((tool) => tool.exposure !== "hidden" && view.allows(tool.name)
+    && (rootOnly === null || !rootOnly(tool.name)));
   const names = new Set<string>();
   const byName = new Map<string, T>();
   for (const tool of tools) {

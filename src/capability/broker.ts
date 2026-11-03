@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import MiniSearch from 'minisearch';
 import { DEFAULT_HARNESS_CONFIG, type HarnessConfig } from '../harness-config.ts';
 import { CAPABILITY_DIAGNOSTIC_LIMITS } from './contracts.ts';
+import { capabilityRef, mcpRef, toolRef } from './refs.ts';
 
 /** The typed BM25 and resource bounds a broker uses for every search. */
 export type CapabilitySearchConfig = HarnessConfig['capability']['search'];
@@ -88,8 +89,6 @@ const string = (value: unknown): string => typeof value === 'string' ? value : '
 const truncate = (text: string, max: number): string => text.length > max ? `${text.slice(0, max - 1)}…` : text;
 const errorText = (error: unknown): string => truncate(error instanceof Error ? error.message : String(error), CAPABILITY_DIAGNOSTIC_LIMITS.warningChars);
 const compare = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0;
-const ref = (scheme: string, name: string): string => `${scheme}://${encodeURIComponent(name)}`;
-const mcpRef = (server: string, tool?: string): string => ref('mcp', server) + (tool ? `/${encodeURIComponent(tool)}` : '');
 
 function checkAbort(signal?: AbortSignal): void {
   if (signal?.aborted) throw signal.reason ?? new DOMException('Capability search aborted', 'AbortError');
@@ -185,7 +184,7 @@ function candidates(tools: Tool[], warnings: string[], limits: CapabilitySearchC
   for (const tool of tools) {
     if (tool.isMcp && !tool.mcp && !tool.namespace) warnings.push(`mcp tool "${tool.name}" exposes no parseable server identity`);
     if (!tool.namespace && !tool.isMcp && tool.active && ['builtin', 'sdk'].includes(tool.source)) continue;
-    const key = tool.namespace ? ref('namespace', tool.namespace) : tool.mcp ? mcpRef(tool.mcp.server) : ref('tool', tool.name);
+    const key = tool.namespace ? capabilityRef('namespace', tool.namespace) : tool.mcp ? mcpRef(tool.mcp.server) : toolRef(tool.name);
     const group = groups.get(key) ?? [];
     group.push(tool);
     groups.set(key, group);
@@ -196,8 +195,8 @@ function candidates(tools: Tool[], warnings: string[], limits: CapabilitySearchC
     const kind = isMcp ? 'mcp' : first.namespace ? 'namespace' : 'tool';
     const aliases = new Set([key]);
     const members = group.map((tool): ToolMember => {
-      const memberRef = tool.mcp ? mcpRef(tool.mcp.server, tool.mcp.tool) : ref('tool', tool.name);
-      if (!isMcp) aliases.add(ref('tool', tool.name));
+      const memberRef = tool.mcp ? mcpRef(tool.mcp.server, tool.mcp.tool) : toolRef(tool.name);
+      if (!isMcp) aliases.add(toolRef(tool.name));
       if (tool.mcp) { aliases.add(mcpRef(tool.mcp.server)); aliases.add(memberRef); }
       return { ref: memberRef, name: tool.name, description: truncate(tool.description, limits.descriptionChars),
         exposure: tool.exposure, ...(tool.mcp?.tool ? { tool: tool.mcp.tool } : {}) };
@@ -258,7 +257,7 @@ function exactRef(query: string): string | null {
     const slash = rest.indexOf('/');
     return mcpRef(decodeURIComponent(slash < 0 ? rest : rest.slice(0, slash)), slash < 0 ? undefined : decodeURIComponent(rest.slice(slash + 1)));
   }
-  return ref(scheme, decodeURIComponent(rest));
+  return capabilityRef(scheme, decodeURIComponent(rest));
 }
 
 const emptyResult = (): CapabilitySearchResult => ({ status: 'ok', tools: [], mcp: [], skills: [], remote: [], missingCapabilities: [], warnings: [] });
