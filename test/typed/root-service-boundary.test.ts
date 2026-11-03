@@ -58,6 +58,7 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
   };
   let rejectTerminal = false;
   let terminalAttempts = 0;
+  let sentTerminalNotices = 0;
   const settingsManager = SettingsManager.inMemory({
     retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: 'off',
   });
@@ -65,6 +66,11 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
     cwd, agentDir, settingsManager,
     noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
     extensionFactories: [{ name: 'real-subagent-boundary', factory(api) {
+      const send = api.sendMessage.bind(api);
+      api.sendMessage = (message, options) => {
+        if (message.customType === 'agent-delivery') sentTerminalNotices += 1;
+        return send(message, options);
+      };
       const append = api.appendEntry.bind(api);
       api.appendEntry = (customType, data) => {
         if (customType === 'subagent-job-end') {
@@ -138,6 +144,7 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
       const terminal = session.sessionManager.getBranch().filter((entry) =>
         entry.type === 'custom' && entry.customType === 'subagent-job-end');
       assert.equal(terminal.length, children, 'the old root owns terminal appends until its before-hook settles');
+      assert.equal(sentTerminalNotices, children, 'the quiescing root still retains terminal notices');
     }
   } finally {
     releaseSecondPrompt.resolve();
