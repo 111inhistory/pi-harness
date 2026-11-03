@@ -87,11 +87,16 @@ export function enableManualTools(
   // An already-active manual tool still needs the record: activation alone (a
   // `defaultActive` tool, a restored transcript or another extension) does not
   // authorize it. Non-manual tools that were already active need nothing.
-  const authorized = [
-    ...outcome.activated,
-    ...outcome.alreadyActive.filter((name) => rootOnly !== null && rootOnly(name)),
-  ].filter((name) => !recorded.has(name));
-  const hits = authorized.flatMap((name) => {
+  const newlyAuthorized = outcome.alreadyActive
+    .filter((name) => rootOnly !== null && rootOnly(name) && !recorded.has(name));
+  // The record is append-only: a name already remembered is not written twice.
+  // The result still reports what this call activated, so a remembered but
+  // currently inactive tool is not silently dropped from `enabled`.
+  const toRecord = [
+    ...outcome.activated.filter((name) => !recorded.has(name)),
+    ...newlyAuthorized,
+  ];
+  const hits = toRecord.flatMap((name) => {
     const tool = registered.get(name);
     return tool === undefined ? [] : [manualHit(tool)];
   });
@@ -103,5 +108,6 @@ export function enableManualTools(
       recordError = error instanceof Error ? error.message : String(error);
     }
   }
-  return { enabled: authorized, alreadyActive: outcome.alreadyActive, skipped: outcome.skipped, recordError };
+  const enabled = [...new Set([...outcome.activated, ...newlyAuthorized])];
+  return { enabled, alreadyActive: outcome.alreadyActive, skipped: outcome.skipped, recordError };
 }

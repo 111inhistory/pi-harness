@@ -131,6 +131,16 @@ test("a repeated enable is idempotent and never removes existing memory", () => 
   assert.deepEqual(api.activeNames(), ["deck_pages"]);
 });
 
+test("a remembered but inactive manual tool is activated and reported", () => {
+  const api = host(tools, []);
+  setCapabilityRootOnlyPolicy(api, manualToolMatcher(["deck_pages"]));
+  const result = enableManualTools(api, ["deck_pages"], { recorded: new Set(["deck_pages"]) });
+  assert.deepEqual(result.enabled, ["deck_pages"], "activation is reported even when the record already exists");
+  assert.deepEqual(result.alreadyActive, []);
+  assert.deepEqual(api.activeNames(), ["deck_pages"]);
+  assert.equal(api.entries.length, 0, "an existing record is not duplicated");
+});
+
 test("an already-active manual tool is authorized by the user command", () => {
   const api = host(tools, ["deck_pages"]);
   setCapabilityRootOnlyPolicy(api, manualToolMatcher(["deck_pages"]));
