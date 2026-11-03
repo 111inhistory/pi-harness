@@ -488,7 +488,7 @@ try {
     assert.equal(received.length, 1, "one write produces exactly one Main delivery item");
     assert.equal(received[0].details.sourceId, sender.id);
     if (steering) {
-      assert.equal(received[0].details.status, "running", "ordinary progress is not rewritten by the later terminal");
+      assert.equal("status" in received[0].details, false, "ordinary progress carries no execution state");
       const terminals = session.messages.filter((message) => message.role === "custom" && message.customType === "agent-delivery" &&
         message.details?.sourceId === sender.id && message.details?.source === "host");
       assert.equal(terminals.length, 1);

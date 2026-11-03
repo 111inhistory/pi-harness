@@ -162,6 +162,14 @@ export async function runPackageSkillsScenario(
   assert.deepEqual(networkAttempts, [], "installed/CLI skills must not resolve or install missing packages");
 }
 
+/**
+ * The Subagent namespace membership Main sees. Discovery selects the whole
+ * group, so every count in these scenarios is derived from this one list.
+ */
+const SUBAGENT_MEMBERS = [
+  "session_list", "subagent_create", "subagent_list", "subagent_stop", "msg_write",
+] as const;
+
 export async function runResponsesOnlyScenario(fixture: CapabilityScenarioFixture): Promise<void> {
   const { session, controls, call, toolAnswer, textAnswer, chats } = fixture;
   session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
@@ -186,7 +194,7 @@ export async function runResponsesOnlyScenario(fixture: CapabilityScenarioFixtur
   };
   const selectedInterfaces = parsed.tools[0];
   assert.ok(selectedInterfaces);
-  assert.equal(selectedInterfaces.toolCount, 4, "the compact interface keeps all newly selected Subagent members");
+  assert.equal(selectedInterfaces.toolCount, SUBAGENT_MEMBERS.length, "the compact interface keeps all newly selected Subagent members");
   assert.equal(selectedInterfaces.tools, undefined, "compact interfaces omit members hidden from native declarations");
   assert.equal(selectedInterfaces.parameters, undefined, "argument schemas stay in the Codemode query path");
   assert.match(selectedInterfaces.interface ?? "", /describeTool/);
@@ -205,7 +213,7 @@ export async function runResponsesOnlyScenario(fixture: CapabilityScenarioFixtur
 
 export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixture): Promise<void> {
   const { session, cwd, model, chats, controls, call, toolAnswer, textAnswer } = fixture;
-  const members = ["subagent_create", "subagent_list", "subagent_stop", "msg_write"];
+  const members = SUBAGENT_MEMBERS;
   session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
   await session.prompt("Seed a stable Responses transcript without calling tools.");
   const firstChat = chats[0];
@@ -292,13 +300,13 @@ export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixt
   assert.equal(compact.tools[0]?.tools, undefined);
   assert.equal(compact.tools[0]?.description, undefined);
   assert.equal(compact.tools[0]?.instructions, undefined, "request memory owns the shared guidance");
-  const subagentCreateDef = session.getToolDefinition(members[0]!);
+  const subagentCreateDef = session.getToolDefinition("subagent_create");
   assert.ok(subagentCreateDef);
   const namespaceInstructions = (subagentCreateDef as unknown as { namespace: { instructions: string } }).namespace.instructions;
   assert.ok(namespaceInstructions.length > 0);
   const discoveryDetails = discovery.details as CapabilityDiscoveryResult;
   const toolsGroup = discoveryDetails.tools[0] as unknown as { name: string; tools: Array<{ name: string }>; instructions: string };
-  assert.deepEqual(toolsGroup.tools.map((tool) => tool.name), members);
+  assert.deepEqual([...toolsGroup.tools.map((tool) => tool.name)].sort(), [...members].sort());
   assert.equal(toolsGroup.instructions, namespaceInstructions, "full details retain the shared guidance");
   assert.equal(occurrences(JSON.stringify(discovery.content), namespaceInstructions), 0, "the tool result does not repeat shared guidance");
   assert.ok(members.every((name) => session.getActiveToolNames().includes(name)));
@@ -330,7 +338,7 @@ export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixt
   assert.equal(occurrences(JSON.stringify(repeated.content), namespaceInstructions), 0);
   const repeatedDetails = repeated.details as CapabilityDiscoveryResult;
   const repeatedToolsGroup = repeatedDetails.tools[0] as unknown as { tools: unknown[] };
-  assert.equal(repeatedToolsGroup.tools.length, 4, "full selection remains in details, not model text");
+  assert.equal(repeatedToolsGroup.tools.length, members.length, "full selection remains in details, not model text");
   assert.equal(internalCalls, 8);
   await assert.rejects(fsp.stat(path.join(cwd, "forbidden.txt")), { code: "ENOENT" });
   await assert.rejects(fsp.stat(path.join(cwd, "forbidden-nested.txt")), { code: "ENOENT" });
@@ -439,7 +447,7 @@ export async function runCapabilityMissingScenario(fixture: CapabilityScenarioFi
 
 export async function runNamespaceScenario(fixture: CapabilityScenarioFixture): Promise<void> {
   const { session, cwd, controls, call, toolAnswer, create, stopped, chats } = fixture;
-  const members = ["subagent_create", "subagent_list", "subagent_stop", "msg_write"];
+  const members = SUBAGENT_MEMBERS;
   const initial = session.getActiveToolNames();
   assert.ok(members.every((name) => !initial.includes(name)), "Main starts without any Subagent namespace member");
   assert.doesNotMatch(session.systemPrompt, /subagent_create|one JSON object per line/);
@@ -486,8 +494,8 @@ export async function runNamespaceScenario(fixture: CapabilityScenarioFixture): 
   const toolEntry = discovery.tools[0]!;
   assert.equal(toolEntry.kind, "namespace");
   assert.equal(toolEntry.namespace, "subagent");
-  assert.deepEqual(toolEntry.tools.map((tool) => tool.name), members);
-  const subagentCreateDef = session.getToolDefinition(members[0]!);
+  assert.deepEqual([...toolEntry.tools.map((tool) => tool.name)].sort(), [...SUBAGENT_MEMBERS].sort());
+  const subagentCreateDef = session.getToolDefinition("subagent_create");
   assert.ok(subagentCreateDef);
   assert.equal(
     toolEntry.instructions,

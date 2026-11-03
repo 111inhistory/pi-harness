@@ -67,7 +67,8 @@ test("parses the supported subcommands and rejects the rest", () => {
   assert.deepEqual(parseCommand("list --id sub_01"), { verb: "list", all: false, id: "sub_01" });
   assert.deepEqual(parseCommand("stop sub_01"), { verb: "stop", actorId: "sub_01" });
   assert.deepEqual(parseCommand("stop --all"), { verb: "stopAll" });
-  for (const raw of ["show", "stop", "stop a b", "list --id", "list --bogus", "list --id --all", "stop --bogus"]) {
+  assert.deepEqual(parseCommand("sessions"), { verb: "sessions" });
+  for (const raw of ["show", "stop", "stop a b", "list --id", "list --bogus", "list --id --all", "stop --bogus", "sessions all"]) {
     assert.throws(
       () => parseCommand(raw),
       (error: unknown) => error instanceof SubagentError && error.code === "invalid_command_args",
@@ -248,4 +249,24 @@ test("the harness extension registers the subagent command", () => {
   } as unknown as ExtensionAPI;
   subagentExtension(api);
   assert.deepEqual(names, ["subagent"]);
+});
+
+test("sessions lists live sessions with their managed Main address and native name", async () => {
+  const notifications: Array<{ text: string; type: string }> = [];
+  const service = {
+    sessionId: "current-session",
+    listSessions: async () => [
+      { sessionId: "current-session", uid: "aaaaaa", socketDir: "/tmp/sockets/aaaaaa", pid: 11, cwd: "/tmp/project-a", name: null, startedAt: 1 },
+      { sessionId: "other-session", uid: "bbbbbb", socketDir: "/tmp/sockets/bbbbbb", pid: 22, cwd: "/tmp/project-b", name: "parser work", startedAt: 2 },
+    ],
+  } as unknown as RootService;
+  const { handler } = install(service);
+  await handler("sessions", context(notifications));
+  const text = notifications[0]?.text ?? "";
+  assert.match(text, /^Live sessions \(2\):/m);
+  assert.match(text, /^\* aaaaaa\s+\(unnamed\)\s+pid 11\s+\/tmp\/project-a$/m);
+  assert.match(text, /^ {2}bbbbbb\s+parser work\s+pid 22\s+\/tmp\/project-b$/m);
+  assert.match(text, /main: \/tmp\/sockets\/aaaaaa\/Main\.sock/);
+  assert.match(text, /main: \/tmp\/sockets\/bbbbbb\/Main\.sock/);
+  assert.match(text, /session other-session/);
 });

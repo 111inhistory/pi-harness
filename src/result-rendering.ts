@@ -68,7 +68,9 @@ function createDeliveryRenderer(): MessageRenderer<DeliveryCustomMessage['detail
       : message.content.filter(part => part.type === 'text').map(part => part.text).join('\n');
     const details = message.details;
     const title = details === undefined ? message.customType
-      : `${details.sourceId} · ${details.status} · round ${details.round}`;
+      : details.status === undefined
+        ? details.sourceId
+        : `${details.sourceId} · ${details.status} · round ${details.round}`;
     const box = new Box(options.outputPad ?? 1, 1, line => theme.bg('customMessageBg', line));
     box.addChild(new Text(theme.fg('customMessageLabel', theme.bold(`[${title}]`)), 0, 0));
     box.addChild(new Spacer(1));

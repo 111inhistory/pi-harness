@@ -8,7 +8,7 @@ Pi Harness 是基于 Pi SDK 构建的 Coding Agent 增强插件，提供能力�
 
 - **Capability 按需发现**：主 Agent 在遇到能力缺口时检索本地 Skill、Tool 与 MCP 工具。选中资源按会话分支保存，后续请求从规范记录重建能力指引。
 - **Subagent 树状编排**：主 Agent 可并发创建子任务，支持角色与候选模型路由；提供层级 Budget、最大深度与活跃子节点限额；父 Agent 在当前 Job 内等待直接子节点交付（parent-hold），无需忙轮询或外部唤醒。
-- **受管本地 IPC 通信**：提供专用的纯文本 `msg_write` 消息工具；宿主处理传输分帧与发送者身份绑定；Unix 平台使用独立 UID 的 Unix Socket，Windows 平台使用命名管道。
+- **受管本地 IPC 通信**：提供专用的纯文本 `msg_write` 消息工具；宿主处理传输分帧与发送者身份绑定；Unix 平台使用独立 UID 的 Unix Socket，Windows 平台使用命名管道。同一用户下的多个 Pi session 可通过对方 `Main` 的受管 Socket 路径由 Main 互相发消息，`session_list` 与 `/subagent sessions` 列出可寻址的 session、原生名称与投递地址。跨 session 协调当前只实现 POSIX 平台，Windows 明确不支持。
 - **Shell Preflight（可选）**：拦截并校验聊天框命令，Windows 下通过 PowerShell AST 语法检查后分发，防止选错 Shell。
 
 ## 快速开始

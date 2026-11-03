@@ -13,7 +13,12 @@ import { DEFAULT_HARNESS_CONFIG, type HarnessConfig } from '../harness-config.ts
 import { createSubagentStore, EVENTS, SUBAGENT_SESSIONS_DIR, writeFileAtomic } from './storage.ts';
 import { hasJobView, jobViewPaths, writeJobView, readTranscript } from './view.ts';
 import { routeSubagent } from './routing.ts';
-import { DEFAULT_SOCKET_DIR, deriveSessionUid } from '../ipc/socket.ts';
+import { DEFAULT_SOCKET_DIR, deriveSessionUid, endpointKey, getAgentSocketPath } from '../ipc/socket.ts';
+import {
+  assertCrossSessionSupported, crossSessionSupported, liveSessions, registerSession,
+  sendToSessionEndpoint, unregisterSession, updateSessionName,
+  type LiveSession,
+} from './session-directory.ts';
 import { ensurePrivateSocketRoot } from '../ipc/platform.ts';
 import { setCapabilityParent, type CapabilityToolCatalog } from '../capability/scope.ts';
 import { ActorSessionStore } from './actor-sessions.ts';
@@ -22,7 +27,7 @@ import { NativeJobRunner } from './native-runner.ts';
 import { NativeDeliveryRouter } from './native-delivery.ts';
 import { createNativeSessionFactory } from './native-session.ts';
 import { installSessionSurface, type SubagentSurfaceCreateOptions } from './surface.ts';
-import type { ManagedWriteHost } from './message-write.ts';
+import type { ManagedWriteHost, SessionEndpoint } from './message-write.ts';
 import type { NativeCustomHandoff, NativeRouteResult, NativeRoutingPort, NativeStartedJob } from './native-types.ts';
 import {
   createSubagentRuntime, copyInheritedEntries, SubagentError,
@@ -135,7 +140,7 @@ export class RootService implements ManagedWriteHost {
       },
     });
     this.listeners = new AgentListeners({
-      socketDir, baseSocketDir: socketRoot,
+      socketDir, baseSocketDir: socketRoot, sessionId: this.sessionId,
       maxDepth: this.#options.config.subagent.maxDepth,
       actors: () => this.runtime.list().agents,
       isAccepting: () => this.active,
@@ -256,6 +261,7 @@ export class RootService implements ManagedWriteHost {
       this.#phase = 'open';
       for (const event of this.#pendingEvents.splice(0)) this.#event(event);
       await this.listeners.sync();
+      await this.#publishSession();
     } catch (error) {
       this.#failure = errorOf(error);
       this.#phase = 'failed';
@@ -345,13 +351,107 @@ export class RootService implements ManagedWriteHost {
     return this.runtime.sendMessage(command);
   }
 
+  /** The socket root every live session of this user publishes itself under. */
+  get socketRoot(): string { return this.#socketRoot; }
+
+  /** Live sessions reachable from here, including this one. Empty where unsupported. */
+  listSessions(): Promise<LiveSession[]> {
+    return crossSessionSupported() ? liveSessions(this.#socketRoot) : Promise.resolve([]);
+  }
+
+  /**
+   * Classify a managed address against this root and the shared directory.
+   *
+   * This is the one place that decides whether a path is local, this session's
+   * own Main, another live session's Main, or another session's non-Main
+   * endpoint. It uses the same address space as every other `msg_write` call.
+   */
+  async sessionEndpoint(address: string): Promise<SessionEndpoint> {
+    const ownSocketDir = path.join(this.#socketRoot, deriveSessionUid(this.sessionId));
+    if (endpointKey(address) === endpointKey(getAgentSocketPath('Main', ownSocketDir))) {
+      return { kind: 'self' };
+    }
+    const live = await liveSessions(this.#socketRoot);
+    for (const session of live) {
+      if (session.sessionId === this.sessionId) continue;
+      if (endpointKey(address) === endpointKey(getAgentSocketPath('Main', session.socketDir))) {
+        return { kind: 'session', session };
+      }
+    }
+    const prefix = `${path.sep}`;
+    for (const session of live) {
+      if (session.sessionId === this.sessionId) continue;
+      if (address.startsWith(session.socketDir + prefix)) return { kind: 'foreign' };
+    }
+    return { kind: 'local' };
+  }
+
+  /**
+   * Mirror a native session rename into the shared directory.
+   *
+   * The SDK reports the new name; this session owns its record, so it rewrites
+   * only the name and keeps the rest of the published identity. Reachability is
+   * auxiliary: a failed update is reported, never fatal.
+   */
+  async syncSessionName(name: string | null): Promise<void> {
+    if (!crossSessionSupported()) return;
+    try {
+      await updateSessionName(this.#socketRoot, { sessionId: this.sessionId, name });
+    } catch (error) {
+      this.#report(new Error(`This session's published name was not updated: ${errorOf(error).message}`));
+    }
+  }
+
+  /**
+   * Deliver one message to another live session's Main.
+   *
+   * The receiving root owns admission: this call only frames the sender and
+   * writes one NDJSON request to the target's managed Main endpoint. An error
+   * response, a timeout or a disconnect does not prove the message was not
+   * handed over, so nothing is retried here.
+   */
+  async sendCrossSession(command: {
+    readonly target: LiveSession;
+    readonly content: string;
+    readonly signal?: AbortSignal | undefined;
+  }): Promise<void> {
+    this.assertOperational();
+    assertCrossSessionSupported();
+    return sendToSessionEndpoint({
+      sender: { sessionId: this.sessionId, uid: deriveSessionUid(this.sessionId) },
+      ...command,
+    });
+  }
+
+  /**
+   * Publish this session for cross-session addressing. Reachability is
+   * auxiliary: a failed publish is reported, and this root keeps running.
+   */
+  async #publishSession(): Promise<void> {
+    // Windows is explicitly out of scope; no record is published there.
+    if (!crossSessionSupported()) return;
+    try {
+      await registerSession(this.#socketRoot, {
+        sessionId: this.sessionId,
+        cwd: this.#options.context.cwd,
+        name: this.#options.context.sessionManager.getSessionName() ?? null,
+      });
+    } catch (error) {
+      this.#report(new Error(`This session is not reachable from other sessions: ${errorOf(error).message}`));
+    }
+  }
+
   retire(): Promise<void> {
     if (this.#retirement !== null) return this.#retirement;
     this.#phase = 'quiescing';
     const jobs = this.runtime.jobs().jobs.filter((job) => ['running', 'stopping', 'finalizing'].includes(job.status));
     for (const job of jobs) if (job.status === 'running') this.runtime.cancelJob(job.jobId);
     this.#retirement = (async () => {
-      const results = await Promise.allSettled([this.listeners.close(), ...jobs.map((job) => this.runtime.jobDone(job.jobId))]);
+      const results = await Promise.allSettled([
+        this.listeners.close(),
+        unregisterSession(this.#socketRoot, this.sessionId),
+        ...jobs.map((job) => this.runtime.jobDone(job.jobId)),
+      ]);
       const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
       this.#phase = 'detached';
       if (this.#persistenceFailure !== null) throw this.#persistenceFailure;

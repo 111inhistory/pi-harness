@@ -10,7 +10,7 @@ import { SubagentError } from '../../src/subagent/runtime.ts';
 test('broadcast rejection keeps failed recipients in the external IPC response', { skip: process.platform === 'win32' }, async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'ipc-broadcast-failure-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const listeners = new AgentListeners({ socketDir: root, baseSocketDir: root, maxDepth: 2, actors: () => [],
+  const listeners = new AgentListeners({ socketDir: root, baseSocketDir: root, sessionId: 'test-session', maxDepth: 2, actors: () => [],
     isAccepting: () => true, onError() {}, send: async () => ({ ok: false, to: 'all',
       sent: [{ to: 'sub_01', jobId: 'sub_01#r2' }],
       errors: [{ to: 'sub_02', code: 'agent_busy', message: 'finalizing' },

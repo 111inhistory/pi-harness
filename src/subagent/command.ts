@@ -9,11 +9,13 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { RootService } from "./root-service.ts";
 import { SubagentError, type StopResult } from "./runtime.ts";
 import { renderSubagentList } from "./status-view.ts";
+import { crossSessionSupported, sessionMainAddress, type LiveSession } from "./session-directory.ts";
 
 export type SubagentCommand =
   | { readonly verb: "list"; readonly all: boolean; readonly id: string | null }
   | { readonly verb: "stop"; readonly actorId: string }
-  | { readonly verb: "stopAll" };
+  | { readonly verb: "stopAll" }
+  | { readonly verb: "sessions" };
 
 /** Parse the raw argument string without touching any service. */
 export function parseCommand(raw: string): SubagentCommand {
@@ -42,6 +44,11 @@ export function parseCommand(raw: string): SubagentCommand {
       throw new SubagentError("invalid_command_args", `Unknown list option: ${token}.`, { field: "list" });
     }
     return { verb: "list", all, id };
+  }
+
+  if (verb === "sessions") {
+    if (rest.length > 0) throw new SubagentError("invalid_command_args", "sessions takes no arguments.", { field: "sessions" });
+    return { verb: "sessions" };
   }
 
   if (verb === "stop") {
@@ -136,6 +143,27 @@ async function showList(
   ctx.ui.notify(text, "info");
 }
 
+/**
+ * Every live session under this socket root, with the managed socket address of
+ * its Main. A user pastes that address into another session to let its agents
+ * reach this one; the model never receives this catalog on its own.
+ */
+function renderSessions(sessions: readonly LiveSession[], currentSessionId: string): string {
+  if (!crossSessionSupported()) {
+    return "Cross-session discovery is not available on this platform yet (POSIX only).";
+  }
+  const lines = [`Live sessions (${sessions.length}):`];
+  if (sessions.length === 0) lines.push("  none");
+  for (const session of sessions) {
+    const marker = session.sessionId === currentSessionId ? "*" : " ";
+    const name = session.name === null ? "(unnamed)" : session.name;
+    lines.push(`${marker} ${session.uid}  ${name}  pid ${session.pid}  ${session.cwd}`);
+    lines.push(`    session ${session.sessionId}`);
+    lines.push(`    main: ${sessionMainAddress(session)}`);
+  }
+  return lines.join("\n");
+}
+
 async function run(raw: string, ctx: ExtensionContext, current: (ctx: ExtensionContext) => Promise<RootService>): Promise<void> {
   let command: SubagentCommand;
   try {
@@ -162,6 +190,10 @@ async function run(raw: string, ctx: ExtensionContext, current: (ctx: ExtensionC
       ctx.ui.notify(describeStop(service.stop(command.actorId)), "info");
       return;
     }
+    if (command.verb === "sessions") {
+      ctx.ui.notify(renderSessions(await service.listSessions(), service.sessionId), "info");
+      return;
+    }
     ctx.ui.notify(stopAll(service), "info");
   } catch (error) {
     report(ctx, error);
@@ -174,11 +206,12 @@ export function installSubagentCommand(
   current: (ctx: ExtensionContext) => Promise<RootService>,
 ): void {
   api.registerCommand("subagent", {
-    description: "Inspect subagents of the current root and stop them",
+    description: "Inspect subagents of the current root, stop them, and list live sessions",
     getArgumentCompletions: (prefix) => {
       const items = [
         { value: "list", label: "list", description: "Show the subagent tree" },
         { value: "stop", label: "stop", description: "Stop one actor or --all" },
+        { value: "sessions", label: "sessions", description: "List live sessions and their cross-session addresses" },
       ].filter((item) => item.value.startsWith(prefix.trim()));
       return items.length === 0 ? null : items;
     },

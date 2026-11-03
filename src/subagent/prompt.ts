@@ -2,6 +2,7 @@ import { promptString } from '../prompt-text.ts';
 
 const field = (name: string): string => promptString('subagent-turns.json', name);
 const turns = { batchContext: field('batchContext'), task: field('task'), messageFrom: field('messageFrom'),
+  replyTo: field('replyTo'),
   originalAssignment: field('originalAssignment'), restatement: field('restatement'), control: field('control') };
 const context: string = promptString('subagent-turns.json', 'context');
 
@@ -39,8 +40,25 @@ export function composeAssignment(task: string, batchContext: string): string {
   return batchContext.trim() === '' ? task : `${turns.batchContext}\n\n${batchContext}\n\n${turns.task}\n\n${task}`;
 }
 
-export function formatPeerMessage(message: { from: string; content: string }): string {
-  return `[${turns.messageFrom} ${message.from}]\n${message.content}`;
+/**
+ * The one model-facing message label.
+ *
+ * A same-session peer needs only its id. A sender from another live session is
+ * named with that session and gets one reply address, so the recipient can
+ * answer without a directory lookup of its own.
+ */
+export function formatPeerMessage(message: {
+  from: string;
+  content: string;
+  external?: { readonly sender: string; readonly replyTo: string } | undefined;
+}): string {
+  // One label for every message. A cross-session sender is already the full
+  // identity `<session-uid>:Main`; the reply address is its real Main endpoint.
+  const identity = message.external === undefined ? message.from : message.external.sender;
+  const header = `[${turns.messageFrom} ${identity}]`;
+  return message.external === undefined
+    ? `${header}\n${message.content}`
+    : `${header}\n${turns.replyTo}: ${message.external.replyTo}\n${message.content}`;
 }
 
 /** Events already exist as separate native entries above this control prompt. */

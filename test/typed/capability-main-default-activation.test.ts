@@ -19,7 +19,7 @@ import type { CapabilityDiscoveryResult } from '../../src/capability/agent.ts';
 import { CAPABILITY_STEP_TOOL_NAME } from '../../src/capability/contracts.ts';
 
 type ToolResult = Extract<Message, { role: 'toolResult' }>;
-const SUBAGENT_TOOLS = ['msg_write', 'subagent_create', 'subagent_list', 'subagent_stop'] as const;
+const SUBAGENT_TOOLS = ['msg_write', 'session_list', 'subagent_create', 'subagent_list', 'subagent_stop'] as const;
 const SUBAGENT_REF = 'namespace://subagent';
 
 function latestResult(messages: readonly AgentMessage[], name: string): ToolResult {

@@ -1,6 +1,6 @@
 {
   "namespace": "Orchestrate independent background subagents for concurrent execution.",
-  "instructions": "Use subagent_list to inspect status and historyDir paths. Use msg_write to agent addresses, or your children.sock to broadcast to direct active agents without opening custom socket connections. Messaging a stopped agent revives it for a new round.",
+  "instructions": "Use subagent_list to inspect status and historyDir paths. Use msg_write to agent addresses, or your children.sock to broadcast to direct active agents without opening custom socket connections. Messaging a stopped agent revives it for a new round. A message from another session carries its full session identity in `from` and one managed reply address.",
   "create": {
     "description": "Create background subagents for concurrent execution, non-blocking. Returns agent IDs and socket addresses.",
     "snippet": "Delegate parallel workloads to direct subagents",
@@ -34,14 +34,19 @@
     }
   },
   "msg_write": {
-    "description": "Send a plain-text message to a managed Agent IPC endpoint: Unix Socket or Windows Named Pipe. The host binds the sender and transport framing. Omit from/to, JSON or NDJSON envelopes, and trailing newlines.",
+    "description": "Send a plain-text message to a managed Agent IPC endpoint: Unix Socket or Windows Named Pipe. The host binds the sender and transport framing. Omit from/to, JSON or NDJSON envelopes, and trailing newlines. A path that is another live session's Main endpoint reaches that session's Main; that session sees your session identity and a reply address.",
     "snippet": "Send plain-text messages to agents through their Socket paths",
     "guidelines": [
       "Provide the message body as plain text content; do not add from/to, JSON/NDJSON framing, a trailing newline, or a custom Socket client."
     ],
     "parameters": {
-      "path": "Returned Unix Socket or Windows Named Pipe address.",
+      "path": "Returned Unix Socket or Windows Named Pipe address, including another live session's Main endpoint from session_list.",
       "content": "Plain-text message body. The host frames the transport and binds the sender."
     }
+  },
+  "session_list": {
+    "description": "List the live Pi sessions reachable on this machine (same user, same socket root), including this one. Each item carries the session's name, its working directory, and the managed Unix Socket address of its Main, which you can pass to msg_write for Main-to-Main coordination. Use it before delegating cross-session work or when you need to know which sessions are running. `available: false` means this platform does not support cross-session coordination; the list is then empty.",
+    "snippet": "Discover other running Pi sessions for cross-session coordination",
+    "parameters": {}
   }
 }
