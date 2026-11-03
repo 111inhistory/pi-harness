@@ -138,6 +138,23 @@ class RecordingHost implements SubagentSurfaceHost {
     return this.endpoint;
   }
 
+  async sendCrossSession(command: Parameters<SubagentSurfaceHost["sendCrossSession"]>[0]): Promise<void> {
+    this.crossSessions.push(command);
+  }
+
+  async listSessions() {
+    return [{ sessionId: "current", uid: "aaaaaa", socketDir: "/tmp/sockets/aaaaaa", pid: 1, cwd: "/tmp/project", intent: "reviewing", startedAt: 1 }];
+  }
+
+  async setIntent(intent: string) {
+    this.intents.push(intent);
+    return { sessionId: "current", uid: "aaaaaa", socketDir: "/tmp/sockets/aaaaaa", pid: 1, cwd: "/tmp/project", intent, startedAt: 1 };
+  }
+
+  readonly intents: string[] = [];
+
+  readonly crossSessions: unknown[] = [];
+
   async sendMessage(command: Parameters<SubagentSurfaceHost["sendMessage"]>[0]): Promise<MessageReceipt | BroadcastReceipt> {
     this.sends.push(command);
     const receipt: MessageReceipt = { ok: true, to: command.to, jobId: null };
@@ -252,6 +269,8 @@ test("the root surface registers controls and messaging without overriding write
     "subagent_create",
     "subagent_list",
     "subagent_stop",
+    "session_list",
+    "session_intent",
     "msg_write",
   ]);
   for (const tool of registered) {
@@ -343,6 +362,41 @@ test("tool-owned parameter labels and create-only guidance follow the assets", (
     scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: MAX_DEPTH } });
   assert.equal(leaf.create, null);
   assert.deepEqual(leaf.list.promptGuidelines, common);
+});
+
+test("the root session_list reports the discovery view with addresses and the current marker", async () => {
+  const host = new RecordingHost();
+  const tools = createSurfaceTools({ api: new FakeSurfaceApi(), resolveHost: async () => host, scope: ROOT_SCOPE });
+  assert.ok(tools.sessions);
+  const ctx = sdkContext({ cwd: "/tmp/project", sessionId: "current" });
+  const result = await tools.sessions.execute("call-sessions", {}, undefined, undefined, ctx);
+  assert.deepEqual(result.details, {
+    available: true,
+    sessions: [{
+      uid: "aaaaaa", sessionId: "current", cwd: "/tmp/project", pid: 1, startedAt: 1,
+      intent: "reviewing", current: true, address: "session:aaaaaa",
+    }],
+  });
+});
+
+test("the root session_intent publishes through the host and returns the stored value", async () => {
+  const host = new RecordingHost();
+  const tools = createSurfaceTools({ api: new FakeSurfaceApi(), resolveHost: async () => host, scope: ROOT_SCOPE });
+  assert.ok(tools.intent);
+  const ctx = sdkContext({ cwd: "/tmp/project", sessionId: "current" });
+  const result = await tools.intent.execute("call-intent", { intent: "migrating the parser" }, undefined, undefined, ctx);
+  assert.deepEqual(host.intents, ["migrating the parser"]);
+  assert.deepEqual(result.details, { uid: "aaaaaa", sessionId: "current", intent: "migrating the parser" });
+});
+
+test("a subagent surface has no cross-session discovery or intent tools", () => {
+  const tools = createSurfaceTools({
+    api: new FakeSurfaceApi(),
+    resolveHost: async () => new RecordingHost(),
+    scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: 1 },
+  });
+  assert.equal(tools.sessions, null);
+  assert.equal(tools.intent, null);
 });
 
 test("the root create tool maps Main to no parent and passes origin and lazy capture", async () => {

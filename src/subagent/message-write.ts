@@ -4,6 +4,9 @@ import path from 'node:path';
 import { isIpcPath, isWindowsPipe, type EndpointResolverResult } from '../ipc/socket.ts';
 import { promptString, promptStrings } from '../prompt-text.ts';
 import { SubagentError, type BroadcastReceipt, type MessageReceipt } from './runtime.ts';
+import {
+  isCrossSessionAddress, parseCrossSessionAddress, type CrossSessionTarget,
+} from './session-directory.ts';
 
 type Receipt = MessageReceipt | BroadcastReceipt;
 
@@ -15,6 +18,12 @@ export interface ManagedWriteHost {
     content: string;
     signal?: AbortSignal;
   }): Promise<Receipt>;
+  /** Deliver to another live session's Main through its own endpoint. */
+  sendCrossSession(command: {
+    target: CrossSessionTarget;
+    content: string;
+    signal?: AbortSignal;
+  }): Promise<void>;
 }
 
 const text = {
@@ -48,12 +57,31 @@ export function createMessageWriteTool(options: {
     promptGuidelines: [...text.guidelines],
     parameters,
     async execute(_id, args, signal) {
-      if (!isIpcPath(args.path)) throw new SubagentError('invalid_target', 'msg_write requires an IPC endpoint address.');
+      const crossSession = isCrossSessionAddress(args.path);
+      if (!crossSession && !isIpcPath(args.path)) {
+        throw new SubagentError('invalid_target', 'msg_write requires an IPC endpoint address or a cross-session address.');
+      }
       if (signal?.aborted) throw new SubagentError('cancelled', 'Message send was cancelled.');
+      const from = actorId(options.senderId);
+      if (crossSession) {
+        // Cross-session coordination is Main-to-Main. The address names the
+        // session, so no path is guessed and the target root still owns
+        // recipient admission.
+        if (from !== 'Main') {
+          throw new SubagentError('invalid_target', 'Cross-session messages are sent by Main only.');
+        }
+        const target = parseCrossSessionAddress(args.path);
+        if (target === null) {
+          throw new SubagentError('invalid_target', 'A cross-session address must be session:<session-uid>.');
+        }
+        await options.host.sendCrossSession({ target, content: args.content,
+          ...(signal === undefined ? {} : { signal }) });
+        if (signal?.aborted) throw new SubagentError('cancelled', 'Message send was cancelled.');
+        return { content: [{ type: 'text', text: `Successfully sent message to ${args.path}` }], details: undefined };
+      }
       const address = isWindowsPipe(args.path) ? args.path : path.resolve(options.cwd, args.path);
       const endpoint = await options.host.resolveEndpoint(address);
       if (!endpoint.isManaged) throw new SubagentError('unmanaged_endpoint', `No registered Agent owns this IPC address: ${args.path}`);
-      const from = actorId(options.senderId);
       let to: string;
       if (endpoint.isBroadcast) {
         if (endpoint.parentId === undefined || actorId(endpoint.parentId) !== from) {

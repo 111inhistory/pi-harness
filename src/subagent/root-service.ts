@@ -14,6 +14,11 @@ import { createSubagentStore, EVENTS, SUBAGENT_SESSIONS_DIR, writeFileAtomic } f
 import { hasJobView, jobViewPaths, writeJobView, readTranscript } from './view.ts';
 import { routeSubagent } from './routing.ts';
 import { DEFAULT_SOCKET_DIR, deriveSessionUid } from '../ipc/socket.ts';
+import {
+  assertCrossSessionSupported, crossSessionSupported, liveSessions, registerSession,
+  sendToSession, unregisterSession, updateSession,
+  type CrossSessionTarget, type LiveSession,
+} from './session-directory.ts';
 import { ensurePrivateSocketRoot } from '../ipc/platform.ts';
 import { setCapabilityParent, type CapabilityToolCatalog } from '../capability/scope.ts';
 import { ActorSessionStore } from './actor-sessions.ts';
@@ -212,9 +217,11 @@ export class RootService implements ManagedWriteHost {
     // Validate the private root inside initialize(), so failure is latched and
     // tools report it rather than repeatedly rebuilding an insecure service.
     this.#socketRoot = socketRoot;
+    this.#socketDir = socketDir;
   }
 
   readonly #socketRoot: string;
+  readonly #socketDir: string;
   /** The resolved nesting limit of this root's snapshot. */
   get maxDepth(): number { return this.#options.config.subagent.maxDepth; }
   get active(): boolean { return this.#phase === 'open' && this.#failure === null && this.#options.ownsContext(); }
@@ -256,6 +263,7 @@ export class RootService implements ManagedWriteHost {
       this.#phase = 'open';
       for (const event of this.#pendingEvents.splice(0)) this.#event(event);
       await this.listeners.sync();
+      await this.#publishSession();
     } catch (error) {
       this.#failure = errorOf(error);
       this.#phase = 'failed';
@@ -345,13 +353,67 @@ export class RootService implements ManagedWriteHost {
     return this.runtime.sendMessage(command);
   }
 
+  /** The socket root every live session of this user publishes itself under. */
+  get socketRoot(): string { return this.#socketRoot; }
+
+  /** Live sessions reachable from here, including this one. Empty where unsupported. */
+  listSessions(): Promise<LiveSession[]> {
+    return crossSessionSupported() ? liveSessions(this.#socketRoot) : Promise.resolve([]);
+  }
+
+  /** Publish what this session is working on, for cross-session discovery. */
+  async setIntent(intent: string): Promise<LiveSession> {
+    assertCrossSessionSupported();
+    const updated = await updateSession(this.#socketRoot, { sessionId: this.sessionId, intent });
+    if (updated === null) {
+      throw new SubagentError('unknown_session', 'This session is not published for cross-session discovery.');
+    }
+    return updated;
+  }
+
+  /**
+   * Deliver one message to an actor of another live session.
+   *
+   * The receiving root owns admission: this call only resolves the published
+   * session, frames the sender, and writes one NDJSON request. An error
+   * response, a timeout or a disconnect does not prove the message was not
+   * handed over, so nothing is retried here.
+   */
+  async sendCrossSession(command: {
+    readonly target: CrossSessionTarget;
+    readonly content: string;
+    readonly signal?: AbortSignal | undefined;
+  }): Promise<void> {
+    this.assertOperational();
+    assertCrossSessionSupported();
+    return sendToSession(this.#socketRoot, { senderSessionId: this.sessionId, ...command });
+  }
+
+  /**
+   * Publish this session for cross-session addressing. Reachability is
+   * auxiliary: a failed publish is reported, and this root keeps running.
+   */
+  async #publishSession(): Promise<void> {
+    // Windows is explicitly out of scope; no record is published there.
+    if (!crossSessionSupported()) return;
+    try {
+      await registerSession(this.#socketRoot, { sessionId: this.sessionId, cwd: this.#options.context.cwd });
+    } catch (error) {
+      this.#report(new Error(`This session is not reachable from other sessions: ${errorOf(error).message}`));
+    }
+  }
+
   retire(): Promise<void> {
     if (this.#retirement !== null) return this.#retirement;
     this.#phase = 'quiescing';
     const jobs = this.runtime.jobs().jobs.filter((job) => ['running', 'stopping', 'finalizing'].includes(job.status));
     for (const job of jobs) if (job.status === 'running') this.runtime.cancelJob(job.jobId);
     this.#retirement = (async () => {
-      const results = await Promise.allSettled([this.listeners.close(), ...jobs.map((job) => this.runtime.jobDone(job.jobId))]);
+      const results = await Promise.allSettled([
+        this.listeners.close(),
+        unregisterSession(this.#socketRoot, this.sessionId),
+        ...jobs.map((job) => this.runtime.jobDone(job.jobId)),
+      ]);
       const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
       this.#phase = 'detached';
       if (this.#persistenceFailure !== null) throw this.#persistenceFailure;

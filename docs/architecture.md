@@ -17,6 +17,7 @@
 | `command.ts`、`status-view.ts` | `/subagent` 命令注册、参数解析、错误呈现与列表文本渲染 | Job 状态、准入或消息投递 |
 | `capability/command.ts`、`capability/manual.ts`、`capability/activation.ts` | `/capability` 命令解析与呈现、用户直接启用的校验与分支记录、工具激活的单一实现（发现与命令共用） | 检索会话、路由、Subagent 状态 |
 | `listeners.ts`、`ipc/` | 端点目录、监听、NDJSON 分帧与平台资源归属校验 | 用显示窗口决定可达性、另写广播状态机 |
+| `session-directory.ts` | 跨 session 目录的发布、`intent` 更新、存活校验与归属删除，`session:<uid>` 地址，跨 session 单帧写入；POSIX 平台限定 | 认证协议、跨主机调度、第二套消息状态机 |
 | `native-delivery.ts`、`delivery.ts` | 独立通知封装、检查原生交接结果、明确拒收后的保留会话追加 | 模型已读回执、自动重发或消息合并 |
 | `inherited-context.ts` | 共享分支捕获，在清理未决工具前通过 spawning assistant 锁定物理模型 | 伪造身份或跨分支泄漏 |
 
@@ -71,6 +72,10 @@ Main 默认不激活 `msg_write`（`defaultActive: false`）；Capability 选中
 报文应显式提供非空 `from` 和字符串 `content`，不回退为 Main。广播端点还检查声明的发送者是否为该端点的父节点。本项目信任同用户本机进程，不另建认证协议。
 
 每个 NDJSON 请求处理结束后，成功返回空行，失败只返回错误的 `code`（如有）和 `message`；外部 IPC 广播失败在响应中保留失败接收者列表及原因，普通 IPC 错误不向调用方泄漏内部任意状态细节。`writeSocket` 等待结果再返回；超时或断连表示结果未知，不自动重发。正常返回不表示模型已读或任务完成。
+
+跨 session 消息走同一条接收路径，且只做 Main 之间的交互。发送侧由 `session-directory.ts` 解析目标 session 的 Socket 目录并写入一帧 `{from: "Main", session, content}`；接收侧 `listeners.ts` 只在该根的 `Main` 端点接受此类帧，用共享目录核对 `session` 是否为存活 session，按该记录推导回复地址后交给 Runtime。Runtime 只接受宿主解析出的外部发送者描述，不自行读目录；外部发送者只能是 Main，接收者也只能是 Main。
+
+发现由同一目录提供：`RootService.initialize` 在监听就绪后发布记录，`retire` 按记录归属删除，`session_intent` 重写自己的记录。`crossSessionSupported()` 把平台范围收在一处：Windows 不发布记录，`session_list` 报告不可用，`session_intent` 与跨 session 发送以 `unsupported_platform` 拒绝。
 
 `subagent_list` 将筛选后的拓扑投影为 `children` 树，省去 `parentId` 和外层 `items`；窗口和展开规则见[接口契约](interface-contract.md#当前调用形态-1)。监听由当前根注册表决定，覆盖已停止但可续跑的 Actor，不复用 `subagent_list` 的每组四项显示窗口。大量累计 Actor 会增加监听资源占用；系统资源不足会报告错误，不把它解释成 Actor 不存在。
 

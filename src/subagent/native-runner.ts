@@ -169,6 +169,7 @@ export class NativeJobRunner {
       content: message.content,
       round: message.round,
       jobId: message.jobId,
+      ...(message.external === undefined ? {} : { external: message.external }),
     });
     return this.#handoffMessage(live, entry.sourceId, deliveryMessage(entry), true);
   }

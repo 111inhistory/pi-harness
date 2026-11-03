@@ -30,6 +30,8 @@ export interface DeliveryEntry {
   content: string;
   /** Sender Job id, when the runtime supplies one. */
   jobId?: string;
+  /** Sending session, when the message came from another live session. */
+  session?: string;
   terminal?: DeliveryTerminal;
 }
 
@@ -39,6 +41,8 @@ export interface DeliveryDetails {
   source: "agent" | "host";
   status: string;
   jobId?: string;
+  /** Sending session, when the message came from another live session. */
+  session?: string;
   terminal?: DeliveryTerminal;
 }
 
@@ -64,6 +68,7 @@ export interface PeerDeliveryInput {
   content: string;
   round?: string | number | undefined;
   jobId?: string | null | undefined;
+  external?: { readonly sessionId: string; readonly replyTo: string } | undefined;
 }
 
 function formatDetails(details: unknown): string {
@@ -92,6 +97,7 @@ export function deliveryMessage(entry: DeliveryEntry): DeliveryCustomMessage {
       source: entry.terminal === undefined ? "agent" : "host",
       status: entry.terminal?.status ?? "running",
       ...(entry.jobId === undefined ? {} : { jobId: entry.jobId }),
+      ...(entry.session === undefined ? {} : { session: entry.session }),
       ...(entry.terminal === undefined ? {} : { terminal: entry.terminal }),
     },
     timestamp: Date.now(),
@@ -104,8 +110,10 @@ export function peerDeliveryEntry(input: PeerDeliveryInput): DeliveryEntry {
   return {
     sourceId: input.from,
     round: input.round ?? 1,
-    content: formatPeerMessage({ from: input.from, content: input.content }),
+    content: formatPeerMessage({ from: input.from, content: input.content,
+      ...(input.external === undefined ? {} : { external: input.external }) }),
     ...(jobId === undefined ? {} : { jobId }),
+    ...(input.external === undefined ? {} : { session: input.external.sessionId }),
   };
 }
 
@@ -127,6 +135,7 @@ export function deliveryEntryFor(message: RuntimeDelivery): DeliveryEntry {
       content: message.content,
       ...(message.round === undefined ? {} : { round: message.round }),
       ...(message.jobId === undefined ? {} : { jobId: message.jobId }),
+      ...(message.external === undefined ? {} : { external: message.external }),
     });
   }
   return { sourceId: message.subagentId, round: message.round, jobId: message.jobId, content: message.content,

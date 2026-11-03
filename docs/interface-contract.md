@@ -173,7 +173,7 @@ Capability 调用仍等待检索完成，再返回筛选后的资源。复用执
 | 查询 | `subagent_list({id?, all?})`；返回嵌套 `children` 树，不返回 `parentId` 或外层 `items`；默认视图有范围限制，`all: true` 查询完整树，`id` 返回可见子树或 `null`；节点附带 `kind`（`fresh`／`inherited`）；持久化存储启用时返回的树根附带 `historyDir` |
 | 取消 | `subagent_stop({id})`；请求取消，不等待执行退出与历史写入结束 |
 | 结果读取 | 终态通知直接携带本轮最终输出；超限时附完整结果路径。`history.result` 指向原始结果，`history.summary` 与 `history.cleanJsonl` 用于按需回顾该轮任务和记录 |
-| 通信 | `msg_write` 向返回的 IPC 地址写入消息；`write` 保持 SDK 原生文件工具完全不变，不用于消息发送 |
+| 通信 | `msg_write` 向返回的 IPC 地址或跨 session 地址写入消息；`write` 保持 SDK 原生文件工具完全不变，不用于消息发送 |
 | 续跑 | 向已停止的 Subagent 发消息，会启动同一 Subagent 的新一轮执行 |
 
 初始工具集与激活状态按调用方深度确定：
@@ -197,6 +197,7 @@ Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）�
 | `/subagent`、`/subagent list` | 打印当前根的 Actor 树；`--all` 展开完整树，`--id <actorId>` 只看指定子树 |
 | `/subagent stop <actorId>` | 请求取消该 Actor 的当前 Job；返回 `ok` 与 `status`，被拒绝时附带 `reason`（`already_finished`、`stopping`、`finalizing`、`budget_exceeded`）；Actor 没有运行中的 Job 时保持幂等 `ok`，视图提示无运行任务 |
 | `/subagent stop --all` | 对当前根所有 `running` Job 请求取消，立即汇总已请求／拒绝／失败数量，不等待终态 |
+| `/subagent sessions` | 列出同一 Socket 根下所有存活 session 的短标识、进程、工作目录、session id 与 Main 的跨 session 地址；当前 session 以 `*` 标记 |
 
 - 列表输出为纯文本：树形缩进，`●` 活跃、`◐` 正在停止或收尾、`○` 空闲；列固定为 ID、深度、种类（`fresh`／`inherited`）、角色、状态与调用数。标题给出当前根的全部 Actor 数；活跃数与 Fresh／Inherited 分项只统计运行中的 Actor。窗口隐藏节点时给出提示。
 - 命令只读与停止：不发送消息、不 steer、不唤醒；消息仍由 `msg_write` 与 IPC 提供。
@@ -224,6 +225,20 @@ Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）�
 
 广播有部分失败时，消息写入工具报错并指出失败接收者，不返回成功结果，也不自动重试。
 
+### 跨 session 消息
+
+跨 session 消息用于让一个 Pi session 的 Main 联系同一用户、同一 Socket 根下另一个存活 session 的 Main。它不建立跨主机调度，也不自动广播到其他 session。
+
+**平台范围：当前只实现 POSIX（Linux、macOS）。Windows 明确不支持**：不发布 session 记录，`session_list` 返回 `available: false` 与空列表，`/subagent sessions` 提示不可用，`session_intent` 与 `msg_write` 的跨 session 地址以 `unsupported_platform` 拒绝。Windows 命名管道的寻址与端点归属校验尚未实现与验收。
+
+- **地址**：`session:<session-uid>`。`session-uid` 是 session id 的短标识。地址只命名 session，不含 Actor：跨 session 只面向对方的 `Main`，因此不暴露对方的 Actor 拓扑，也不提供点名子 Agent 的入口。
+- **发现**：`session_list` 是模型侧的发现入口，`/subagent sessions` 是用户侧入口。两者读取同一份共享目录：`socketRoot/sessions/<uid>.json` 由各 session 在 `initialize` 后发布，`retire` 时按记录归属删除；读取时按 `pid` 存活与记录自洽过滤，畸形或残留记录被忽略且不由他人删除。记录只含身份、工作目录、`pid`、`intent` 与起始时间，不含拓扑或对话内容。`subagent_list` 仍只描述当前根。
+- **发送**：`msg_write` 接受跨 session 地址，且只有 `Main` 可发送。宿主解析已发布的 session、按该 session 的 Socket 目录计算目标 `Main` 端点，并以 `{from: "Main", session, content}` 单帧写入。发送方不提供自己的 session；宿主绑定。
+- **接收**：目标根只在其 `Main` 端点接受跨 session 帧，并检查帧中的 session 是否为当前存活的已发布 session。通过后按该记录推导回复地址 `session:<sender-uid>`，再把消息投递给 `Main`，唤醒规则与本地 Main 消息相同。
+- **呈现**：接收方模型看到发送者 Actor ID、发送 session 与一个回复地址；界面标题显示发送 session，不显示轮次。
+- **边界**：跨 session 只做 Main 之间的消息，不能广播；终态通知与 parent-hold 仍只属于本 session，子 Agent 不参与跨 session 交互。未知或已退出的 session 以 `unknown_session` 拒绝。超时、断连或错误不证明消息未入队，宿主不重发。
+- **信任**：session 记录与 `from` 都是同用户本机进程的声明，不构成认证协议；与外部 Socket 客户端属于同一信任模型。
+
 ### 思考强度
 
 候选模型直接配置单一 `thinking` 级别，例如 `"thinking": "high"`。系统去除了区间与裁剪逻辑，不再通过区间计算最终强度。Inherited 模式仍继承父会话的思考强度。
@@ -238,7 +253,7 @@ Agent 应通过提供的 `msg_write` 发送消息；`write` 保持 SDK 原生文
 
 调用方只提供接收地址和纯文本消息。`content` 即为消息正文，不要求调用方封装成 JSON、拼接 NDJSON 或添加末尾换行。
 
-`msg_write` 位于 subagent 命名空间。Main 默认不启用该工具；Capability 选中整个 subagent namespace 后，一并启用 `msg_write`。所有子 Agent 的 Harness 工具组显式保持启用该工具。`msg_write` 仅接受受管 IPC 地址。由宿主负责通信封装、消息分帧（`src/ipc/message.ts` 中的 `managedFrame`）和发送者绑定。内部传输格式不属于 Agent 的调用契约。
+`msg_write` 位于 subagent 命名空间。Main 默认不启用该工具；Capability 选中整个 subagent namespace 后，一并启用 `msg_write`。所有子 Agent 的 Harness 工具组显式保持启用该工具。`msg_write` 只接受受管 IPC 地址或跨 session 地址。由宿主负责通信封装、消息分帧（`src/ipc/message.ts` 中的 `managedFrame`）和发送者绑定。内部传输格式不属于 Agent 的调用契约。
 
 参数示例：
 

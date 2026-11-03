@@ -15,6 +15,7 @@ function host(overrides: Partial<ManagedWriteHost> = {}): ManagedWriteHost {
   return {
     resolveEndpoint: async () => ({ isManaged: true, targetId: 'sub_01' }),
     sendMessage: async ({ to }) => ({ ok: true, to, jobId: to }),
+    sendCrossSession: async () => {},
     ...overrides,
   };
 }

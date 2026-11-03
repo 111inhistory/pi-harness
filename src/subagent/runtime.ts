@@ -108,12 +108,24 @@ export interface StartedJobHandle {
   cancel?(): void | Promise<void>;
 }
 
+/**
+ * A sender from another live session, resolved by the host from the shared
+ * session directory. The runtime never reads that directory itself: it accepts
+ * only a host-validated descriptor, exactly like the sender id of a local write.
+ */
+export interface ExternalSender {
+  readonly sessionId: string;
+  /** The sender's own endpoint, expressed as a cross-session address. */
+  readonly replyTo: string;
+}
+
 export interface MessageEnvelope {
   type: "message";
   from: string;
   content: string;
   jobId?: string;
   round?: number;
+  external?: ExternalSender;
 }
 
 export type RuntimeDelivery = MessageEnvelope | TerminalNotification;
@@ -374,6 +386,7 @@ interface MessagePlan {
   from: string;
   to: string;
   content: string;
+  external?: ExternalSender;
 }
 
 const MAX_MESSAGE_CHARS = 32768;
@@ -1193,17 +1206,21 @@ export class SubagentRuntime {
    * `to: "all"` broadcasts to the sender's direct children and answers with
    * one explicit outcome per recipient.
    *
-   * @param {{ from: string, to: string, content: string, signal?: AbortSignal }} message
+   * A sender that is not registered here is accepted only with an `external`
+   * descriptor that the host resolved from the shared session directory. That
+   * path is Main-to-Main only: another session may reach this Main, nothing else.
+   *
+   * @param {{ from: string, to: string, content: string, signal?: AbortSignal, external?: ExternalSender }} message
    * @returns {Promise<{ ok: true, to: string, jobId: string | null } | { ok: boolean, to: "all", sent: object[], errors: object[] }>}
    */
   async sendMessage(
-    input: { from?: unknown; to?: unknown; content?: unknown; signal?: AbortSignal } = {},
+    input: { from?: unknown; to?: unknown; content?: unknown; signal?: AbortSignal; external?: ExternalSender } = {},
   ): Promise<MessageReceipt | BroadcastReceipt> {
-    const { from, to, content, signal } = input;
+    const { from, to, content, signal, external } = input;
     if (signal?.aborted) {
       throw new SubagentError("aborted", "The write was aborted before it was delivered.");
     }
-    const plan = this.#planMessage({ from, to, content });
+    const plan = this.#planMessage({ from, to, content, ...(external === undefined ? {} : { external }) });
 
     if (plan.to === MAIN_ACTOR_ID) {
       return this.#sendToMain(plan);
@@ -1963,7 +1980,7 @@ export class SubagentRuntime {
     agent.status = active ? "running" : "idle";
   }
 
-  #planMessage(input: { from?: unknown; to?: unknown; content?: unknown }): MessagePlan {
+  #planMessage(input: { from?: unknown; to?: unknown; content?: unknown; external?: ExternalSender }): MessagePlan {
     const { from, to, content } = input;
     if (typeof content !== "string" || content.trim() === "") {
       throw new SubagentError("invalid_message", "A message body must be a non-empty string.");
@@ -1976,7 +1993,19 @@ export class SubagentRuntime {
       );
     }
     const sender = canonicalActorId(from);
-    if (sender === null || (sender !== MAIN_ACTOR_ID && !this.#agents.has(sender))) {
+    // Only the host sets `external`, and only for a frame that named another
+    // live session. It is the one way a sender outside this runtime is admitted,
+    // and it is Main-to-Main only: another session reaches this Main, nothing else.
+    const external = input.external;
+    if (sender === null) {
+      throw new SubagentError("unknown_sender", `${describe(from)} is not a sender registered in this runtime.`, {
+        from: typeof from === "string" ? from : null,
+      });
+    }
+    if (external !== undefined && sender !== MAIN_ACTOR_ID) {
+      throw new SubagentError("invalid_sender", "Only Main may send a cross-session message.", { actorId: sender });
+    }
+    if (external === undefined && sender !== MAIN_ACTOR_ID && !this.#agents.has(sender)) {
       throw new SubagentError("unknown_sender", `${describe(from)} is not a sender registered in this runtime.`, {
         from: typeof from === "string" ? from : null,
       });
@@ -1988,15 +2017,21 @@ export class SubagentRuntime {
         to: typeof to === "string" ? to : null,
       });
     }
-    if (recipient === sender) {
+    if (external !== undefined && recipient !== MAIN_ACTOR_ID) {
+      throw new SubagentError("invalid_target", "A cross-session message is delivered to the target session's Main only.", { actorId: recipient });
+    }
+    // Another session's Main shares the reserved id; it is not this Main, so the
+    // self-send rule applies to local traffic only.
+    if (external === undefined && recipient === sender) {
       throw new SubagentError("invalid_target", "An actor cannot send a message to itself.", { actorId: sender });
     }
-    return { from: sender, to: recipient, content };
+    return { from: sender, to: recipient, content, ...(external === undefined ? {} : { external }) };
   }
 
   /** The typed envelope of one explicit write; `type` and `from` are host-owned. */
   #messageEnvelope(plan: MessagePlan): MessageEnvelope {
-    const envelope: MessageEnvelope = { type: "message", from: plan.from, content: plan.content };
+    const envelope: MessageEnvelope = { type: "message", from: plan.from, content: plan.content,
+      ...(plan.external === undefined ? {} : { external: plan.external }) };
     // A Subagent message belongs to its sender's current execution round. The
     // host can therefore correlate it with that round's terminal notice without
     // asking the caller to supply transport or run identity.

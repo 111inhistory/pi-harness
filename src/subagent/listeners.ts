@@ -7,7 +7,8 @@ import {
   type EndpointResolverResult,
 } from '../ipc/socket.ts';
 import type { OwnedServer } from '../ipc/endpoint.ts';
-import { canonicalActorId, SubagentError, type BroadcastReceipt, type MessageReceipt } from './runtime.ts';
+import { canonicalActorId, SubagentError, type BroadcastReceipt, type ExternalSender, type MessageReceipt } from './runtime.ts';
+import { crossSessionAddress, sessionById } from './session-directory.ts';
 
 interface ListenerActor {
   readonly agentId: string;
@@ -22,7 +23,7 @@ export interface ListenerRegistryOptions {
   readonly maxDepth: number;
   actors(): readonly ListenerActor[];
   isAccepting(): boolean;
-  send(command: { from: string; to: string; content: string }): Promise<MessageReceipt | BroadcastReceipt>;
+  send(command: { from: string; to: string; content: string; external?: ExternalSender }): Promise<MessageReceipt | BroadcastReceipt>;
   onError(error: Error): void;
 }
 
@@ -55,6 +56,20 @@ export class AgentListeners {
     const run = this.#changes.then(operation);
     this.#changes = run.catch(() => {});
     return run;
+  }
+
+  /**
+   * Turn one claimed sending session into an external sender descriptor.
+   *
+   * The directory is the only source: an unregistered, dead or malformed
+   * session refuses the frame instead of creating an unaddressed sender.
+   */
+  async #externalSender(sessionId: string): Promise<ExternalSender> {
+    const session = await sessionById(this.#options.baseSocketDir, sessionId);
+    if (session === null) {
+      throw new SubagentError('unknown_session', 'The sending session is not registered under this socket root.');
+    }
+    return { sessionId: session.sessionId, replyTo: crossSessionAddress(session.uid) };
   }
 
   async resolve(address: string): Promise<EndpointResolverResult> {
@@ -90,9 +105,18 @@ export class AgentListeners {
             const sender = canonicalActorId(message.from);
             if (sender === null) throw new SubagentError('unknown_sender', 'The IPC sender is not a valid Actor ID.');
             if (destination.broadcast && sender !== destination.owner) throw new SubagentError('invalid_target', 'Only the parent may write its broadcast endpoint.');
+            // A frame that names a session is a cross-session write. Only Main
+            // sends and only Main receives: the session must be published in the
+            // shared directory right now, and the reply address is derived from
+            // that record, never from the frame.
+            if (message.session !== undefined && (sender !== 'Main' || destination.owner !== 'Main' || destination.broadcast)) {
+              throw new SubagentError('invalid_target', 'Cross-session messages are Main-to-Main only.');
+            }
+            const external = message.session === undefined ? undefined : await this.#externalSender(message.session);
             // Registry membership is checked by Runtime. A supplied sender is
             // not authenticated merely because it is a valid registered ID.
-            const result = await this.#options.send({ from: sender, to: destination.broadcast ? 'all' : destination.owner, content: message.content });
+            const result = await this.#options.send({ from: sender, to: destination.broadcast ? 'all' : destination.owner,
+              content: message.content, ...(external === undefined ? {} : { external }) });
             if ('errors' in result && result.errors.length !== 0) {
               const failures = result.errors.map(error => `${error.to}: ${error.message}`).join('; ');
               throw new SubagentError('broadcast_partial_failure', `Some broadcast recipients rejected the message. ${failures}`,

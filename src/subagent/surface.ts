@@ -40,6 +40,7 @@ import {
 } from "./message-write.ts";
 import { droppedInheritedTools, inheritedToolsWarning } from "./tool-policy.ts";
 import type { CreatedAgents, DetailedAgentItem, StopResult } from "./runtime.ts";
+import { crossSessionAddress, crossSessionSupported, type LiveSession } from "./session-directory.ts";
 
 /** Resolved active-child caps reported to the model in the prompt section. */
 export interface ChildCapacity {
@@ -98,6 +99,10 @@ export interface SubagentSurfaceHost extends ManagedWriteHost {
   create(batch: unknown, options: SubagentSurfaceCreateOptions, ctx: ExtensionContext): Promise<CreatedAgents>;
   list(filter: unknown, callerId: string): Promise<DetailedAgentItem | null>;
   stop(target: unknown): StopResult;
+  /** Live sessions of this user, for cross-session coordination. */
+  listSessions(): Promise<readonly LiveSession[]>;
+  /** Publish this session's coordination intent. */
+  setIntent(intent: string): Promise<LiveSession>;
 }
 
 /** The only shape the surface needs from a registered tool. */
@@ -142,6 +147,31 @@ export interface SubagentSurfaceTools {
   /** null at the leaf depth, where a child may not stop other agents. */
   readonly stop: ToolDefinition<typeof stopParameters, StopResult> | null;
   readonly msg_write: ManagedWriteTool;
+  /** Cross-session discovery; null below Main, where sessions are not coordinated. */
+  readonly sessions: ToolDefinition<typeof sessionListParameters, SessionListView> | null;
+  readonly intent: ToolDefinition<typeof sessionIntentParameters, SessionIntentView> | null;
+}
+
+/** One reachable session as the discovery tool reports it. */
+export interface SessionListView {
+  /** False where cross-session coordination is unavailable on this platform. */
+  readonly available: boolean;
+  readonly sessions: readonly {
+    readonly uid: string;
+    readonly sessionId: string;
+    readonly cwd: string;
+    readonly pid: number;
+    readonly startedAt: number;
+    readonly intent: string;
+    readonly current: boolean;
+    readonly address: string;
+  }[];
+}
+
+export interface SessionIntentView {
+  readonly uid: string;
+  readonly sessionId: string;
+  readonly intent: string;
 }
 
 export interface SubagentSurfaceToolOptions {
@@ -168,6 +198,7 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
       return createMessageWriteTool({ cwd: scope.cwd, senderId: caller.callerId, host: {
         resolveEndpoint: async address => (await host()).resolveEndpoint(address),
         sendMessage: async command => (await host()).sendMessage(command),
+        sendCrossSession: async command => (await host()).sendCrossSession(command),
       } }).execute(toolCallId, params, signal, onUpdate, ctx);
     },
   };
@@ -232,7 +263,60 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
       }
     : null;
 
-  return { create, list, stop, msg_write };
+  // Cross-session coordination is Main-only: a subagent has no session view and
+  // cannot reach another session's Main.
+  const mainOnly = caller.callerId === "Main";
+  const sessions: SubagentSurfaceTools["sessions"] = mainOnly
+    ? {
+        name: "session_list",
+        namespace: SUBAGENT_NAMESPACE,
+        defaultActive: false,
+        label: "List Sessions",
+        description: TOOL_TEXT.session_list.description,
+        promptSnippet: TOOL_TEXT.session_list.snippet,
+        promptGuidelines: [...SUBAGENT_NAMESPACE.instructions?.split("\n") ?? []],
+        parameters: sessionListParameters,
+        async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+          const host = await resolveHost(ctx);
+          const current = ctx.sessionManager.getSessionId();
+          const available = crossSessionSupported();
+          const live = await host.listSessions();
+          return respond({
+            available,
+            sessions: live.map((session) => ({
+              uid: session.uid,
+              sessionId: session.sessionId,
+              cwd: session.cwd,
+              pid: session.pid,
+              startedAt: session.startedAt,
+              intent: session.intent,
+              current: session.sessionId === current,
+              address: crossSessionAddress(session.uid),
+            })),
+          } satisfies SessionListView);
+        },
+      }
+    : null;
+
+  const intent: SubagentSurfaceTools["intent"] = mainOnly
+    ? {
+        name: "session_intent",
+        namespace: SUBAGENT_NAMESPACE,
+        defaultActive: false,
+        label: "Publish Session Intent",
+        description: TOOL_TEXT.session_intent.description,
+        promptSnippet: TOOL_TEXT.session_intent.snippet,
+        promptGuidelines: [...SUBAGENT_NAMESPACE.instructions?.split("\n") ?? []],
+        parameters: sessionIntentParameters,
+        async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+          const host = await resolveHost(ctx);
+          const updated = await host.setIntent(params.intent);
+          return respond({ uid: updated.uid, sessionId: updated.sessionId, intent: updated.intent } satisfies SessionIntentView);
+        },
+      }
+    : null;
+
+  return { create, list, stop, msg_write, sessions, intent };
 }
 
 /**
@@ -259,6 +343,8 @@ export function installSessionSurface(
   if (tools.create !== null) api.registerTool(tools.create);
   api.registerTool(tools.list);
   if (tools.stop !== null) api.registerTool(tools.stop);
+  if (tools.sessions !== null) api.registerTool(tools.sessions);
+  if (tools.intent !== null) api.registerTool(tools.intent);
   api.registerTool(tools.msg_write);
   api.on("before_agent_start", (event, ctx) => {
     const limits = scope.capacityFor(ctx);
@@ -281,6 +367,9 @@ const UNRESOLVED_HOST: ManagedWriteHost = {
     throw new Error("The Subagent surface host was not resolved for this tool execution.");
   },
   sendMessage: async () => {
+    throw new Error("The Subagent surface host was not resolved for this tool execution.");
+  },
+  sendCrossSession: async () => {
     throw new Error("The Subagent surface host was not resolved for this tool execution.");
   },
 };
@@ -315,6 +404,11 @@ const TOOL_TEXT: SurfaceToolText = {
     description: text('stop', 'description'), snippet: text('stop', 'snippet'),
     parameters: { id: text('stop', 'parameters', 'id') },
   },
+  session_list: { description: text('session_list', 'description'), snippet: text('session_list', 'snippet') },
+  session_intent: {
+    description: text('session_intent', 'description'), snippet: text('session_intent', 'snippet'),
+    parameters: { intent: text('session_intent', 'parameters', 'intent') },
+  },
 };
 
 export const SUBAGENT_NAMESPACE: ToolNamespace = Object.freeze({
@@ -344,6 +438,12 @@ const stopParameters = Type.Object({
   id: Type.String({ description: TOOL_TEXT.stop.parameters.id }),
 });
 
+const sessionListParameters = Type.Object({}, { additionalProperties: false });
+
+const sessionIntentParameters = Type.Object({
+  intent: Type.String({ description: TOOL_TEXT.session_intent.parameters.intent }),
+}, { additionalProperties: false });
+
 /** The parts of `prompts/subagent-tools.json` this module renders. */
 interface SurfaceToolText {
   readonly namespace: string;
@@ -362,9 +462,16 @@ interface SurfaceToolText {
   };
   readonly list: { readonly description: string; readonly snippet: string; readonly parameters: { readonly all: string; readonly id: string } };
   readonly stop: { readonly description: string; readonly snippet: string; readonly parameters: { readonly id: string } };
+  readonly session_list: { readonly description: string; readonly snippet: string };
+  readonly session_intent: {
+    readonly description: string;
+    readonly snippet: string;
+    readonly parameters: { readonly intent: string };
+  };
 }
 
 // The declared tool parameter types, exported so callers can name a batch.
 export type SubagentTaskBatch = Static<typeof createParameters>;
 export type SubagentListFilter = Static<typeof listParameters>;
 export type SubagentStopTarget = Static<typeof stopParameters>;
+export type SubagentSessionIntent = Static<typeof sessionIntentParameters>;
