@@ -34,7 +34,7 @@ node --import tsx --test test/typed/capability-manual-sdk.test.ts
 
 ## 2. 在线组合
 
-入口：`scripts/verify-capability-manual-online.mjs`。它用真实 `createAgentSession`、真实提供方模型与 `mcp.json` 中真实 MCP 服务器运行同一契约；manual 名单以内存配置注入，不修改 `harness.json`；MCP 日志写入临时目录；不写会话文件；**不调用任何 MCP 工具**，只列出并激活，因此在线运行没有服务器副作用。
+入口：`scripts/verify-capability-manual-online.mjs`。它用真实 `createAgentSession`、真实提供方模型与 `mcp.json` 中真实 MCP 服务器运行同一契约；manual 名单以内存配置注入，不修改 `harness.json`；MCP 日志写入临时目录；不写会话文件；默认只列出并激活 MCP 工具，`--call` 时额外让模型对指定工具做一次调用，由执行者决定这次运行是否产生服务器副作用。
 
 ```sh
 node --import tsx scripts/verify-capability-manual-online.mjs [--agent-dir DIR] [--model PROVIDER/ID] [--server NAME]
@@ -47,13 +47,34 @@ node --import tsx scripts/verify-capability-manual-online.mjs [--agent-dir DIR] 
 [info] before enable: active=6 fixtureActive=false
 [info] /capability enable -> info
 [info] manual_fixture executed through the real model
-[info] MCP tools activated without calls: 12; resource reader not registered by this server
-[pass] manual gating and /capability enable verified online; no MCP tool was called
+[info] MCP tools activated: 12; resource reader not registered by this server
+[info] call mcp__video_ffmpeg__export args={"list":true} ok parts=text bytes=777 keys=non-json
+[pass] manual gating, /capability enable and one real MCP query call (mcp__video_ffmpeg__export) verified online
 ```
 
-同机其他服务器（`computer-use-linux`、`firefox-devtools`、`splayer-next`）在 20 秒内未注册工具，未用于本次证据；入口会以退出码 2 报告缺失依赖（无模型认证、无 `mcp.json` 服务器等）而不创建配置。
+真实 MCP 工具调用的选型与执行（先读 schema 与说明，再决定调用）：
 
-在线证据只覆盖这一次运行：单个提供方、单个 MCP 服务器、两轮模型调用。它证明的是连接、注册、manual 门禁、命令启用和本地 fixture 工具的真实模型调用；**没有调用任何真实 MCP 工具**（只列出并激活），也没有做真实资源读取。以下仍未验证：真实 MCP 工具调用、其他提供方的多轮遵循情况、`read_mcp_resource` 的真实资源读取（本次服务器未注册资源读取工具）、启用后 MCP 断连的行为、长时间运行。
+| 工具 | schema | 说明 | 判定 |
+| --- | --- | --- | --- |
+| `mcp__computer_use_linux__doctor` | 无参数 | 只报告桌面集成就绪状态；启用类动作在 `setup_accessibility` / `setup_window_targeting`，未调用 | 无输入、只读，调用 |
+| `mcp__video_ffmpeg__export` + `{"list": true}` | `list` 布尔，说明为 “list presets and exit”，无 `input` | 列出预设后退出，不读文件、不写文件 | 无输入、只读，调用 |
+| `click`、`type_text`、`set_value`、`press_key`、`drag`、`scroll`、`perform_action`、`move_window`、`resize_window`、`activate_window` | 需要坐标/文本/窗口目标 | 会产生真实桌面输入或窗口操作 | 拒绝，不调用 |
+| `screenshot`、`list_windows`、`focused_window`、`list_apps` | 无参数或窗口目标 | 只读，但会暴露屏幕内容或本机窗口/应用清单 | 拒绝，不调用（隐私） |
+| `video_ffmpeg` 的 `audio`/`caption`/`check`/`cut`/`export`（非 list）/`fit`/`graphics`/`look` 等 | 需要 `input` 路径 | 会读写媒体文件 | 拒绝，不调用 |
+
+两次调用的脱敏证据（只记录形状与大小，不记录服务器返回的值）：
+
+```text
+[info] call mcp__computer_use_linux__doctor args={} ok parts=text bytes=9957
+       keys=accessibility,capabilities,input,platform,portals,readiness,windowing
+[info] call mcp__video_ffmpeg__export args={"list":true} ok parts=text bytes=777 keys=non-json
+```
+
+两次都是“未授权时不在激活集 → `/capability enable` 激活 → 真实模型发起调用 → 工具返回成功”。`doctor` 的 JSON 只记录了顶层键名；`export --list` 的输出按纯文本记录长度，未保存内容。
+
+同机 `firefox-devtools`、`splayer-next` 在等待窗口内未注册工具，未用于证据；入口会以退出码 2 报告缺失依赖（无模型认证、无 `mcp.json` 服务器等）而不创建配置。
+
+在线证据覆盖：连接、注册、manual 门禁、命令启用、本地 fixture 工具调用和一次真实 MCP 查询调用（两个服务器各一次）。仍未验证：其他提供方的多轮遵循情况、`read_mcp_resource` 的真实资源读取（服务器未注册资源读取工具）、启用后 MCP 断连的行为、长时间运行。
 
 ## 3. 准入开销
 
@@ -86,5 +107,5 @@ node --import tsx scripts/capability-admission-bench.mjs
 ## 4. 未覆盖
 
 - Windows：manual 门禁的代码路径与平台无关，但未在 Windows 实机运行；跨 session 协调在 Windows 明确未实现。
-- 真实 MCP 工具调用（离线用真实 stdio 子进程调用，在线只做注册与激活）、真实 MCP 服务器的资源读取、断连后重新启用、以及启用记录残留的补偿行为。
+- 真实 MCP 服务器的资源读取、断连后重新启用、以及启用记录残留的补偿行为；在线只调用了两个只读查询入口，未覆盖写入型工具。
 - 多提供方、长时压测与真实多进程并发。

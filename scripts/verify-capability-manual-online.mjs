@@ -10,9 +10,10 @@
  *
  * The manual policy is passed to this session in memory, so the script never
  * edits `harness.json`. It never creates, edits or deletes configuration, never
- * prints credentials, URLs, headers or environment values, writes no session
- * file, and calls no MCP tool: it only lists and activates them, so an online
- * run has no server-side effects.
+ * prints credentials, URLs, headers, environment values or tool result values,
+ * and writes no session file. By default it only lists and activates MCP tools;
+ * `--call` makes the model call one explicitly chosen read-only tool once, so the
+ * operator decides which server-side effect, if any, a run has.
  *
  * Requirements (the script only checks them):
  *   - model auth: `auth.json` in the agent directory or a provider environment key
@@ -25,8 +26,11 @@
  *   --agent-dir <dir>   Pi agent directory (default: $PI_CODING_AGENT_DIR or ~/.pi/agent)
  *   --model <p/id>      Model to use (default: the first model with configured auth)
  *   --server <name>     MCP server from mcp.json (default: the first enabled server)
+ *   --call <tool>       After enablement, make the model call this MCP tool once
+ *   --args <json>       Arguments for --call (default: {})
  *   --tool <name>       Manual fixture tool name (default: manual_fixture)
  *   --timeout <ms>      Whole-run timeout (default: 300000)
+ *   --wait <ms>         How long to wait for the MCP server to register (default: 30000)
  *   -h, --help
  *
  * Exit codes: 0 pass, 1 failed verification, 2 missing dependencies.
@@ -54,7 +58,10 @@ const { values: options } = parseArgs({
     model: { type: 'string' },
     server: { type: 'string' },
     tool: { type: 'string', default: 'manual_fixture' },
+    call: { type: 'string' },
+    args: { type: 'string', default: '{}' },
     timeout: { type: 'string', default: '300000' },
+    wait: { type: 'string', default: '30000' },
     help: { type: 'boolean', short: 'h' },
   },
 });
@@ -63,7 +70,8 @@ if (options.help) {
   process.stdout.write(`Online manual-capability acceptance.
 
   node --import tsx scripts/verify-capability-manual-online.mjs [--agent-dir DIR] [--model PROVIDER/ID]
-                                                              [--server NAME] [--tool NAME] [--timeout MS]
+                                                              [--server NAME] [--tool NAME] [--call TOOL]
+                                                              [--args JSON] [--timeout MS] [--wait MS]
 
 Exit codes: 0 pass, 1 failed verification, 2 missing dependencies.
 `);
@@ -182,11 +190,13 @@ try {
   await session.bindExtensions({});
   report(`[info] provider=${model.provider} model=${model.id} server=${server} agentDir=${agentDir}`);
 
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline && !session.getAllTools().some((tool) => tool.namespace?.name === `mcp__${server}`)) {
+  const deadline = Date.now() + Number(options.wait);
+  const belongsToServer = (tool) => tool.namespace?.aliases?.includes(server) === true
+    || tool.namespace?.name === `mcp__${server}`;
+  while (Date.now() < deadline && !session.getAllTools().some(belongsToServer)) {
     await sleep(100);
   }
-  const mcpTools = session.getAllTools().filter((tool) => tool.namespace?.name === `mcp__${server}`);
+  const mcpTools = session.getAllTools().filter(belongsToServer);
   if (mcpTools.length === 0) throw new Error(`MCP server "${server}" registered no tools; pick another with --server`);
 
   await session.prompt('Reply with the single word READY. Do not call any tool.');
@@ -203,6 +213,9 @@ try {
     value: { notify: (text, type = 'info') => { notices.push({ text, type }); } },
   });
   const resourceReader = session.getAllTools().some((tool) => tool.name === 'read_mcp_resource');
+  if (options.call !== undefined && !mcpTools.some((tool) => tool.name === options.call)) {
+    throw new Error(`--call ${options.call} is not a tool of server "${server}"; choose one of: ${mcpTools.map((tool) => tool.name).join(',')}`);
+  }
   const enableNames = [toolName, ...(resourceReader ? ['read_mcp_resource'] : []), ...mcpTools.map((tool) => tool.name)];
   await command.handler(`enable ${enableNames.join(' ')}`, commandContext);
   report(`[info] /capability enable -> ${notices.map((notice) => notice.type).join(',') || 'no notice'}`);
@@ -218,14 +231,34 @@ try {
   } else {
     report(`[info] ${toolName} executed through the real model`);
   }
-  report(`[info] MCP tools activated without calls: ${mcpTools.length}; resource reader ${resourceReader ? 'enabled' : 'not registered by this server'}`);
+  report(`[info] MCP tools activated: ${mcpTools.length}; resource reader ${resourceReader ? 'enabled' : 'not registered by this server'}`);
+
+  if (options.call !== undefined) {
+    const callArgs = JSON.parse(options.args);
+    await session.prompt(`Call the tool ${options.call} exactly once with these arguments: ${JSON.stringify(callArgs)}. Reply with its raw output.`);
+    const result = session.messages.findLast((message) => message.role === 'toolResult' && message.toolName === options.call);
+    if (result === undefined) failures.push(`the model did not call ${options.call}`);
+    else if (result.isError === true) failures.push(`${options.call} failed: ${JSON.stringify(result.content).slice(0, 200)}`);
+    else {
+      // Redacted evidence: shape and size only, never the server's values.
+      const text = result.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+      let keys = null;
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) keys = Object.keys(parsed);
+      } catch { /* not JSON */ }
+      report(`[info] call ${options.call} args=${JSON.stringify(callArgs)} ok parts=${[...new Set(result.content.map((part) => part.type))].join('+')} bytes=${text.length} keys=${keys === null ? 'non-json' : keys.join(',')}`);
+    }
+  }
 
   if (failures.length > 0) {
     report('[failed]');
     for (const failure of failures) report(`  - ${failure}`);
     process.exitCode = 1;
   } else {
-    report('[pass] manual gating and /capability enable verified online; no MCP tool was called');
+    report(options.call === undefined
+      ? '[pass] manual gating and /capability enable verified online; no MCP tool was called'
+      : `[pass] manual gating, /capability enable and one real MCP query call (${options.call}) verified online`);
   }
 } catch (error) {
   report(`[failed] ${timedOut ? 'timed out; ' : ''}${error instanceof Error ? error.message : String(error)}`);
