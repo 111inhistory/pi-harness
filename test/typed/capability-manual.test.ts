@@ -112,6 +112,42 @@ test("enablement activates and records only the tools the session really activat
   assert.equal(record.result.manual[0]?.kind, "tool");
 });
 
+test("enable expands a namespace ref to its registered members", () => {
+  const api = host(tools, []);
+  const result = enableManualTools(api, ["namespace://subagent"]);
+  assert.deepEqual(result.enabled, ["msg_write"]);
+  assert.deepEqual(result.namespaces, [{ name: "subagent", tools: ["msg_write"] }]);
+  assert.deepEqual(api.activeNames(), ["msg_write"]);
+  assert.equal(api.entries.length, 1);
+  const record = api.entries[0]?.data as { result: { manual: { ref: string }[] } };
+  assert.deepEqual(record.result.manual.map((hit) => hit.ref), ["tool://msg_write"]);
+});
+
+test("a bare namespace name expands when no tool has that name", () => {
+  const api = host(tools, []);
+  const result = enableManualTools(api, ["subagent"]);
+  assert.deepEqual(result.enabled, ["msg_write"]);
+  assert.deepEqual(result.namespaces.map((namespace) => namespace.name), ["subagent"]);
+  assert.deepEqual(api.activeNames(), ["msg_write"]);
+});
+
+test("a tool name wins over a namespace with the same text", () => {
+  const api = host([...tools, { name: "subagent", description: "A plain tool", exposure: "deferred" }], []);
+  const result = enableManualTools(api, ["subagent"]);
+  assert.deepEqual(result.enabled, ["subagent"]);
+  assert.deepEqual(result.namespaces, []);
+  assert.ok(!api.activeNames().includes("msg_write"));
+});
+
+test("the command reports a namespace and enables its members", async () => {
+  const fixture = install(tools, []);
+  await fixture.run("enable namespace://subagent");
+  const text = fixture.notifications[0]?.text ?? "";
+  assert.match(text, /Enabled: msg_write/);
+  assert.match(text, /Namespace subagent: msg_write/);
+  assert.deepEqual(fixture.activeNames(), ["msg_write"]);
+});
+
 test("a tool outside the current qualification is refused, not activated", () => {
   const api = host(tools, [], ["mcp__git__status"]);
   const result = enableManualTools(api, ["mcp__git__status"]);
@@ -333,10 +369,10 @@ test("completions cover verbs, list categories and enable names, including trail
   assert.equal(await fixture.completions("list tool "), null, "the rest of a category line is a free filter");
   assert.equal(await fixture.completions("list tool gi"), null);
   assert.deepEqual((await fixture.completions("enable "))?.map((item) => item.label),
-    ["deck_pages", "read", "mcp__git__log", "mcp__git__status", "msg_write"]);
+    ["deck_pages", "read", "mcp__git__log", "mcp__git__status", "msg_write", "namespace://subagent"]);
   assert.deepEqual((await fixture.completions("enable de"))?.map((item) => item.value), ["enable deck_pages "]);
   assert.deepEqual((await fixture.completions("enable deck_pages "))?.map((item) => item.label),
-    ["read", "mcp__git__log", "mcp__git__status", "msg_write"]);
+    ["read", "mcp__git__log", "mcp__git__status", "msg_write", "namespace://subagent"]);
   assert.deepEqual((await fixture.completions("enable deck_pages re"))?.map((item) => item.value),
     ["enable deck_pages read "]);
 });
@@ -522,6 +558,8 @@ test("the editor's forced Tab request reaches argument completions through the w
   assert.ok(more.items.some((item) => item.value === "enable deck_pages read "));
   assert.ok(!more.items.some((item) => item.value.startsWith("enable deck_pages deck_pages")),
     "an already chosen name is excluded");
+  assert.ok(more.items.some((item) => item.value === "enable deck_pages namespace://subagent "),
+    "a namespace completes as an explicit ref");
 });
 
 test("the /subagent wrapper restores its verb candidates on a forced Tab too", async () => {
