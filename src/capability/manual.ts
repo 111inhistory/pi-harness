@@ -28,6 +28,7 @@ export interface ManualTool {
   readonly name: string;
   readonly description?: string | undefined;
   readonly exposure?: string | undefined;
+  readonly namespace?: { readonly name: string; readonly aliases?: readonly string[] } | undefined;
 }
 
 /** Activation plus branch persistence; an ExtensionAPI satisfies it. */
@@ -46,8 +47,15 @@ export interface ManualEnableResult {
   /** Requested tools that were already active before this call. */
   readonly alreadyActive: readonly string[];
   readonly skipped: readonly ActivationSkip[];
+  /** Namespaces expanded by this call, with the members they contributed. */
+  readonly namespaces: readonly ManualEnableNamespace[];
   /** Set when the branch record failed after activation. */
   readonly recordError: string | null;
+}
+
+export interface ManualEnableNamespace {
+  readonly name: string;
+  readonly tools: readonly string[];
 }
 
 /** Tools the branch already records as user-enabled; avoids duplicate records. */
@@ -66,6 +74,58 @@ function manualHit(tool: ManualTool): CapabilityHit {
   };
 }
 
+const NAMESPACE_SCHEME = 'namespace://';
+
+/**
+ * Expand enable tokens to concrete tool names.
+ *
+ * A tool name wins over a namespace with the same text. A namespace can be
+ * written as `namespace://<name>` or as its bare non-MCP name; both expand to
+ * every registered member so the user does not have to name each tool. The
+ * members still go through the normal activation and record path individually.
+ */
+function expandTargets(host: ManualEnableHost, tokens: readonly string[]): {
+  readonly names: readonly string[];
+  readonly namespaces: readonly ManualEnableNamespace[];
+} {
+  const tools = host.getAllTools();
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  const byNamespace = new Map<string, string[]>();
+  for (const tool of tools) {
+    const name = tool.namespace?.name;
+    if (name === undefined || name.startsWith('mcp__')) continue;
+    const members = byNamespace.get(name) ?? [];
+    members.push(tool.name);
+    byNamespace.set(name, members);
+  }
+  const names: string[] = [];
+  const namespaces: ManualEnableNamespace[] = [];
+  const seen = new Set<string>();
+  const add = (name: string): void => {
+    if (seen.has(name)) return;
+    seen.add(name);
+    names.push(name);
+  };
+  for (const token of tokens) {
+    const trimmed = token.trim();
+    if (trimmed === '') continue;
+    let namespace: string | undefined;
+    if (trimmed.startsWith(NAMESPACE_SCHEME)) {
+      try { namespace = decodeURIComponent(trimmed.slice(NAMESPACE_SCHEME.length)); } catch { namespace = undefined; }
+    } else if (!byName.has(trimmed) && byNamespace.has(trimmed)) {
+      namespace = trimmed;
+    }
+    const members = namespace === undefined ? undefined : byNamespace.get(namespace);
+    if (members !== undefined) {
+      namespaces.push({ name: namespace!, tools: members });
+      for (const member of members) add(member);
+      continue;
+    }
+    add(trimmed);
+  }
+  return { names, namespaces };
+}
+
 /**
  * Enable the named tools in this session and remember them on the branch.
  *
@@ -78,9 +138,9 @@ export function enableManualTools(
   names: readonly string[],
   options: ManualEnableOptions = {},
 ): ManualEnableResult {
-  const requested = names.map((name) => name.trim()).filter((name) => name !== '');
+  const targets = expandTargets(host, names);
   // The user command is the one path allowed to enable a manual tool.
-  const outcome = activateToolNames(host, requested, { includeManual: true });
+  const outcome = activateToolNames(host, targets.names, { includeManual: true });
   const registered = new Map(host.getAllTools().map((tool) => [tool.name, tool]));
   const recorded = options.recorded ?? new Set<string>();
   const rootOnly = capabilityRootOnlyPolicy(host);
@@ -109,5 +169,5 @@ export function enableManualTools(
     }
   }
   const enabled = [...new Set([...outcome.activated, ...newlyAuthorized])];
-  return { enabled, alreadyActive: outcome.alreadyActive, skipped: outcome.skipped, recordError };
+  return { enabled, alreadyActive: outcome.alreadyActive, skipped: outcome.skipped, namespaces: targets.namespaces, recordError };
 }

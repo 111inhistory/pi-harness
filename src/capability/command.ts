@@ -105,6 +105,7 @@ function renderList(view: CapabilityCatalogView, command: Extract<CapabilityComm
 function renderEnable(result: ReturnType<typeof enableManualTools>): string {
   const lines: string[] = [];
   lines.push(result.enabled.length === 0 ? 'Enabled: none' : `Enabled: ${result.enabled.join(', ')}`);
+  for (const namespace of result.namespaces) lines.push(`Namespace ${namespace.name}: ${namespace.tools.join(', ')}`);
   if (result.alreadyActive.length > 0) lines.push(`Already active: ${result.alreadyActive.join(', ')}`);
   const reasons: ReadonlyArray<[string, (reason: string) => boolean]> = [
     ['Not registered', (reason) => reason === 'not_registered'],
@@ -216,15 +217,28 @@ export function capabilityArgumentCompletions(prefix: string, pi: ExtensionAPI):
     const fragment = trailingSpace ? '' : rest.at(-1) ?? '';
     const chosen = new Set(trailingSpace ? rest : rest.slice(0, -1));
     const head = text.slice(0, text.length - fragment.length);
-    const items = createCapabilityCatalog(pi).entries
-      .filter((entry) => !chosen.has(entry.name) && entry.name.toLowerCase().startsWith(fragment.toLowerCase()))
-      .slice(0, COMPLETION_LIMIT)
+    const needle = fragment.toLowerCase();
+    const items: { value: string; label: string; description: string }[] = createCapabilityCatalog(pi).entries
+      .filter((entry) => !chosen.has(entry.name) && entry.name.toLowerCase().startsWith(needle))
       .map((entry) => ({
         value: `${head}${entry.name} `,
         label: entry.name,
         description: `${entry.group} · ${truncate(entry.description)}`,
       }));
-    return items.length === 0 ? null : items;
+    // A namespace expands to all members; keep it distinct from a tool with the
+    // same text by completing the explicit `namespace://` ref.
+    const namespaces = new Map<string, number>();
+    for (const tool of pi.getAllTools()) {
+      const name = tool.namespace?.name;
+      if (name === undefined || name.startsWith('mcp__')) continue;
+      namespaces.set(name, (namespaces.get(name) ?? 0) + 1);
+    }
+    for (const [name, count] of namespaces) {
+      const label = `namespace://${name}`;
+      if (!label.toLowerCase().startsWith(needle) && !name.toLowerCase().startsWith(needle)) continue;
+      items.push({ value: `${head}${label} `, label, description: `Namespace · ${count} tools` });
+    }
+    return items.length === 0 ? null : items.slice(0, COMPLETION_LIMIT);
   }
   return null;
 }
