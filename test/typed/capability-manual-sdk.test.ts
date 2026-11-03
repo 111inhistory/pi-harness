@@ -33,6 +33,7 @@ import {
 
 import capabilityExtension from '../../extensions/capability.ts';
 import harnessExtension from '../../extensions/harness.ts';
+import { installCapabilityMcp } from '../../src/capability/native-discovery.ts';
 import { setCapabilityParent } from '../../src/capability/scope.ts';
 import { waitFor } from '../../test-support/async.ts';
 
@@ -54,6 +55,23 @@ function textOf(message: ToolResult): string {
     .map((part) => part.text)
     .join('\n');
 }
+
+/** The same manual fixture tool in both sessions, so registration is equal. */
+const manualFixtureTool = {
+  name: 'manual-fixture-tool',
+  factory: (api: ExtensionAPI): void => {
+    api.registerTool({
+      name: 'manual_fixture',
+      label: 'Manual fixture',
+      description: 'A default-active tool that only the user may enable.',
+      parameters: { type: 'object', properties: {} },
+      defaultActive: true,
+      async execute() {
+        return { content: [{ type: 'text' as const, text: 'MANUAL_FIXTURE_EXECUTED' }], details: {} };
+      },
+    });
+  },
+};
 
 function systemText(messages: readonly AgentMessage[]): string {
   return JSON.stringify(messages.filter((entry) => entry.role === 'system'));
@@ -169,21 +187,7 @@ test('full SDK: manual tools stay unreachable until /capability enable, then wor
       cwd, agentDir, settingsManager,
       noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
       extensionFactories: [
-        {
-          name: 'manual-fixture-tool',
-          factory: (api: ExtensionAPI) => {
-            api.registerTool({
-              name: 'manual_fixture',
-              label: 'Manual fixture',
-              description: 'A default-active tool that only the user may enable.',
-              parameters: { type: 'object', properties: {} },
-              defaultActive: true,
-              async execute() {
-                return { content: [{ type: 'text' as const, text: 'MANUAL_FIXTURE_EXECUTED' }], details: {} };
-              },
-            });
-          },
-        },
+        manualFixtureTool,
         {
           name: 'harness-manual-sdk-fixture',
           factory: (api: ExtensionAPI) => {
@@ -266,29 +270,63 @@ test('full SDK: manual tools stay unreachable until /capability enable, then wor
     assert.equal(afterScript.isError, false, textOf(afterScript));
     assert.match(textOf(afterScript), /MANUAL_ACCESS_OK/);
 
-    // Phase 3: the same branch memory in a real child scope.
+    // Phase 3: the same branch memory, the same registered tools, a real child scope.
     const rootBranch = session.sessionManager.getEntries();
     assert.ok(rootBranch.some((entry) => entry.type === 'custom' && entry.customType === 'capability-discovery'),
       'the enable command recorded the manual authorization on the branch');
-    const childLoader = new DefaultResourceLoader({
-      cwd, agentDir, settingsManager,
-      noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-      extensionFactories: [{
-        name: 'child-capability-manual-fixture',
-        factory: (api: ExtensionAPI) => {
-          setCapabilityParent(api, rootApi!);
-          capabilityExtension(api);
+    // The child gets its own agent directory only so its MCP child process records
+    // a separate pid; the manual policy is identical.
+    const childAgentDir = path.join(cwd, 'agent-child');
+    const childPidFile = path.join(cwd, 'mcp-child.pid');
+    await mkdir(childAgentDir);
+    await writeFile(path.join(childAgentDir, 'harness.json'), JSON.stringify({
+      capability: { manualTools: [...MANUAL_TOOLS] },
+    }));
+    await writeFile(path.join(childAgentDir, 'mcp.json'), JSON.stringify({
+      mcpServers: {
+        [SERVER]: {
+          command: process.execPath, args: [SERVER_SCRIPT], exposure: 'deferred',
+          env: { MCP_FIXTURE_PID_FILE: childPidFile },
         },
-      }],
+      },
+    }));
+    process.env['PI_CODING_AGENT_DIR'] = childAgentDir;
+    const childLoader = new DefaultResourceLoader({
+      cwd, agentDir: childAgentDir, settingsManager,
+      noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+      extensionFactories: [
+        manualFixtureTool,
+        {
+          name: 'child-capability-manual-fixture',
+          factory: (api: ExtensionAPI) => {
+            setCapabilityParent(api, rootApi!);
+            capabilityExtension(api);
+            installCapabilityMcp(api, { logPath: path.join(cwd, 'mcp-child.log') });
+          },
+        },
+      ],
     });
     await childLoader.reload();
     assert.deepEqual(childLoader.getExtensions().errors, []);
     const child = (await createAgentSession({
-      cwd, agentDir, modelRuntime: runtime, model, settingsManager, resourceLoader: childLoader,
+      cwd, agentDir: childAgentDir, modelRuntime: runtime, model, settingsManager, resourceLoader: childLoader,
       sessionManager: SessionManager.inMemory(cwd, {}, rootBranch),
     })).session;
     sessions.push(child);
     await child.bindExtensions({ onError: (error) => errors.push(error) });
+    await waitFor(async () => (await readFile(childPidFile, 'utf8').catch(() => '')) !== '',
+      { label: 'the child MCP pid file', timeoutMs: 10_000 });
+    await waitFor(() => child.getAllTools().some((tool) => tool.name === 'manual_fixture')
+      && child.getAllTools().some((tool) => tool.name === MCP_TOOL),
+    { label: 'the child tools', timeoutMs: 10_000 });
+    const childTools = child.getAllTools().map((tool) => tool.name);
+    assert.ok(childTools.includes('manual_fixture'), 'the child registers the same manual fixture');
+    assert.ok(childTools.includes(MCP_TOOL), 'the child registers the same MCP tool');
+    assert.ok(child.sessionManager.getBranch().some((entry) => {
+      const data = (entry as { data?: { result?: { manual?: unknown[] } } }).data;
+      return entry.type === 'custom' && entry.customType === 'capability-discovery'
+        && Array.isArray(data?.result?.manual) && data.result.manual.length > 0;
+    }), 'the child branch carries the root manual record');
     phase = 'child';
     step = 0;
     const childBaseline = child.messages.length;
@@ -297,6 +335,8 @@ test('full SDK: manual tools stay unreachable until /capability enable, then wor
     assert.ok(!declared.child[0]!.includes(MCP_TOOL));
     assert.doesNotMatch(systemText(requests.child[0]!), /"category":"manual"/,
       'the child projection drops the manual record even though the branch carries it');
+    assert.ok(!declared.child[0]!.includes('manual_fixture') && !declared.child[0]!.includes(MCP_TOOL),
+      'registered manual tools stay out of the child declaration');
     const childCall = results(child.messages.slice(childBaseline), 'manual_fixture');
     assert.equal(childCall.length, 1);
     assert.equal(childCall[0]!.isError, true);
@@ -309,9 +349,11 @@ test('full SDK: manual tools stay unreachable until /capability enable, then wor
     }
     // The SDK stdio transport keeps its child handle after dispose; terminate the
     // fixture server so the test process can exit.
-    const pid = Number(await readFile(path.join(cwd, 'mcp.pid'), 'utf8').catch(() => ''));
-    if (Number.isInteger(pid) && pid > 0) {
-      try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+    for (const pidFile of ['mcp.pid', 'mcp-child.pid']) {
+      const pid = Number(await readFile(path.join(cwd, pidFile), 'utf8').catch(() => ''));
+      if (Number.isInteger(pid) && pid > 0) {
+        try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+      }
     }
     if (previousAgentDir === undefined) delete process.env['PI_CODING_AGENT_DIR'];
     else process.env['PI_CODING_AGENT_DIR'] = previousAgentDir;
