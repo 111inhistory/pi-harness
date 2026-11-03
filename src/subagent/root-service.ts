@@ -406,6 +406,11 @@ export class RootService implements ManagedWriteHost {
    * writes no capability record and does not load the rest of the namespace.
    */
   #activateReplyTool(): void {
+    // An already active tool is complete, including a manual tool the user
+    // enabled: activation must not re-judge it as manual_only and report a
+    // false failure. Only an inactive tool goes through the normal activation
+    // path, which keeps manual tools closed without an explicit grant.
+    if (this.#options.api.getActiveTools().includes('msg_write')) return;
     const outcome = activateToolNames(this.#options.api, ['msg_write']);
     if (outcome.activated.length > 0 || outcome.alreadyActive.length > 0) return;
     const reason = outcome.skipped.find((skip) => skip.name === 'msg_write')?.reason ?? 'not_activated';
