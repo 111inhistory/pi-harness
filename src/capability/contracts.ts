@@ -9,8 +9,8 @@
  * searches at execution time.
  */
 
-import { Type } from "@earendil-works/pi-ai";
-import type { Static } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
+import type { Static } from "typebox";
 
 import { promptString } from "../prompt-text.ts";
 

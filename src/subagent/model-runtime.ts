@@ -5,7 +5,7 @@
  * so extension-registered providers, virtual-model routing and runtime
  * credentials stay available. Pi's synchronous `ModelRegistry` compatibility
  * facade stores that runtime in a TypeScript-`private` field; the compiled
- * 1.4.0 facade (``model-registry.js``) keeps it as the plain property
+ * 1.5.0 facade (``model-registry.js``) keeps it as the plain property
  * `runtime`, and there is no public accessor.
  *
  * This module is the ONE documented vendor compatibility boundary where an
@@ -26,7 +26,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
  * The private-SDK surface was audited against this package version. Bump only
  * together with a new audit of the compiled `ModelRegistry` facade.
  */
-export const MODEL_RUNTIME_AUDITED_VERSION = "1.4.0";
+export const MODEL_RUNTIME_AUDITED_VERSION = "1.5.0";
 
 /** Explicit bridge failure. The code matches the Subagent lifecycle error. */
 export class ModelRuntimeBridgeError extends Error {
@@ -40,7 +40,7 @@ export class ModelRuntimeBridgeError extends Error {
 }
 
 /**
- * Audited structural guard for the 1.4.0 ModelRuntime members this harness
+ * Audited structural guard for the 1.5.0 ModelRuntime members this harness
  * relies on. Kept narrow on purpose: the private facade property is the only
  * thing that needs an unknown-to-ModelRuntime bridge.
  */

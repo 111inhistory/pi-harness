@@ -10,7 +10,7 @@ import type { Api, Message, Model, ToolResultMessage, TranscriptContext } from "
 import { getCurrentTools, getSystemMessageText } from "@earendil-works/pi-ai";
 import { createWriteToolDefinition, type DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 import { resolveTranscriptTools } from "../../../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js";
-import { convertResponsesMessages } from "../../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
+import { convertResponsesMessages, type ConvertResponsesMessagesOptions } from "../../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 
 import { deferred } from "../../../test-support/async.ts";
 import { promptString } from "../../../src/prompt-text.ts";
@@ -358,7 +358,7 @@ export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixt
     model,
     addedContext as unknown as TranscriptContext,
     new Set([model.provider]),
-    { includeSystemPrompt: false, ...model.compat },
+    { includeSystemPrompt: false, ...model.compat } as ConvertResponsesMessagesOptions,
   );
   const declaredInterfaces = (wire as Array<{ type: string; tools?: Array<{ name: string; parameters?: object }> }>)
     .filter((item) => item.type === "additional_tools")
