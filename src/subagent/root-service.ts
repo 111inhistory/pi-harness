@@ -213,8 +213,13 @@ export class RootService implements ManagedWriteHost {
       sendToMain: async (message, triggerTurn) => {
         const gate = this.#compaction;
         if (gate !== null) await gate.promise;
-        this.assertOperational();
-        await options.api.sendMessage(message, { triggerTurn, deliverAs: 'steer' });
+        // Quiescing still owns the old root: a terminal notice may be retained
+        // after retirement starts. Only a detached root refuses the handover.
+        if (!this.#mayPersist()) {
+          throw new SubagentError('runtime_closed', 'The original root no longer owns this delivery.');
+        }
+        // Waking is a current-state decision, not a snapshot taken before the gate.
+        await options.api.sendMessage(message, { triggerTurn: triggerTurn && this.active, deliverAs: 'steer' });
       },
       appendRetained: (agentId, message) => this.#appendNotice(agentId, message),
       onError: (error) => this.#report(error),

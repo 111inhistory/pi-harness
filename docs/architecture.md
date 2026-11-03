@@ -74,7 +74,7 @@ Main 默认不激活 `msg_write`（`defaultActive: false`）；Capability 选中
 
 每个 NDJSON 请求处理结束后，成功返回空行，失败只返回错误的 `code`（如有）和 `message`；外部 IPC 广播失败在响应中保留失败接收者列表及原因，普通 IPC 错误不向调用方泄漏内部任意状态细节。`writeSocket` 等待结果再返回；超时或断连表示结果未知，不自动重发。正常返回不表示模型已读或任务完成。
 
-跨 session 消息走同一条接收路径，且只做 Main 之间的交互。发送侧由 `session-directory.ts` 解析目标 session 的 Socket 目录并写入一帧 `{from: "Main", session, content}`；接收侧 `listeners.ts` 只在该根的 `Main` 端点接受此类帧，用共享目录核对 `session` 是否为存活 session，按该记录推导回复地址后交给 Runtime。Runtime 只接受宿主解析出的外部发送者描述，不自行读目录；外部发送者只能是 Main，接收者也只能是 Main。
+跨 session 消息走同一条接收路径，且只做 Main 之间的交互。发送侧由 `session-directory.ts` 解析目标 session 的 Socket 目录并写入一帧 `{from: "<session-uid>:Main", content}`；接收侧 `listeners.ts` 只在该根的 `Main` 端点接受此类帧，在 IPC 边界解析 `from` 的复合身份，用共享目录核对 uid 是否为存活 session，按该记录推导回复地址后交给 Runtime。Runtime 只接受宿主解析出的外部发送者描述，不自行读目录；外部发送者只能是 Main，接收者也只能是 Main。
 
 发现由同一目录提供：`RootService.initialize` 在监听就绪后发布记录（含原生 session name），`retire` 按记录归属删除。`crossSessionSupported()` 把平台范围收在一处：Windows 不发布记录，`/subagent sessions` 提示不可用，跨 session 发送以 `unsupported_platform` 拒绝。跨 session 没有独立地址协议：目标就是对方 `Main` 的受管 Socket 路径，接收端在 IPC 边界解析 `<uid>:Main` 复合身份。
 
