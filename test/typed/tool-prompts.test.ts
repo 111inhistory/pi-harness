@@ -11,6 +11,7 @@ function fixture() {
   // Registration-only fake: no tool execution, provider or session is opened.
   const api = {
     registerTool(tool: ToolDefinition) { tools.set(tool.name, tool); },
+    registerCommand() {},
     getAllTools: () => [...tools.values()], getActiveTools: () => active,
     on(event: string, handler: Handler) { handlers.set(event, handler); return () => {}; },
     events: { emit() {}, on() { return () => {}; } },

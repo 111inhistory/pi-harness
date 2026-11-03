@@ -15,6 +15,7 @@ function registrationFixture(mode: 'on' | 'only' = 'on') {
   let active = ['codemode', 'gate'];
   const pi = {
     registerTool: (tool: ToolDefinition) => { definitions.set(tool.name, tool); },
+    registerCommand: () => {},
     on: (event: string, handler: unknown) => { handlers.set(event, [...handlers.get(event) ?? [], handler]); },
     getSettings: () => ({ codemode: { mode } }),
     getActiveTools: () => [...active],

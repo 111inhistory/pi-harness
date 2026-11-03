@@ -18,7 +18,9 @@ export interface ProjectionMessage {
   [field: string]: unknown;
 }
 
-const categories = ['tools', 'mcp', 'skills', 'guidance'] as const;
+/** Groups that carry tools, so their entries answer to the live tool permissions. */
+const toolCategories: ReadonlySet<string> = new Set(['tools', 'mcp', 'manual']);
+const categories = ['tools', 'mcp', 'skills', 'guidance', 'manual'] as const;
 interface SelectedHit extends CapabilityHit {
   ref: string;
   category: typeof categories[number];
@@ -36,14 +38,15 @@ function selected(result: DiscoveryMemory, allowsTool: (name: string) => boolean
     for (const hit of result[category] ?? []) {
       if (!hit.ref || (hit.status && hit.status !== 'available')) continue;
       const members = hit.tools;
+      const tools = toolCategories.has(category);
       if (members && !members.some(allowed)) continue;
-      if (!members && ['tools', 'mcp'].includes(category) && (hit.kind === 'tool' || hit.tool) && !allowed(hit)) continue;
+      if (!members && tools && (hit.kind === 'tool' || hit.tool) && !allowed(hit)) continue;
       hits.push({
         category,
         ...keep(hit, ['name', 'description', 'instructions', 'filePath']),
         ref: category === 'skills' && hit.filePath ? hit.filePath : hit.ref,
         ...(members ? { tools: members.filter(allowed).map((tool) => keep(tool, ['ref', 'name', 'description', 'exposure'])) } : {}),
-        ...(!members && ['tools', 'mcp'].includes(category) ? keep(hit, ['exposure', 'tool', 'server']) : {}),
+        ...(!members && tools ? keep(hit, ['exposure', 'tool', 'server']) : {}),
       });
     }
   }

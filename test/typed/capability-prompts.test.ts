@@ -78,7 +78,7 @@ test('retrieval prompts and budget guidance use external assets', () => {
 
 test('registered Capability metadata uses external text', () => {
   const registered: Array<{ name: string; description: string; promptSnippet?: string; promptGuidelines?: string[] }> = [];
-  capabilityExtension({ registerTool: (tool: typeof registered[number]) => registered.push(tool), getAllTools: () => [], getActiveTools: () => [], on: () => () => {} } as unknown as Parameters<typeof capabilityExtension>[0]);
+  capabilityExtension({ registerTool: (tool: typeof registered[number]) => registered.push(tool), registerCommand: () => {}, getAllTools: () => [], getActiveTools: () => [], on: () => () => {} } as unknown as Parameters<typeof capabilityExtension>[0]);
   const tool = registered.find((candidate) => candidate.name === CAPABILITY_TOOL_NAME);
   assert.ok(tool);
   assert.equal(tool.name, CAPABILITY_TOOL_NAME);

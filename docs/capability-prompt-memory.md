@@ -11,7 +11,8 @@ canonical `capability-discovery` custom entry appended to the branch through
 ## Durable branch storage
 
 Every successful or partial discovery writes one `capability-discovery` entry
-to the session branch:
+to the session branch. User-driven enablement writes the same entry shape with
+the `manual` category and no tool call anchor.
 
 - Nested calls: When an outer tool calls `ctx.executeTool("capability", ...)`,
   the inner discovery record writes directly to the branch. The record survives
@@ -36,6 +37,10 @@ to the session branch:
   constraints or associations from Skill prose. A Skill ref is its entry path;
   the model uses native file read to understand the guidance. The host installs
   no resource protocol router or file tool override.
+- Manual entries: `/capability enable` records the tools it actually activated
+  under the `manual` category. A manual record carries no tool call anchor, so
+  the projection folds it into the leading checkpoint. Manual and discovered
+  entries share one ref namespace and the same permission check.
 - Shared guidance: retained across discoveries, even when a selection adds no tools.
 - Remote coverage: discovery searches local resources only.
   Coverage explicitly marks remote search as `not_searched`. Remote candidates

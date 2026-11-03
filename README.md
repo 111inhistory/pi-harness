@@ -66,6 +66,8 @@ Fresh 子任务需要 Pi 用户目录中的 `subagent-routing.json`。默认用�
 
 任务完成后，宿主会自动向父 Agent 发送终态通知，携带本轮最终执行文本。
 
+用户也可直接管理已启用工具：`/capability` 列出当前分支的 `manual` 能力与激活工具，`/capability search <text>` 按名称或描述查找，`/capability enable <name...>` 启用已注册工具。该入口只增不减，没有停用或移除子命令。
+
 ## 开发与验证
 
 项目提供以下代码、类型与配置验证脚本：

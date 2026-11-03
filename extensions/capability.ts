@@ -81,6 +81,8 @@ import { openSubagentExecution } from "../src/subagent/execution.ts";
 import { parentModelRuntime } from "../src/subagent/model-runtime.ts";
 import { installNativeDiscoveryBoundary } from "../src/capability/native-discovery.ts";
 import { createEligibleToolCatalog, retainEligibleSelectedTools, supplySelectedToolInterfaces } from "../src/capability/tool-catalog.ts";
+import { activateToolNames } from "../src/capability/activation.ts";
+import { installCapabilityCommand } from "../src/capability/command.ts";
 import {
   additiveToolTranscript, capabilityModelResult, capabilityToolDelta, retrievalToolLoadout, supportsAdditiveResponses,
   type CapabilityInterfaceSources,
@@ -135,6 +137,7 @@ export default function capabilityExtension(
 ): void {
   const configFor = harnessConfigFor(pi, config);
   const declaredTools = installNativeDiscoveryBoundary(pi, configFor);
+  installCapabilityCommand(pi);
   const service = {
     agentDir: getAgentDir(),
     projectTrusted: false,
@@ -338,49 +341,29 @@ function internalSettings(pi: ExtensionAPI, trusted: boolean): SettingsManager {
 /**
  * Declare the selected, already-registered tools active in this session.
  *
- * `getActiveTools`/`setActiveTools` is Pi's active-tool API: it declares the
- * named registered tools to the model, records the change in the transcript,
- * and ignores unknown and hidden names. This is tool activation — not
- * installation or enablement: nothing is downloaded, loaded or connected and
- * the current active set (read/write and everything else) is preserved. Every
- * registered, non-hidden tool is loadable this way, including `direct` and
- * `model-only` tools that were left inactive by the caller's tool allowlist or
- * by `defaultActive: false`; a `hidden` tool is unreachable and skipped.
+ * The per-name activation is shared with the `/capability enable` command
+ * (`activation.ts`); this function only maps the discovery selection onto tool
+ * names and turns the skipped names into discovery warnings. A server-level
+ * `mcp://<server>` ref names no single registered tool, so only a tool ref that
+ * lost its registration is reported.
  */
 function activateSelectedTools(pi: ExtensionAPI, result: CapabilityDiscoveryResult): Activation {
-  const registered = new Map(pi.getAllTools().map((tool) => [tool.name, tool]));
-  const active = new Set(pi.getActiveTools());
-  const activate: string[] = [];
-  const seen = new Set<string>();
-  const warnings: string[] = [];
   const selected: ActivationHit[] = [];
   for (const hit of [...result.tools, ...result.mcp]) {
     if (Array.isArray(hit.tools)) selected.push(...hit.tools);
     else selected.push(hit);
   }
-  for (const hit of selected) {
-    const name = typeof hit.name === "string" ? hit.name : "";
-    if (name === "" || seen.has(name)) continue;
-    seen.add(name);
-    const tool = registered.get(name);
-    if (tool === undefined) {
-      // A server-level `mcp://<server>` ref names no single registered tool;
-      // only a tool ref that lost its registration is reported.
-      if (hit.kind === "tool") warnings.push(`selected tool "${name}" is not registered in this session`);
-      continue;
+  const named = selected.flatMap((hit) => typeof hit.name === "string" && hit.name !== "" ? [{ name: hit.name, kind: hit.kind }] : []);
+  const outcome = activateToolNames(pi, named.map((hit) => hit.name));
+  const kindOf = new Map(named.map((hit) => [hit.name, hit.kind]));
+  const warnings: string[] = [];
+  for (const skip of outcome.skipped) {
+    if (skip.reason === "not_registered" && kindOf.get(skip.name) === "tool") {
+      warnings.push(`selected tool "${skip.name}" is not registered in this session`);
     }
-    if (tool.exposure === "hidden") {
-      warnings.push(`selected tool "${name}" is hidden and cannot be activated`);
-      continue;
-    }
-    if (active.has(name)) continue;
-    activate.push(name);
+    if (skip.reason === "hidden") warnings.push(`selected tool "${skip.name}" is hidden and cannot be activated`);
   }
-  if (activate.length > 0) pi.setActiveTools([...active, ...activate]);
-  // Read back the SDK's authoritative set instead of assuming the request took
-  // effect; Pi ignores unknown/hidden names and can mask an activatable tool.
-  const actual = new Set(pi.getActiveTools());
-  return { activated: activate, warnings, active: actual };
+  return { activated: outcome.activated, warnings, active: outcome.active };
 }
 
 /**
