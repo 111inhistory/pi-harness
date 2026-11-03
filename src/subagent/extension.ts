@@ -2,6 +2,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil
 import { DEFAULT_HARNESS_CONFIG, harnessConfigFor } from '../harness-config.ts';
 import { ServiceLifecycle } from './lifecycle.ts';
 import { RootService } from './root-service.ts';
+import { argumentCompletionProvider } from '../autocomplete.ts';
 import { installSubagentCommand } from './command.ts';
 import { installSessionSurface } from './surface.ts';
 import { SubagentError } from './runtime.ts';
@@ -61,7 +62,17 @@ export default function subagentExtension(api: ExtensionAPI): void {
     }
   };
 
-  api.on('session_start', async (_event, ctx) => { epoch += 1; await activate(ctx); });
+  let autocompleteInstalled = false;
+  api.on('session_start', async (_event, ctx) => {
+    epoch += 1;
+    // The editor's Tab request skips slash-command arguments; restore them for
+    // /subagent without touching other commands' file completion.
+    if (!autocompleteInstalled) {
+      autocompleteInstalled = true;
+      ctx.ui.addAutocompleteProvider((base) => argumentCompletionProvider(base, 'subagent'));
+    }
+    await activate(ctx);
+  });
   api.on('session_tree', async (_event, ctx) => { epoch += 1; await activate(ctx); });
   api.on('session_before_tree', async (_event, ctx) => beforeTransition(ctx));
   api.on('session_before_switch', async (_event, ctx) => beforeTransition(ctx));

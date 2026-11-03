@@ -80,6 +80,19 @@ function compareText(left: string, right: string): number {
     || left.localeCompare(right);
 }
 
+/**
+ * The one filter rule for `list` and the picker: case-insensitive text over the
+ * tool name, display name, full description and group. Display truncation never
+ * feeds this predicate.
+ */
+export function capabilityEntryMatches(entry: CapabilityCatalogEntry, needle: string): boolean {
+  if (needle === '') return true;
+  return entry.name.toLowerCase().includes(needle)
+    || entry.display.toLowerCase().includes(needle)
+    || entry.description.toLowerCase().includes(needle)
+    || entry.group.toLowerCase().includes(needle);
+}
+
 /** Read the current catalog once and classify it. */
 export function createCapabilityCatalog(
   pi: ExtensionAPI,
@@ -111,11 +124,7 @@ export function createCapabilityCatalog(
       };
     })
     .filter((entry) => options.category === undefined || entry.category === options.category)
-    .filter((entry) => needle === ''
-      || entry.name.toLowerCase().includes(needle)
-      || entry.display.toLowerCase().includes(needle)
-      || entry.description.toLowerCase().includes(needle)
-      || entry.group.toLowerCase().includes(needle))
+    .filter((entry) => capabilityEntryMatches(entry, needle))
     .sort((left, right) => CATEGORY_ORDER.indexOf(left.category) - CATEGORY_ORDER.indexOf(right.category)
       || compareText(left.group, right.group)
       || compareText(left.display, right.display)

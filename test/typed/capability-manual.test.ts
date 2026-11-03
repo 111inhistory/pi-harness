@@ -10,7 +10,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand, Theme } from "@earendil-works/pi-coding-agent";
-import { getKeybindings, type Component, type KeybindingsManager } from "@earendil-works/pi-tui";
+import {
+  CombinedAutocompleteProvider, CURSOR_MARKER, getKeybindings, type AutocompleteProvider,
+  type Component, type Focusable, type KeybindingsManager,
+} from "@earendil-works/pi-tui";
 
 import {
   appendManualRecord,
@@ -21,8 +24,12 @@ import {
 import { CAPABILITY_SECTION, capabilityPromptTranscript } from "../../src/capability/prompt.ts";
 import { enableManualTools, type ManualEnableHost } from "../../src/capability/manual.ts";
 import { createToolAdmission } from "../../src/capability/admission.ts";
-import { parseCapabilityCommand, installCapabilityCommand } from "../../src/capability/command.ts";
+import {
+  capabilityArgumentCompletions, installCapabilityCommand, parseCapabilityCommand,
+} from "../../src/capability/command.ts";
+import { argumentCompletionProvider } from "../../src/autocomplete.ts";
 import { createCapabilityCatalog } from "../../src/capability/catalog.ts";
+import { createCapabilitySelector } from "../../src/capability/selector.ts";
 import { setCapabilityParent, setCapabilityRootOnlyPolicy } from "../../src/capability/scope.ts";
 import { createEligibleToolCatalog } from "../../src/capability/tool-catalog.ts";
 import { activateToolNames } from "../../src/capability/activation.ts";
@@ -307,21 +314,21 @@ test("the command reports an invalid subcommand without touching tools", async (
 
 test("completions cover verbs, list categories and enable names, including trailing spaces", async () => {
   const fixture = install(tools, []);
-  assert.deepEqual((await fixture.completions(""))?.map((item) => item.value), ["list", "enable"]);
-  assert.deepEqual((await fixture.completions("li"))?.map((item) => item.value), ["list"]);
+  assert.deepEqual((await fixture.completions(""))?.map((item) => item.value), ["list ", "enable "]);
+  assert.deepEqual((await fixture.completions("li"))?.map((item) => item.value), ["list "]);
   assert.equal(await fixture.completions("se"), null, "search is gone");
   assert.deepEqual((await fixture.completions("list "))?.map((item) => item.value),
-    ["list tool", "list mcp", "list namespace"]);
-  assert.deepEqual((await fixture.completions("list to"))?.map((item) => item.value), ["list tool"]);
+    ["list tool ", "list mcp ", "list namespace "]);
+  assert.deepEqual((await fixture.completions("list to"))?.map((item) => item.value), ["list tool "]);
   assert.equal(await fixture.completions("list tool "), null, "the rest of a category line is a free filter");
   assert.equal(await fixture.completions("list tool gi"), null);
   assert.deepEqual((await fixture.completions("enable "))?.map((item) => item.label),
     ["deck_pages", "read", "mcp__git__log", "mcp__git__status", "msg_write"]);
-  assert.deepEqual((await fixture.completions("enable de"))?.map((item) => item.value), ["enable deck_pages"]);
+  assert.deepEqual((await fixture.completions("enable de"))?.map((item) => item.value), ["enable deck_pages "]);
   assert.deepEqual((await fixture.completions("enable deck_pages "))?.map((item) => item.label),
     ["read", "mcp__git__log", "mcp__git__status", "msg_write"]);
   assert.deepEqual((await fixture.completions("enable deck_pages re"))?.map((item) => item.value),
-    ["enable deck_pages read"]);
+    ["enable deck_pages read "]);
 });
 
 test("enable without a name opens the native picker and enables the chosen tool", async () => {
@@ -393,6 +400,139 @@ test("a child scope's catalog never offers manual tools to list or the picker", 
     ["mcp__git__log", "mcp__git__status", "msg_write", "read"]);
   assert.deepEqual(createCapabilityCatalog(rootHost as unknown as ExtensionAPI).entries
     .some((entry) => entry.name === "deck_pages"), true, "Main keeps the manual tool browsable");
+});
+
+test("list and the picker share one filter rule, including the description tail", async () => {
+  const catalog = [...tools, {
+    name: "long_tail",
+    description: `${"x".repeat(90)} TAILWORD`,
+    exposure: "deferred" as const,
+  }];
+  const listFixture = install(catalog, []);
+  await listFixture.run("list tailword");
+  assert.match(listFixture.notifications[0]?.text ?? "", /1 matches for "tailword"/);
+  const fixture = install(catalog, [], [], {
+    mode: "tui",
+    custom: async (factory: unknown) => {
+      let resolve!: (value: unknown) => void;
+      const result = new Promise<unknown>((done) => { resolve = done; });
+      const component = (factory as (
+        tui: unknown, theme: Theme, keybindings: KeybindingsManager, done: (value: unknown) => void,
+      ) => Component)(undefined, theme, getKeybindings(), resolve);
+      for (const key of "tailword") component.handleInput?.(key);
+      assert.match(component.render(120).join("\n"), /long_tail/,
+        "a word past the display truncation still matches in the picker");
+      component.handleInput?.("\r");
+      return result;
+    },
+  });
+  await fixture.run("enable");
+  assert.match(fixture.notifications.at(-1)?.text ?? "", /Enabled: long_tail/);
+});
+
+test("an empty filter shows the same full catalog in list and the picker", async () => {
+  const fixture = install(tools, []);
+  await fixture.run("list");
+  const listText = fixture.notifications[0]?.text ?? "";
+  const entries = createCapabilityCatalog(fixture.pi).entries;
+  assert.equal(entries.length, 5, "hidden tools stay out of both views");
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const entry of entries) {
+    assert.match(listText, new RegExp(escape(entry.display)), `list shows ${entry.display}`);
+  }
+  const component = createCapabilitySelector(entries, theme, getKeybindings(), () => {});
+  const rendered = component.render(120).join("\n");
+  for (const entry of entries) {
+    assert.match(rendered, new RegExp(escape(entry.display)), `the picker shows ${entry.display}`);
+  }
+});
+
+test("the picker forwards focus to its input and re-themes on render", () => {
+  const entries = createCapabilityCatalog(install(tools, []).pi).entries;
+  let accent = "A";
+  const liveTheme = {
+    fg: (color: string, text: string) => (color === "accent" ? `${accent}${text}` : text),
+    bold: (text: string) => text,
+  } as unknown as Theme;
+  const component = createCapabilitySelector(entries, liveTheme, getKeybindings(), () => {}) as Component & Focusable;
+  assert.equal(component.focused, false);
+  component.focused = true;
+  assert.equal(component.focused, true, "focus reaches the wrapped input");
+  assert.ok(component.render(100).some((line) => line.includes(CURSOR_MARKER)),
+    "the focused input renders its cursor marker for IME positioning");
+  assert.match(component.render(100).join("\n"), /AEnable a capability/);
+  accent = "B";
+  assert.match(component.render(100).join("\n"), /BEnable a capability/,
+    "themed text is rebuilt on render, not frozen in constructor state");
+});
+
+test("the editor's forced Tab request reaches argument completions through the wrapper", async () => {
+  const fixture = install(tools, []);
+  const provider: AutocompleteProvider = new CombinedAutocompleteProvider([{
+    name: "capability",
+    description: "Browse the catalog",
+    getArgumentCompletions: (prefix: string) => capabilityArgumentCompletions(prefix, fixture.pi),
+  }], process.cwd());
+  const wrapped = argumentCompletionProvider(provider, "capability");
+  const signal = new AbortController().signal;
+
+  // The command name completes with the editor's own trailing space.
+  const names = await provider.getSuggestions(["/capab"], 0, 6, { signal, force: false });
+  assert.ok(names);
+  const commandApplied = provider.applyCompletion(["/capab"], 0, 6, names.items[0]!, names.prefix);
+  assert.equal(commandApplied.lines[0], "/capability ");
+  assert.equal(commandApplied.cursorCol, "/capability ".length);
+
+  // Root cause: the editor's Tab path forces the request, and the built-in
+  // provider skips slash-command arguments then.
+  const forced = await provider.getSuggestions(commandApplied.lines, 0, commandApplied.cursorCol, { signal, force: true });
+  assert.ok(!(forced?.items ?? []).some((item) => item.value === "list "),
+    "a forced Tab never returns argument completions (it falls through to file completion)");
+  const verbs = await wrapped.getSuggestions(commandApplied.lines, 0, commandApplied.cursorCol, { signal, force: true });
+  assert.ok(verbs);
+  assert.deepEqual(verbs.items.map((item) => item.value), ["list ", "enable "]);
+  const listApplied = wrapped.applyCompletion(commandApplied.lines, 0, commandApplied.cursorCol, verbs.items[0]!, verbs.prefix);
+  assert.equal(listApplied.lines[0], "/capability list ");
+  assert.equal(listApplied.cursorCol, "/capability list ".length);
+
+  const categories = await wrapped.getSuggestions(listApplied.lines, 0, listApplied.cursorCol, { signal, force: true });
+  assert.ok(categories);
+  assert.deepEqual(categories.items.map((item) => item.value), ["list tool ", "list mcp ", "list namespace "]);
+  const toolApplied = wrapped.applyCompletion(listApplied.lines, 0, listApplied.cursorCol, categories.items[0]!, categories.prefix);
+  assert.equal(toolApplied.lines[0], "/capability list tool ");
+  assert.equal(await wrapped.getSuggestions(toolApplied.lines, 0, toolApplied.cursorCol, { signal, force: true }), null,
+    "a free filter has no candidates, but the cursor is in the right position");
+
+  // Enable keeps the name shortcut and appends further names after a space.
+  const enableApplied = wrapped.applyCompletion(["/capability enable "], 0, "/capability enable ".length,
+    { value: "enable deck_pages ", label: "deck_pages" }, "enable ");
+  assert.equal(enableApplied.lines[0], "/capability enable deck_pages ");
+  const more = await wrapped.getSuggestions(enableApplied.lines, 0, enableApplied.cursorCol, { signal, force: true });
+  assert.ok(more);
+  assert.ok(more.items.some((item) => item.value === "enable deck_pages read "));
+  assert.ok(!more.items.some((item) => item.value.startsWith("enable deck_pages deck_pages")),
+    "an already chosen name is excluded");
+});
+
+test("the /subagent wrapper restores its verb candidates on a forced Tab too", async () => {
+  const provider: AutocompleteProvider = new CombinedAutocompleteProvider([{
+    name: "subagent",
+    description: "Inspect subagents",
+    getArgumentCompletions: (prefix: string) => {
+      const items = ["list", "stop", "sessions"]
+        .filter((item) => item.startsWith(prefix.trim()))
+        .map((item) => ({ value: item, label: item }));
+      return items.length === 0 ? null : items;
+    },
+  }], process.cwd());
+  const wrapped = argumentCompletionProvider(provider, "subagent");
+  const signal = new AbortController().signal;
+  const forced = await provider.getSuggestions(["/subagent "], 0, 10, { signal, force: true });
+  assert.ok(!(forced?.items ?? []).some((item) => item.value === "list"),
+    "a forced Tab never returns argument completions");
+  const verbs = await wrapped.getSuggestions(["/subagent "], 0, 10, { signal, force: true });
+  assert.ok(verbs);
+  assert.deepEqual(verbs.items.map((item) => item.value), ["list", "stop", "sessions"]);
 });
 
 test("a manual tool is invisible to discovery and cannot be activated by it", () => {

@@ -10,9 +10,11 @@
 
 import type { Theme } from '@earendil-works/pi-coding-agent';
 import {
-  Input, SelectList, Text, type Component, type KeybindingsManager, type SelectItem,
+  Input, SelectList, Text, type Component, type Focusable, type KeybindingsManager, type SelectItem,
   type SelectListTheme,
 } from '@earendil-works/pi-tui';
+
+import { capabilityEntryMatches, type CapabilityCatalogEntry } from './catalog.ts';
 
 const MAX_VISIBLE = 15;
 const TITLE = 'Enable a capability';
@@ -28,11 +30,10 @@ function listTheme(theme: Theme): SelectListTheme {
   };
 }
 
-class CapabilitySelector implements Component {
-  readonly #title: Text;
-  readonly #hint: Text;
+class CapabilitySelector implements Component, Focusable {
+  readonly #theme: Theme;
+  readonly #entries: readonly CapabilityCatalogEntry[];
   readonly #input: Input;
-  readonly #items: readonly SelectItem[];
   readonly #listTheme: SelectListTheme;
   readonly #keybindings: KeybindingsManager;
   readonly #done: (name: string | undefined) => void;
@@ -40,34 +41,48 @@ class CapabilitySelector implements Component {
   #finished = false;
 
   constructor(
-    items: readonly SelectItem[],
+    entries: readonly CapabilityCatalogEntry[],
     theme: Theme,
     keybindings: KeybindingsManager,
     done: (name: string | undefined) => void,
   ) {
     this.#keybindings = keybindings;
     this.#done = done;
-    this.#items = items;
+    this.#theme = theme;
+    this.#entries = entries;
     this.#listTheme = listTheme(theme);
-    this.#title = new Text(theme.fg('accent', theme.bold(TITLE)), 1, 0);
-    this.#hint = new Text(theme.fg('muted', HINT), 1, 0);
     this.#input = new Input({ placeholder: 'Filter by name, purpose or group…' });
     this.#list = this.#buildList();
     this.#input.onEscape = () => this.#finish(undefined);
   }
 
   /**
-   * The native list filters by `value` prefix; the picker also needs the human
-   * label, purpose and group, so it selects the visible items itself and hands
-   * them to a fresh native list.
+   * A container around `Input` must forward focus: the TUI positions the
+   * hardware cursor (and the IME candidate window) from the focused child.
+   */
+  get focused(): boolean {
+    return this.#input.focused;
+  }
+
+  set focused(value: boolean) {
+    this.#input.focused = value;
+  }
+
+  /**
+   * The native list filters by `value` prefix; the picker filters by the same
+   * catalog rule as `list` (full name, purpose and group), then hands the
+   * visible entries to a fresh native list.
    */
   #buildList(): SelectList {
     const needle = this.#input.getValue().trim().toLowerCase();
-    const visible = needle === '' ? this.#items : this.#items.filter((item) =>
-      item.value.toLowerCase().includes(needle)
-      || item.label.toLowerCase().includes(needle)
-      || (item.description ?? '').toLowerCase().includes(needle));
-    const list = new SelectList([...visible], MAX_VISIBLE, this.#listTheme);
+    const visible = this.#entries
+      .filter((entry) => capabilityEntryMatches(entry, needle))
+      .map((entry): SelectItem => ({
+        value: entry.name,
+        label: `${entry.active ? '✔' : '○'} ${entry.display}${entry.manual ? '  [manual]' : ''}`,
+        description: `${entry.group} · ${entry.description === '' ? 'no description' : entry.description}`,
+      }));
+    const list = new SelectList(visible, MAX_VISIBLE, this.#listTheme);
     list.onSelect = (item) => this.#finish(item.value);
     list.onCancel = () => this.#finish(undefined);
     return list;
@@ -98,17 +113,17 @@ class CapabilitySelector implements Component {
   }
 
   render(width: number): string[] {
+    // Themed text is computed per render so a theme change cannot leave stale
+    // ANSI in application state.
     return [
-      ...this.#title.render(width),
-      ...this.#hint.render(width),
+      ...new Text(this.#theme.fg('accent', this.#theme.bold(TITLE)), 1, 0).render(width),
+      ...new Text(this.#theme.fg('muted', HINT), 1, 0).render(width),
       ...this.#input.render(width),
       ...this.#list.render(width),
     ];
   }
 
   invalidate(): void {
-    this.#title.invalidate();
-    this.#hint.invalidate();
     this.#input.invalidate();
     this.#list.invalidate();
   }
@@ -121,10 +136,10 @@ class CapabilitySelector implements Component {
 
 /** Build the picker component for `ctx.ui.custom`. */
 export function createCapabilitySelector(
-  items: readonly SelectItem[],
+  entries: readonly CapabilityCatalogEntry[],
   theme: Theme,
   keybindings: KeybindingsManager,
   done: (name: string | undefined) => void,
 ): Component {
-  return new CapabilitySelector(items, theme, keybindings, done);
+  return new CapabilitySelector(entries, theme, keybindings, done);
 }

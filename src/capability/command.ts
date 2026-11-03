@@ -15,7 +15,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from '@earendil-works/pi-coding-agent';
-import type { KeybindingsManager, SelectItem } from '@earendil-works/pi-tui';
+import type { AutocompleteItem, KeybindingsManager } from '@earendil-works/pi-tui';
 
 import {
   CATEGORY_LABEL, CATEGORY_ORDER, createCapabilityCatalog, type CapabilityCategory, type CapabilityCatalogView,
@@ -122,14 +122,6 @@ function renderEnable(result: ReturnType<typeof enableManualTools>): string {
   return lines.join('\n');
 }
 
-function selectorItems(view: CapabilityCatalogView): SelectItem[] {
-  return view.entries.map((entry) => ({
-    value: entry.name,
-    label: `${entry.active ? '✔' : '○'} ${entry.display}${entry.manual ? '  [manual]' : ''}`,
-    description: `${entry.group} · ${entry.description === '' ? 'no description' : truncate(entry.description)}`,
-  }));
-}
-
 /** Open the native picker and enable exactly the selected tool. */
 async function pickAndEnable(ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
   const view = createCapabilityCatalog(pi);
@@ -143,7 +135,7 @@ async function pickAndEnable(ctx: ExtensionCommandContext, pi: ExtensionAPI): Pr
     return;
   }
   const chosen = await ctx.ui.custom<string | undefined>((_tui, theme: Theme, keybindings: KeybindingsManager, done) =>
-    createCapabilitySelector(selectorItems(view), theme, keybindings, done));
+    createCapabilitySelector(view.entries, theme, keybindings, done));
   if (chosen === undefined) {
     ctx.ui.notify('Cancelled. Nothing was enabled.', 'info');
     return;
@@ -180,13 +172,15 @@ async function run(
 }
 
 /** Full-text argument completions: verbs, list categories, enable tool names. */
-function completions(prefix: string, pi: ExtensionAPI): { value: string; label: string; description?: string }[] | null {
+export function capabilityArgumentCompletions(prefix: string, pi: ExtensionAPI): AutocompleteItem[] | null {
   const text = prefix.trimStart();
   const trailingSpace = /\s$/.test(text);
   const tokens = text.split(/\s+/).filter((token) => token !== '');
   if (tokens.length === 0) {
     return VERBS.map((verb) => ({
-      value: verb,
+      // A trailing space puts the cursor at the next argument; the editor inserts
+      // the value verbatim for arguments.
+      value: `${verb} `,
       label: verb,
       description: verb === 'list' ? 'Browse the catalog (optional category and filter)' : 'Pick tools to enable',
     }));
@@ -195,7 +189,7 @@ function completions(prefix: string, pi: ExtensionAPI): { value: string; label: 
   if (rest.length === 0 && !trailingSpace) {
     const items = VERBS.filter((candidate) => candidate.startsWith(tokens[0]!))
       .map((candidate) => ({
-        value: candidate,
+        value: `${candidate} `,
         label: candidate,
         description: candidate === 'list' ? 'Browse the catalog (optional category and filter)' : 'Pick tools to enable',
       }));
@@ -206,13 +200,13 @@ function completions(prefix: string, pi: ExtensionAPI): { value: string; label: 
     // category or free text is present, the rest is the filter.
     if (rest.length === 0) {
       return CATEGORY_ORDER.map((category) => ({
-        value: `list ${category}`, label: category, description: `${CATEGORY_LABEL[category]} only`,
+        value: `list ${category} `, label: category, description: `${CATEGORY_LABEL[category]} only`,
       }));
     }
     if (rest.length === 1 && !trailingSpace) {
       const items = CATEGORY_ORDER.filter((category) => category.startsWith(rest[0]!.toLowerCase()))
         .map((category) => ({
-          value: `list ${category}`, label: category, description: `${CATEGORY_LABEL[category]} only`,
+          value: `list ${category} `, label: category, description: `${CATEGORY_LABEL[category]} only`,
         }));
       return items.length === 0 ? null : items;
     }
@@ -226,7 +220,7 @@ function completions(prefix: string, pi: ExtensionAPI): { value: string; label: 
       .filter((entry) => !chosen.has(entry.name) && entry.name.toLowerCase().startsWith(fragment.toLowerCase()))
       .slice(0, COMPLETION_LIMIT)
       .map((entry) => ({
-        value: `${head}${entry.name}`,
+        value: `${head}${entry.name} `,
         label: entry.name,
         description: `${entry.group} · ${truncate(entry.description)}`,
       }));
@@ -242,7 +236,7 @@ export function installCapabilityCommand(
 ): void {
   pi.registerCommand('capability', {
     description: 'Browse the capability catalog and enable tools (append-only)',
-    getArgumentCompletions: (prefix) => completions(prefix, pi),
+    getArgumentCompletions: (prefix) => capabilityArgumentCompletions(prefix, pi),
     handler: async (raw, ctx) => {
       try {
         await run(raw, ctx, pi, options.prepare);

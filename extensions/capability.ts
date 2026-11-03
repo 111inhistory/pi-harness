@@ -82,6 +82,7 @@ import { parentModelRuntime } from "../src/subagent/model-runtime.ts";
 import { installNativeDiscoveryBoundary } from "../src/capability/native-discovery.ts";
 import { createEligibleToolCatalog, retainEligibleSelectedTools, supplySelectedToolInterfaces } from "../src/capability/tool-catalog.ts";
 import { activateToolNames } from "../src/capability/activation.ts";
+import { argumentCompletionProvider } from "../src/autocomplete.ts";
 import { installCapabilityCommand } from "../src/capability/command.ts";
 import { manualToolMatcher } from "../src/capability/manual-tools.ts";
 import { createToolAdmission } from "../src/capability/admission.ts";
@@ -150,6 +151,7 @@ export default function capabilityExtension(
   };
   if (config !== undefined) applyManualPolicy(config.capability.manualTools);
   installCapabilityCommand(pi, { prepare: (ctx) => applyManualPolicy(configFor(ctx).capability.manualTools) });
+  let autocompleteInstalled = false;
   const service = {
     agentDir: getAgentDir(),
     projectTrusted: false,
@@ -157,6 +159,12 @@ export default function capabilityExtension(
   pi.on("session_start", (_event, ctx) => {
     service.projectTrusted = ctx.isProjectTrusted();
     applyManualPolicy(configFor(ctx).capability.manualTools);
+    // The editor's Tab request skips slash-command arguments; this wrapper only
+    // restores them for /capability (see argumentCompletionProvider).
+    if (!autocompleteInstalled) {
+      autocompleteInstalled = true;
+      ctx.ui.addAutocompleteProvider((base) => argumentCompletionProvider(base, "capability"));
+    }
   });
 
   // Keep Pi's loaded Skill inventory for discovery, but do not advertise it

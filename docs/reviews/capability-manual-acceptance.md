@@ -112,7 +112,23 @@ node --import tsx scripts/capability-admission-bench.mjs
 
 耗时结论与局限：同一台机器、同一进程内的中位数，样本为合成工具与合成记录，未控制 GC 与 JIT，也没有跨机器数据。固定读次数不等于恒定总耗时：`per-operation` 的耗时仍随工具数缓增（450 工具约 0.08–0.15 ms），只是从平方级降为线性级。该表是参考实现对照，只用于确认收敛没有引入退化，不作为性能承诺。
 
-## 4. 未覆盖
+## 4. 终端交互验收
+
+隔离环境：临时 agent 目录之外的合成工具经 `-e fixture.ts` 注入（`manual_fixture`、`deck_pages`、`部署页面并发布预览`、25 个 `bulk_*`、`demo` 命名空间），真实 Pi TUI（`--tui-mode regular`），未发送模型提示，未调用真实 MCP 工具。`pi` 启动器会把 `PI_CODING_AGENT_DIR` 固定到项目 agent 目录，因此本次使用现有模型配置仅用于启动 TUI。
+
+| 流程 | 观察结果 |
+| --- | --- |
+| `/capability list` | `Capability · 42 tools · Tools`，`Tools · Tools` 组内按显示名排序（`bash [active]`、`bulk_0`…），用途截断显示 |
+| `/capability list mcp` | `Capability · 66 tools · MCP servers`，按服务器分组（`computer-use-linux`、`doctor` 等） |
+| `/capability ` + Tab | 出现 `list` / `enable` 候选；选中后文本为 `/capability list `（含尾随空格） |
+| `/capability l` + Tab + Tab | 第一次 Tab 补成 `/capability list `，第二次 Tab 直接出现 `tool` / `mcp` / `namespace` 候选（修复前第二次 Tab 无反应） |
+| `/capability list tool ` + Tab | 无候选（自由文本过滤），光标位于过滤词位置 |
+| `/capability enable` | 打开原生选择列表；输入中文 `部署` 后只剩 `deploy_pages`；Enter → `Enabled: deploy_pages` |
+| 重新打开 + `deploy` | 列表显示 `✔ deploy_pages` 与中文用途，状态已更新 |
+| Esc | `Cancelled. Nothing was enabled.`，无激活、无记录 |
+| 50×20 窄终端 | `list` 与选择列表最长行分别为 49 / 48 列，无横向溢出；恢复 110×34 后布局正常 |
+
+## 5. 未覆盖
 
 - Windows：manual 门禁的代码路径与平台无关，但未在 Windows 实机运行；跨 session 协调在 Windows 明确未实现。
 - 真实 MCP 服务器的资源读取、断连后重新启用、以及启用记录残留的补偿行为；在线只调用了两个只读查询入口，未覆盖写入型工具。
