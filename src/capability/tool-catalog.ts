@@ -16,7 +16,6 @@
  */
 
 import {
-  capabilityRootOnlyPolicy,
   createCapabilityScopeView,
   type CapabilityScopedTool,
 } from "./scope.ts";
@@ -55,7 +54,8 @@ export function createEligibleToolCatalog<T extends CapabilityScopedTool>(
   options: EligibleCatalogOptions = {},
 ): EligibleToolCatalog<T> {
   const view = createCapabilityScopeView(catalog);
-  const rootOnly = options.includeManual === true ? null : capabilityRootOnlyPolicy(catalog);
+  // One scope resolution answers qualification and the root-only policy.
+  const rootOnly = options.includeManual === true ? null : view.rootOnly;
   const tools = catalog.getAllTools().filter((tool) => tool.exposure !== "hidden" && view.allows(tool.name)
     && (rootOnly === null || !rootOnly(tool.name)));
   const names = new Set<string>();

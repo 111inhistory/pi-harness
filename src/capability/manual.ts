@@ -17,10 +17,10 @@
  * later request projection still re-checks the live tool permissions.
  */
 
-import { appendManualRecord, manualEnabledTools } from './discovery-record.ts';
+import { appendManualRecord } from './discovery-record.ts';
 import type { CapabilityHit } from './discovery-record.ts';
 import { activateToolNames, type ActivationHost, type ActivationSkip } from './activation.ts';
-import { capabilityRootOnlyPolicy, capabilityScopeIsRoot, type CapabilityToolCatalog } from './scope.ts';
+import { capabilityRootOnlyPolicy } from './scope.ts';
 import { toolRef } from './refs.ts';
 
 /** A registered tool as manual enablement records it. */
@@ -104,22 +104,4 @@ export function enableManualTools(
     }
   }
   return { enabled: authorized, alreadyActive: outcome.alreadyActive, skipped: outcome.skipped, recordError };
-}
-
-/**
- * Whether a manual tool may be used in this session right now.
- *
- * A manual tool belongs to the root session and needs the user's own enablement
- * record on the current branch. Every other tool is unaffected. Discovery never
- * reaches this predicate because it excludes manual tools from its catalog; the
- * declaration, execution and Codemode admission boundaries use it.
- */
-export function manualToolAllowed(
-  catalog: CapabilityToolCatalog,
-  branch: readonly unknown[] | null | undefined,
-  name: string,
-): boolean {
-  const rootOnly = capabilityRootOnlyPolicy(catalog);
-  if (rootOnly === null || !rootOnly(name)) return true;
-  return capabilityScopeIsRoot(catalog) && manualEnabledTools(branch).has(name);
 }

@@ -16,6 +16,7 @@
 | `surface.ts`、`message-write.ts` | 工具声明、调用方身份绑定、输入捕获、专用 `msg_write` 消息工具（`write` 为 SDK 原生文件工具完全保持不变） | 持有全局注册表或执行循环 |
 | `command.ts`、`status-view.ts` | `/subagent` 命令注册、参数解析、错误呈现与列表文本渲染 | Job 状态、准入或消息投递 |
 | `capability/command.ts`、`capability/manual.ts`、`capability/activation.ts` | `/capability` 命令解析与呈现、用户直接启用的校验与分支记录、工具激活的单一实现（发现与命令共用） | 检索会话、路由、Subagent 状态 |
+| `capability/admission.ts` | 单次操作的工具准入视图：一次解析作用域链与分支记录，提供 `declares`（声明）、`admits`（执行）、`admitsManual` 与 `admitsServer` | 跨请求缓存、第二套权限服务、改写激活集 |
 | `listeners.ts`、`ipc/` | 端点目录、监听、NDJSON 分帧与平台资源归属校验 | 用显示窗口决定可达性、另写广播状态机 |
 | `session-directory.ts` | 跨 session 目录的发布、`intent` 更新、存活校验与归属删除，`session:<uid>` 地址，跨 session 单帧写入；POSIX 平台限定 | 认证协议、跨主机调度、第二套消息状态机 |
 | `native-delivery.ts`、`delivery.ts` | 独立通知封装、检查原生交接结果、明确拒收后的保留会话追加 | 模型已读回执、自动重发或消息合并 |
@@ -139,7 +140,9 @@ Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返�
 
 `capability.manualTools` 的门禁收在 `scope.ts`：根作用域保存名单谓词，任何带父节点的视图在计算 `effective` 与 `allows` 时都排除名单内名字，因此子会话既看不到也不能继承。`tool-catalog.ts` 默认排除名单内工具，只有命令与执行守卫传 `includeManual`；`activation.ts` 对发现路径返回 `manual_only`。
 
-授权判定在 `manual.ts` 的 `manualToolAllowed`：必须处于根作用域，且当前分支存在 `manual` 记录。三个边界都调用它：`before_agent_start` 把未授权的 manual 工具从激活集与 `selectedTools` 中移除（覆盖 `defaultActive`、历史恢复和其他扩展的激活），`tool_call` 拒绝未授权调用，`native-discovery.ts` 的 Codemode 准入 `permits` 同样要求授权。`selectedNames` 把 `manual` 记录计入选择，因此手动启用的 MCP 工具通过原生 MCP 准入并可作为资源读取的服务器依据。请求投影用 `includeManual` 的目录解析执行视图，Main 可见、子会话仍被作用域排除。
+授权判定集中在 `admission.ts` 的单次操作视图：它一次解析作用域链、分支记录（一次扫描同时得到「已选择」与「用户已启用」两个集合）与当前激活集，再提供逐名字谓词。`declares` 用于声明准入（禁用原生工具、MCP 选择、manual 授权，不含作用域），`admits` 在声明规则上叠加作用域，供 Codemode 准入使用，`admitsServer` 判定资源读取。manual 工具必须处于根作用域且当前分支存在 `manual` 记录。
+
+声明裁剪只有一处：`native-discovery.ts` 的 `before_agent_start` 用 `declares` 过滤激活集与 `selectedTools`，同时覆盖 `defaultActive`、历史恢复和其他扩展的激活；`extensions/capability.ts` 的同一钩子只处理 Skill 段。执行仍分别检查：原生 MCP 的 `tool_call` 用 `declares` 加激活状态，能力侧 `tool_call` 用目录/激活状态加 `admitsManual`。作用域拒绝只关闭执行，不改写分支选择或历史声明。请求投影用 `includeManual` 的目录解析执行视图，Main 可见、子会话仍被作用域排除。
 
 工具资格按设计只增不减，角色排除仍优先。每次同步目录投影只解析一次资格视图；不把快照跨请求或工具调用缓存。资格、注册和激活是三件不同的事。
 

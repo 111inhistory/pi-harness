@@ -84,7 +84,7 @@ import { createEligibleToolCatalog, retainEligibleSelectedTools, supplySelectedT
 import { activateToolNames } from "../src/capability/activation.ts";
 import { installCapabilityCommand } from "../src/capability/command.ts";
 import { manualToolMatcher } from "../src/capability/manual-tools.ts";
-import { manualToolAllowed } from "../src/capability/manual.ts";
+import { createToolAdmission } from "../src/capability/admission.ts";
 import { setCapabilityRootOnlyPolicy } from "../src/capability/scope.ts";
 import {
   additiveToolTranscript, capabilityModelResult, capabilityToolDelta, retrievalToolLoadout, supportsAdditiveResponses,
@@ -161,18 +161,10 @@ export default function capabilityExtension(
 
   // Keep Pi's loaded Skill inventory for discovery, but do not advertise it
   // eagerly in the base prompt. Mutate the native section, not the full prompt.
-  pi.on("before_agent_start", (event, ctx) => {
+  // The active-set and selectedTools prune, including the manual gate, belongs
+  // to the one declaration-admission path in `native-discovery.ts`.
+  pi.on("before_agent_start", (event) => {
     event.systemPromptOptions.skills = [];
-    // A manual tool is not declared merely because it is `defaultActive`,
-    // restored from the transcript or activated by another extension. The user
-    // command is the only activation path, so drop it until the branch records
-    // the user's enablement.
-    const branch = ctx.sessionManager.getBranch();
-    const active = pi.getActiveTools();
-    const next = active.filter((name) => manualToolAllowed(pi, branch, name));
-    if (next.length !== active.length) pi.setActiveTools(next);
-    event.systemPromptOptions.selectedTools = event.systemPromptOptions.selectedTools
-      .filter((name) => manualToolAllowed(pi, branch, name));
   });
 
   // Discovery memory follows the branch, not the lossy summary. Append native
@@ -193,13 +185,14 @@ export default function capabilityExtension(
     };
   });
   pi.on("tool_call", (event, ctx) => {
-    // Execution permission includes manual tools, but only in the root session
-    // and only after `/capability enable` recorded the user's decision.
+    // This entry owns declaration/activation; the shared admission view owns the
+    // common rule (scope, MCP selection, manual authorization).
     const tool = createEligibleToolCatalog(pi, { includeManual: true }).tools.find((entry) => entry.name === event.toolName);
     if (!tool || (!pi.getActiveTools().includes(event.toolName) && !["codemode", "deferred"].includes(tool.exposure ?? ""))) {
       return { block: true, reason: `Tool ${event.toolName} is unavailable in this session; retained declarations do not enable execution.` };
     }
-    if (!manualToolAllowed(pi, ctx.sessionManager.getBranch(), event.toolName)) {
+    const admission = createToolAdmission(pi, ctx.sessionManager.getBranch());
+    if (!admission.admitsManual(event.toolName)) {
       return { block: true, reason: `Tool ${event.toolName} is manual and requires /capability enable in this session.` };
     }
     return undefined;

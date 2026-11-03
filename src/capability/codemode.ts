@@ -164,11 +164,14 @@ function summary(tool: AgentTool): string {
  * with an explicit global list. The built-in executor always installs searchTools;
  * this adapter never registers it. ALL_TOOLS and description helpers see only the
  * current active, permitted tools, not Pi's complete deferred registry.
+ *
+ * Both admission ports return one per-name predicate per operation, so the
+ * caller resolves its view once and the loops below reuse it.
  */
 export function installCapabilityCodemode(
   pi: ExtensionAPI,
-  permits: (ctx: ExtensionToolContext, name: string) => boolean,
-  permitsDeclaration: (name: string) => boolean,
+  permitsFor: (ctx: ExtensionToolContext) => (name: string) => boolean,
+  permitsDeclarationFor: () => (name: string) => boolean,
   configFor: HarnessConfigProvider = () => DEFAULT_HARNESS_CONFIG,
 ): () => ReadonlySet<string> {
   let hiddenDeclarations = new Set<string>();
@@ -183,7 +186,8 @@ export function installCapabilityCodemode(
         description: scopeDescription(native.description),
         prepareLoadout(loadout) {
           const active = new Set(loadout.declared.map((tool) => tool.name));
-          const scoped = { ...loadout, callable: loadout.callable.filter((tool) => active.has(tool.name) && permitsDeclaration(tool.name)) };
+          const admits = permitsDeclarationFor();
+          const scoped = { ...loadout, callable: loadout.callable.filter((tool) => active.has(tool.name) && admits(tool.name)) };
           const changes = native.prepareLoadout?.(scoped);
           hiddenDeclarations = new Set(changes?.hiddenDeclarations ?? []);
           if (!changes?.descriptions?.['codemode']) return changes;
@@ -203,7 +207,8 @@ export function installCapabilityCodemode(
           const started = performance.now();
           const parsed = parseCodemodeSource((input as { code: string }).code);
           const active = new Set(pi.getActiveTools());
-          const tools = ctx.tools.filter((tool) => tool.name !== 'codemode' && active.has(tool.name) && permits(ctx, tool.name));
+          const admits = permitsFor(ctx);
+          const tools = ctx.tools.filter((tool) => tool.name !== 'codemode' && active.has(tool.name) && admits(tool.name));
           const declarations = new Map(tools.map((tool) => [tool.name, renderToolSample(declaration(tool,
             pi.getAllTools().find((entry) => entry.name === tool.name)?.promptGuidelines))]));
           const summaries = new Map(tools.map((tool) => [tool.name, summary(tool)]));

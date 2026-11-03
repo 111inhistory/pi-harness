@@ -66,7 +66,7 @@ test('old native Codemode catalogs are removed from request declarations, not fr
 
 test('only mode hides direct exposure, not active codemode or deferred declarations', () => {
   const { pi, definitions } = registrationFixture('only');
-  const declaredTools = installCapabilityCodemode(pi, () => true, () => true);
+  const declaredTools = installCapabilityCodemode(pi, () => () => true, () => () => true);
   const names = ['codemode', 'direct_tool', 'script_tool', 'deferred_tool'];
   const tools: AgentTool[] = names.map((name) => ({
     name, label: name, description: name, parameters: { type: 'object', properties: {} },
@@ -88,7 +88,7 @@ test('a Codemode admission aborted after wake-up passes the free worker to the n
   const oldLimit = process.env['PI_CODEMODE_MAX_WORKERS'];
   process.env['PI_CODEMODE_MAX_WORKERS'] = '1';
   const { pi, definitions } = registrationFixture();
-  installCapabilityCodemode(pi, () => true, () => true);
+  installCapabilityCodemode(pi, () => () => true, () => () => true);
   const definition = definitions.get('codemode')!;
   let gateStarted = false;
   let releaseGate!: () => void;
@@ -169,7 +169,7 @@ test('configured Codemode memory and output defaults apply per call while script
   const { pi, definitions } = registrationFixture();
   const config = { ...DEFAULT_HARNESS_CONFIG,
     codemode: { memoryLimitBytes: 8 * 1024 * 1024, defaultMaxOutputTokens: 2 } };
-  installCapabilityCodemode(pi, () => true, () => true, () => config);
+  installCapabilityCodemode(pi, () => () => true, () => () => true, () => config);
   const ctx = {
     tools: [], sessionManager: { getBranch: () => [] }, modelRegistry: {},
   } as unknown as ExtensionToolContext;
@@ -217,7 +217,7 @@ function bigFixture() {
     } as unknown as ToolDefinition);
   }
   pi.setActiveTools(['codemode', 'big_tool', 'second_tool']);
-  installCapabilityCodemode(pi, () => true, () => true);
+  installCapabilityCodemode(pi, () => () => true, () => () => true);
   const ctx = {
     tools: [bigTool, secondTool], sessionManager: { getBranch: () => [] }, modelRegistry: {},
   } as unknown as ExtensionToolContext;
@@ -280,7 +280,7 @@ test('a running sandbox keeps its tool snapshot and the next call sees newly act
     },
   } as unknown as ExtensionToolContext;
   pi.setActiveTools(['codemode', 'gate']);
-  installCapabilityCodemode(pi, () => true, () => true);
+  installCapabilityCodemode(pi, () => () => true, () => () => true);
   const definition = definitions.get('codemode')!;
   const code = 'await tools.gate({}); return JSON.stringify(ALL_TOOLS.map((tool) => tool.name));';
   const running = definition.execute('snapshot', { code }, undefined, undefined, ctx);
@@ -301,7 +301,7 @@ test('a running sandbox keeps its tool snapshot and the next call sees newly act
 test('codemode reach claims no servers instead of every active tool', () => {
   const { pi, definitions } = registrationFixture();
   pi.setActiveTools(['codemode', 'mcp__fixture_server__inspect', 'read']);
-  installCapabilityCodemode(pi, () => true, () => true);
+  installCapabilityCodemode(pi, () => () => true, () => () => true);
   const reachesTools = definitions.get('codemode')!.reachesTools!;
   for (const code of [
     'return ALL_TOOLS.map((tool) => tool.name);',

@@ -3,7 +3,7 @@
  *
  * These cases run the installed extension handlers (`before_agent_start`,
  * `context_with_system`, `tool_call`) plus the Codemode loadout hook, because
- * the unit tests around `manualToolAllowed` cannot prove the assembly honours
+ * the unit tests around `createToolAdmission` cannot prove the assembly honours
  * the configuration. They cover the three defects a review found:
  *
  * - a manual MCP tool enabled by the command must pass native MCP admission;

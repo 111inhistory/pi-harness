@@ -217,11 +217,9 @@ export class RootService implements ManagedWriteHost {
     // Validate the private root inside initialize(), so failure is latched and
     // tools report it rather than repeatedly rebuilding an insecure service.
     this.#socketRoot = socketRoot;
-    this.#socketDir = socketDir;
   }
 
   readonly #socketRoot: string;
-  readonly #socketDir: string;
   /** The resolved nesting limit of this root's snapshot. */
   get maxDepth(): number { return this.#options.config.subagent.maxDepth; }
   get active(): boolean { return this.#phase === 'open' && this.#failure === null && this.#options.ownsContext(); }

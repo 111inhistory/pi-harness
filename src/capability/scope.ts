@@ -67,6 +67,10 @@ export type CapabilityRootOnlyPolicy = (name: string) => boolean;
 export interface CapabilityScopeView {
   readonly allows: (name: string) => boolean;
   readonly available: ReadonlySet<string>;
+  /** Whether this view's catalog is the chain root (it has no parent). */
+  readonly root: boolean;
+  /** The root-only policy of the chain, resolved with this view. */
+  readonly rootOnly: CapabilityRootOnlyPolicy | null;
 }
 
 interface ScopeState {
@@ -180,7 +184,7 @@ export function createCapabilityScopeView(pi: CapabilityToolCatalog): Capability
       : (name: string): boolean =>
           !denied.has(name) && (rootOnly === null || !rootOnly(name)) && parent.has(name);
 
-  return { allows, available: new Set(targetEffective) };
+  return { allows, available: new Set(targetEffective), root: parent === null, rootOnly };
 }
 
 /**
@@ -197,10 +201,10 @@ export function setCapabilityRootOnlyPolicy(
   stateFor(pi).rootOnly = policy;
 }
 
-/** Whether this catalog is the root of its scope chain (it has no parent). */
-export function capabilityScopeIsRoot(pi: CapabilityToolCatalog): boolean {
-  return resolvedParent(stateFor(pi)) === null;
-}
+/**
+ * Chain-only variant of {@link CapabilityScopeView.rootOnly}, for callers that
+ * must not enumerate a catalog. It resolves the parent links, not the tools.
+ */
 
 /** The root-only policy that governs this catalog's chain, or null. */
 export function capabilityRootOnlyPolicy(pi: CapabilityToolCatalog): CapabilityRootOnlyPolicy | null {

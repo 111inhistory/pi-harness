@@ -18,7 +18,8 @@ import {
   manualEnabledTools,
 } from "../../src/capability/discovery-record.ts";
 import { CAPABILITY_SECTION, capabilityPromptTranscript } from "../../src/capability/prompt.ts";
-import { enableManualTools, manualToolAllowed, type ManualEnableHost } from "../../src/capability/manual.ts";
+import { enableManualTools, type ManualEnableHost } from "../../src/capability/manual.ts";
+import { createToolAdmission } from "../../src/capability/admission.ts";
 import { parseCapabilityCommand, installCapabilityCommand } from "../../src/capability/command.ts";
 import { setCapabilityParent, setCapabilityRootOnlyPolicy } from "../../src/capability/scope.ts";
 import { createEligibleToolCatalog } from "../../src/capability/tool-catalog.ts";
@@ -132,18 +133,21 @@ test("manual usage needs the root session and a user enablement record", () => {
   const root = host(tools, []);
   setCapabilityRootOnlyPolicy(root, manualToolMatcher(["deck_pages"]));
   const branch: unknown[] = [];
-  assert.equal(manualToolAllowed(root, branch, "deck_pages"), false, "active or registered alone is not authority");
-  assert.equal(manualToolAllowed(root, branch, "read"), true, "other tools are unaffected");
+  const before = createToolAdmission(root, branch);
+  assert.equal(before.admitsManual("deck_pages"), false, "active or registered alone is not authority");
+  assert.equal(before.admits("read"), true, "other tools are unaffected");
 
   enableManualTools(root, ["deck_pages"]);
   const record = root.entries[0]?.data;
   const enabledBranch = [{ type: "custom", customType: CAPABILITY_DISCOVERY_RECORD, data: record }];
   assert.deepEqual([...manualEnabledTools(enabledBranch)], ["deck_pages"]);
-  assert.equal(manualToolAllowed(root, enabledBranch, "deck_pages"), true);
+  assert.equal(createToolAdmission(root, enabledBranch).admits("deck_pages"), true);
 
   const child = host(tools, []);
   setCapabilityParent(child, root);
-  assert.equal(manualToolAllowed(child, enabledBranch, "deck_pages"), false, "a subagent never holds a manual tool");
+  const childAdmission = createToolAdmission(child, enabledBranch);
+  assert.equal(childAdmission.admitsManual("deck_pages"), false, "a subagent never holds a manual tool");
+  assert.equal(childAdmission.admits("deck_pages"), false);
 });
 
 test("a failed branch write is reported instead of claiming durable memory", () => {
