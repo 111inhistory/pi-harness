@@ -210,7 +210,12 @@ export class RootService implements ManagedWriteHost {
       runner: this.runner,
       ownsContext: () => this.#mayPersist(),
       canWake: () => this.active,
-      sendToMain: (message, triggerTurn) => options.api.sendMessage(message, { triggerTurn, deliverAs: 'steer' }),
+      sendToMain: async (message, triggerTurn) => {
+        const gate = this.#compaction;
+        if (gate !== null) await gate.promise;
+        this.assertOperational();
+        await options.api.sendMessage(message, { triggerTurn, deliverAs: 'steer' });
+      },
       appendRetained: (agentId, message) => this.#appendNotice(agentId, message),
       onError: (error) => this.#report(error),
     });
@@ -220,6 +225,8 @@ export class RootService implements ManagedWriteHost {
   }
 
   readonly #socketRoot: string;
+  /** Native compaction rewrites the context; deliveries wait for it to finish. */
+  #compaction: { readonly promise: Promise<void>; readonly resolve: () => void } | null = null;
   /** The resolved nesting limit of this root's snapshot. */
   get maxDepth(): number { return this.#options.config.subagent.maxDepth; }
   get active(): boolean { return this.#phase === 'open' && this.#failure === null && this.#options.ownsContext(); }
@@ -387,6 +394,28 @@ export class RootService implements ManagedWriteHost {
   }
 
   /**
+   * Hold deliveries while native compaction rewrites the context.
+   *
+   * A steer handed to the SDK mid-compaction can land inside the rewritten
+   * boundary or interleave with the retried turn. The extension opens this gate
+   * on `session_before_compact` and closes it on `session_compact` or
+   * `session_compact_failed`; every Main delivery waits here.
+   */
+  beginCompaction(): void {
+    if (this.#compaction !== null) return;
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => { resolve = done; });
+    this.#compaction = { promise, resolve };
+  }
+
+  endCompaction(): void {
+    const gate = this.#compaction;
+    if (gate === null) return;
+    this.#compaction = null;
+    gate.resolve();
+  }
+
+  /**
    * Mirror a native session rename into the shared directory.
    *
    * The SDK reports the new name; this session owns its record, so it rewrites
@@ -444,6 +473,9 @@ export class RootService implements ManagedWriteHost {
   retire(): Promise<void> {
     if (this.#retirement !== null) return this.#retirement;
     this.#phase = 'quiescing';
+    // Release deliveries waiting on a compaction that will never finish here;
+    // they fail the active check instead of hanging past retirement.
+    this.endCompaction();
     const jobs = this.runtime.jobs().jobs.filter((job) => ['running', 'stopping', 'finalizing'].includes(job.status));
     for (const job of jobs) if (job.status === 'running') this.runtime.cancelJob(job.jobId);
     this.#retirement = (async () => {
