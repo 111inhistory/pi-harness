@@ -9,7 +9,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand, Theme } from "@earendil-works/pi-coding-agent";
+import { getKeybindings, type Component, type KeybindingsManager } from "@earendil-works/pi-tui";
 
 import {
   appendManualRecord,
@@ -21,6 +22,7 @@ import { CAPABILITY_SECTION, capabilityPromptTranscript } from "../../src/capabi
 import { enableManualTools, type ManualEnableHost } from "../../src/capability/manual.ts";
 import { createToolAdmission } from "../../src/capability/admission.ts";
 import { parseCapabilityCommand, installCapabilityCommand } from "../../src/capability/command.ts";
+import { createCapabilityCatalog } from "../../src/capability/catalog.ts";
 import { setCapabilityParent, setCapabilityRootOnlyPolicy } from "../../src/capability/scope.ts";
 import { createEligibleToolCatalog } from "../../src/capability/tool-catalog.ts";
 import { activateToolNames } from "../../src/capability/activation.ts";
@@ -31,6 +33,7 @@ interface FakeTool {
   readonly name: string;
   readonly description?: string;
   readonly exposure?: string;
+  readonly namespace?: { readonly name: string; readonly aliases?: readonly string[] };
 }
 
 /** A host that behaves like the SDK's registry: unknown and hidden names are ignored. */
@@ -66,17 +69,20 @@ const tools: FakeTool[] = [
   { name: "read", description: "Read a file", exposure: "direct" },
   { name: "deck_pages", description: "List deck pages", exposure: "deferred" },
   { name: "secret", description: "Internal", exposure: "hidden" },
-  { name: "mcp__git__status", description: "Show repository status", exposure: "deferred" },
+  { name: "mcp__git__status", description: "Show repository status", exposure: "deferred", namespace: { name: "mcp__git", aliases: ["git"] } },
+  { name: "mcp__git__log", description: "Show commit log", exposure: "deferred", namespace: { name: "mcp__git", aliases: ["git"] } },
+  { name: "msg_write", description: "Send a message to a child", exposure: "deferred", namespace: { name: "subagent" } },
 ];
 
-test("the command line parser accepts only list, search and enable", () => {
-  assert.deepEqual(parseCapabilityCommand(""), { verb: "list" });
-  assert.deepEqual(parseCapabilityCommand("  list "), { verb: "list" });
-  assert.deepEqual(parseCapabilityCommand("search git status"), { verb: "search", query: "git status" });
+test("the command line parser accepts only list and enable", () => {
+  assert.deepEqual(parseCapabilityCommand(""), { verb: "list", filter: "" });
+  assert.deepEqual(parseCapabilityCommand("  list "), { verb: "list", filter: "" });
+  assert.deepEqual(parseCapabilityCommand("list mcp"), { verb: "list", category: "mcp", filter: "" });
+  assert.deepEqual(parseCapabilityCommand("list tool git status"), { verb: "list", category: "tool", filter: "git status" });
+  assert.deepEqual(parseCapabilityCommand("list git status"), { verb: "list", filter: "git status" });
+  assert.deepEqual(parseCapabilityCommand("enable"), { verb: "enable", names: [] });
   assert.deepEqual(parseCapabilityCommand("enable deck_pages read"), { verb: "enable", names: ["deck_pages", "read"] });
-  assert.throws(() => parseCapabilityCommand("list extra"), /takes no arguments/);
-  assert.throws(() => parseCapabilityCommand("search"), /requires search text/);
-  assert.throws(() => parseCapabilityCommand("enable"), /at least one tool name/);
+  assert.throws(() => parseCapabilityCommand("search git"), /Unknown subcommand/);
   assert.throws(() => parseCapabilityCommand("disable read"), /Unknown subcommand/);
 });
 
@@ -186,7 +192,12 @@ test("appendManualRecord refuses an empty selection", () => {
 
 type Notification = { text: string; type: string };
 
-function install(tools: FakeTool[], active: string[] = [], branch: unknown[] = []) {
+interface InstallOptions {
+  readonly mode?: "tui" | "rpc" | "print";
+  readonly custom?: (factory: unknown) => Promise<unknown>;
+}
+
+function install(tools: FakeTool[], active: string[] = [], branch: unknown[] = [], options: InstallOptions = {}) {
   const notifications: Notification[] = [];
   const entries: { customType: string; data?: unknown }[] = [];
   let registered: RegisteredCommand | undefined;
@@ -203,52 +214,75 @@ function install(tools: FakeTool[], active: string[] = [], branch: unknown[] = [
   } as unknown as ExtensionAPI;
   installCapabilityCommand(pi);
   const ctx = {
-    ui: { notify: (text: string, type: string = "info") => { notifications.push({ text, type }); } },
+    mode: options.mode ?? "tui",
+    ui: {
+      notify: (text: string, type: string = "info") => { notifications.push({ text, type }); },
+      custom: (factory: unknown) => options.custom === undefined
+        ? Promise.reject(new Error("no custom UI in this fixture"))
+        : options.custom(factory),
+    },
     sessionManager: { getBranch: () => branch },
   } as unknown as ExtensionCommandContext;
   assert.ok(registered);
   const command = registered;
   return {
+    pi: pi as unknown as ExtensionAPI,
     notifications,
     entries,
     activeNames: () => [...activeNames],
-    completions: async (prefix: string) => (await command.getArgumentCompletions?.(prefix)) ?? null,    run: async (raw: string) => { await command.handler(raw, ctx); },
+    completions: async (prefix: string) => (await command.getArgumentCompletions?.(prefix)) ?? null,
+    run: async (raw: string) => { await command.handler(raw, ctx); },
   };
 }
 
-test("the command lists manual memory, active tools and the eligible count", async () => {
-  const branch = [
-    {
-      type: "custom",
-      customType: CAPABILITY_DISCOVERY_RECORD,
-      data: {
-        version: 1,
-        result: {
-          status: "ok", tools: [], mcp: [], skills: [], coverage: { local: "not_searched", remote: "not_searched" },
-          manual: [{ ref: "tool://deck_pages", name: "deck_pages", kind: "tool", status: "available" }],
-        },
-      },
-    },
-  ];
-  const fixture = install(tools, ["read"], branch);
+const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as unknown as Theme;
+
+/** Run the picker through the real component and return what the user chose. */
+function drivePicker(keys: readonly string[]): (factory: unknown) => Promise<unknown> {
+  return async (factory: unknown) => {
+    let resolve!: (value: unknown) => void;
+    const result = new Promise<unknown>((done) => { resolve = done; });
+    const component = (factory as (
+      tui: unknown, theme: Theme, keybindings: KeybindingsManager, done: (value: unknown) => void,
+    ) => Component)(undefined, theme, getKeybindings(), resolve);
+    for (const key of keys) component.handleInput?.(key);
+    return result;
+  };
+}
+
+test("list groups the catalog by category and server, in a stable order", async () => {
+  const fixture = install(tools, ["read"]);
+  setCapabilityRootOnlyPolicy(fixture.pi, manualToolMatcher(["deck_pages"]));
   await fixture.run("");
   const text = fixture.notifications[0]?.text ?? "";
-  assert.match(text, /Manual capabilities \(1\):/);
-  assert.match(text, /tool:\/\/deck_pages/);
-  assert.match(text, /Active tools \(1\): read/);
-  assert.match(text, /Registered eligible tools: 3/, "the hidden tool is not offered");
+  assert.match(text, /Capability · 5 tools · all categories/);
+  assert.match(text, /Tools · Tools\n  ○ deck_pages  \[manual\]/);
+  assert.match(text, /✔ read  \[active\]/);
+  assert.match(text, /MCP servers · git\n  ○ log/);
+  assert.match(text, /○ status/);
+  assert.match(text, /Namespaces · subagent\n  ○ msg_write/);
+  assert.doesNotMatch(text, /secret|tool:\/\/|Registered eligible/,
+    "hidden tools and internal diagnostics stay out of the human view");
+  assert.ok(text.indexOf("deck_pages") < text.indexOf("✔ read"), "display names sort inside a group");
+  assert.ok(text.indexOf("○ log") < text.indexOf("○ status"), "MCP members sort by display name");
 });
 
-test("the command searches eligible tools and marks the active ones", async () => {
-  const fixture = install(tools, ["read"]);
-  await fixture.run("search git");
-  const text = fixture.notifications[0]?.text ?? "";
-  assert.match(text, /Matches for "git" \(1\)/);
-  assert.match(text, /mcp__git__status/);
-  assert.doesNotMatch(text, /deck_pages/);
-
-  await fixture.run("search status");
-  assert.match(fixture.notifications[1]?.text ?? "", /Show repository status/);
+test("list filters by category and by free text, with a recoverable empty result", async () => {
+  const fixture = install(tools, []);
+  await fixture.run("list mcp");
+  const mcp = fixture.notifications[0]?.text ?? "";
+  assert.match(mcp, /MCP servers · git/);
+  assert.doesNotMatch(mcp, /Tools ·|Namespaces ·/);
+  await fixture.run("list namespace");
+  assert.match(fixture.notifications[1]?.text ?? "", /Namespaces · subagent/);
+  await fixture.run("list status");
+  const filtered = fixture.notifications[2]?.text ?? "";
+  assert.match(filtered, /1 matches for "status"/);
+  assert.match(filtered, /status/);
+  assert.doesNotMatch(filtered, /msg_write|deck_pages/);
+  await fixture.run("list tool status");
+  assert.match(fixture.notifications[3]?.text ?? "", /No tools match/);
+  assert.match(fixture.notifications[3]?.text ?? "", /Try \/capability list/);
 });
 
 test("the command enables tools and reports every refused name", async () => {
@@ -271,12 +305,94 @@ test("the command reports an invalid subcommand without touching tools", async (
   assert.deepEqual(fixture.activeNames(), []);
 });
 
-test("completions offer subcommands, then registered names after enable", async () => {
+test("completions cover verbs, list categories and enable names, including trailing spaces", async () => {
   const fixture = install(tools, []);
-  assert.deepEqual((await fixture.completions("en") ?? []).map((item) => item.value), ["enable"]);
-  assert.equal(await fixture.completions("search gi"), null);
-  const values = (await fixture.completions("enable de") ?? []).map((item) => item.value);
-  assert.deepEqual(values, ["enable deck_pages"]);
+  assert.deepEqual((await fixture.completions(""))?.map((item) => item.value), ["list", "enable"]);
+  assert.deepEqual((await fixture.completions("li"))?.map((item) => item.value), ["list"]);
+  assert.equal(await fixture.completions("se"), null, "search is gone");
+  assert.deepEqual((await fixture.completions("list "))?.map((item) => item.value),
+    ["list tool", "list mcp", "list namespace"]);
+  assert.deepEqual((await fixture.completions("list to"))?.map((item) => item.value), ["list tool"]);
+  assert.equal(await fixture.completions("list tool "), null, "the rest of a category line is a free filter");
+  assert.equal(await fixture.completions("list tool gi"), null);
+  assert.deepEqual((await fixture.completions("enable "))?.map((item) => item.label),
+    ["deck_pages", "read", "mcp__git__log", "mcp__git__status", "msg_write"]);
+  assert.deepEqual((await fixture.completions("enable de"))?.map((item) => item.value), ["enable deck_pages"]);
+  assert.deepEqual((await fixture.completions("enable deck_pages "))?.map((item) => item.label),
+    ["read", "mcp__git__log", "mcp__git__status", "msg_write"]);
+  assert.deepEqual((await fixture.completions("enable deck_pages re"))?.map((item) => item.value),
+    ["enable deck_pages read"]);
+});
+
+test("enable without a name opens the native picker and enables the chosen tool", async () => {
+  const fixture = install(tools, [], [], {
+    mode: "tui",
+    custom: drivePicker([...Array.from("stat"), "\r"]),
+  });
+  await fixture.run("enable");
+  assert.match(fixture.notifications.at(-1)?.text ?? "", /Enabled: mcp__git__status/);
+  assert.deepEqual(fixture.activeNames(), ["mcp__git__status"]);
+  assert.equal(fixture.entries.length, 1, "the explicit selection is recorded once");
+});
+
+test("the picker is a native filterable list: typing narrows it, Enter selects", async () => {
+  let rendered = "";
+  const fixture = install(tools, [], [], {
+    mode: "tui",
+    custom: async (factory: unknown) => {
+      let resolve!: (value: unknown) => void;
+      const result = new Promise<unknown>((done) => { resolve = done; });
+      const component = (factory as (
+        tui: unknown, theme: Theme, keybindings: KeybindingsManager, done: (value: unknown) => void,
+      ) => Component)(undefined, theme, getKeybindings(), resolve);
+      const initial = component.render(100).join("\n");
+      assert.match(initial, /Enable a capability/);
+      assert.match(initial, /○ status/);
+      assert.match(initial, /git · Show repository status/);
+      assert.match(initial, /\[manual\]|○ deck_pages/, "manual tools are browsable in the picker");
+      for (const key of "log") component.handleInput?.(key);
+      rendered = component.render(100).join("\n");
+      component.handleInput?.("\r");
+      return result;
+    },
+  });
+  await fixture.run("enable");
+  assert.match(rendered, /log/);
+  assert.doesNotMatch(rendered, /status/);
+  assert.match(fixture.notifications.at(-1)?.text ?? "", /Enabled: mcp__git__log/);
+});
+
+test("Esc closes the picker without activating or recording anything", async () => {
+  const fixture = install(tools, [], [], { mode: "tui", custom: drivePicker(["\x1b"]) });
+  await fixture.run("enable");
+  assert.deepEqual(fixture.activeNames(), []);
+  assert.equal(fixture.entries.length, 0);
+  assert.match(fixture.notifications.at(-1)?.text ?? "", /Cancelled/);
+});
+
+test("enable without a name reports the terminal UI requirement instead of guessing", async () => {
+  const fixture = install(tools, [], [], { mode: "print" });
+  await fixture.run("enable");
+  assert.deepEqual(fixture.activeNames(), []);
+  assert.equal(fixture.entries.length, 0);
+  assert.match(fixture.notifications[0]?.text ?? "", /needs the terminal UI/);
+});
+
+test("a child scope's catalog never offers manual tools to list or the picker", () => {
+  const rootHost = host(tools, []);
+  setCapabilityRootOnlyPolicy(rootHost, manualToolMatcher(["deck_pages"]));
+  const child = {
+    getAllTools: () => tools,
+    getActiveTools: () => [],
+  };
+  setCapabilityParent(child, rootHost);
+  const view = createCapabilityCatalog(child as unknown as ExtensionAPI);
+  assert.deepEqual(view.entries.some((entry) => entry.name === "deck_pages"), false,
+    "the child list and picker exclude manual tools even though the root lists them");
+  assert.deepEqual(view.entries.map((entry) => entry.name).sort(),
+    ["mcp__git__log", "mcp__git__status", "msg_write", "read"]);
+  assert.deepEqual(createCapabilityCatalog(rootHost as unknown as ExtensionAPI).entries
+    .some((entry) => entry.name === "deck_pages"), true, "Main keeps the manual tool browsable");
 });
 
 test("a manual tool is invisible to discovery and cannot be activated by it", () => {

@@ -1,23 +1,31 @@
 /**
- * `/capability` command: the user-facing entry for capability memory.
+ * `/capability` command: the human entry for the capability catalog.
  *
- * The command lists what this branch remembers and can enable a registered tool
- * by name. Enablement is append-only, matching the discovery rule: there is no
- * disable, remove or reset subcommand. It never runs retrieval, never writes to
- * a subagent and never asks the model for anything.
+ * Two subcommands only:
+ * - `list [tool|mcp|namespace] [filter]` prints the current eligible catalog,
+ *   grouped by category and, where it applies, by MCP server or namespace.
+ *   The filter is plain text over the registered catalog; no model and no
+ *   retrieval run.
+ * - `enable` opens a native filterable picker; `enable <name...>` keeps the
+ *   name shortcut. Both go through the same activation and `manual` record path.
  *
- * Output is plain text through `ctx.ui.notify`, like `/subagent`.
+ * Enablement is append-only: there is no disable, remove or reset subcommand.
+ * The picker lists manual tools so the user can browse them, but browsing grants
+ * nothing; only the explicit selection enables and records.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI, ExtensionCommandContext, Theme } from '@earendil-works/pi-coding-agent';
+import type { KeybindingsManager, SelectItem } from '@earendil-works/pi-tui';
 
-import { createEligibleToolCatalog } from './tool-catalog.ts';
-import { discoveryRecords, manualEnabledTools, type CapabilityHit } from './discovery-record.ts';
+import {
+  CATEGORY_LABEL, CATEGORY_ORDER, createCapabilityCatalog, type CapabilityCategory, type CapabilityCatalogView,
+} from './catalog.ts';
+import { manualEnabledTools } from './discovery-record.ts';
 import { enableManualTools } from './manual.ts';
+import { createCapabilitySelector } from './selector.ts';
 
 export type CapabilityCommand =
-  | { readonly verb: 'list' }
-  | { readonly verb: 'search'; readonly query: string }
+  | { readonly verb: 'list'; readonly category?: CapabilityCategory; readonly filter: string }
   | { readonly verb: 'enable'; readonly names: readonly string[] };
 
 /** A refused command line; the handler reports it without touching any state. */
@@ -30,26 +38,36 @@ export class CapabilityCommandError extends Error {
   }
 }
 
-const VERBS = ['list', 'search', 'enable'] as const;
-const SEARCH_LIMIT = 20;
+const VERBS = ['list', 'enable'] as const;
 const DESCRIPTION_CHARS = 72;
+const COMPLETION_LIMIT = 20;
 
-/** Parse the raw argument string without touching tools or the branch. */
+function isCategory(value: string): value is CapabilityCategory {
+  return (CATEGORY_ORDER as readonly string[]).includes(value);
+}
+
+/**
+ * Parse the raw argument string without touching tools or the branch.
+ *
+ * `list` reads `[category] [filter]`: the first word is a category only when it
+ * is exactly one of the three names, so the filter never competes with it.
+ */
 export function parseCapabilityCommand(raw: string): CapabilityCommand {
-  const tokens = raw.trim().split(/\s+/).filter((token) => token !== '');
-  const [verb, ...rest] = tokens;
-  if (verb === undefined || verb === 'list') {
-    if (rest.length > 0) throw new CapabilityCommandError('list takes no arguments.');
-    return { verb: 'list' };
-  }
-  if (verb === 'search') {
-    const query = rest.join(' ');
-    if (query === '') throw new CapabilityCommandError('search requires search text.');
-    return { verb: 'search', query };
+  const trimmed = raw.trim();
+  if (trimmed === '') return { verb: 'list', filter: '' };
+  const space = trimmed.search(/\s/);
+  const verb = space < 0 ? trimmed : trimmed.slice(0, space);
+  const rest = space < 0 ? '' : trimmed.slice(space + 1).trim();
+  if (verb === 'list') {
+    const tokens = rest === '' ? [] : rest.split(/\s+/);
+    const head = tokens[0]?.toLowerCase();
+    if (head !== undefined && isCategory(head)) {
+      return { verb: 'list', category: head, filter: tokens.slice(1).join(' ') };
+    }
+    return { verb: 'list', filter: rest };
   }
   if (verb === 'enable') {
-    if (rest.length === 0) throw new CapabilityCommandError('enable requires at least one tool name.');
-    return { verb: 'enable', names: rest };
+    return { verb: 'enable', names: rest === '' ? [] : rest.split(/\s+/) };
   }
   throw new CapabilityCommandError(`Unknown subcommand: ${verb}. Expected one of: ${VERBS.join(', ')}.`);
 }
@@ -59,43 +77,29 @@ function truncate(text: string): string {
   return flat.length <= DESCRIPTION_CHARS ? flat : `${flat.slice(0, DESCRIPTION_CHARS - 1)}…`;
 }
 
-/** Manual entries already stored on this branch, in branch order. */
-function manualEntries(branch: readonly unknown[] | null | undefined): CapabilityHit[] {
-  return discoveryRecords(branch).flatMap((record) => record.result.manual ?? []);
-}
-
-function renderList(ctx: ExtensionCommandContext, pi: ExtensionAPI): string {
-  const manual = manualEntries(ctx.sessionManager.getBranch());
-  const active = pi.getActiveTools();
-  const eligible = createEligibleToolCatalog(pi, { includeManual: true }).tools.length;
-  const lines = [`Manual capabilities (${manual.length}):`];
-  lines.push(...(manual.length === 0
-    ? ['  none']
-    : manual.map((hit) => `  ${hit.ref ?? hit.name ?? 'unknown'}${hit.name && hit.ref !== hit.name ? `  ${hit.name}` : ''}`)));
-  lines.push(`Active tools (${active.length}): ${active.length === 0 ? 'none' : active.join(', ')}`);
-  lines.push(`Registered eligible tools: ${eligible}`);
-  lines.push('Use /capability search <text> to find a name, then /capability enable <name...>.');
-  return lines.join('\n');
-}
-
-function renderSearch(query: string, pi: ExtensionAPI): string {
-  const needle = query.toLowerCase();
-  const active = new Set(pi.getActiveTools());
-  const matches = createEligibleToolCatalog(pi, { includeManual: true }).tools.filter((tool) => {
-    const description = typeof tool.description === 'string' ? tool.description : '';
-    return tool.name.toLowerCase().includes(needle) || description.toLowerCase().includes(needle);
-  });
-  const shown = matches.slice(0, SEARCH_LIMIT);
-  const lines = [`Matches for "${query}" (${matches.length}):`];
-  lines.push(...(shown.length === 0
-    ? ['  none']
-    : shown.map((tool) => {
-        const description = typeof tool.description === 'string' ? tool.description : '';
-        const marker = active.has(tool.name) ? 'active  ' : '        ';
-        return `  ${marker}${tool.name}${description === '' ? '' : `  ${truncate(description)}`}`;
-      })));
-  if (matches.length > shown.length) lines.push(`  … ${matches.length - shown.length} more; narrow the search text.`);
-  return lines.join('\n');
+function renderList(view: CapabilityCatalogView, command: Extract<CapabilityCommand, { verb: 'list' }>): string {
+  const scope = command.category === undefined ? 'all categories' : CATEGORY_LABEL[command.category];
+  const header = command.filter === ''
+    ? `Capability · ${view.entries.length} tools · ${scope}`
+    : `Capability · ${view.entries.length} matches for "${command.filter}" · ${scope}`;
+  if (view.entries.length === 0) {
+    return `${header}\n\nNo tools match. Try /capability list for the full catalog, or another word.`;
+  }
+  const lines = [header, ''];
+  for (const section of view.sections) {
+    for (const group of section.groups) {
+      lines.push(`${CATEGORY_LABEL[section.category]} · ${group.group}`);
+      for (const entry of group.entries) {
+        const tags = [entry.active ? 'active' : undefined, entry.manual ? 'manual' : undefined]
+          .filter((tag): tag is string => tag !== undefined);
+        lines.push(`  ${entry.active ? '✔' : '○'} ${entry.display}${tags.length === 0 ? '' : `  [${tags.join(', ')}]`}`);
+        if (entry.description !== '') lines.push(`      ${truncate(entry.description)}`);
+      }
+      lines.push('');
+    }
+  }
+  lines.push('Enable with /capability enable (opens a picker) or /capability enable <name>.');
+  return lines.join('\n').trimEnd();
 }
 
 function renderEnable(result: ReturnType<typeof enableManualTools>): string {
@@ -118,6 +122,37 @@ function renderEnable(result: ReturnType<typeof enableManualTools>): string {
   return lines.join('\n');
 }
 
+function selectorItems(view: CapabilityCatalogView): SelectItem[] {
+  return view.entries.map((entry) => ({
+    value: entry.name,
+    label: `${entry.active ? '✔' : '○'} ${entry.display}${entry.manual ? '  [manual]' : ''}`,
+    description: `${entry.group} · ${entry.description === '' ? 'no description' : truncate(entry.description)}`,
+  }));
+}
+
+/** Open the native picker and enable exactly the selected tool. */
+async function pickAndEnable(ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
+  const view = createCapabilityCatalog(pi);
+  if (view.entries.length === 0) {
+    ctx.ui.notify('No eligible tools are registered. Nothing to enable.', 'info');
+    return;
+  }
+  // `custom` is a terminal UI: RPC and print modes report instead of guessing.
+  if (ctx.mode !== 'tui') {
+    ctx.ui.notify('The enable picker needs the terminal UI. Use /capability enable <name>.', 'info');
+    return;
+  }
+  const chosen = await ctx.ui.custom<string | undefined>((_tui, theme: Theme, keybindings: KeybindingsManager, done) =>
+    createCapabilitySelector(selectorItems(view), theme, keybindings, done));
+  if (chosen === undefined) {
+    ctx.ui.notify('Cancelled. Nothing was enabled.', 'info');
+    return;
+  }
+  ctx.ui.notify(renderEnable(enableManualTools(pi, [chosen], {
+    recorded: manualEnabledTools(ctx.sessionManager.getBranch()),
+  })), 'info');
+}
+
 async function run(
   raw: string,
   ctx: ExtensionCommandContext,
@@ -129,11 +164,14 @@ async function run(
   // before the first turn of a session.
   prepare?.(ctx);
   if (command.verb === 'list') {
-    ctx.ui.notify(renderList(ctx, pi), 'info');
+    ctx.ui.notify(renderList(createCapabilityCatalog(pi, {
+      ...(command.category === undefined ? {} : { category: command.category }),
+      filter: command.filter,
+    }), command), 'info');
     return;
   }
-  if (command.verb === 'search') {
-    ctx.ui.notify(renderSearch(command.query, pi), 'info');
+  if (command.names.length === 0) {
+    await pickAndEnable(ctx, pi);
     return;
   }
   ctx.ui.notify(renderEnable(enableManualTools(pi, command.names, {
@@ -141,25 +179,60 @@ async function run(
   })), 'info');
 }
 
+/** Full-text argument completions: verbs, list categories, enable tool names. */
 function completions(prefix: string, pi: ExtensionAPI): { value: string; label: string; description?: string }[] | null {
-  const trimmed = prefix.trimStart();
-  const tokens = trimmed.split(/\s+/).filter((token) => token !== '');
-  if (tokens.length <= 1) {
-    const items = [
-      { value: 'list', label: 'list', description: 'Show manual capabilities and active tools' },
-      { value: 'search', label: 'search', description: 'Find a registered tool by name or description' },
-      { value: 'enable', label: 'enable', description: 'Enable one or more registered tools' },
-    ].filter((item) => item.value.startsWith(trimmed));
+  const text = prefix.trimStart();
+  const trailingSpace = /\s$/.test(text);
+  const tokens = text.split(/\s+/).filter((token) => token !== '');
+  if (tokens.length === 0) {
+    return VERBS.map((verb) => ({
+      value: verb,
+      label: verb,
+      description: verb === 'list' ? 'Browse the catalog (optional category and filter)' : 'Pick tools to enable',
+    }));
+  }
+  const [verb, ...rest] = tokens;
+  if (rest.length === 0 && !trailingSpace) {
+    const items = VERBS.filter((candidate) => candidate.startsWith(tokens[0]!))
+      .map((candidate) => ({
+        value: candidate,
+        label: candidate,
+        description: candidate === 'list' ? 'Browse the catalog (optional category and filter)' : 'Pick tools to enable',
+      }));
     return items.length === 0 ? null : items;
   }
-  if (tokens[0] !== 'enable') return null;
-  const last = tokens[tokens.length - 1]!;
-  const head = trimmed.slice(0, trimmed.length - last.length);
-  const items = createEligibleToolCatalog(pi, { includeManual: true }).tools
-    .filter((tool) => tool.name.startsWith(last))
-    .slice(0, SEARCH_LIMIT)
-    .map((tool) => ({ value: `${head}${tool.name}`, label: tool.name }));
-  return items.length === 0 ? null : items;
+  if (verb === 'list') {
+    // After the verb a category is the only positional completion; once a
+    // category or free text is present, the rest is the filter.
+    if (rest.length === 0) {
+      return CATEGORY_ORDER.map((category) => ({
+        value: `list ${category}`, label: category, description: `${CATEGORY_LABEL[category]} only`,
+      }));
+    }
+    if (rest.length === 1 && !trailingSpace) {
+      const items = CATEGORY_ORDER.filter((category) => category.startsWith(rest[0]!.toLowerCase()))
+        .map((category) => ({
+          value: `list ${category}`, label: category, description: `${CATEGORY_LABEL[category]} only`,
+        }));
+      return items.length === 0 ? null : items;
+    }
+    return null;
+  }
+  if (verb === 'enable') {
+    const fragment = trailingSpace ? '' : rest.at(-1) ?? '';
+    const chosen = new Set(trailingSpace ? rest : rest.slice(0, -1));
+    const head = text.slice(0, text.length - fragment.length);
+    const items = createCapabilityCatalog(pi).entries
+      .filter((entry) => !chosen.has(entry.name) && entry.name.toLowerCase().startsWith(fragment.toLowerCase()))
+      .slice(0, COMPLETION_LIMIT)
+      .map((entry) => ({
+        value: `${head}${entry.name}`,
+        label: entry.name,
+        description: `${entry.group} · ${truncate(entry.description)}`,
+      }));
+    return items.length === 0 ? null : items;
+  }
+  return null;
 }
 
 /** Register the command on one Pi extension API. */
@@ -168,7 +241,7 @@ export function installCapabilityCommand(
   options: { readonly prepare?: (ctx: ExtensionCommandContext) => void } = {},
 ): void {
   pi.registerCommand('capability', {
-    description: 'List capability memory and enable registered tools (append-only)',
+    description: 'Browse the capability catalog and enable tools (append-only)',
     getArgumentCompletions: (prefix) => completions(prefix, pi),
     handler: async (raw, ctx) => {
       try {

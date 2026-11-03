@@ -270,6 +270,26 @@ test('full SDK: manual tools stay unreachable until /capability enable, then wor
     assert.equal(afterScript.isError, false, textOf(afterScript));
     assert.match(textOf(afterScript), /MANUAL_ACCESS_OK/);
 
+    // The real SDK catalog through the user-facing list, grouped by category.
+    const listNotices: { text: string; type: string }[] = [];
+    const listContext = session.extensionRunner.createCommandContext();
+    Object.defineProperty(listContext, 'ui', {
+      value: { notify: (text: string, type: string = 'info') => { listNotices.push({ text, type }); } },
+    });
+    await command.handler('list mcp', listContext);
+    const mcpList = listNotices.at(-1)?.text ?? '';
+    assert.match(mcpList, /MCP servers · manual_fixture/);
+    assert.match(mcpList, /✔ deploy/);
+    assert.doesNotMatch(mcpList, /Tools ·|Namespaces ·/);
+    await command.handler('list tool', listContext);
+    const toolList = listNotices.at(-1)?.text ?? '';
+    assert.match(toolList, /manual_fixture  \[active, manual\]/);
+    assert.doesNotMatch(toolList, /MCP servers ·/);
+    await command.handler('list deploy', listContext);
+    assert.match(listNotices.at(-1)?.text ?? '', /1 matches for "deploy"/);
+    await command.handler('list namespace', listContext);
+    assert.match(listNotices.at(-1)?.text ?? '', /Namespaces · subagent/);
+
     // Phase 3: the same branch memory, the same registered tools, a real child scope.
     const rootBranch = session.sessionManager.getEntries();
     assert.ok(rootBranch.some((entry) => entry.type === 'custom' && entry.customType === 'capability-discovery'),
