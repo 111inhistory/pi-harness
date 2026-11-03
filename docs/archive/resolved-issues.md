@@ -18,6 +18,12 @@ Windows 11 虚拟机已验证中文命令、检查阶段不执行命令，以及
 
 用户已移除 `pi-better-compaction`，用户包配置中也已移除该插件，以避免破坏 Responses 的 `additional_tools`。历史问题见[压缩调查](../reviews/native-compaction-review.md)。Inherited 的 Responses 工具继承适配仍未完成，后续适配不以恢复该插件为前提。
 
+## 原生压缩期间的消息投递
+
+已修复。根会话执行原生压缩时，子 Agent 消息、跨 session 消息与终态通知原先会立即以 `deliverAs: "steer"` 交给 SDK，可能落在压缩重写的上下文边界内，或与重试轮次交错。
+
+`RootService` 现在维护一个压缩门：`session_before_compact` 打开，`session_compact` 与 `session_compact_failed` 关闭；`sendToMain` 在投递前等待该门。退役时释放该门，等待中的投递以 `delivery_failed`（根不再接受操作）失败，不挂起、不重放。回归见 [delivery-compaction.test.ts](../../test/typed/delivery-compaction.test.ts)。
+
 ## 本机 Socket 信任与资源保护
 
 本项目信任同用户本机进程，不把同用户恶意程序作为隔离对象，不新增 Socket 认证协议。这是既定信任范围，不是待实现的认证功能。

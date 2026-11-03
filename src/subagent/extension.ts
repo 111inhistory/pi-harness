@@ -74,6 +74,9 @@ export default function subagentExtension(api: ExtensionAPI): void {
     await activate(ctx);
   });
   api.on('session_tree', async (_event, ctx) => { epoch += 1; await activate(ctx); });
+  api.on('session_before_compact', () => { lifecycle.service?.beginCompaction(); });
+  api.on('session_compact', () => { lifecycle.service?.endCompaction(); });
+  api.on('session_compact_failed', () => { lifecycle.service?.endCompaction(); });
   api.on('session_info_changed', async (event, ctx) => {
     // The native rename event is the lifecycle source; the directory mirrors it
     // so another session and /subagent sessions see the new name immediately.
