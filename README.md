@@ -15,7 +15,9 @@ Pi Harness 是基于 Pi SDK 构建的 Coding Agent 增强插件，提供能力�
 
 ### 1. 环境准备
 
-Pi Harness 要求 Node.js `>= 22.19.0`。执行以下命令安装依赖：
+Pi Harness 要求 Node.js `>= 22.19.0`。当前适配 Pi `1.5.0`：`@earendil-works/pi-coding-agent`、`pi-ai`、`pi-agent-core` 与 `pi-codemode` 均使用 `1.5.0`。升级 Pi SDK 前先复核 `src/subagent/model-runtime.ts` 的私有 `ModelRegistry.runtime` 桥接审计，并运行 `npm run check`。
+
+执行以下命令安装依赖：
 
 ```bash
 npm ci

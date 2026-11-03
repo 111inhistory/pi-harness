@@ -110,7 +110,7 @@ compaction itself.
 
 ## Unresolved SDK allowlist discrepancy
 
-Under SDK `1.4.0`, a strict tool allowlist can retain MCP registration while
+Under SDK `1.5.0`, a strict tool allowlist can retain MCP registration while
 rejecting activation of members that do not match it. The absence of hidden
 `tool_search` alone does not predict failure: an allowlist that matches the MCP
 member names can still permit activation.

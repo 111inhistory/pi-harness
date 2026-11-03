@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 
 import { promptText } from "../../src/prompt-text.ts";
 import {

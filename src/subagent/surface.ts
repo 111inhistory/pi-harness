@@ -28,8 +28,8 @@ import type {
   ToolDefinition,
   ToolNamespace,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "@earendil-works/pi-ai";
-import type { Static } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
+import type { Static } from "typebox";
 
 import { captureInheritedContext, type InheritedSnapshot } from "../inherited-context.ts";
 import { fillPrompt, promptString } from "../prompt-text.ts";

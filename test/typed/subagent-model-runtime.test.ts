@@ -46,12 +46,12 @@ interface PackageManifest {
   readonly version: string;
 }
 
-test("the private-SDK bridge is pinned to the installed 1.4.0 package", async () => {
+test("the private-SDK bridge is pinned to the installed 1.5.0 package", async () => {
   const entry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
   const manifestPath = path.resolve(path.dirname(entry), "../package.json");
   const manifest: PackageManifest = JSON.parse(await readFile(manifestPath, "utf8"));
 
-  assert.equal(MODEL_RUNTIME_AUDITED_VERSION, "1.4.0");
+  assert.equal(MODEL_RUNTIME_AUDITED_VERSION, "1.5.0");
   assert.equal(manifest.version, MODEL_RUNTIME_AUDITED_VERSION);
 });
 

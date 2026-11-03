@@ -6,7 +6,7 @@
 
 ### 严格工具 allowlist 下的激活记忆不一致
 
-Pi SDK `1.4.0` 可能保留 MCP 注册，却拒绝激活不匹配 allowlist 的成员。例如 allowlist 只列出 `read`、`write`、`capability`，既不匹配目标 `mcp__*` 工具，也不保留隐藏的 `tool_search`。SDK 没有公开的激活资格预检接口，激活调用可以静默省略成员。
+Pi SDK `1.5.0` 可能保留 MCP 注册，却拒绝激活不匹配 allowlist 的成员。例如 allowlist 只列出 `read`、`write`、`capability`，既不匹配目标 `mcp__*` 工具，也不保留隐藏的 `tool_search`。SDK 没有公开的激活资格预检接口，激活调用可以静默省略成员。
 
 Capability 按实际激活集筛选公开结果，返回失败或部分成功。但先写入的 `capability-discovery` 规范记录仍可能包含未激活成员。激活调用抛出异常时也可能出现这类差异。该记录不授予执行权限，却可能让请求记忆提示一个未启用工具。
 
