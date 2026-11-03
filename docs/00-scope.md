@@ -23,6 +23,7 @@ Pi Harness 是基于 Pi SDK 构建的 Coding Agent Harness 扩展。项目核心
 - 宿主统一处理传输分帧与发送者身份绑定；调用方提供纯文本正文与目标地址。
 - Unix 平台使用基于 UID 隔离且校验 inode 的 Unix Socket；Windows 平台使用命名管道。
 - 同一用户、同一 Socket 根下的多个 Pi session 可通过已发布目录互相发现，并按对方 `Main` 的受管 Socket 路径由 Main 互相发消息；不提供跨主机调度或自动广播。该能力当前只在 POSIX 平台实现，Windows 明确不支持。
+- session 生命周期编排（创建、恢复、停止、轮询、定时检查）由独立外部项目承担；本仓库只提供发现、寻址、消息与命名接口，不注册 `session_*` 工具。
 
 ### 4. Shell Preflight（附加功能）
 

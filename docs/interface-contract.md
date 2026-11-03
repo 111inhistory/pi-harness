@@ -247,6 +247,20 @@ Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）�
 - **边界**：跨 session 只做 Main 之间的消息，不能广播；终态通知与 parent-hold 仍只属于本 session，子 Agent 不参与跨 session 交互。未知或已退出的 session 以 `unknown_session` 拒绝。超时、断连或错误不证明消息未入队，宿主不重发。
 - **信任**：session 记录与 `from` 都是同用户本机进程的声明，不构成认证协议；与外部 Socket 客户端属于同一信任模型。
 
+### 外部编排接口
+
+session 生命周期（创建、恢复、停止、轮询、定时检查）与 `/session`、`/cron` 命令由独立的编排项目承担。本仓库不注册 `session_*` 工具，也不提供进程托管或管理协议；这里只保证外部编排所需的稳定接口。
+
+- **发现**：`<socketRoot>/sessions/<uid>.json`（版本化记录）。字段为 `version`、`sessionId`、`uid`、`socketDir`、`pid`、`cwd`、`name`、`startedAt`。记录由 session 自己发布、按归属删除；读取方按 `pid` 存活与记录自洽过滤，畸形或残留记录被忽略且不由他人删除。`uid` 用于寻址与判同，`sessionId` 是原生身份，`name` 是原生显示名。
+- **寻址**：`<socketRoot>/<uid>/Main.sock`（POSIX）。没有 `session:` 方案；其他 Actor 端点不是跨 session 目标。
+- **消息**：向目标 Main 端点写单帧 NDJSON `{"from":"<sender-uid>:Main","content":"..."}`；接收端在 IPC 边界校验发送者 uid 是当前存活的已发布 session，并映射为 Runtime 的外部发送者描述。只有 Main 参与跨 session；自发、广播与非 Main 端点拒绝；不确定交接不重发。
+- **编排者身份**：外部编排者必须作为已发布的 Pi session 参与（通过 SDK 或 CLI 运行），复用上述发布、寻址与收发。本仓库不为非 session 的外部进程新增客户端身份、第二套接收端点或管理通道。
+- **名称**：原生 session name；`/name` 通过 `session_info_changed` 同步到目录，其他 session 与人类界面读取同一份名称。
+- **平台与信任**：仅 POSIX；同一用户本机；记录与 `from` 都是声明，不是认证。
+- **非目标**：进程创建/停止/托管、stop/poll 的宿主请求协议、cron、管理范围、`/session`/`/cron`、transcript 读取与 `session_*` 工具。
+
+`session_list` 与 `/subagent sessions` 只是只读发现视图，不是管理入口。
+
 ### 思考强度
 
 候选模型直接配置单一 `thinking` 级别，例如 `"thinking": "high"`。系统去除了区间与裁剪逻辑，不再通过区间计算最终强度。Inherited 模式仍继承父会话的思考强度。
