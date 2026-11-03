@@ -1,6 +1,6 @@
 {
   "namespace": "Orchestrate independent background subagents for concurrent execution.",
-  "instructions": "Use subagent_list to inspect status and historyDir paths. Use msg_write to agent addresses, or your children.sock to broadcast to direct active agents without opening custom socket connections. Messaging a stopped agent revives it for a new round. A message from another session names that session and carries a reply address.",
+  "instructions": "Use subagent_list to inspect status and historyDir paths. Use msg_write to agent addresses, or your children.sock to broadcast to direct active agents without opening custom socket connections. Messaging a stopped agent revives it for a new round. A message from another session carries its full session identity in `from` and one managed reply address.",
   "create": {
     "description": "Create background subagents for concurrent execution, non-blocking. Returns agent IDs and socket addresses.",
     "snippet": "Delegate parallel workloads to direct subagents",
@@ -34,26 +34,19 @@
     }
   },
   "msg_write": {
-    "description": "Send a plain-text message to a managed Agent IPC endpoint: Unix Socket or Windows Named Pipe. The host binds the sender and transport framing. Omit from/to, JSON or NDJSON envelopes, and trailing newlines. A cross-session address session:<session-uid>/<actor-id> reaches an actor of another live Pi session; that session sees your Actor ID and a reply address.",
+    "description": "Send a plain-text message to a managed Agent IPC endpoint: Unix Socket or Windows Named Pipe. The host binds the sender and transport framing. Omit from/to, JSON or NDJSON envelopes, and trailing newlines. A path that is another live session's Main endpoint reaches that session's Main; that session sees your session identity and a reply address.",
     "snippet": "Send plain-text messages to agents through their Socket paths",
     "guidelines": [
       "Provide the message body as plain text content; do not add from/to, JSON/NDJSON framing, a trailing newline, or a custom Socket client."
     ],
     "parameters": {
-      "path": "Returned Unix Socket or Windows Named Pipe address, or a cross-session address session:<session-uid>/<actor-id>.",
+      "path": "Returned Unix Socket or Windows Named Pipe address, including another live session's Main endpoint from session_list.",
       "content": "Plain-text message body. The host frames the transport and binds the sender."
     }
   },
   "session_list": {
-    "description": "List the live Pi sessions reachable on this machine (same user, same socket root), including this one. Each item carries a session address you can pass to msg_write for Main-to-Main coordination, and the intent the session published. Use it before delegating cross-session work or when you need to know which sessions are running. `available: false` means this platform does not support cross-session coordination; the list is then empty.",
+    "description": "List the live Pi sessions reachable on this machine (same user, same socket root), including this one. Each item carries the session's name, its working directory, and the managed Unix Socket address of its Main, which you can pass to msg_write for Main-to-Main coordination. Use it before delegating cross-session work or when you need to know which sessions are running. `available: false` means this platform does not support cross-session coordination; the list is then empty.",
     "snippet": "Discover other running Pi sessions for cross-session coordination",
     "parameters": {}
-  },
-  "session_intent": {
-    "description": "Publish a one-line statement of what this session is working on, so other sessions can see it in session_list. Send an empty string to clear it. This is coordination metadata only: it grants nothing and changes no task.",
-    "snippet": "Publish what this session is working on for cross-session discovery",
-    "parameters": {
-      "intent": "One-line description of this session's current work; empty string clears it."
-    }
   }
 }

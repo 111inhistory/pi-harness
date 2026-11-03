@@ -30,8 +30,6 @@ export interface DeliveryEntry {
   content: string;
   /** Sender Job id, when the runtime supplies one. */
   jobId?: string;
-  /** Sending session, when the message came from another live session. */
-  session?: string;
   terminal?: DeliveryTerminal;
 }
 
@@ -39,10 +37,9 @@ export interface DeliveryDetails {
   sourceId: string;
   round: string | number;
   source: "agent" | "host";
-  status: string;
+  /** Present for terminal notices only; a peer message has no execution state. */
+  status?: string;
   jobId?: string;
-  /** Sending session, when the message came from another live session. */
-  session?: string;
   terminal?: DeliveryTerminal;
 }
 
@@ -68,7 +65,7 @@ export interface PeerDeliveryInput {
   content: string;
   round?: string | number | undefined;
   jobId?: string | null | undefined;
-  external?: { readonly sessionId: string; readonly replyTo: string } | undefined;
+  external?: { readonly sessionId: string; readonly sender: string; readonly replyTo: string } | undefined;
 }
 
 function formatDetails(details: unknown): string {
@@ -95,10 +92,8 @@ export function deliveryMessage(entry: DeliveryEntry): DeliveryCustomMessage {
     role: "custom", customType: DELIVERY_CUSTOM_TYPE, content, display: true,
     details: { sourceId: entry.sourceId, round: entry.round,
       source: entry.terminal === undefined ? "agent" : "host",
-      status: entry.terminal?.status ?? "running",
+      ...(entry.terminal === undefined ? {} : { status: entry.terminal.status, terminal: entry.terminal }),
       ...(entry.jobId === undefined ? {} : { jobId: entry.jobId }),
-      ...(entry.session === undefined ? {} : { session: entry.session }),
-      ...(entry.terminal === undefined ? {} : { terminal: entry.terminal }),
     },
     timestamp: Date.now(),
   };
@@ -108,12 +103,13 @@ export function deliveryMessage(entry: DeliveryEntry): DeliveryCustomMessage {
 export function peerDeliveryEntry(input: PeerDeliveryInput): DeliveryEntry {
   const jobId = input.jobId ?? undefined;
   return {
-    sourceId: input.from,
+    // A cross-session sender is displayed by its full identity, never as a
+    // local Main plus a second session field.
+    sourceId: input.external?.sender ?? input.from,
     round: input.round ?? 1,
     content: formatPeerMessage({ from: input.from, content: input.content,
       ...(input.external === undefined ? {} : { external: input.external }) }),
     ...(jobId === undefined ? {} : { jobId }),
-    ...(input.external === undefined ? {} : { session: input.external.sessionId }),
   };
 }
 

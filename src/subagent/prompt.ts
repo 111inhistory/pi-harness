@@ -2,7 +2,7 @@ import { promptString } from '../prompt-text.ts';
 
 const field = (name: string): string => promptString('subagent-turns.json', name);
 const turns = { batchContext: field('batchContext'), task: field('task'), messageFrom: field('messageFrom'),
-  externalFrom: field('externalFrom'), replyTo: field('replyTo'),
+  replyTo: field('replyTo'),
   originalAssignment: field('originalAssignment'), restatement: field('restatement'), control: field('control') };
 const context: string = promptString('subagent-turns.json', 'context');
 
@@ -50,13 +50,15 @@ export function composeAssignment(task: string, batchContext: string): string {
 export function formatPeerMessage(message: {
   from: string;
   content: string;
-  external?: { readonly sessionId: string; readonly replyTo: string } | undefined;
+  external?: { readonly sender: string; readonly replyTo: string } | undefined;
 }): string {
-  if (message.external === undefined) return `[${turns.messageFrom} ${message.from}]\n${message.content}`;
-  const header = turns.externalFrom
-    .replaceAll('{from}', () => message.from)
-    .replaceAll('{session}', () => message.external!.sessionId);
-  return `[${header}]\n${turns.replyTo}: ${message.external.replyTo}\n${message.content}`;
+  // One label for every message. A cross-session sender is already the full
+  // identity `<session-uid>:Main`; the reply address is its real Main endpoint.
+  const identity = message.external === undefined ? message.from : message.external.sender;
+  const header = `[${turns.messageFrom} ${identity}]`;
+  return message.external === undefined
+    ? `${header}\n${message.content}`
+    : `${header}\n${turns.replyTo}: ${message.external.replyTo}\n${message.content}`;
 }
 
 /** Events already exist as separate native entries above this control prompt. */

@@ -14,6 +14,7 @@ async function fixture(run: (cwd: string) => Promise<void>): Promise<void> {
 function host(overrides: Partial<ManagedWriteHost> = {}): ManagedWriteHost {
   return {
     resolveEndpoint: async () => ({ isManaged: true, targetId: 'sub_01' }),
+    sessionEndpoint: async () => ({ kind: 'local' }),
     sendMessage: async ({ to }) => ({ ok: true, to, jobId: to }),
     sendCrossSession: async () => {},
     ...overrides,

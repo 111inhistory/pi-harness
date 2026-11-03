@@ -13,11 +13,11 @@ import { DEFAULT_HARNESS_CONFIG, type HarnessConfig } from '../harness-config.ts
 import { createSubagentStore, EVENTS, SUBAGENT_SESSIONS_DIR, writeFileAtomic } from './storage.ts';
 import { hasJobView, jobViewPaths, writeJobView, readTranscript } from './view.ts';
 import { routeSubagent } from './routing.ts';
-import { DEFAULT_SOCKET_DIR, deriveSessionUid } from '../ipc/socket.ts';
+import { DEFAULT_SOCKET_DIR, deriveSessionUid, endpointKey, getAgentSocketPath } from '../ipc/socket.ts';
 import {
   assertCrossSessionSupported, crossSessionSupported, liveSessions, registerSession,
-  sendToSession, unregisterSession, updateSession,
-  type CrossSessionTarget, type LiveSession,
+  sendToSessionEndpoint, unregisterSession,
+  type LiveSession,
 } from './session-directory.ts';
 import { ensurePrivateSocketRoot } from '../ipc/platform.ts';
 import { setCapabilityParent, type CapabilityToolCatalog } from '../capability/scope.ts';
@@ -27,7 +27,7 @@ import { NativeJobRunner } from './native-runner.ts';
 import { NativeDeliveryRouter } from './native-delivery.ts';
 import { createNativeSessionFactory } from './native-session.ts';
 import { installSessionSurface, type SubagentSurfaceCreateOptions } from './surface.ts';
-import type { ManagedWriteHost } from './message-write.ts';
+import type { ManagedWriteHost, SessionEndpoint } from './message-write.ts';
 import type { NativeCustomHandoff, NativeRouteResult, NativeRoutingPort, NativeStartedJob } from './native-types.ts';
 import {
   createSubagentRuntime, copyInheritedEntries, SubagentError,
@@ -140,7 +140,7 @@ export class RootService implements ManagedWriteHost {
       },
     });
     this.listeners = new AgentListeners({
-      socketDir, baseSocketDir: socketRoot,
+      socketDir, baseSocketDir: socketRoot, sessionId: this.sessionId,
       maxDepth: this.#options.config.subagent.maxDepth,
       actors: () => this.runtime.list().agents,
       isAccepting: () => this.active,
@@ -359,32 +359,52 @@ export class RootService implements ManagedWriteHost {
     return crossSessionSupported() ? liveSessions(this.#socketRoot) : Promise.resolve([]);
   }
 
-  /** Publish what this session is working on, for cross-session discovery. */
-  async setIntent(intent: string): Promise<LiveSession> {
-    assertCrossSessionSupported();
-    const updated = await updateSession(this.#socketRoot, { sessionId: this.sessionId, intent });
-    if (updated === null) {
-      throw new SubagentError('unknown_session', 'This session is not published for cross-session discovery.');
+  /**
+   * Classify a managed address against this root and the shared directory.
+   *
+   * This is the one place that decides whether a path is local, this session's
+   * own Main, another live session's Main, or another session's non-Main
+   * endpoint. It uses the same address space as every other `msg_write` call.
+   */
+  async sessionEndpoint(address: string): Promise<SessionEndpoint> {
+    const ownSocketDir = path.join(this.#socketRoot, deriveSessionUid(this.sessionId));
+    if (endpointKey(address) === endpointKey(getAgentSocketPath('Main', ownSocketDir))) {
+      return { kind: 'self' };
     }
-    return updated;
+    const live = await liveSessions(this.#socketRoot);
+    for (const session of live) {
+      if (session.sessionId === this.sessionId) continue;
+      if (endpointKey(address) === endpointKey(getAgentSocketPath('Main', session.socketDir))) {
+        return { kind: 'session', session };
+      }
+    }
+    const prefix = `${path.sep}`;
+    for (const session of live) {
+      if (session.sessionId === this.sessionId) continue;
+      if (address.startsWith(session.socketDir + prefix)) return { kind: 'foreign' };
+    }
+    return { kind: 'local' };
   }
 
   /**
-   * Deliver one message to an actor of another live session.
+   * Deliver one message to another live session's Main.
    *
-   * The receiving root owns admission: this call only resolves the published
-   * session, frames the sender, and writes one NDJSON request. An error
+   * The receiving root owns admission: this call only frames the sender and
+   * writes one NDJSON request to the target's managed Main endpoint. An error
    * response, a timeout or a disconnect does not prove the message was not
    * handed over, so nothing is retried here.
    */
   async sendCrossSession(command: {
-    readonly target: CrossSessionTarget;
+    readonly target: LiveSession;
     readonly content: string;
     readonly signal?: AbortSignal | undefined;
   }): Promise<void> {
     this.assertOperational();
     assertCrossSessionSupported();
-    return sendToSession(this.#socketRoot, { senderSessionId: this.sessionId, ...command });
+    return sendToSessionEndpoint({
+      sender: { sessionId: this.sessionId, uid: deriveSessionUid(this.sessionId) },
+      ...command,
+    });
   }
 
   /**
@@ -395,7 +415,11 @@ export class RootService implements ManagedWriteHost {
     // Windows is explicitly out of scope; no record is published there.
     if (!crossSessionSupported()) return;
     try {
-      await registerSession(this.#socketRoot, { sessionId: this.sessionId, cwd: this.#options.context.cwd });
+      await registerSession(this.#socketRoot, {
+        sessionId: this.sessionId,
+        cwd: this.#options.context.cwd,
+        name: this.#options.context.sessionManager.getSessionName() ?? null,
+      });
     } catch (error) {
       this.#report(new Error(`This session is not reachable from other sessions: ${errorOf(error).message}`));
     }

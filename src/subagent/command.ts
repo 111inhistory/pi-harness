@@ -9,7 +9,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { RootService } from "./root-service.ts";
 import { SubagentError, type StopResult } from "./runtime.ts";
 import { renderSubagentList } from "./status-view.ts";
-import { crossSessionAddress, crossSessionSupported, type LiveSession } from "./session-directory.ts";
+import { crossSessionSupported, sessionMainAddress, type LiveSession } from "./session-directory.ts";
 
 export type SubagentCommand =
   | { readonly verb: "list"; readonly all: boolean; readonly id: string | null }
@@ -144,9 +144,9 @@ async function showList(
 }
 
 /**
- * Every live session under this socket root, with the cross-session address of
- * its Main actor. A user pastes that address into another session to let its
- * agents reach this one; the model never receives this catalog on its own.
+ * Every live session under this socket root, with the managed socket address of
+ * its Main. A user pastes that address into another session to let its agents
+ * reach this one; the model never receives this catalog on its own.
  */
 function renderSessions(sessions: readonly LiveSession[], currentSessionId: string): string {
   if (!crossSessionSupported()) {
@@ -156,10 +156,10 @@ function renderSessions(sessions: readonly LiveSession[], currentSessionId: stri
   if (sessions.length === 0) lines.push("  none");
   for (const session of sessions) {
     const marker = session.sessionId === currentSessionId ? "*" : " ";
-    lines.push(`${marker} ${session.uid}  pid ${session.pid}  ${session.cwd}`);
+    const name = session.name === null ? "(unnamed)" : session.name;
+    lines.push(`${marker} ${session.uid}  ${name}  pid ${session.pid}  ${session.cwd}`);
     lines.push(`    session ${session.sessionId}`);
-    lines.push(`    intent: ${session.intent === "" ? "(unset)" : session.intent}`);
-    lines.push(`    main: ${crossSessionAddress(session.uid)}`);
+    lines.push(`    main: ${sessionMainAddress(session)}`);
   }
   return lines.join("\n");
 }

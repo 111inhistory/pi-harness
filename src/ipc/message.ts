@@ -10,8 +10,6 @@
 export interface ManagedMessage {
   from: string;
   content: string;
-  /** Set only for a cross-session write: the sending session's own id. */
-  session?: string;
 }
 
 export class ManagedMessageError extends Error {
@@ -27,8 +25,6 @@ export class ManagedMessageError extends Error {
 export interface InboundFrame {
   from: string;
   content: string;
-  /** The sending session, when the frame came from another live session. */
-  session?: string;
 }
 
 /** Stable refusal for an inbound frame that cannot identify both fields. */
@@ -70,29 +66,21 @@ export function validateInboundFrame(input: unknown): InboundFrame {
   const record = input as Record<string, unknown>;
   const from = record["from"];
   const content = record["content"];
-  const session = record["session"];
   if (typeof from !== "string" || from.trim() === "") {
     throw new InboundFrameError("An inbound frame requires an explicit non-empty sender identity.");
   }
   if (typeof content !== "string") {
     throw new InboundFrameError("An inbound frame requires a string content body.");
   }
-  if (session !== undefined && (typeof session !== "string" || session.trim() === "")) {
-    throw new InboundFrameError("An inbound frame's session field must be a non-empty string when present.");
-  }
-  return session === undefined ? { from, content } : { from, content, session };
+  return { from, content };
 }
 
 /** Build exactly one envelope and frame; the content is never reparsed. */
-export function managedFrame({ senderId, content, session }: { senderId: string; content: unknown; session?: string }): {
+export function managedFrame({ senderId, content }: { senderId: string; content: unknown }): {
   message: ManagedMessage;
   frame: string;
 } {
   assertSender(senderId);
   const message: ManagedMessage = { from: senderId, content: messageText(content) };
-  if (session !== undefined) {
-    assertSender(session);
-    message.session = session;
-  }
   return { message, frame: `${JSON.stringify(message)}\n` };
 }

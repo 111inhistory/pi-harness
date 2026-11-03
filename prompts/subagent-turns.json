@@ -4,7 +4,6 @@
   "batchContext": "# Batch context",
   "task": "# Task",
   "messageFrom": "Message from",
-  "externalFrom": "Message from {from} in another session ({session})",
   "replyTo": "Reply address",
   "originalAssignment": "# Original assignment",
   "restatement": "Your initial assignment is restated here.",

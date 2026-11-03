@@ -4,10 +4,11 @@
  * Three boundaries are pinned separately:
  * - Runtime admission: an unregistered sender is accepted only with a host
  *   resolved external descriptor, and an external sender cannot broadcast.
- * - Delivery rendering: the receiving model sees the sending session and one
- *   reply address, and the UI title names the session instead of a round.
- * - Transport: a frame naming a live session reaches the receiving root with the
- *   directory-derived reply address; an unknown session is refused.
+ * - Delivery rendering: the receiving model sees one `from` label carrying the
+ *   full session identity, plus one managed reply address.
+ * - Transport: the managed Main endpoint is the only cross-session address. A
+ *   composite `from` is parsed at the IPC boundary, an unknown session is
+ *   refused, and a session cannot address itself.
  */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -17,9 +18,9 @@ import test from "node:test";
 
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 
-import { deriveSessionUid, getAgentSocketPath, getBroadcastSocketPath, writeSocket } from "../../src/ipc/socket.ts";
+import { getAgentSocketPath, getBroadcastSocketPath, writeSocket } from "../../src/ipc/socket.ts";
 import { AgentListeners } from "../../src/subagent/listeners.ts";
-import { createMessageWriteTool, type ManagedWriteHost } from "../../src/subagent/message-write.ts";
+import { createMessageWriteTool, type ManagedWriteHost, type SessionEndpoint } from "../../src/subagent/message-write.ts";
 import {
   createSubagentRuntime,
   SubagentError,
@@ -29,10 +30,12 @@ import {
 import { deliveryEntryFor, deliveryMessage } from "../../src/subagent/delivery.ts";
 import {
   assertCrossSessionSupported,
-  crossSessionAddress,
   crossSessionSupported,
   registerSession,
-  sendToSession,
+  sendToSessionEndpoint,
+  sessionMainAddress,
+  sessionSenderId,
+  type LiveSession,
 } from "../../src/subagent/session-directory.ts";
 
 const posix = process.platform !== "win32";
@@ -91,7 +94,7 @@ test("an unregistered sender needs a host-resolved external descriptor", async (
   );
   assert.equal(fake.deliveries.length, 0);
 
-  const external = { sessionId: "session-alpha", replyTo: crossSessionAddress("abc123") };
+  const external = { sessionId: "session-alpha", sender: "abc123:Main", replyTo: "/tmp/abc123/main.sock" };
   await assert.rejects(
     runtime.sendMessage({ from: "Main", to: first.id, content: "hello", external }),
     (error: unknown) => error instanceof SubagentError && error.code === "invalid_target",
@@ -101,8 +104,8 @@ test("an unregistered sender needs a host-resolved external descriptor", async (
 });
 
 test("cross-session traffic is Main-to-Main only", async () => {
-  const { fake, runtime, first } = runtimeFixture();
-  const external = { sessionId: "session-alpha", replyTo: crossSessionAddress("abc123") };
+  const { fake, runtime } = runtimeFixture();
+  const external = { sessionId: "session-alpha", sender: "abc123:Main", replyTo: "/tmp/abc123/main.sock" };
   await assert.rejects(
     runtime.sendMessage({ from: "sub_remote", to: "Main", content: "hi", external }),
     (error: unknown) => error instanceof SubagentError && error.code === "invalid_sender",
@@ -116,7 +119,10 @@ test("cross-session traffic is Main-to-Main only", async () => {
 test("a subagent cannot claim a cross-session identity", async () => {
   const { fake, runtime, first, second } = runtimeFixture();
   await assert.rejects(
-    runtime.sendMessage({ from: first.id, to: second.id, content: "peer", external: { sessionId: "session-alpha", replyTo: "session:abc123" } }),
+    runtime.sendMessage({
+      from: first.id, to: second.id, content: "peer",
+      external: { sessionId: "session-alpha", sender: "abc123:Main", replyTo: "/tmp/abc123/main.sock" },
+    }),
     (error: unknown) => error instanceof SubagentError && error.code === "invalid_sender",
   );
   await runtime.sendMessage({ from: first.id, to: second.id, content: "peer" });
@@ -126,24 +132,29 @@ test("a subagent cannot claim a cross-session identity", async () => {
 test("a cross-session sender cannot broadcast", async () => {
   const { runtime } = runtimeFixture();
   await assert.rejects(
-    runtime.sendMessage({ from: "Main", to: "all", content: "hi", external: { sessionId: "session-alpha", replyTo: "session:abc123" } }),
+    runtime.sendMessage({
+      from: "Main", to: "all", content: "hi",
+      external: { sessionId: "session-alpha", sender: "abc123:Main", replyTo: "/tmp/abc123/main.sock" },
+    }),
     (error: unknown) => error instanceof SubagentError && error.code === "invalid_target",
   );
 });
 
-test("the receiving model sees the sending session and one reply address", () => {
-  const external = { sessionId: "session-alpha", replyTo: crossSessionAddress("abc123") };
+test("the receiving model sees one full identity and one managed reply address", () => {
+  const external = { sessionId: "session-alpha", sender: "abc123:Main", replyTo: "/tmp/abc123/main.sock" };
   const entry = deliveryEntryFor({ type: "message", from: "Main", content: "please review", external });
-  assert.equal(entry.session, "session-alpha");
+  assert.equal(entry.sourceId, "abc123:Main");
   assert.equal(entry.round, 1);
   const message = deliveryMessage(entry);
   assert.equal(message.content,
-    "[Message from Main in another session (session-alpha)]\nReply address: session:abc123\nplease review");
-  assert.equal(message.details.session, "session-alpha");
+    "[Message from abc123:Main]\nReply address: /tmp/abc123/main.sock\nplease review");
+  assert.equal(message.details.sourceId, "abc123:Main");
+  assert.equal("status" in (message.details ?? {}), false, "a peer message carries no execution state");
+  assert.equal("session" in (message.details ?? {}), false);
 
   const local = deliveryMessage(deliveryEntryFor({ type: "message", from: "sub_01", content: "hi" }));
   assert.equal(local.content, "[Message from sub_01]\nhi");
-  assert.equal("session" in (local.details ?? {}), false);
+  assert.equal("status" in (local.details ?? {}), false);
 });
 
 async function socketRoot(t: test.TestContext): Promise<string> {
@@ -152,12 +163,17 @@ async function socketRoot(t: test.TestContext): Promise<string> {
   return directory;
 }
 
-test("a frame naming a live session reaches the receiving root with a derived reply address", { skip: !posix, timeout: 15000 }, async (t) => {
-  const root = await socketRoot(t);
-  const sender = await registerSession(root, { sessionId: "session-alpha", cwd: "/tmp/project" });
-  const sends: Array<{ from: string; to: string; content: string; external?: unknown }> = [];
-  const listeners = new AgentListeners({
-    socketDir: root,
+interface RecordedSend {
+  readonly from: string;
+  readonly to: string;
+  readonly content: string;
+  readonly external?: unknown;
+}
+
+function receiverListeners(root: string, session: LiveSession, sends: RecordedSend[]): AgentListeners {
+  return new AgentListeners({
+    sessionId: session.sessionId,
+    socketDir: session.socketDir,
     baseSocketDir: root,
     maxDepth: 2,
     actors: () => [{ agentId: "sub_01", parentAgentId: null, depth: 1 }],
@@ -165,59 +181,120 @@ test("a frame naming a live session reaches the receiving root with a derived re
     send: async (command) => { sends.push(command); return { ok: true, to: command.to, jobId: null }; },
     onError: () => {},
   });
+}
+
+test("a frame from another session reaches Main with its identity and reply address", { skip: !posix, timeout: 15000 }, async (t) => {
+  const root = await socketRoot(t);
+  const receiver = await registerSession(root, { sessionId: "receiver-session", cwd: "/tmp/receiver" });
+  const sender = await registerSession(root, { sessionId: "sender-session", cwd: "/tmp/sender" });
+  const sends: RecordedSend[] = [];
+  const listeners = receiverListeners(root, receiver, sends);
   t.after(() => listeners.close());
   await listeners.sync();
 
-  await writeSocket(getAgentSocketPath("Main", root), { from: "Main", session: "session-alpha", content: "hello" });
+  await writeSocket(sessionMainAddress(receiver), { from: sessionSenderId(sender.uid), content: "hello" });
   assert.deepEqual(sends, [{
     from: "Main", to: "Main", content: "hello",
-    external: { sessionId: "session-alpha", replyTo: crossSessionAddress(sender.uid) },
+    external: { sessionId: "sender-session", sender: sessionSenderId(sender.uid), replyTo: sessionMainAddress(sender) },
   }]);
+});
 
-  // A cross-session frame may not address a subagent or a broadcast endpoint.
-  for (const address of [getAgentSocketPath("sub_01", root), getBroadcastSocketPath("Main", root)]) {
+test("a composite sender at a non-Main endpoint or broadcast is refused", { skip: !posix, timeout: 15000 }, async (t) => {
+  const root = await socketRoot(t);
+  const receiver = await registerSession(root, { sessionId: "receiver-session", cwd: "/tmp/receiver" });
+  const sender = await registerSession(root, { sessionId: "sender-session", cwd: "/tmp/sender" });
+  const sends: RecordedSend[] = [];
+  const listeners = receiverListeners(root, receiver, sends);
+  t.after(() => listeners.close());
+  await listeners.sync();
+
+  for (const address of [getAgentSocketPath("sub_01", receiver.socketDir), getBroadcastSocketPath("Main", receiver.socketDir)]) {
     await assert.rejects(
-      writeSocket(address, { from: "Main", session: "session-alpha", content: "hello" }),
+      writeSocket(address, { from: sessionSenderId(sender.uid), content: "hello" }),
       { code: "invalid_target" },
     );
   }
-  assert.equal(sends.length, 1);
+  assert.deepEqual(sends, []);
 });
 
 test("a frame naming an unknown session is refused before any delivery", { skip: !posix, timeout: 15000 }, async (t) => {
   const root = await socketRoot(t);
-  const sends: unknown[] = [];
-  const listeners = new AgentListeners({
-    socketDir: root,
-    baseSocketDir: root,
-    maxDepth: 2,
-    actors: () => [{ agentId: "sub_01", parentAgentId: null, depth: 1 }],
-    isAccepting: () => true,
-    send: async (command) => { sends.push(command); return { ok: true, to: command.to, jobId: null }; },
-    onError: () => {},
-  });
+  const receiver = await registerSession(root, { sessionId: "receiver-session", cwd: "/tmp/receiver" });
+  const sends: RecordedSend[] = [];
+  const listeners = receiverListeners(root, receiver, sends);
   t.after(() => listeners.close());
   await listeners.sync();
 
   await assert.rejects(
-    writeSocket(getAgentSocketPath("Main", root), { from: "Main", session: "ghost-session", content: "hello" }),
+    writeSocket(sessionMainAddress(receiver), { from: "ffffff:Main", content: "hello" }),
     { code: "unknown_session" },
   );
   assert.deepEqual(sends, []);
 });
 
+test("a frame with the removed session field has no cross-session effect", { skip: !posix, timeout: 15000 }, async (t) => {
+  const root = await socketRoot(t);
+  const receiver = await registerSession(root, { sessionId: "receiver-session", cwd: "/tmp/receiver" });
+  await registerSession(root, { sessionId: "sender-session", cwd: "/tmp/sender" });
+  const sends: RecordedSend[] = [];
+  const listeners = receiverListeners(root, receiver, sends);
+  t.after(() => listeners.close());
+  await listeners.sync();
+
+  // The old field is not read at all: only `from` decides the identity.
+  await writeSocket(sessionMainAddress(receiver), { from: "Main", session: "sender-session", content: "hello" });
+  assert.deepEqual(sends, [{ from: "Main", to: "Main", content: "hello" }]);
+});
+
+test("a reply to the reported address reaches the sender's Main", { skip: !posix, timeout: 15000 }, async (t) => {
+  const root = await socketRoot(t);
+  const alpha = await registerSession(root, { sessionId: "alpha-session", cwd: "/tmp/alpha" });
+  const beta = await registerSession(root, { sessionId: "beta-session", cwd: "/tmp/beta" });
+  const alphaSends: RecordedSend[] = [];
+  const betaSends: RecordedSend[] = [];
+  const alphaListeners = receiverListeners(root, alpha, alphaSends);
+  const betaListeners = receiverListeners(root, beta, betaSends);
+  t.after(async () => { await alphaListeners.close(); await betaListeners.close(); });
+  await alphaListeners.sync();
+  await betaListeners.sync();
+
+  await sendToSessionEndpoint({ sender: { sessionId: alpha.sessionId, uid: alpha.uid }, target: beta, content: "ping" });
+  const delivered = betaSends[0];
+  const external = delivered?.external as { replyTo: string } | undefined;
+  assert.equal(external?.replyTo, sessionMainAddress(alpha));
+
+  await sendToSessionEndpoint({ sender: { sessionId: beta.sessionId, uid: beta.uid }, target: alpha, content: "pong" });
+  assert.deepEqual(alphaSends, [{
+    from: "Main", to: "Main", content: "pong",
+    external: { sessionId: "beta-session", sender: sessionSenderId(beta.uid), replyTo: sessionMainAddress(beta) },
+  }]);
+});
+
+test("a frame naming this session is local Main traffic, not an external sender", { skip: !posix, timeout: 15000 }, async (t) => {
+  const root = await socketRoot(t);
+  const receiver = await registerSession(root, { sessionId: "receiver-session", cwd: "/tmp/receiver" });
+  const sends: RecordedSend[] = [];
+  const listeners = receiverListeners(root, receiver, sends);
+  t.after(() => listeners.close());
+  await listeners.sync();
+
+  await writeSocket(sessionMainAddress(receiver), { from: sessionSenderId(receiver.uid), content: "hello" });
+  assert.deepEqual(sends, [{ from: "Main", to: "Main", content: "hello" }],
+    "the runtime then applies its self-send rule; the frame is never framed as another session");
+});
+
 test("the sender writes to another published session and keeps the remote refusal code", { skip: !posix, timeout: 15000 }, async (t) => {
   const root = await socketRoot(t);
   const receiver = await registerSession(root, { sessionId: "receiver-session", cwd: "/tmp/receiver" });
-  // Both sessions publish themselves, so the receiver can validate the sender.
-  await registerSession(root, { sessionId: "sender-session", cwd: "/tmp/sender" });
+  const sender = await registerSession(root, { sessionId: "sender-session", cwd: "/tmp/sender" });
   let failure: SubagentError | null = null;
-  const sends: Array<{ from: string; to: string; content: string; external?: unknown }> = [];
+  const sends: RecordedSend[] = [];
   const listeners = new AgentListeners({
+    sessionId: receiver.sessionId,
     socketDir: receiver.socketDir,
     baseSocketDir: root,
     maxDepth: 2,
-    actors: () => [{ agentId: "sub_01", parentAgentId: null, depth: 1 }],
+    actors: () => [],
     isAccepting: () => true,
     send: async (command) => {
       if (failure !== null) throw failure;
@@ -229,57 +306,85 @@ test("the sender writes to another published session and keeps the remote refusa
   t.after(() => listeners.close());
   await listeners.sync();
 
-  await sendToSession(root, { senderSessionId: "sender-session", target: { uid: receiver.uid }, content: "ping" });
+  const self = { sessionId: sender.sessionId, uid: sender.uid };
+  await sendToSessionEndpoint({ sender: self, target: receiver, content: "ping" });
   assert.deepEqual(sends, [{
     from: "Main", to: "Main", content: "ping",
-    external: { sessionId: "sender-session", replyTo: crossSessionAddress(deriveSessionUid("sender-session")) },
+    external: { sessionId: "sender-session", sender: sessionSenderId(sender.uid), replyTo: sessionMainAddress(sender) },
   }]);
-
-  await assert.rejects(
-    sendToSession(root, { senderSessionId: "sender-session", target: { uid: "ffffff" }, content: "ping" }),
-    (error: unknown) => error instanceof SubagentError && error.code === "unknown_session",
-  );
 
   failure = new SubagentError("agent_busy", "Agent Main is stopping.");
   await assert.rejects(
-    sendToSession(root, { senderSessionId: "sender-session", target: { uid: receiver.uid }, content: "ping" }),
+    sendToSessionEndpoint({ sender: self, target: receiver, content: "ping" }),
     (error: unknown) => error instanceof SubagentError && error.code === "agent_busy",
   );
 });
 
-test("msg_write accepts a cross-session address and refuses a malformed one", async () => {
+test("a session cannot address itself across the directory", { skip: !posix, timeout: 15000 }, async (t) => {
+  const root = await socketRoot(t);
+  const self = await registerSession(root, { sessionId: "self-session", cwd: "/tmp/self" });
+  const sends: RecordedSend[] = [];
+  const listeners = receiverListeners(root, self, sends);
+  t.after(() => listeners.close());
+  await listeners.sync();
+
+  await assert.rejects(
+    sendToSessionEndpoint({ sender: { sessionId: self.sessionId, uid: self.uid }, target: self, content: "ping" }),
+    (error: unknown) => error instanceof SubagentError && error.code === "invalid_target",
+  );
+  assert.deepEqual(sends, [], "a self-addressed frame never reaches the socket");
+});
+
+test("msg_write uses the same path for local and cross-session targets", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "cross-session-write-"));
   try {
     const calls: unknown[] = [];
+    const target = { sessionId: "receiver-session", uid: "abc123" } as unknown as LiveSession;
+    let managed = true;
+    let kind: SessionEndpoint = { kind: "local" };
     const host: ManagedWriteHost = {
-      resolveEndpoint: async () => { throw new Error("a cross-session address is not an IPC path"); },
-      sendMessage: async () => { throw new Error("a cross-session address is not a local recipient"); },
-      sendCrossSession: async (command) => { calls.push(command); },
+      resolveEndpoint: async () => managed
+        ? { isManaged: true, isBroadcast: false, targetId: "sub_01" }
+        : { isManaged: false },
+      sessionEndpoint: async () => kind,
+      sendMessage: async (command) => { calls.push({ local: command }); return { ok: true, to: command.to, jobId: null }; },
+      sendCrossSession: async (command) => { calls.push({ cross: command }); },
     };
-    const tool = createMessageWriteTool({ cwd, senderId: "sub_01", host });
     const ctx = { cwd } as ExtensionToolContext;
 
-    // A subagent may not reach another session; only Main coordinates across them.
-    await assert.rejects(
-      tool.execute("call", { path: "session:abc123", content: "hello" }, undefined, undefined, ctx),
-      (error: unknown) => error instanceof SubagentError && error.code === "invalid_target",
-    );
+    // A local path keeps the existing write path.
+    await createMessageWriteTool({ cwd, senderId: "sub_01", host })
+      .execute("call", { path: "/tmp/local.sock", content: "hello" }, undefined, undefined, ctx);
+    assert.deepEqual(calls, [{ local: { from: "sub_01", to: "sub_01", content: "hello" } }]);
 
-    const main = createMessageWriteTool({ cwd, senderId: "Main", host });
-    const result = await main.execute("call", { path: "session:abc123", content: "hello" }, undefined, undefined, ctx);
-    assert.deepEqual(calls, [{ target: { uid: "abc123" }, content: "hello" }]);
-    assert.match(JSON.stringify(result.content), /Successfully sent message to session:abc123/);
-    assert.equal(result.details, undefined);
+    // A session's Main endpoint is a cross-session send for Main only.
+    managed = false;
+    kind = { kind: "session", session: target };
+    await assert.rejects(
+      createMessageWriteTool({ cwd, senderId: "sub_01", host })
+        .execute("call", { path: "/tmp/receiver.sock", content: "hello" }, undefined, undefined, ctx),
+      (error: unknown) => error instanceof SubagentError && error.code === "invalid_target",
+    );
+    const result = await createMessageWriteTool({ cwd, senderId: "Main", host })
+      .execute("call", { path: "/tmp/receiver.sock", content: "hello" }, undefined, undefined, ctx);
+    assert.deepEqual(calls[1], { cross: { target, content: "hello" } });
+    assert.match(JSON.stringify(result.content), /Successfully sent message to \/tmp\/receiver\.sock/);
 
+    // Self and foreign non-Main endpoints are refused before any write.
+    for (const refused of ["self", "foreign"] as const) {
+      kind = { kind: refused };
+      await assert.rejects(
+        createMessageWriteTool({ cwd, senderId: "Main", host })
+          .execute("call", { path: "/tmp/receiver.sock", content: "hello" }, undefined, undefined, ctx),
+        (error: unknown) => error instanceof SubagentError && error.code === "invalid_target",
+      );
+    }
     await assert.rejects(
-      main.execute("call", { path: "session:abc123/../escape", content: "hello" }, undefined, undefined, ctx),
+      createMessageWriteTool({ cwd, senderId: "Main", host })
+        .execute("call", { path: "not-an-address", content: "hello" }, undefined, undefined, ctx),
       (error: unknown) => error instanceof SubagentError && error.code === "invalid_target",
     );
-    await assert.rejects(
-      main.execute("call", { path: "not-an-address", content: "hello" }, undefined, undefined, ctx),
-      (error: unknown) => error instanceof SubagentError && error.code === "invalid_target",
-    );
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -293,5 +398,4 @@ test("cross-session coordination is POSIX-only and refuses Windows explicitly", 
     () => assertCrossSessionSupported("win32"),
     (error: unknown) => error instanceof SubagentError && error.code === "unsupported_platform",
   );
-  assert.doesNotThrow(() => assertCrossSessionSupported("linux"));
 });

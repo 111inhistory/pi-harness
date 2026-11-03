@@ -237,13 +237,13 @@ Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）�
 
 跨 session 消息用于让一个 Pi session 的 Main 联系同一用户、同一 Socket 根下另一个存活 session 的 Main。它不建立跨主机调度，也不自动广播到其他 session。
 
-**平台范围：当前只实现 POSIX（Linux、macOS）。Windows 明确不支持**：不发布 session 记录，`session_list` 返回 `available: false` 与空列表，`/subagent sessions` 提示不可用，`session_intent` 与 `msg_write` 的跨 session 地址以 `unsupported_platform` 拒绝。Windows 命名管道的寻址与端点归属校验尚未实现与验收。
+**平台范围：当前只实现 POSIX（Linux、macOS）。Windows 明确不支持**：不发布 session 记录，`session_list` 返回 `available: false` 与空列表，`/subagent sessions` 提示不可用，跨 session 发送以 `unsupported_platform` 拒绝。Windows 命名管道的寻址与端点归属校验尚未实现与验收。
 
-- **地址**：`session:<session-uid>`。`session-uid` 是 session id 的短标识。地址只命名 session，不含 Actor：跨 session 只面向对方的 `Main`，因此不暴露对方的 Actor 拓扑，也不提供点名子 Agent 的入口。
-- **发现**：`session_list` 是模型侧的发现入口，`/subagent sessions` 是用户侧入口。两者读取同一份共享目录：`socketRoot/sessions/<uid>.json` 由各 session 在 `initialize` 后发布，`retire` 时按记录归属删除；读取时按 `pid` 存活与记录自洽过滤，畸形或残留记录被忽略且不由他人删除。记录只含身份、工作目录、`pid`、`intent` 与起始时间，不含拓扑或对话内容。`subagent_list` 仍只描述当前根。
-- **发送**：`msg_write` 接受跨 session 地址，且只有 `Main` 可发送。宿主解析已发布的 session、按该 session 的 Socket 目录计算目标 `Main` 端点，并以 `{from: "Main", session, content}` 单帧写入。发送方不提供自己的 session；宿主绑定。
-- **接收**：目标根只在其 `Main` 端点接受跨 session 帧，并检查帧中的 session 是否为当前存活的已发布 session。通过后按该记录推导回复地址 `session:<sender-uid>`，再把消息投递给 `Main`，唤醒规则与本地 Main 消息相同。
-- **呈现**：接收方模型看到发送者 Actor ID、发送 session 与一个回复地址；界面标题显示发送 session，不显示轮次。
+- **地址**：目标 session 的受管 `Main` Socket 路径，与本地 `msg_write` 使用同一地址空间，没有第二套 scheme。`session_list` 与 `/subagent sessions` 直接返回/显示该路径；指向其他 session 非 `Main` 端点的路径以 `invalid_target` 拒绝，因此拿到任意子 Actor Socket 也不能越界。
+- **发现**：`session_list` 是模型侧的发现入口，`/subagent sessions` 是用户侧入口。两者读取同一份共享目录：`socketRoot/sessions/<uid>.json` 由各 session 在 `initialize` 后发布，`retire` 时按记录归属删除；读取时按 `pid` 存活与记录自洽过滤，畸形或残留记录被忽略且不由他人删除。记录只含稳定 uid、session id、原生 session name、工作目录、`pid` 与起始时间，不含拓扑或对话内容。`subagent_list` 仍只描述当前根。
+- **发送**：`msg_write` 接受上述路径，且只有 `Main` 可发送。宿主先按本 root 的受管端点解析：属于本 session 的路径走原有本地写入（`Main` 写给自己的 `Main` 由 Runtime 的 self-send 规则拒绝）；不属于本 root 时，只有目标为已发布 session 的 `Main` 才按跨 session 写入。线上帧只有 `from` 与 `content`，`from` 由发送宿主绑定为 `<session-uid>:Main`，模型不提供发送者或独立 session 字段。
+- **接收**：目标根只在其 `Main` 端点接受复合身份的帧。IPC 边界解析 `from` 的 `<uid>:Main`，要求该 uid 是当前存活的已发布 session；发送者自身的 uid 映射为本地 `Main`，交由 Runtime 的 self-send 规则拒绝。通过后把复合身份映射为 Runtime 的外部发送者描述（session id、完整 `from`、回复地址），不把复合身份当作本地 Actor ID。
+- **呈现**：接收方消息沿用统一的 `Message from` 标签，跨 session 的 `from` 显示完整身份 `<uid>:Main`；回复提示使用发送方真实的受管 `Main` Socket 地址，不再出现 `session:` 协议。普通消息不显示发送方的执行状态，只有终态通知带状态与轮次。
 - **边界**：跨 session 只做 Main 之间的消息，不能广播；终态通知与 parent-hold 仍只属于本 session，子 Agent 不参与跨 session 交互。未知或已退出的 session 以 `unknown_session` 拒绝。超时、断连或错误不证明消息未入队，宿主不重发。
 - **信任**：session 记录与 `from` 都是同用户本机进程的声明，不构成认证协议；与外部 Socket 客户端属于同一信任模型。
 

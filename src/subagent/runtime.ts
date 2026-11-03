@@ -115,7 +115,9 @@ export interface StartedJobHandle {
  */
 export interface ExternalSender {
   readonly sessionId: string;
-  /** The sender's own endpoint, expressed as a cross-session address. */
+  /** The composite wire identity `<session-uid>:Main`, for display. */
+  readonly sender: string;
+  /** The sender's real managed Main endpoint, usable as a reply address. */
   readonly replyTo: string;
 }
 
@@ -2020,8 +2022,8 @@ export class SubagentRuntime {
     if (external !== undefined && recipient !== MAIN_ACTOR_ID) {
       throw new SubagentError("invalid_target", "A cross-session message is delivered to the target session's Main only.", { actorId: recipient });
     }
-    // Another session's Main shares the reserved id; it is not this Main, so the
-    // self-send rule applies to local traffic only.
+    // Another session's Main is delivered to this Main, not to a local actor
+    // with the same id; the self-send rule applies to local traffic only.
     if (external === undefined && recipient === sender) {
       throw new SubagentError("invalid_target", "An actor cannot send a message to itself.", { actorId: sender });
     }

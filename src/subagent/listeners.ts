@@ -1,5 +1,6 @@
 import {
   createOwnedNdjsonServer,
+  deriveSessionUid,
   endpointKey,
   getAgentSocketPath,
   getBroadcastSocketPath,
@@ -8,7 +9,7 @@ import {
 } from '../ipc/socket.ts';
 import type { OwnedServer } from '../ipc/endpoint.ts';
 import { canonicalActorId, SubagentError, type BroadcastReceipt, type ExternalSender, type MessageReceipt } from './runtime.ts';
-import { crossSessionAddress, sessionById } from './session-directory.ts';
+import { parseSessionSenderId, sessionByUid, sessionMainAddress, sessionSenderId } from './session-directory.ts';
 
 interface ListenerActor {
   readonly agentId: string;
@@ -19,6 +20,8 @@ interface ListenerActor {
 export interface ListenerRegistryOptions {
   readonly socketDir: string;
   readonly baseSocketDir: string;
+  /** The root's own session id; a frame naming it is local Main traffic. */
+  readonly sessionId: string;
   /** The root's resolved maximum nesting depth; a child at it has no broadcast endpoint. */
   readonly maxDepth: number;
   actors(): readonly ListenerActor[];
@@ -62,14 +65,16 @@ export class AgentListeners {
    * Turn one claimed sending session into an external sender descriptor.
    *
    * The directory is the only source: an unregistered, dead or malformed
-   * session refuses the frame instead of creating an unaddressed sender.
+   * session refuses the frame instead of creating an unaddressed sender. The
+   * reply address is the sender's real managed Main endpoint, never a second
+   * addressing scheme.
    */
-  async #externalSender(sessionId: string): Promise<ExternalSender> {
-    const session = await sessionById(this.#options.baseSocketDir, sessionId);
+  async #externalSender(uid: string): Promise<ExternalSender> {
+    const session = await sessionByUid(this.#options.baseSocketDir, uid);
     if (session === null) {
       throw new SubagentError('unknown_session', 'The sending session is not registered under this socket root.');
     }
-    return { sessionId: session.sessionId, replyTo: crossSessionAddress(session.uid) };
+    return { sessionId: session.sessionId, sender: sessionSenderId(uid), replyTo: sessionMainAddress(session) };
   }
 
   async resolve(address: string): Promise<EndpointResolverResult> {
@@ -102,17 +107,32 @@ export class AgentListeners {
           onMessage: async (input: unknown) => {
             if (this.#closed || !this.#options.isAccepting()) throw new SubagentError('runtime_closed', 'This IPC root is quiescing.');
             const message = validateInboundFrame(input);
-            const sender = canonicalActorId(message.from);
-            if (sender === null) throw new SubagentError('unknown_sender', 'The IPC sender is not a valid Actor ID.');
-            if (destination.broadcast && sender !== destination.owner) throw new SubagentError('invalid_target', 'Only the parent may write its broadcast endpoint.');
-            // A frame that names a session is a cross-session write. Only Main
-            // sends and only Main receives: the session must be published in the
-            // shared directory right now, and the reply address is derived from
-            // that record, never from the frame.
-            if (message.session !== undefined && (sender !== 'Main' || destination.owner !== 'Main' || destination.broadcast)) {
-              throw new SubagentError('invalid_target', 'Cross-session messages are Main-to-Main only.');
+            // One `from` field carries both identities: a plain local Actor ID,
+            // or the composite `<session-uid>:Main` that only a sending host
+            // builds for a cross-session frame.
+            const claimed = parseSessionSenderId(message.from);
+            let sender: string;
+            let external: ExternalSender | undefined;
+            if (claimed === null) {
+              const local = canonicalActorId(message.from);
+              if (local === null) throw new SubagentError('unknown_sender', 'The IPC sender is not a valid Actor ID.');
+              if (destination.broadcast && local !== destination.owner) throw new SubagentError('invalid_target', 'Only the parent may write its broadcast endpoint.');
+              sender = local;
+            } else {
+              // Only Main sends and only Main receives across sessions. A
+              // composite identity at any other endpoint is out of scope.
+              if (destination.owner !== 'Main' || destination.broadcast) {
+                throw new SubagentError('invalid_target', 'Cross-session messages are Main-to-Main only.');
+              }
+              if (claimed.uid === deriveSessionUid(this.#options.sessionId)) {
+                // The sender addressed its own Main. The runtime rejects the
+                // self-send; it is never framed as another session.
+                sender = 'Main';
+              } else {
+                sender = 'Main';
+                external = await this.#externalSender(claimed.uid);
+              }
             }
-            const external = message.session === undefined ? undefined : await this.#externalSender(message.session);
             // Registry membership is checked by Runtime. A supplied sender is
             // not authenticated merely because it is a valid registered ID.
             const result = await this.#options.send({ from: sender, to: destination.broadcast ? 'all' : destination.owner,

@@ -1,6 +1,6 @@
 /**
- * Cross-session actor directory: publication, liveness, ownership and the
- * `session:<uid>/<actor-id>` address form.
+ * Cross-session directory: publication, liveness, ownership, and the managed
+ * Main endpoint as the one cross-session address.
  */
 import assert from "node:assert/strict";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -9,18 +9,18 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  crossSessionAddress,
-  isCrossSessionAddress,
   liveSessions,
-  parseCrossSessionAddress,
+  parseSessionSenderId,
   registerSession,
   SESSION_DIRECTORY,
   sessionById,
+  sessionByMainAddress,
   sessionByUid,
+  sessionMainAddress,
+  sessionSenderId,
   unregisterSession,
-  updateSession,
 } from "../../src/subagent/session-directory.ts";
-import { deriveSessionUid } from "../../src/ipc/socket.ts";
+import { deriveSessionUid, getAgentSocketPath } from "../../src/ipc/socket.ts";
 
 async function root(t: test.TestContext): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "pi-session-directory-"));
@@ -28,19 +28,36 @@ async function root(t: test.TestContext): Promise<string> {
   return directory;
 }
 
-test("a published session is readable by uid and by id", async (t) => {
+test("a published session is readable by uid, id and Main endpoint", async (t) => {
   const socketRoot = await root(t);
-  const session = await registerSession(socketRoot, { sessionId: "session-alpha", cwd: "/tmp/project" });
+  const session = await registerSession(socketRoot, {
+    sessionId: "session-alpha", cwd: "/tmp/project", name: "parser work",
+  });
   assert.equal(session.uid, deriveSessionUid("session-alpha"));
   assert.equal(session.socketDir, path.join(socketRoot, session.uid));
   assert.equal(session.pid, process.pid);
+  assert.equal(session.name, "parser work");
+  assert.equal(sessionMainAddress(session), getAgentSocketPath("Main", session.socketDir));
 
   const live = await liveSessions(socketRoot);
   assert.deepEqual(live.map((entry) => entry.sessionId), ["session-alpha"]);
   assert.equal((await sessionByUid(socketRoot, session.uid))?.sessionId, "session-alpha");
   assert.equal((await sessionById(socketRoot, "session-alpha"))?.uid, session.uid);
+  assert.equal((await sessionByMainAddress(socketRoot, sessionMainAddress(session)))?.sessionId, "session-alpha");
+  assert.equal(await sessionByMainAddress(socketRoot, getAgentSocketPath("Main", "/tmp/elsewhere")), null);
   assert.equal(await sessionById(socketRoot, "missing"), null);
   assert.equal(await sessionByUid(socketRoot, "../escape"), null);
+});
+
+test("the wire identity is the stable session uid followed by Main", () => {
+  const uid = deriveSessionUid("session-alpha");
+  const sender = sessionSenderId(uid);
+  assert.equal(sender, `${uid}:Main`);
+  assert.deepEqual(parseSessionSenderId(sender), { uid });
+  assert.equal(parseSessionSenderId(`${uid}:sub_01`), null, "a subagent is not a cross-session identity");
+  assert.equal(parseSessionSenderId("Main"), null, "a local actor id is not a session identity");
+  assert.equal(parseSessionSenderId(`${uid}:`), null);
+  assert.equal(parseSessionSenderId(`:Main`), null);
 });
 
 test("a session removes only its own record", async (t) => {
@@ -76,6 +93,7 @@ test("dead and malformed records are never reported as live sessions", async (t)
     { ...valid, uid: "000000" },
     { ...valid, socketDir: "/tmp/elsewhere" },
     { ...valid, sessionId: "" },
+    { ...valid, name: 42 },
     { ...valid, startedAt: "yesterday" },
     "not an object",
   ];
@@ -88,26 +106,15 @@ test("dead and malformed records are never reported as live sessions", async (t)
   assert.equal((await readdir(directory)).includes("broken.json"), true);
 });
 
-test("cross-session addresses name a session, never an actor inside it", () => {
-  const address = crossSessionAddress("abc123");
-  assert.equal(address, "session:abc123");
-  assert.equal(isCrossSessionAddress(address), true);
-  assert.deepEqual(parseCrossSessionAddress(address), { uid: "abc123" });
-
-  for (const invalid of ["session:", "session:/Main", "session:abc123/", "session:abc123/Main",
-    "session:abc123/sub_01", "session:abc123/../Main", "abc123", 42, null]) {
-    assert.equal(parseCrossSessionAddress(invalid), null, `address must be refused: ${String(invalid)}`);
-  }
-  assert.equal(isCrossSessionAddress("/tmp/x.sock"), false);
-});
-
-test("a session publishes its intent without letting a foreign record change", async (t) => {
+test("a session publishes its native name; no coordination state is stored", async (t) => {
   const socketRoot = await root(t);
-  const session = await registerSession(socketRoot, { sessionId: "session-alpha", cwd: "/tmp/project" });
-  assert.equal(session.intent, "");
-  const updated = await updateSession(socketRoot, { sessionId: "session-alpha", intent: "migrating the parser" });
-  assert.equal(updated?.intent, "migrating the parser");
-  assert.equal((await liveSessions(socketRoot))[0]?.intent, "migrating the parser");
-  assert.equal(await updateSession(socketRoot, { sessionId: "session-other", intent: "hijack" }), null);
-  assert.equal((await liveSessions(socketRoot))[0]?.intent, "migrating the parser");
+  const unnamed = await registerSession(socketRoot, { sessionId: "session-alpha", cwd: "/tmp/project" });
+  assert.equal(unnamed.name, null);
+  const named = await registerSession(socketRoot, { sessionId: "session-beta", cwd: "/tmp/project", name: "migrating the parser" });
+  assert.equal(named.name, "migrating the parser");
+  const names = new Map((await liveSessions(socketRoot)).map((entry) => [entry.sessionId, entry.name]));
+  assert.deepEqual([...names.entries()].sort(), [
+    ["session-alpha", null],
+    ["session-beta", "migrating the parser"],
+  ]);
 });

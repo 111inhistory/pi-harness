@@ -251,24 +251,22 @@ test("the harness extension registers the subagent command", () => {
   assert.deepEqual(names, ["subagent"]);
 });
 
-test("sessions lists live sessions with their cross-session addresses and marks the current one", async () => {
+test("sessions lists live sessions with their managed Main address and native name", async () => {
   const notifications: Array<{ text: string; type: string }> = [];
   const service = {
     sessionId: "current-session",
     listSessions: async () => [
-      { sessionId: "current-session", uid: "aaaaaa", socketDir: "/tmp/sockets/aaaaaa", pid: 11, cwd: "/tmp/project-a", intent: "", startedAt: 1 },
-      { sessionId: "other-session", uid: "bbbbbb", socketDir: "/tmp/sockets/bbbbbb", pid: 22, cwd: "/tmp/project-b", intent: "migrating the parser", startedAt: 2 },
+      { sessionId: "current-session", uid: "aaaaaa", socketDir: "/tmp/sockets/aaaaaa", pid: 11, cwd: "/tmp/project-a", name: null, startedAt: 1 },
+      { sessionId: "other-session", uid: "bbbbbb", socketDir: "/tmp/sockets/bbbbbb", pid: 22, cwd: "/tmp/project-b", name: "parser work", startedAt: 2 },
     ],
   } as unknown as RootService;
   const { handler } = install(service);
   await handler("sessions", context(notifications));
   const text = notifications[0]?.text ?? "";
   assert.match(text, /^Live sessions \(2\):/m);
-  assert.match(text, /^\* aaaaaa\s+pid 11\s+\/tmp\/project-a$/m);
-  assert.match(text, /^ {2}bbbbbb\s+pid 22\s+\/tmp\/project-b$/m);
-  assert.match(text, /main: session:aaaaaa/);
-  assert.match(text, /main: session:bbbbbb/);
-  assert.match(text, /intent: \(unset\)/);
-  assert.match(text, /intent: migrating the parser/);
+  assert.match(text, /^\* aaaaaa\s+\(unnamed\)\s+pid 11\s+\/tmp\/project-a$/m);
+  assert.match(text, /^ {2}bbbbbb\s+parser work\s+pid 22\s+\/tmp\/project-b$/m);
+  assert.match(text, /main: \/tmp\/sockets\/aaaaaa\/Main\.sock/);
+  assert.match(text, /main: \/tmp\/sockets\/bbbbbb\/Main\.sock/);
   assert.match(text, /session other-session/);
 });

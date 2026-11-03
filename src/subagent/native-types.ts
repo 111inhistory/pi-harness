@@ -299,7 +299,7 @@ export interface NativePeerHandoff {
   /** Sender Job id, when the runtime supplied one. */
   readonly jobId?: string | undefined;
   /** Sending session, when the runtime admitted a cross-session sender. */
-  readonly external?: { readonly sessionId: string; readonly replyTo: string } | undefined;
+  readonly external?: { readonly sessionId: string; readonly sender: string; readonly replyTo: string } | undefined;
 }
 
 /**

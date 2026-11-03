@@ -729,7 +729,7 @@ test("a continuation restates its assignment and appends startup input as native
   assert.equal(entries.length, 2);
   assert.equal(entries[0]?.customType, "agent-delivery");
   assert.equal(entries[0]?.content, "[Message from sub_02]\npeer says hi");
-  assert.deepEqual(entries[0]?.details, { sourceId: "sub_02", round: 1, source: "agent", status: "running" });
+  assert.deepEqual(entries[0]?.details, { sourceId: "sub_02", round: 1, source: "agent" });
   assert.equal(entries[1]?.customType, "agent-delivery");
   assert.ok(entries[1]?.content.includes("terminal says done"));
   assert.ok(entries[1]?.content.includes("[Subagent sub_03 completed (round 1)]"));
@@ -861,7 +861,7 @@ test("native steering owns live input and parked queues are replayed exactly onc
   assert.equal(session.custom[0]?.message.content, "[Message from sub_02]\nlive update");
   assert.deepEqual(session.custom[0]?.options, { triggerTurn: true, deliverAs: "steer" });
   assert.deepEqual(session.custom[0]?.message.details, {
-    sourceId: "sub_02", round: 2, source: "agent", status: "running", jobId: "sub_02#r2",
+    sourceId: "sub_02", round: 2, source: "agent", jobId: "sub_02#r2",
   });
 
   const customSteer = await h.runner.handoffCustom("sub_01", {
@@ -940,7 +940,7 @@ test("buffered input becomes one more turn of the same Job without a second loop
   assert.equal(buffered.length, 1);
   assert.equal(buffered[0]?.customType, "agent-delivery");
   assert.equal(buffered[0]?.content, "[Message from sub_02]\nqueued update");
-  assert.deepEqual(buffered[0]?.details, { sourceId: "sub_02", round: 1, source: "agent", status: "running" });
+  assert.deepEqual(buffered[0]?.details, { sourceId: "sub_02", round: 1, source: "agent" });
   assert.equal(outcome.result, "second answer");
   // The ended Job refuses further input instead of accepting it into a disposed session.
   const late = await h.runner.handoff("sub_01", { from: "sub_02", content: "too late" });
@@ -997,9 +997,9 @@ test("independent peer events stay one native entry each and share one control t
   ]);
   // Sender, round and Job id appear once each, never duplicated or regrouped.
   assert.deepEqual(entries.map((entry) => entry.details), [
-    { sourceId: "sub_02", round: 2, source: "agent", status: "running", jobId: "sub_02#r2" },
-    { sourceId: "sub_03", round: 1, source: "agent", status: "running" },
-    { sourceId: "sub_04", round: 4, source: "agent", status: "running", jobId: "sub_04#r4" },
+    { sourceId: "sub_02", round: 2, source: "agent", jobId: "sub_02#r2" },
+    { sourceId: "sub_03", round: 1, source: "agent" },
+    { sourceId: "sub_04", round: 4, source: "agent", jobId: "sub_04#r4" },
   ]);
   // Each event appears exactly once in native history, before the control turn.
   const branch = manager.getBranch();

@@ -48,6 +48,7 @@ import type {
   MessageReceipt,
   StopResult,
 } from "../../src/subagent/runtime.ts";
+import type { SessionEndpoint } from "../../src/subagent/message-write.ts";
 
 const MAX_DEPTH = 2;
 
@@ -142,16 +143,16 @@ class RecordingHost implements SubagentSurfaceHost {
     this.crossSessions.push(command);
   }
 
+  async sessionEndpoint(address: string): Promise<SessionEndpoint> {
+    return address.startsWith("/tmp/sockets/aaaaaa") ? { kind: "local" } : { kind: "local" };
+  }
+
   async listSessions() {
-    return [{ sessionId: "current", uid: "aaaaaa", socketDir: "/tmp/sockets/aaaaaa", pid: 1, cwd: "/tmp/project", intent: "reviewing", startedAt: 1 }];
+    return [{
+      sessionId: "current", uid: "aaaaaa", socketDir: "/tmp/sockets/aaaaaa", pid: 1,
+      cwd: "/tmp/project", name: "reviewing", startedAt: 1,
+    }];
   }
-
-  async setIntent(intent: string) {
-    this.intents.push(intent);
-    return { sessionId: "current", uid: "aaaaaa", socketDir: "/tmp/sockets/aaaaaa", pid: 1, cwd: "/tmp/project", intent, startedAt: 1 };
-  }
-
-  readonly intents: string[] = [];
 
   readonly crossSessions: unknown[] = [];
 
@@ -270,7 +271,6 @@ test("the root surface registers controls and messaging without overriding write
     "subagent_list",
     "subagent_stop",
     "session_list",
-    "session_intent",
     "msg_write",
   ]);
   for (const tool of registered) {
@@ -373,20 +373,10 @@ test("the root session_list reports the discovery view with addresses and the cu
   assert.deepEqual(result.details, {
     available: true,
     sessions: [{
-      uid: "aaaaaa", sessionId: "current", cwd: "/tmp/project", pid: 1, startedAt: 1,
-      intent: "reviewing", current: true, address: "session:aaaaaa",
+      uid: "aaaaaa", sessionId: "current", name: "reviewing", cwd: "/tmp/project", pid: 1, startedAt: 1,
+      current: true, address: "/tmp/sockets/aaaaaa/Main.sock",
     }],
   });
-});
-
-test("the root session_intent publishes through the host and returns the stored value", async () => {
-  const host = new RecordingHost();
-  const tools = createSurfaceTools({ api: new FakeSurfaceApi(), resolveHost: async () => host, scope: ROOT_SCOPE });
-  assert.ok(tools.intent);
-  const ctx = sdkContext({ cwd: "/tmp/project", sessionId: "current" });
-  const result = await tools.intent.execute("call-intent", { intent: "migrating the parser" }, undefined, undefined, ctx);
-  assert.deepEqual(host.intents, ["migrating the parser"]);
-  assert.deepEqual(result.details, { uid: "aaaaaa", sessionId: "current", intent: "migrating the parser" });
 });
 
 test("a subagent surface has no cross-session discovery or intent tools", () => {
@@ -396,7 +386,6 @@ test("a subagent surface has no cross-session discovery or intent tools", () => 
     scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: 1 },
   });
   assert.equal(tools.sessions, null);
-  assert.equal(tools.intent, null);
 });
 
 test("the root create tool maps Main to no parent and passes origin and lazy capture", async () => {
@@ -532,7 +521,7 @@ test("msg_write still rejects a non-IPC path without resolving the host", async 
 
   await assert.rejects(
     tools.msg_write.execute("m2", { path: "notes.txt", content: "x" }, undefined, undefined, ctx),
-    /requires an IPC endpoint address/,
+    /requires a managed endpoint address/,
   );
   assert.deepEqual(seen, []);
 });
