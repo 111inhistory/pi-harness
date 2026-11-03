@@ -13,6 +13,7 @@
  * publish a tool the session cannot call.
  */
 
+import { capabilityRootOnlyPolicy } from './scope.ts';
 import { createEligibleToolCatalog } from './tool-catalog.ts';
 
 /** The registered tool shape activation needs. */
@@ -29,7 +30,7 @@ export interface ActivationHost {
 }
 
 /** Why one requested name did not end up active. */
-export type ActivationSkipReason = 'not_registered' | 'hidden' | 'not_permitted' | 'not_activated';
+export type ActivationSkipReason = 'not_registered' | 'hidden' | 'manual_only' | 'not_permitted' | 'not_activated';
 
 export interface ActivationSkip {
   readonly name: string;
@@ -46,15 +47,25 @@ export interface ActivationOutcome {
   readonly active: ReadonlySet<string>;
 }
 
+/** Activation options: only the user command may enable manual tools. */
+export interface ActivationOptions {
+  readonly includeManual?: boolean;
+}
+
 /**
  * Activate the named tools in one synchronous step.
  *
- * Duplicate names are ignored. A name that is unregistered, hidden or outside
- * the current qualification is skipped with its reason; the remaining names are
- * activated in a single call that keeps the current set.
+ * Duplicate names are ignored. A name that is unregistered, hidden, manual-only
+ * or outside the current qualification is skipped with its reason; the
+ * remaining names are activated in a single call that keeps the current set.
  */
-export function activateToolNames(host: ActivationHost, names: readonly string[]): ActivationOutcome {
-  const eligible = createEligibleToolCatalog(host).byName;
+export function activateToolNames(
+  host: ActivationHost,
+  names: readonly string[],
+  options: ActivationOptions = {},
+): ActivationOutcome {
+  const eligible = createEligibleToolCatalog(host, options).byName;
+  const rootOnly = options.includeManual === true ? null : capabilityRootOnlyPolicy(host);
   const registered = new Map(host.getAllTools().map((tool) => [tool.name, tool]));
   const active = new Set(host.getActiveTools());
   const requested: string[] = [];
@@ -71,6 +82,10 @@ export function activateToolNames(host: ActivationHost, names: readonly string[]
     }
     if (tool.exposure === 'hidden') {
       skipped.push({ name, reason: 'hidden' });
+      continue;
+    }
+    if (rootOnly !== null && rootOnly(name)) {
+      skipped.push({ name, reason: 'manual_only' });
       continue;
     }
     if (!eligible.has(name)) {

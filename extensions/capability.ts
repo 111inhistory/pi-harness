@@ -83,6 +83,8 @@ import { installNativeDiscoveryBoundary } from "../src/capability/native-discove
 import { createEligibleToolCatalog, retainEligibleSelectedTools, supplySelectedToolInterfaces } from "../src/capability/tool-catalog.ts";
 import { activateToolNames } from "../src/capability/activation.ts";
 import { installCapabilityCommand } from "../src/capability/command.ts";
+import { manualToolMatcher } from "../src/capability/manual-tools.ts";
+import { setCapabilityRootOnlyPolicy } from "../src/capability/scope.ts";
 import {
   additiveToolTranscript, capabilityModelResult, capabilityToolDelta, retrievalToolLoadout, supportsAdditiveResponses,
   type CapabilityInterfaceSources,
@@ -137,12 +139,24 @@ export default function capabilityExtension(
 ): void {
   const configFor = harnessConfigFor(pi, config);
   const declaredTools = installNativeDiscoveryBoundary(pi, configFor);
-  installCapabilityCommand(pi);
+  /**
+   * Publish the configured manual-tool policy on this surface. The root sets it
+   * once per session; a child surface reads the root's policy through the scope
+   * chain, so a manual tool never becomes eligible below Main.
+   */
+  const applyManualPolicy = (patterns: readonly string[]): void => {
+    setCapabilityRootOnlyPolicy(pi, manualToolMatcher(patterns));
+  };
+  if (config !== undefined) applyManualPolicy(config.capability.manualTools);
+  installCapabilityCommand(pi, { prepare: (ctx) => applyManualPolicy(configFor(ctx).capability.manualTools) });
   const service = {
     agentDir: getAgentDir(),
     projectTrusted: false,
   };
-  pi.on("session_start", (_event, ctx) => { service.projectTrusted = ctx.isProjectTrusted(); });
+  pi.on("session_start", (_event, ctx) => {
+    service.projectTrusted = ctx.isProjectTrusted();
+    applyManualPolicy(configFor(ctx).capability.manualTools);
+  });
 
   // Keep Pi's loaded Skill inventory for discovery, but do not advertise it
   // eagerly in the base prompt. Mutate the native section, not the full prompt.
@@ -165,7 +179,9 @@ export default function capabilityExtension(
     };
   });
   pi.on("tool_call", (event) => {
-    const tool = createEligibleToolCatalog(pi).tools.find((entry) => entry.name === event.toolName);
+    // Execution permission includes manual tools: the user already enabled
+    // them. Discovery never reaches this catalog with them included.
+    const tool = createEligibleToolCatalog(pi, { includeManual: true }).tools.find((entry) => entry.name === event.toolName);
     if (!tool || (!pi.getActiveTools().includes(event.toolName) && !["codemode", "deferred"].includes(tool.exposure ?? ""))) {
       return { block: true, reason: `Tool ${event.toolName} is unavailable in this session; retained declarations do not enable execution.` };
     }

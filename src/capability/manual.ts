@@ -2,9 +2,11 @@
  * Manual capability enablement.
  *
  * The model discovers capabilities through `capability`; the user can also
- * enable one directly with `/capability enable`. Both paths converge on the same
- * append-only branch memory, but a manual entry is recorded under the `manual`
- * category, so a request projection can say where the resource came from.
+ * enable one directly with `/capability enable`. A tool classified as manual
+ * (`capability.manualTools`) is invisible to discovery and can be enabled only
+ * here; a discovered tool may be enabled here as well. Both paths converge on
+ * the same append-only branch memory, and the record marks the resources as
+ * user-enabled rather than model-discovered.
  *
  * Order is activate, then record: the user is present, and only the tools the
  * SDK reports active after the call enter memory. Recording first would let the
@@ -63,7 +65,8 @@ function manualHit(tool: ManualTool): CapabilityHit {
  */
 export function enableManualTools(host: ManualEnableHost, names: readonly string[]): ManualEnableResult {
   const requested = names.map((name) => name.trim()).filter((name) => name !== '');
-  const outcome = activateToolNames(host, requested);
+  // The user command is the one path allowed to enable a manual tool.
+  const outcome = activateToolNames(host, requested, { includeManual: true });
   const registered = new Map(host.getAllTools().map((tool) => [tool.name, tool]));
   const hits = outcome.activated.flatMap((name) => {
     const tool = registered.get(name);

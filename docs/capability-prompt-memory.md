@@ -41,6 +41,11 @@ the `manual` category and no tool call anchor.
   under the `manual` category. A manual record carries no tool call anchor, so
   the projection folds it into the leading checkpoint. Manual and discovered
   entries share one ref namespace and the same permission check.
+- Manual-only tools: `capability.manualTools` names tools that discovery must not
+  see. They are excluded from the eligible catalog used by search and by
+  discovery activation, and the scope view drops them from every node below the
+  root, so a child cannot inherit one. The user command opts back in with
+  `includeManual`; execution then follows the normal active-tool guard.
 - Shared guidance: retained across discoveries, even when a selection adds no tools.
 - Remote coverage: discovery searches local resources only.
   Coverage explicitly marks remote search as `not_searched`. Remote candidates

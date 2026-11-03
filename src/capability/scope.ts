@@ -8,6 +8,12 @@
  * catalog change does not revoke it. Role denials always win, including a
  * denial added after a descendant already learned the name.
  *
+ * Manual tools are root-only. A tool that the user alone may enable never
+ * enters a child's effective set, even when the root activated it: the root
+ * policy is read from the first node of the ancestor chain and applied to every
+ * node that has a parent. Enabling it in Main therefore cannot leak it into a
+ * subagent session through inheritance or through a learned grant.
+ *
  * A synchronous operation must resolve the ancestor chain once and then ask
  * {@link CapabilityScopeView.allows} for every tool. Eligibility can grow
  * mid-turn, so a view is deliberately fresh for one operation: it is never
@@ -55,6 +61,9 @@ export type CapabilityParentSource =
  * the view was returned. `available` is a detached, read-only snapshot; keeping
  * or mutating the returned object cannot change authority state.
  */
+/** Name policy for tools that only the root session may hold. */
+export type CapabilityRootOnlyPolicy = (name: string) => boolean;
+
 export interface CapabilityScopeView {
   readonly allows: (name: string) => boolean;
   readonly available: ReadonlySet<string>;
@@ -65,6 +74,8 @@ interface ScopeState {
   denied: ReadonlySet<string>;
   /** Append-only qualification learned by earlier operations. */
   learned: Set<string>;
+  /** Root-only policy; only the chain's first node is consulted. */
+  rootOnly: CapabilityRootOnlyPolicy | null;
 }
 
 interface ScopeNode {
@@ -78,7 +89,7 @@ const NO_DENIALS: ReadonlySet<string> = new Set<string>();
 function stateFor(pi: CapabilityToolCatalog): ScopeState {
   let state = scopes.get(pi);
   if (state === undefined) {
-    state = { parent: null, denied: NO_DENIALS, learned: new Set<string>() };
+    state = { parent: null, denied: NO_DENIALS, learned: new Set<string>(), rootOnly: null };
     scopes.set(pi, state);
   }
   return state;
@@ -121,6 +132,7 @@ function ancestorChain(pi: CapabilityToolCatalog): ScopeNode[] {
  */
 export function createCapabilityScopeView(pi: CapabilityToolCatalog): CapabilityScopeView {
   const chain = ancestorChain(pi);
+  const rootOnly = chain[0]?.state.rootOnly ?? null;
 
   let inheritedDenied: ReadonlySet<string> = NO_DENIALS;
   let parentEffective: ReadonlySet<string> | null = null;
@@ -147,6 +159,11 @@ export function createCapabilityScopeView(pi: CapabilityToolCatalog): Capability
     for (const name of node.state.learned) {
       if (!denied.has(name)) effective.add(name);
     }
+    // Manual tools stay in the root's own set. A node with a parent drops them
+    // here, so neither its own view nor any descendant can qualify them.
+    if (rootOnly !== null && node !== chain[0]) {
+      for (const name of effective) if (rootOnly(name)) effective.delete(name);
+    }
 
     targetParentEffective = parentEffective;
     targetDenied = denied;
@@ -160,9 +177,29 @@ export function createCapabilityScopeView(pi: CapabilityToolCatalog): Capability
   const allows =
     parent === null
       ? (name: string): boolean => !denied.has(name)
-      : (name: string): boolean => !denied.has(name) && parent.has(name);
+      : (name: string): boolean =>
+          !denied.has(name) && (rootOnly === null || !rootOnly(name)) && parent.has(name);
 
   return { allows, available: new Set(targetEffective) };
+}
+
+/**
+ * Declare which tool names only the root session may hold.
+ *
+ * The policy is stored on the catalog it is set on and consulted from the first
+ * node of every ancestor chain, so a root sets it once and every child view
+ * enforces it. Passing a null policy removes the restriction.
+ */
+export function setCapabilityRootOnlyPolicy(
+  pi: CapabilityToolCatalog,
+  policy: CapabilityRootOnlyPolicy | null,
+): void {
+  stateFor(pi).rootOnly = policy;
+}
+
+/** The root-only policy that governs this catalog's chain, or null. */
+export function capabilityRootOnlyPolicy(pi: CapabilityToolCatalog): CapabilityRootOnlyPolicy | null {
+  return ancestorChain(pi)[0]?.state.rootOnly ?? null;
 }
 
 /**
@@ -203,6 +240,9 @@ export function capabilityAllowsTool(pi: CapabilityToolCatalog, name: string): b
   const state = stateFor(pi);
   if (state.denied.has(name)) return false;
   const parent = resolvedParent(state);
+  // The root holds manual tools; no scope below it may qualify one.
   if (parent === null) return true;
+  const rootOnly = capabilityRootOnlyPolicy(pi);
+  if (rootOnly !== null && rootOnly(name)) return false;
   return createCapabilityScopeView(parent).available.has(name);
 }

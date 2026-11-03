@@ -132,6 +132,8 @@ Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返�
 
 用户直接启用走独立入口：`src/capability/command.ts` 解析 `/capability`，`src/capability/manual.ts` 先调用共享的 `activation.ts` 激活工具，再把实际激活的成员以 `manual` 分类写入同一 `capability-discovery` 记录。先激活后记录使记录不会包含被激活阶段静默遮掉的成员；记录写入失败不回滚激活，命令单独报告该失败。
 
+`capability.manualTools` 的门禁收在 `scope.ts`：根作用域保存名单谓词，任何带父节点的视图在计算 `effective` 与 `allows` 时都排除名单内名字，因此子会话既看不到也不能继承。`tool-catalog.ts` 默认排除名单内工具，只有命令与执行守卫传 `includeManual`；`activation.ts` 对发现路径返回 `manual_only`。
+
 工具资格按设计只增不减，角色排除仍优先。每次同步目录投影只解析一次资格视图；不把快照跨请求或工具调用缓存。资格、注册和激活是三件不同的事。
 
 发现记录按当前分支保存，不重复存储参数 schema；请求投影依据当前声明提供接口。严格工具 allowlist 可能拒绝不匹配的 MCP 成员。当前先写记录、再激活的顺序会让未激活成员残留在规范记忆中，后续投影可能再次展示它们。这是与成功获得能力才应累积的要求不一致的已知缺陷，详见[已知问题](known-issues.md#严格工具-allowlist-下的激活记忆不一致)。

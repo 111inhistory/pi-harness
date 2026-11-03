@@ -19,7 +19,11 @@ import {
 import { CAPABILITY_SECTION, capabilityPromptTranscript } from "../../src/capability/prompt.ts";
 import { enableManualTools, type ManualEnableHost } from "../../src/capability/manual.ts";
 import { parseCapabilityCommand, installCapabilityCommand } from "../../src/capability/command.ts";
-import { setCapabilityParent } from "../../src/capability/scope.ts";
+import { setCapabilityParent, setCapabilityRootOnlyPolicy } from "../../src/capability/scope.ts";
+import { createEligibleToolCatalog } from "../../src/capability/tool-catalog.ts";
+import { activateToolNames } from "../../src/capability/activation.ts";
+import { manualToolMatcher } from "../../src/capability/manual-tools.ts";
+import { resolveHarnessConfig } from "../../src/harness-config.ts";
 
 interface FakeTool {
   readonly name: string;
@@ -239,4 +243,60 @@ test("completions offer subcommands, then registered names after enable", async 
   assert.equal(await fixture.completions("search gi"), null);
   const values = (await fixture.completions("enable de") ?? []).map((item) => item.value);
   assert.deepEqual(values, ["enable deck_pages"]);
+});
+
+test("a manual tool is invisible to discovery and cannot be activated by it", () => {
+  const api = host(tools, []);
+  setCapabilityRootOnlyPolicy(api, manualToolMatcher(["deck_*"]));
+
+  assert.deepEqual(createEligibleToolCatalog(api).names.has("deck_pages"), false, "discovery never sees it");
+  assert.deepEqual(createEligibleToolCatalog(api, { includeManual: true }).names.has("deck_pages"), true,
+    "the user command and the execution guard see it");
+
+  const refused = activateToolNames(api, ["deck_pages"]);
+  assert.deepEqual(refused.skipped, [{ name: "deck_pages", reason: "manual_only" }]);
+  assert.deepEqual(api.activeNames(), []);
+
+  const enabled = activateToolNames(api, ["deck_pages"], { includeManual: true });
+  assert.deepEqual(enabled.activated, ["deck_pages"]);
+});
+
+test("a child scope never holds a manual tool, even after the root enabled it", () => {
+  const root = host(tools, []);
+  setCapabilityRootOnlyPolicy(root, manualToolMatcher(["deck_pages"]));
+  enableManualTools(root, ["deck_pages"]);
+  assert.deepEqual(root.activeNames(), ["deck_pages"]);
+
+  const child = host(tools, []);
+  setCapabilityParent(child, root);
+  assert.equal(createEligibleToolCatalog(child, { includeManual: true }).names.has("deck_pages"), false,
+    "an inherited or learned grant cannot qualify a manual tool below Main");
+  const outcome = activateToolNames(child, ["deck_pages"], { includeManual: true });
+  assert.deepEqual(outcome.skipped, [{ name: "deck_pages", reason: "not_permitted" }]);
+  assert.deepEqual(child.activeNames(), []);
+});
+
+test("the manual tool list is configured per layer and validated", () => {
+  const config = resolveHarnessConfig([
+    { source: "global", value: { capability: { manualTools: ["deploy_prod", "mcp__prod__*"] } } },
+  ]);
+  assert.deepEqual(config.capability.manualTools, ["deploy_prod", "mcp__prod__*"]);
+  const matcher = manualToolMatcher(config.capability.manualTools);
+  assert.equal(matcher("deploy_prod"), true);
+  assert.equal(matcher("mcp__prod__rotate"), true);
+  assert.equal(matcher("mcp__staging__rotate"), false);
+
+  const replaced = resolveHarnessConfig([
+    { source: "global", value: { capability: { manualTools: ["a"] } } },
+    { source: "project", value: { capability: { manualTools: ["b"] } } },
+  ]);
+  assert.deepEqual(replaced.capability.manualTools, ["b"], "a later layer replaces the list");
+
+  for (const value of [[1], [""], "deploy_prod", { tool: "x" }]) {
+    assert.throws(
+      () => resolveHarnessConfig([{ source: "global", value: { capability: { manualTools: value } } }]),
+      /manualTools must be an array of non-empty tool name patterns/,
+      JSON.stringify(value),
+    );
+  }
 });

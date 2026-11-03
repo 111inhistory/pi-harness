@@ -67,7 +67,7 @@ function manualEntries(branch: readonly unknown[] | null | undefined): Capabilit
 function renderList(ctx: ExtensionCommandContext, pi: ExtensionAPI): string {
   const manual = manualEntries(ctx.sessionManager.getBranch());
   const active = pi.getActiveTools();
-  const eligible = createEligibleToolCatalog(pi).tools.length;
+  const eligible = createEligibleToolCatalog(pi, { includeManual: true }).tools.length;
   const lines = [`Manual capabilities (${manual.length}):`];
   lines.push(...(manual.length === 0
     ? ['  none']
@@ -81,7 +81,7 @@ function renderList(ctx: ExtensionCommandContext, pi: ExtensionAPI): string {
 function renderSearch(query: string, pi: ExtensionAPI): string {
   const needle = query.toLowerCase();
   const active = new Set(pi.getActiveTools());
-  const matches = createEligibleToolCatalog(pi).tools.filter((tool) => {
+  const matches = createEligibleToolCatalog(pi, { includeManual: true }).tools.filter((tool) => {
     const description = typeof tool.description === 'string' ? tool.description : '';
     return tool.name.toLowerCase().includes(needle) || description.toLowerCase().includes(needle);
   });
@@ -118,8 +118,16 @@ function renderEnable(result: ReturnType<typeof enableManualTools>): string {
   return lines.join('\n');
 }
 
-async function run(raw: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
+async function run(
+  raw: string,
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+  prepare: ((ctx: ExtensionCommandContext) => void) | undefined,
+): Promise<void> {
   const command = parseCapabilityCommand(raw);
+  // Refresh the manual-tool policy before any catalog read: the command may run
+  // before the first turn of a session.
+  prepare?.(ctx);
   if (command.verb === 'list') {
     ctx.ui.notify(renderList(ctx, pi), 'info');
     return;
@@ -145,7 +153,7 @@ function completions(prefix: string, pi: ExtensionAPI): { value: string; label: 
   if (tokens[0] !== 'enable') return null;
   const last = tokens[tokens.length - 1]!;
   const head = trimmed.slice(0, trimmed.length - last.length);
-  const items = createEligibleToolCatalog(pi).tools
+  const items = createEligibleToolCatalog(pi, { includeManual: true }).tools
     .filter((tool) => tool.name.startsWith(last))
     .slice(0, SEARCH_LIMIT)
     .map((tool) => ({ value: `${head}${tool.name}`, label: tool.name }));
@@ -153,13 +161,16 @@ function completions(prefix: string, pi: ExtensionAPI): { value: string; label: 
 }
 
 /** Register the command on one Pi extension API. */
-export function installCapabilityCommand(pi: ExtensionAPI): void {
+export function installCapabilityCommand(
+  pi: ExtensionAPI,
+  options: { readonly prepare?: (ctx: ExtensionCommandContext) => void } = {},
+): void {
   pi.registerCommand('capability', {
     description: 'List capability memory and enable registered tools (append-only)',
     getArgumentCompletions: (prefix) => completions(prefix, pi),
     handler: async (raw, ctx) => {
       try {
-        await run(raw, ctx, pi);
+        await run(raw, ctx, pi, options.prepare);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         ctx.ui.notify(error instanceof CapabilityCommandError ? `${error.code}: ${message}` : message, 'error');
