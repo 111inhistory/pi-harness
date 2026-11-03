@@ -1,0 +1,243 @@
+#!/usr/bin/env node
+/**
+ * Online acceptance entry for manual capabilities.
+ *
+ * Runs a real SDK session with the real harness assembly, a real model from the
+ * configured providers and the real MCP servers from `mcp.json`. The offline
+ * suite (`test/typed/capability-manual-sdk.test.ts`) covers the same contract
+ * with a scripted model and a synthetic stdio server; this entry repeats it
+ * against the user's own providers and MCP servers.
+ *
+ * The manual policy is passed to this session in memory, so the script never
+ * edits `harness.json`. It never creates, edits or deletes configuration, never
+ * prints credentials, URLs, headers or environment values, writes no session
+ * file, and calls no MCP tool: it only lists and activates them, so an online
+ * run has no server-side effects.
+ *
+ * Requirements (the script only checks them):
+ *   - model auth: `auth.json` in the agent directory or a provider environment key
+ *   - `<agentDir>/mcp.json` with at least one enabled server
+ *
+ * Usage:
+ *   node --import tsx scripts/verify-capability-manual-online.mjs [options]
+ *
+ * Options:
+ *   --agent-dir <dir>   Pi agent directory (default: $PI_CODING_AGENT_DIR or ~/.pi/agent)
+ *   --model <p/id>      Model to use (default: the first model with configured auth)
+ *   --server <name>     MCP server from mcp.json (default: the first enabled server)
+ *   --tool <name>       Manual fixture tool name (default: manual_fixture)
+ *   --timeout <ms>      Whole-run timeout (default: 300000)
+ *   -h, --help
+ *
+ * Exit codes: 0 pass, 1 failed verification, 2 missing dependencies.
+ */
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import process from 'node:process';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { parseArgs } from 'node:util';
+
+import {
+  createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
+} from '@earendil-works/pi-coding-agent';
+
+import capabilityExtension from '../extensions/capability.ts';
+import { installCapabilityMcp } from '../src/capability/native-discovery.ts';
+import { loadHarnessConfig } from '../src/harness-config.ts';
+import { installResultRendering } from '../src/result-rendering.ts';
+import subagentExtension from '../src/subagent/extension.ts';
+
+const { values: options } = parseArgs({
+  options: {
+    'agent-dir': { type: 'string' },
+    model: { type: 'string' },
+    server: { type: 'string' },
+    tool: { type: 'string', default: 'manual_fixture' },
+    timeout: { type: 'string', default: '300000' },
+    help: { type: 'boolean', short: 'h' },
+  },
+});
+
+if (options.help) {
+  process.stdout.write(`Online manual-capability acceptance.
+
+  node --import tsx scripts/verify-capability-manual-online.mjs [--agent-dir DIR] [--model PROVIDER/ID]
+                                                              [--server NAME] [--tool NAME] [--timeout MS]
+
+Exit codes: 0 pass, 1 failed verification, 2 missing dependencies.
+`);
+  process.exit(0);
+}
+
+const agentDir = path.resolve(options['agent-dir'] ?? process.env['PI_CODING_AGENT_DIR'] ?? path.join(process.env['HOME'] ?? '.', '.pi', 'agent'));
+const cwd = process.cwd();
+const toolName = options.tool;
+const MARKER = 'MANUAL_ONLINE_FIXTURE_EXECUTED';
+const blocked = [];
+const failures = [];
+const report = (line) => process.stdout.write(`${line}\n`);
+
+async function readJson(file) {
+  try {
+    return JSON.parse(await readFile(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+const mcpConfig = await readJson(path.join(agentDir, 'mcp.json'));
+const serverNames = Object.entries(mcpConfig?.mcpServers ?? {})
+  .filter(([, config]) => config === null || typeof config !== 'object' || config.enabled !== false)
+  .map(([name]) => name);
+if (serverNames.length === 0) blocked.push(`no enabled MCP server in ${path.join(agentDir, 'mcp.json')}`);
+const server = options.server ?? serverNames[0];
+if (server !== undefined && serverNames.length > 0 && !serverNames.includes(server)) {
+  blocked.push(`MCP server "${server}" is not enabled in mcp.json`);
+}
+
+const runtime = await ModelRuntime.create({ refreshOnCreate: false });
+const available = await runtime.getAvailable().catch(() => []);
+if (available.length === 0) blocked.push('no model with configured auth (auth.json or provider environment keys)');
+let model = available[0];
+if (options.model !== undefined) {
+  const slash = options.model.indexOf('/');
+  model = slash > 0 ? runtime.getModel(options.model.slice(0, slash), options.model.slice(slash + 1)) ?? undefined : undefined;
+  if (model === undefined) blocked.push(`model "${options.model}" is not registered`);
+}
+
+if (blocked.length > 0) {
+  report('[blocked] online acceptance needs, and did not find:');
+  for (const item of blocked) report(`  - ${item}`);
+  report('');
+  report('The script created and changed nothing. Add the missing configuration, then rerun:');
+  report('  node --import tsx scripts/verify-capability-manual-online.mjs');
+  process.exit(2);
+}
+
+const config = loadHarnessConfig({ cwd, agentDir, projectTrusted: false });
+const manualConfig = {
+  ...config,
+  capability: {
+    ...config.capability,
+    manualTools: [toolName, 'read_mcp_resource', `mcp__${server}__*`],
+  },
+};
+
+const workDir = await mkdtemp(path.join(tmpdir(), 'pi-manual-online-'));
+process.env['PI_SUBAGENT_SOCKET_DIR'] = path.join(workDir, 'uds');
+const settingsManager = SettingsManager.inMemory({
+  compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: 'off',
+});
+let session;
+let timedOut = false;
+const timer = setTimeout(() => {
+  timedOut = true;
+  session?.dispose();
+}, Number(options.timeout));
+
+try {
+  const loader = new DefaultResourceLoader({
+    cwd, agentDir, settingsManager,
+    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+    extensionFactories: [
+      {
+        name: 'manual-online-fixture',
+        factory: (api) => {
+          api.registerTool({
+            name: toolName,
+            label: 'Manual online fixture',
+            description: 'Returns a fixed marker. Only the user may enable it.',
+            parameters: { type: 'object', properties: {} },
+            defaultActive: true,
+            async execute() {
+              return { content: [{ type: 'text', text: MARKER }], details: {} };
+            },
+          });
+        },
+      },
+      {
+        // The real harness assembly, with this run's in-memory manual policy and
+        // a temporary MCP log, so the user's agent directory is not written.
+        name: 'harness',
+        factory: (api) => {
+          installResultRendering(api);
+          // Capability goes first so its fixed config becomes this surface's
+          // provider; the other installs reuse it instead of reading the disk.
+          capabilityExtension(api, { config: manualConfig });
+          subagentExtension(api);
+          installCapabilityMcp(api, { logPath: path.join(workDir, 'mcp.log') });
+        },
+      },
+    ],
+  });
+  await loader.reload();
+  const loadErrors = loader.getExtensions().errors;
+  if (loadErrors.length > 0) throw new Error(`extension load failed: ${loadErrors.map(String).join('; ')}`);
+
+  session = (await createAgentSession({
+    cwd, agentDir, modelRuntime: runtime, model, settingsManager, resourceLoader: loader,
+    sessionManager: SessionManager.inMemory(cwd),
+  })).session;
+  await session.bindExtensions({});
+  report(`[info] provider=${model.provider} model=${model.id} server=${server} agentDir=${agentDir}`);
+
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline && !session.getAllTools().some((tool) => tool.namespace?.name === `mcp__${server}`)) {
+    await sleep(100);
+  }
+  const mcpTools = session.getAllTools().filter((tool) => tool.namespace?.name === `mcp__${server}`);
+  if (mcpTools.length === 0) throw new Error(`MCP server "${server}" registered no tools; pick another with --server`);
+
+  await session.prompt('Reply with the single word READY. Do not call any tool.');
+  if (session.getActiveToolNames().includes(toolName)) failures.push(`${toolName} stayed active before /capability enable`);
+  const activeMcpBefore = mcpTools.filter((tool) => session.getActiveToolNames().includes(tool.name));
+  if (activeMcpBefore.length > 0) failures.push(`MCP tools were active before /capability enable: ${activeMcpBefore.map((tool) => tool.name).join(',')}`);
+  report(`[info] before enable: active=${session.getActiveToolNames().length} fixtureActive=${session.getActiveToolNames().includes(toolName)}`);
+
+  const command = session.extensionRunner.getRegisteredCommands().find((entry) => entry.name === 'capability');
+  if (command === undefined) throw new Error('/capability is not registered');
+  const notices = [];
+  const commandContext = session.extensionRunner.createCommandContext();
+  Object.defineProperty(commandContext, 'ui', {
+    value: { notify: (text, type = 'info') => { notices.push({ text, type }); } },
+  });
+  const resourceReader = session.getAllTools().some((tool) => tool.name === 'read_mcp_resource');
+  const enableNames = [toolName, ...(resourceReader ? ['read_mcp_resource'] : []), ...mcpTools.map((tool) => tool.name)];
+  await command.handler(`enable ${enableNames.join(' ')}`, commandContext);
+  report(`[info] /capability enable -> ${notices.map((notice) => notice.type).join(',') || 'no notice'}`);
+  for (const name of enableNames) {
+    if (!session.getActiveToolNames().includes(name)) failures.push(`${name} was not activated by /capability enable`);
+  }
+
+  await session.prompt(`Call the tool ${toolName} exactly once and reply with its output verbatim.`);
+  const fixture = session.messages.findLast((message) => message.role === 'toolResult' && message.toolName === toolName);
+  if (fixture === undefined) failures.push(`the model did not call ${toolName} after enablement`);
+  else if (fixture.isError === true || !JSON.stringify(fixture.content).includes(MARKER)) {
+    failures.push(`${toolName} did not return its marker`);
+  } else {
+    report(`[info] ${toolName} executed through the real model`);
+  }
+  report(`[info] MCP tools activated without calls: ${mcpTools.length}; resource reader ${resourceReader ? 'enabled' : 'not registered by this server'}`);
+
+  if (failures.length > 0) {
+    report('[failed]');
+    for (const failure of failures) report(`  - ${failure}`);
+    process.exitCode = 1;
+  } else {
+    report('[pass] manual gating and /capability enable verified online; no MCP tool was called');
+  }
+} catch (error) {
+  report(`[failed] ${timedOut ? 'timed out; ' : ''}${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 1;
+} finally {
+  clearTimeout(timer);
+  try { await session?.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); } catch { /* already stale */ }
+  session?.dispose();
+  // Give the MCP stdio transports a moment to close their children.
+  await sleep(500);
+  await rm(workDir, { recursive: true, force: true });
+  // MCP child processes and harness listeners may outlive dispose(); exit
+  // explicitly so a passing run does not hang the shell.
+  process.exit(process.exitCode ?? 0);
+}

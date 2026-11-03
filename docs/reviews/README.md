@@ -19,6 +19,7 @@
 | [存储 v2 过渡实现审查](subagent-storage-v2-groundwork-review.md) | 适配层断接、持久化和历史区间问题 |
 | [旧历史批量迁移记录](subagent-migration-batch.md) | 一次离线数据迁移的操作与验证 |
 | [迁移样本人工验收](subagent-migration-smoke.md) | 单样本恢复、工具调用和在线续跑 |
+| [Manual 能力验收](capability-manual-acceptance.md) | 完整 SDK 会话、在线组合与准入开销 |
 
 ## 使用边界
 
