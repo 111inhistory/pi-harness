@@ -16,7 +16,7 @@ import { routeSubagent } from './routing.ts';
 import { DEFAULT_SOCKET_DIR, deriveSessionUid, endpointKey, getAgentSocketPath } from '../ipc/socket.ts';
 import {
   assertCrossSessionSupported, crossSessionSupported, liveSessions, registerSession,
-  sendToSessionEndpoint, unregisterSession,
+  sendToSessionEndpoint, unregisterSession, updateSessionName,
   type LiveSession,
 } from './session-directory.ts';
 import { ensurePrivateSocketRoot } from '../ipc/platform.ts';
@@ -384,6 +384,22 @@ export class RootService implements ManagedWriteHost {
       if (address.startsWith(session.socketDir + prefix)) return { kind: 'foreign' };
     }
     return { kind: 'local' };
+  }
+
+  /**
+   * Mirror a native session rename into the shared directory.
+   *
+   * The SDK reports the new name; this session owns its record, so it rewrites
+   * only the name and keeps the rest of the published identity. Reachability is
+   * auxiliary: a failed update is reported, never fatal.
+   */
+  async syncSessionName(name: string | null): Promise<void> {
+    if (!crossSessionSupported()) return;
+    try {
+      await updateSessionName(this.#socketRoot, { sessionId: this.sessionId, name });
+    } catch (error) {
+      this.#report(new Error(`This session's published name was not updated: ${errorOf(error).message}`));
+    }
   }
 
   /**

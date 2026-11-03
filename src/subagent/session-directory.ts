@@ -156,6 +156,33 @@ export async function registerSession(
 }
 
 /**
+ * Update this session's own published name after the SDK reports a rename.
+ *
+ * The name comes from the native session metadata; this only mirrors it into the
+ * directory. Only the session that owns the record may rewrite it; a record that
+ * no longer matches is left untouched.
+ */
+export async function updateSessionName(
+  root: string,
+  entry: { readonly sessionId: string; readonly name: string | null },
+): Promise<LiveSession | null> {
+  const uid = deriveSessionUid(entry.sessionId);
+  const target = recordPath(root, uid);
+  let current: LiveSession | null;
+  try {
+    current = readRecord(JSON.parse(await readFile(target, 'utf8')) as unknown, root, uid);
+  } catch {
+    return null;
+  }
+  if (current === null || current.sessionId !== entry.sessionId) return null;
+  const name = typeof entry.name === 'string' && entry.name !== '' ? entry.name : null;
+  if (current.name === name) return current;
+  const next: LiveSession = { ...current, name };
+  await writeRecord(root, next);
+  return next;
+}
+
+/**
  * Remove this session's own record. A record written by another session, or one
  * that no longer matches, is left untouched; the return value says whether this
  * call removed its own record.

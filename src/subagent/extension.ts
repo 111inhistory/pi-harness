@@ -74,6 +74,18 @@ export default function subagentExtension(api: ExtensionAPI): void {
     await activate(ctx);
   });
   api.on('session_tree', async (_event, ctx) => { epoch += 1; await activate(ctx); });
+  api.on('session_info_changed', async (event, ctx) => {
+    // The native rename event is the lifecycle source; the directory mirrors it
+    // so another session and /subagent sessions see the new name immediately.
+    const service = lifecycle.service;
+    if (service === null || transitionPending) return;
+    try {
+      service.assertOperational();
+      await service.syncSessionName(event.name ?? null);
+    } catch (error) {
+      report(ctx, error);
+    }
+  });
   api.on('session_before_tree', async (_event, ctx) => beforeTransition(ctx));
   api.on('session_before_switch', async (_event, ctx) => beforeTransition(ctx));
   api.on('session_before_fork', async (_event, ctx) => beforeTransition(ctx));

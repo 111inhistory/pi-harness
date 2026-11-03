@@ -19,6 +19,7 @@ import {
   sessionMainAddress,
   sessionSenderId,
   unregisterSession,
+  updateSessionName,
 } from "../../src/subagent/session-directory.ts";
 import { deriveSessionUid, getAgentSocketPath } from "../../src/ipc/socket.ts";
 
@@ -104,6 +105,20 @@ test("dead and malformed records are never reported as live sessions", async (t)
   await writeFile(path.join(directory, "broken.json"), "{not json");
   assert.deepEqual(await liveSessions(socketRoot), []);
   assert.equal((await readdir(directory)).includes("broken.json"), true);
+});
+
+test("a session can rename only its own published record", async (t) => {
+  const socketRoot = await root(t);
+  await registerSession(socketRoot, { sessionId: "session-alpha", cwd: "/tmp/project" });
+  const renamed = await updateSessionName(socketRoot, { sessionId: "session-alpha", name: "renamed worker" });
+  assert.equal(renamed?.name, "renamed worker");
+  assert.equal((await liveSessions(socketRoot))[0]?.name, "renamed worker");
+
+  assert.equal(await updateSessionName(socketRoot, { sessionId: "session-other", name: "hijack" }), null);
+  assert.equal((await liveSessions(socketRoot))[0]?.name, "renamed worker", "a foreign session cannot rewrite the record");
+
+  await updateSessionName(socketRoot, { sessionId: "session-alpha", name: null });
+  assert.equal((await liveSessions(socketRoot))[0]?.name, null, "clearing the native name clears the record");
 });
 
 test("a session publishes its native name; no coordination state is stored", async (t) => {
