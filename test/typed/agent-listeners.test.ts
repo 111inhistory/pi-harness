@@ -18,8 +18,6 @@ import {
   type BroadcastReceipt,
 } from "../../src/subagent/runtime.ts";
 
-const posix = process.platform !== "win32";
-
 async function socketRoot(t: test.TestContext): Promise<string> {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), "pi-agent-listeners-"));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
@@ -73,7 +71,7 @@ test('endpoint resolution accepts registered addresses and rejects unknown addre
   }
 });
 
-test("all registered stopped actor endpoints stay reachable beyond the display window", { skip: !posix, timeout: 15000 }, async (t) => {
+test("all registered stopped actor endpoints stay reachable beyond the display window", { timeout: 15000 }, async (t) => {
   const root = await socketRoot(t);
   const runtime = createSubagentRuntime({
     startJob: () => ({ done: Promise.resolve({ result: "done", messages: [] }), cancel() {} }),
@@ -126,7 +124,7 @@ test("all registered stopped actor endpoints stay reachable beyond the display w
   assert.deepEqual(sends, [], "reachability alone does not deliver a domain message");
 });
 
-test("missing or invalid senders are rejected with onError and never reach runtime send", { skip: !posix }, async (t) => {
+test("missing or invalid senders are rejected with onError and never reach runtime send", async (t) => {
   const root = await socketRoot(t);
   const sends: unknown[] = [];
   const errors: Error[] = [];
@@ -164,7 +162,7 @@ test("missing or invalid senders are rejected with onError and never reach runti
   assert.equal(sends.length, 0, "no invalid frame may reach the runtime send port");
 });
 
-test("one broadcast frame invokes the domain broadcast once and reports partial errors", { skip: !posix }, async (t) => {
+test("one broadcast frame invokes the domain broadcast once and reports partial errors", async (t) => {
   const root = await socketRoot(t);
   const receipt: BroadcastReceipt = {
     ok: false,
@@ -205,7 +203,7 @@ test("one broadcast frame invokes the domain broadcast once and reports partial 
   assert.deepEqual(failure.detail.errors, receipt.errors);
 });
 
-test("close rejects new traffic and releases every registered socket", { skip: !posix }, async (t) => {
+test("close rejects new traffic and releases every registered socket", async (t) => {
   const root = await socketRoot(t);
   const listeners = new AgentListeners({
     sessionId: 'test-session',
@@ -222,12 +220,12 @@ test("close rejects new traffic and releases every registered socket", { skip: !
 
   const agent = getAgentSocketPath("Main", root);
   const broadcast = getBroadcastSocketPath("Main", root);
-  assert.equal((await fsp.stat(agent)).isSocket(), true);
-  assert.equal((await fsp.stat(broadcast)).isSocket(), true);
+  assert.equal(await canConnect(agent), true, "the Main endpoint accepts a connection while open");
+  assert.equal(await canConnect(broadcast), true, "the broadcast endpoint accepts a connection while open");
 
   await listeners.close();
   for (const address of [agent, broadcast]) {
-    await assert.rejects(fsp.stat(address), { code: "ENOENT" });
+    assert.equal(await canConnect(address), false, `the released endpoint refuses a connection: ${address}`);
     await assert.rejects(
       writeSocket(address, { from: "Main", content: "after close" }),
       (error: unknown) => ["ENOENT", "ECONNREFUSED"].includes(errorCode(error) ?? ""),

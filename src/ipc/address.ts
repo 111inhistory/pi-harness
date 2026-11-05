@@ -30,7 +30,24 @@ export function defaultSocketRoot({
   return path.join(tmpdir, `pi-subagents-${userId ?? 0}`);
 }
 
+/**
+ * The kernel namespace shared by every endpoint of one socket root.
+ *
+ * A Named Pipe has no directory of its own, so the root is folded into the
+ * name: one root maps to one prefix, and every endpoint below it keeps that
+ * prefix. The hash is taken over the resolved, case-folded path because the
+ * Windows filesystem compares paths that way; this is the only place a root
+ * becomes a pipe name.
+ *
+ * Eight hex characters (32 bits) identify the namespaces that are concurrently
+ * active on this machine, not a lifetime-global id: a collision at that scale is
+ * negligible, and the kernel's own first-instance bind refuses a colliding name.
+ */
+export function pipeNamespace(root: string): string {
+  const namespace = crypto.createHash("sha256").update(path.win32.resolve(root).toLowerCase()).digest("hex").slice(0, 8);
+  return `${PIPE_ROOT}pi-harness-${namespace}-`;
+}
+
 export function pipePath(root: string, name: string): string {
-  const namespace = crypto.createHash("sha256").update(path.win32.resolve(root).toLowerCase()).digest("hex").slice(0, 12);
-  return `${PIPE_ROOT}pi-harness-${namespace}-${name}.sock`;
+  return `${pipeNamespace(root)}${name}.sock`;
 }

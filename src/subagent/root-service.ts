@@ -14,8 +14,9 @@ import { createSubagentStore, EVENTS, SUBAGENT_SESSIONS_DIR, writeFileAtomic } f
 import { hasJobView, jobViewPaths, writeJobView, readTranscript } from './view.ts';
 import { routeSubagent } from './routing.ts';
 import { DEFAULT_SOCKET_DIR, deriveSessionUid, endpointKey, getAgentSocketPath } from '../ipc/socket.ts';
+import { ipc } from '../ipc/platform.ts';
 import {
-  assertCrossSessionSupported, crossSessionSupported, liveSessions, registerSession,
+  liveSessions, registerSession,
   sendToSessionEndpoint, sessionMainAddress, unregisterSession, updateSessionName,
   type LiveSession,
 } from './session-directory.ts';
@@ -403,17 +404,19 @@ export class RootService implements ManagedWriteHost {
   /** The socket root every live session of this user publishes itself under. */
   get socketRoot(): string { return this.#socketRoot; }
 
-  /** Live sessions reachable from here, including this one. Empty where unsupported. */
+  /** Live sessions reachable from here, including this one. */
   listSessions(): Promise<LiveSession[]> {
-    return crossSessionSupported() ? liveSessions(this.#socketRoot) : Promise.resolve([]);
+    return liveSessions(this.#socketRoot);
   }
 
   /**
    * Classify a managed address against this root and the shared directory.
    *
-   * This is the one place that decides whether a path is local, this session's
+   * This is the one place that decides whether an address is local, this session's
    * own Main, another live session's Main, or another session's non-Main
-   * endpoint. It uses the same address space as every other `msg_write` call.
+   * endpoint. It uses the same address space as every other `msg_write` call;
+   * whether an address belongs to a session's endpoint namespace is the IPC
+   * platform adapter's answer, not a filesystem assumption made here.
    */
   async sessionEndpoint(address: string): Promise<SessionEndpoint> {
     const ownSocketDir = path.join(this.#socketRoot, deriveSessionUid(this.sessionId));
@@ -427,10 +430,9 @@ export class RootService implements ManagedWriteHost {
         return { kind: 'session', session };
       }
     }
-    const prefix = `${path.sep}`;
     for (const session of live) {
       if (session.sessionId === this.sessionId) continue;
-      if (address.startsWith(session.socketDir + prefix)) return { kind: 'foreign' };
+      if (ipc.belongsToNamespace(address, session.socketDir)) return { kind: 'foreign' };
     }
     return { kind: 'local' };
   }
@@ -447,7 +449,6 @@ export class RootService implements ManagedWriteHost {
    */
   async connectSession(target: string): Promise<SessionConnect> {
     this.assertOperational();
-    assertCrossSessionSupported();
     const wanted = target.trim();
     if (wanted === '') {
       throw new SubagentError('invalid_command_args', 'connect requires one live session uid or session id.');
@@ -539,7 +540,6 @@ export class RootService implements ManagedWriteHost {
    * auxiliary: a failed update is reported, never fatal.
    */
   async syncSessionName(name: string | null): Promise<void> {
-    if (!crossSessionSupported()) return;
     try {
       await updateSessionName(this.#socketRoot, { sessionId: this.sessionId, name });
     } catch (error) {
@@ -561,7 +561,6 @@ export class RootService implements ManagedWriteHost {
     readonly signal?: AbortSignal | undefined;
   }): Promise<void> {
     this.assertOperational();
-    assertCrossSessionSupported();
     return sendToSessionEndpoint({
       sender: { sessionId: this.sessionId, uid: deriveSessionUid(this.sessionId) },
       ...command,
@@ -573,8 +572,6 @@ export class RootService implements ManagedWriteHost {
    * auxiliary: a failed publish is reported, and this root keeps running.
    */
   async #publishSession(): Promise<void> {
-    // Windows is explicitly out of scope; no record is published there.
-    if (!crossSessionSupported()) return;
     try {
       await registerSession(this.#socketRoot, {
         sessionId: this.sessionId,

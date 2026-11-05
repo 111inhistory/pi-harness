@@ -52,6 +52,7 @@ test("a published session is readable by uid, id and Main endpoint", async (t) =
 
 test("the wire identity is the stable session uid followed by Main", () => {
   const uid = deriveSessionUid("session-alpha");
+  assert.match(uid, /^[0-9a-f]{8}$/, "one uid rule on every platform, not a per-platform fold");
   const sender = sessionSenderId(uid);
   assert.equal(sender, `${uid}:Main`);
   assert.deepEqual(parseSessionSenderId(sender), { uid });
@@ -59,6 +60,22 @@ test("the wire identity is the stable session uid followed by Main", () => {
   assert.equal(parseSessionSenderId("Main"), null, "a local actor id is not a session identity");
   assert.equal(parseSessionSenderId(`${uid}:`), null);
   assert.equal(parseSessionSenderId(`:Main`), null);
+});
+
+test("a record's socket directory is compared with native path identity", async (t) => {
+  const socketRoot = await root(t);
+  const session = await registerSession(socketRoot, { sessionId: "session-alpha", cwd: "/tmp/project" });
+  const recordPath = path.join(socketRoot, SESSION_DIRECTORY, `${session.uid}.json`);
+  const valid = JSON.parse(await readFile(recordPath, "utf8")) as Record<string, unknown>;
+  const recorded = String(valid['socketDir']);
+  // A spelling that always differs, so the comparison is actually exercised.
+  const respelled = recorded === recorded.toLowerCase() ? recorded.toUpperCase() : recorded.toLowerCase();
+  assert.notEqual(respelled, recorded);
+
+  await writeFile(recordPath, `${JSON.stringify({ ...valid, socketDir: respelled })}\n`);
+  const windows = process.platform === "win32";
+  assert.equal((await liveSessions(socketRoot)).length, windows ? 1 : 0,
+    windows ? "Windows compares the recorded directory case-insensitively" : "POSIX keeps the recorded directory case-sensitive");
 });
 
 test("a session removes only its own record", async (t) => {

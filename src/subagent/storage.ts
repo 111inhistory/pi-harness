@@ -23,6 +23,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
+import { sameParentDirectory, samePath } from '../fs-path.ts';
 import type { FileEntry, SessionEntry, SessionManager } from '@earendil-works/pi-coding-agent';
 
 export interface TreeEntry { readonly id?: string; readonly parentId?: string | null; readonly type?: string }
@@ -269,7 +270,7 @@ export function createSubagentStore<T extends StoreSession = StoreSession>(optio
   }
 
   function ownsFile(file: string): boolean {
-    return durable && typeof file === "string" && dirname(resolve(file)) === dir;
+    return durable && typeof file === "string" && sameParentDirectory(file, dir!);
   }
 
   function append(type: string, data: object): void {
@@ -360,12 +361,14 @@ export function createSubagentStore<T extends StoreSession = StoreSession>(optio
     const own = childFile(agentId);
     let target = typeof file === "string" && file !== "" ? resolve(file) : own;
     let relocated = false;
-    if (target !== own) {
+    if (!samePath(target, own)) {
       if (existsSync(own)) {
         // A rewound root may again record the foreign path after an earlier
         // branch already materialized our copy. Reuse that tree, not overwrite it.
         const existing = read(own);
-        if (existing === null || existing.getHeader()?.parentSession !== target || (anchor !== null && existing.getEntry(anchor) === undefined)) {
+        const parent = existing === null ? undefined : existing.getHeader()?.parentSession;
+        const sameParent = existing !== null && typeof parent === "string" && samePath(parent, target);
+        if (existing === null || !sameParent || (anchor !== null && existing.getEntry(anchor) === undefined)) {
           throw new SubagentStoreError("storage_seed_conflict", `Actor ${agentId} already has a different session file; refusing to overwrite ${own}.`, {
             agentId, file: own,
           });

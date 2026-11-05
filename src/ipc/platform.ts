@@ -12,6 +12,16 @@ export interface IpcPlatform {
   key(address: string): string;
   isEndpoint(address: unknown): boolean;
   isNamespace(address: unknown): boolean;
+  /**
+   * Whether one managed endpoint address belongs to the endpoint namespace a
+   * session's socket directory maps to.
+   *
+   * This is address classification only: it says which session's address space
+   * an address is in, and grants no authority over the endpoint. Unix nests
+   * endpoints below the directory; Windows folds the directory into one pipe
+   * prefix, so the rule cannot be expressed as a filesystem path test.
+   */
+  belongsToNamespace(address: string, socketDir: string): boolean;
   prepare(address: string): unknown;
   remove(address: string, identity?: EndpointIdentity | null): unknown;
 }

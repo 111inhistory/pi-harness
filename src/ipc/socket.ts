@@ -47,11 +47,18 @@ function errorCode(error: unknown): string | undefined {
     : undefined;
 }
 
+/**
+ * The stable session uid: a short, addressable fold of the native session id.
+ *
+ * Eight hex characters (32 bits) are shared by every platform so the session
+ * directory, the published record and the wire identity `<uid>:Main` follow one
+ * rule. It addresses concurrently active sessions, not a lifetime-global id.
+ */
 export function deriveSessionUid(sessionId: unknown): string {
   if (!sessionId || typeof sessionId !== "string") {
     return "default";
   }
-  return crypto.createHash("sha256").update(sessionId).digest("hex").slice(0, 6);
+  return crypto.createHash("sha256").update(sessionId).digest("hex").slice(0, 8);
 }
 
 export function getAgentSocketPath(id: string, socketDir: string = DEFAULT_SOCKET_DIR): string {

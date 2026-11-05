@@ -10,7 +10,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { RootService, SessionConnect } from "./root-service.ts";
 import { SubagentError, type StopResult } from "./runtime.ts";
 import { renderSubagentList } from "./status-view.ts";
-import { crossSessionSupported, sessionMainAddress, type LiveSession } from "./session-directory.ts";
+import { sessionMainAddress, type LiveSession } from "./session-directory.ts";
 
 export type SubagentCommand =
   | { readonly verb: "list"; readonly all: boolean; readonly id: string | null }
@@ -159,9 +159,6 @@ async function showList(
  * reach this one; the model never receives this catalog on its own.
  */
 function renderSessions(sessions: readonly LiveSession[], currentSessionId: string): string {
-  if (!crossSessionSupported()) {
-    return "Cross-session discovery is not available on this platform yet (POSIX only).";
-  }
   const lines = [`Live sessions (${sessions.length}):`];
   if (sessions.length === 0) lines.push("  none");
   for (const session of sessions) {

@@ -17,8 +17,8 @@
 | `command.ts`、`status-view.ts` | `/subagent` 命令注册、参数解析、错误呈现与列表文本渲染 | Job 状态、准入或消息投递 |
 | `capability/command.ts`、`capability/catalog.ts`、`capability/enable.ts`、`capability/activation.ts` | `/capability` 目录浏览与用户启用、按实时注册表解析启用目标、激活的共享实现（发现、命令与跨会话回复工具加载） | 检索会话、路由、Subagent 状态 |
 | `capability/admission.ts` | 单次操作的工具准入视图：一次解析作用域链与分支记录，提供 `declares`（声明）、`admits`（执行）、`admitsManual` 与 `admitsServer` | 跨请求缓存、第二套权限服务、改写激活集 |
-| `listeners.ts`、`ipc/` | 端点目录、监听、NDJSON 分帧与平台资源归属校验 | 用显示窗口决定可达性、另写广播状态机 |
-| `session-directory.ts` | 跨 session 目录的发布、存活校验与归属删除，受管 `Main` 路径寻址，`<uid>:Main` 复合发送者身份，跨 session 单帧写入；POSIX 平台限定 | 认证协议、跨主机调度、第二套消息状态机 |
+| `listeners.ts`、`ipc/` | 端点目录、监听、NDJSON 分帧、平台资源归属校验，以及“端点属于哪个 session 命名空间”的地址分类（Unix 为目录包含，Windows 为管道名前缀） | 用显示窗口决定可达性、另写广播状态机、用文件系统路径推断管道归属 |
+| `session-directory.ts` | 跨 session 目录的发布、存活校验与归属删除，受管 `Main` 路径寻址，`<uid>:Main` 复合发送者身份，跨 session 单帧写入 | 认证协议、跨主机调度、第二套消息状态机 |
 | `native-delivery.ts`、`delivery.ts` | 独立通知封装、检查原生交接结果、明确拒收后的保留会话追加 | 模型已读回执、自动重发或消息合并 |
 | `inherited-context.ts` | 共享分支捕获，在清理未决工具前锁定物理模型，并捕获独立的出站缓存标识 | 伪造身份或跨分支泄漏 |
 | `provider-session.ts`、`session-transcript.ts` | 按明确模型能力判断原生追加路径，组装尾部指令与工具声明；请求编码交给 Pi | 路由、执行授权、手写协议请求 |
@@ -79,7 +79,7 @@ Main 默认不激活 `msg_write`（`defaultActive: false`）。收到跨 session
 
 跨 session 消息走同一条接收路径，且只做 Main 之间的交互。发送侧由 `session-directory.ts` 解析目标 session 的 Socket 目录并写入一帧 `{from: "<session-uid>:Main", content}`；接收侧 `listeners.ts` 只在该根的 `Main` 端点接受此类帧，在 IPC 边界解析 `from` 的复合身份，用共享目录核对 uid 是否为存活 session，按该记录推导回复地址后交给 Runtime。Runtime 只接受宿主解析出的外部发送者描述，不自行读目录；外部发送者只能是 Main，接收者也只能是 Main。
 
-发现由同一目录提供：`RootService.initialize` 在监听就绪后发布记录（含原生 session name），`retire` 按记录归属删除。`crossSessionSupported()` 把平台范围收在一处：Windows 不发布记录，`/subagent sessions` 提示不可用，跨 session 发送以 `unsupported_platform` 拒绝。跨 session 没有独立地址协议：目标就是对方 `Main` 的受管 Socket 路径，接收端在 IPC 边界解析 `<uid>:Main` 复合身份。
+发现由同一目录提供：`RootService.initialize` 在监听就绪后发布记录（含原生 session name），`retire` 按记录归属删除。跨 session 没有独立地址协议：目标就是对方 `Main` 的受管端点地址（Unix Socket 文件或 Windows Named Pipe），接收端在 IPC 边界解析 `<uid>:Main` 复合身份。地址是否属于某个 session 的端点命名空间由 `ipc/` 平台适配层判定（`belongsToNamespace`），`RootService.sessionEndpoint` 只保留 Main-to-Main 的业务准入；分类不构成端点归属或授权。
 
 `subagent_list` 将筛选后的拓扑投影为 `children` 树，省去 `parentId` 和外层 `items`；窗口和展开规则见[接口契约](interface-contract.md#当前调用形态-1)。监听由当前根注册表决定，覆盖已停止但可续跑的 Actor，不复用 `subagent_list` 的每组四项显示窗口。大量累计 Actor 会增加监听资源占用；系统资源不足会报告错误，不把它解释成 Actor 不存在。
 

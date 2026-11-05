@@ -199,14 +199,24 @@ export function ensurePrivateSocketRoot(
   };
 }
 
+/**
+ * Strict containment inside one Unix endpoint directory.
+ *
+ * Unix endpoints are filesystem entries, so this is a pure POSIX path
+ * calculation: it keeps POSIX case sensitivity even when the caller runs on a
+ * host whose own path rules are case-insensitive. Windows endpoints are kernel
+ * pipe names and never take this route.
+ */
 function insidePath(base: string, value: string): boolean {
-  const relative = path.relative(base, value);
-  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  const resolvedBase = path.posix.resolve(base);
+  const resolvedValue = path.posix.resolve(value);
+  const relative = path.posix.relative(resolvedBase, resolvedValue);
+  return relative !== "" && relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative);
 }
 
-/** True when an endpoint belongs to the configured/default managed namespace. */
-export function endpointInsideRoot(address: string, root: string = defaultSocketRoot()): boolean {
-  return insidePath(path.resolve(root), path.resolve(address));
+/** True when a Unix endpoint is strictly inside one endpoint directory. */
+export function endpointInsideDirectory(address: string, directory: string): boolean {
+  return insidePath(directory, address);
 }
 
 export type EndpointProbe = "active" | "refused" | "missing" | "unknown";
@@ -269,7 +279,7 @@ export async function prepareEndpoint({
   // A managed endpoint nested under the configured/default namespace root
   // validates that root itself first. An arbitrary external socket outside the
   // managed namespace keeps the previous leaf-only ownership rules.
-  if (endpointInsideRoot(address, root)) ensurePrivateSocketRoot(root, userId);
+  if (endpointInsideDirectory(address, root)) ensurePrivateSocketRoot(root, userId);
   ensurePrivateDirectory(path.dirname(address), userId);
   const before = inspectEndpoint(address);
   if (before.kind === "missing") {
@@ -397,7 +407,16 @@ export function createOwnedServer({
     try {
       lease = await prepareEndpoint({ address, namespace: isNamespace, root, userId, probeTimeoutMs });
       if (lease.namespace) {
-        await bind(server, address);
+        try {
+          await bind(server, address);
+        } catch (error) {
+          // The kernel namespace is the owner here: an already bound name is the
+          // same refusal a live Unix endpoint produces, so callers see one code.
+          if (errorCode(error) === "EADDRINUSE") {
+            throw new IpcOwnershipError("ipc_endpoint_in_use", `Endpoint is already in use: ${address}`, { path: address });
+          }
+          throw error;
+        }
       } else {
         // libuv unlinks the exact path passed to listen() when the server
         // closes. Bind a short private path in the same directory, then rename

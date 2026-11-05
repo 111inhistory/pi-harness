@@ -29,16 +29,12 @@ import {
 } from "../../src/subagent/runtime.ts";
 import { deliveryEntryFor, deliveryMessage } from "../../src/subagent/delivery.ts";
 import {
-  assertCrossSessionSupported,
-  crossSessionSupported,
   registerSession,
   sendToSessionEndpoint,
   sessionMainAddress,
   sessionSenderId,
   type LiveSession,
 } from "../../src/subagent/session-directory.ts";
-
-const posix = process.platform !== "win32";
 
 interface Handle {
   request: JobRequest;
@@ -183,7 +179,7 @@ function receiverListeners(root: string, session: LiveSession, sends: RecordedSe
   });
 }
 
-test("a frame from another session reaches Main with its identity and reply address", { skip: !posix, timeout: 15000 }, async (t) => {
+test("a frame from another session reaches Main with its identity and reply address", { timeout: 15000 }, async (t) => {
   const root = await socketRoot(t);
   const receiver = await registerSession(root, { sessionId: "receiver-session", cwd: "/tmp/receiver" });
   const sender = await registerSession(root, { sessionId: "sender-session", cwd: "/tmp/sender" });
@@ -199,7 +195,7 @@ test("a frame from another session reaches Main with its identity and reply addr
   }]);
 });
 
-test("a composite sender at a non-Main endpoint or broadcast is refused", { skip: !posix, timeout: 15000 }, async (t) => {
+test("a composite sender at a non-Main endpoint or broadcast is refused", { timeout: 15000 }, async (t) => {
   const root = await socketRoot(t);
   const receiver = await registerSession(root, { sessionId: "receiver-session", cwd: "/tmp/receiver" });
   const sender = await registerSession(root, { sessionId: "sender-session", cwd: "/tmp/sender" });
@@ -217,7 +213,7 @@ test("a composite sender at a non-Main endpoint or broadcast is refused", { skip
   assert.deepEqual(sends, []);
 });
 
-test("a frame naming an unknown session is refused before any delivery", { skip: !posix, timeout: 15000 }, async (t) => {
+test("a frame naming an unknown session is refused before any delivery", { timeout: 15000 }, async (t) => {
   const root = await socketRoot(t);
   const receiver = await registerSession(root, { sessionId: "receiver-session", cwd: "/tmp/receiver" });
   const sends: RecordedSend[] = [];
@@ -232,7 +228,7 @@ test("a frame naming an unknown session is refused before any delivery", { skip:
   assert.deepEqual(sends, []);
 });
 
-test("a frame with the removed session field has no cross-session effect", { skip: !posix, timeout: 15000 }, async (t) => {
+test("a frame with the removed session field has no cross-session effect", { timeout: 15000 }, async (t) => {
   const root = await socketRoot(t);
   const receiver = await registerSession(root, { sessionId: "receiver-session", cwd: "/tmp/receiver" });
   await registerSession(root, { sessionId: "sender-session", cwd: "/tmp/sender" });
@@ -246,7 +242,7 @@ test("a frame with the removed session field has no cross-session effect", { ski
   assert.deepEqual(sends, [{ from: "Main", to: "Main", content: "hello" }]);
 });
 
-test("a reply to the reported address reaches the sender's Main", { skip: !posix, timeout: 15000 }, async (t) => {
+test("a reply to the reported address reaches the sender's Main", { timeout: 15000 }, async (t) => {
   const root = await socketRoot(t);
   const alpha = await registerSession(root, { sessionId: "alpha-session", cwd: "/tmp/alpha" });
   const beta = await registerSession(root, { sessionId: "beta-session", cwd: "/tmp/beta" });
@@ -270,7 +266,7 @@ test("a reply to the reported address reaches the sender's Main", { skip: !posix
   }]);
 });
 
-test("a frame naming this session is local Main traffic, not an external sender", { skip: !posix, timeout: 15000 }, async (t) => {
+test("a frame naming this session is local Main traffic, not an external sender", { timeout: 15000 }, async (t) => {
   const root = await socketRoot(t);
   const receiver = await registerSession(root, { sessionId: "receiver-session", cwd: "/tmp/receiver" });
   const sends: RecordedSend[] = [];
@@ -283,7 +279,7 @@ test("a frame naming this session is local Main traffic, not an external sender"
     "the runtime then applies its self-send rule; the frame is never framed as another session");
 });
 
-test("the sender writes to another published session and keeps the remote refusal code", { skip: !posix, timeout: 15000 }, async (t) => {
+test("the sender writes to another published session and keeps the remote refusal code", { timeout: 15000 }, async (t) => {
   const root = await socketRoot(t);
   const receiver = await registerSession(root, { sessionId: "receiver-session", cwd: "/tmp/receiver" });
   const sender = await registerSession(root, { sessionId: "sender-session", cwd: "/tmp/sender" });
@@ -320,7 +316,7 @@ test("the sender writes to another published session and keeps the remote refusa
   );
 });
 
-test("a session cannot address itself across the directory", { skip: !posix, timeout: 15000 }, async (t) => {
+test("a session cannot address itself across the directory", { timeout: 15000 }, async (t) => {
   const root = await socketRoot(t);
   const self = await registerSession(root, { sessionId: "self-session", cwd: "/tmp/self" });
   const sends: RecordedSend[] = [];
@@ -351,10 +347,13 @@ test("msg_write uses the same path for local and cross-session targets", async (
       sendCrossSession: async (command) => { calls.push({ cross: command }); },
     };
     const ctx = { cwd } as ExtensionToolContext;
+    // Real endpoint addresses for this platform: socket files or pipe names.
+    const localPath = getAgentSocketPath("sub_01", cwd);
+    const remotePath = getAgentSocketPath("receiver", cwd);
 
     // A local path keeps the existing write path.
     await createMessageWriteTool({ cwd, senderId: "sub_01", host })
-      .execute("call", { path: "/tmp/local.sock", content: "hello" }, undefined, undefined, ctx);
+      .execute("call", { path: localPath, content: "hello" }, undefined, undefined, ctx);
     assert.deepEqual(calls, [{ local: { from: "sub_01", to: "sub_01", content: "hello" } }]);
 
     // A session's Main endpoint is a cross-session send for Main only.
@@ -362,20 +361,23 @@ test("msg_write uses the same path for local and cross-session targets", async (
     kind = { kind: "session", session: target };
     await assert.rejects(
       createMessageWriteTool({ cwd, senderId: "sub_01", host })
-        .execute("call", { path: "/tmp/receiver.sock", content: "hello" }, undefined, undefined, ctx),
+        .execute("call", { path: remotePath, content: "hello" }, undefined, undefined, ctx),
       (error: unknown) => error instanceof SubagentError && error.code === "invalid_target",
     );
     const result = await createMessageWriteTool({ cwd, senderId: "Main", host })
-      .execute("call", { path: "/tmp/receiver.sock", content: "hello" }, undefined, undefined, ctx);
+      .execute("call", { path: remotePath, content: "hello" }, undefined, undefined, ctx);
     assert.deepEqual(calls[1], { cross: { target, content: "hello" } });
-    assert.match(JSON.stringify(result.content), /Successfully sent message to \/tmp\/receiver\.sock/);
+    const [reply] = result.content;
+    assert.equal(reply?.type, "text");
+    assert.ok(reply?.type === "text" && reply.text.includes(`Successfully sent message to ${remotePath}`),
+      "the success text carries the address verbatim, without transport escaping");
 
     // Self and foreign non-Main endpoints are refused before any write.
     for (const refused of ["self", "foreign"] as const) {
       kind = { kind: refused };
       await assert.rejects(
         createMessageWriteTool({ cwd, senderId: "Main", host })
-          .execute("call", { path: "/tmp/receiver.sock", content: "hello" }, undefined, undefined, ctx),
+          .execute("call", { path: remotePath, content: "hello" }, undefined, undefined, ctx),
         (error: unknown) => error instanceof SubagentError && error.code === "invalid_target",
       );
     }
@@ -388,14 +390,4 @@ test("msg_write uses the same path for local and cross-session targets", async (
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
-});
-
-test("cross-session coordination is POSIX-only and refuses Windows explicitly", () => {
-  assert.equal(crossSessionSupported("linux"), true);
-  assert.equal(crossSessionSupported("darwin"), true);
-  assert.equal(crossSessionSupported("win32"), false);
-  assert.throws(
-    () => assertCrossSessionSupported("win32"),
-    (error: unknown) => error instanceof SubagentError && error.code === "unsupported_platform",
-  );
 });

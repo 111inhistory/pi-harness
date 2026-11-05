@@ -20,7 +20,6 @@ Capability 按实际激活集筛选公开结果，返回失败或部分成功。
 | --- | --- |
 | 用户查看与控制入口 | `subagent_list` 是模型接口，不能替代用户查看任务、停止和发送消息的界面 |
 | Capability 远端审批 | 内部搜索只使用本地来源；没有远端审批界面，也不搜索、安装或自动加载远端候选 |
-| Windows 跨 session 协调 | 只在 POSIX 平台实现。Windows 不发布 session 记录，发现返回不可用，发送以 `unsupported_platform` 拒绝；命名管道寻址与归属校验尚未实现 |
 | 仅提供资源的 MCP 服务器发现 | 没有工具的 MCP 服务器不作为独立发现项 |
 | Work | 保留在 `experiments/work/`，不由主线扩展加载；交付形态未确定 |
 
@@ -31,7 +30,7 @@ Capability 按实际激活集筛选公开结果，返回失败或部分成功。
 - **Inherited 在线工具调用与压缩**：基础注册、延迟 MCP 和 Responses 声明链已有离线回归；动态激活后多轮调用、原生压缩后的实际工具调用仍需在线验收。
 - **真实提供方的输入与行为**：精简 step 反馈的 JSON 完整性和大小已在模型请求中验证；提供方是否额外截断、角色选择质量和多轮遵循情况仍需实测。
 - **长期资源与竞态**：退役、落盘失败和部分代次竞态已有回归；长时间压力、监听资源耗尽、强制终止点和插件取消导航的组合仍未完整覆盖。
-- **跨 session 消息（POSIX）**：目录发布、原生 session name、存活校验、单帧写入、未知 session 拒绝与远端错误码透传已有离线回归；两个真实 Pi 进程长期互发与 session 切换期间的目录残留仍需验收。Windows 明确未实现，不计入待验收范围。
+- **跨 session 消息**：目录发布、原生 session name、存活校验、单帧写入、未知 session 拒绝与远端错误码透传已有离线回归；Windows 命名管道的真实监听、占用拒绝、关闭后立即重绑与 NDJSON 往返已独立验证。两个真实 Pi 进程长期互发、session 切换期间的目录残留，以及 Windows 上跨 session 套件的实机回归仍需实测。IPC 目录必须保持本机私有：记录里的 `pid` 只在本机解释，跨机共享 `socketRoot` 不在设计范围内；跨机共享 durable session 历史不受此限制。
 - **Manual 能力在线组合**：完整 SDK 会话（真实 `createAgentSession`、真实 stdio MCP 子进程、离线模型）覆盖未授权声明／执行／Codemode、`/capability enable` 授权后的 manual MCP 与资源读取资格、Main／子作用域隔离。真实提供方的缓存计费、真实资源读取、启用后 MCP 断连和长时间运行仍未验收。
 - **平台与用户边界**：Windows 的部分 Shell Preflight 和 Named Pipe 场景已有验证；完整平台套件与多用户切换仍未完成。
 
