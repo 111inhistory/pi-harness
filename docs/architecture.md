@@ -15,12 +15,15 @@
 | `extension.ts`、`lifecycle.ts` | SDK 生命周期钩子、代次隔离、退役期限和资源隔离 | 伪造物理退出、重跑已结束任务 |
 | `surface.ts`、`message-write.ts` | 工具声明、调用方身份绑定、输入捕获、专用 `msg_write` 消息工具（`write` 为 SDK 原生文件工具完全保持不变） | 持有全局注册表或执行循环 |
 | `command.ts`、`status-view.ts` | `/subagent` 命令注册、参数解析、错误呈现与列表文本渲染 | Job 状态、准入或消息投递 |
-| `capability/command.ts`、`capability/manual.ts`、`capability/activation.ts` | `/capability` 命令解析与呈现、用户直接启用的校验与分支记录、工具激活的单一实现（发现与命令共用） | 检索会话、路由、Subagent 状态 |
+| `capability/command.ts`、`capability/catalog.ts`、`capability/enable.ts`、`capability/activation.ts` | `/capability` 目录浏览与用户启用、按实时注册表解析启用目标、激活的共享实现（发现、命令与跨会话回复工具加载） | 检索会话、路由、Subagent 状态 |
 | `capability/admission.ts` | 单次操作的工具准入视图：一次解析作用域链与分支记录，提供 `declares`（声明）、`admits`（执行）、`admitsManual` 与 `admitsServer` | 跨请求缓存、第二套权限服务、改写激活集 |
 | `listeners.ts`、`ipc/` | 端点目录、监听、NDJSON 分帧与平台资源归属校验 | 用显示窗口决定可达性、另写广播状态机 |
 | `session-directory.ts` | 跨 session 目录的发布、存活校验与归属删除，受管 `Main` 路径寻址，`<uid>:Main` 复合发送者身份，跨 session 单帧写入；POSIX 平台限定 | 认证协议、跨主机调度、第二套消息状态机 |
 | `native-delivery.ts`、`delivery.ts` | 独立通知封装、检查原生交接结果、明确拒收后的保留会话追加 | 模型已读回执、自动重发或消息合并 |
-| `inherited-context.ts` | 共享分支捕获，在清理未决工具前通过 spawning assistant 锁定物理模型 | 伪造身份或跨分支泄漏 |
+| `inherited-context.ts` | 共享分支捕获，在清理未决工具前锁定物理模型，并捕获独立的出站缓存标识 | 伪造身份或跨分支泄漏 |
+| `provider-session.ts`、`session-transcript.ts` | 按明确模型能力判断原生追加路径，组装尾部指令与工具声明；请求编码交给 Pi | 路由、执行授权、手写协议请求 |
+| `session-cache.ts`、`session-cache-runtime.ts` | Responses 出站缓存标识、现有 payload hook 组合、原生分支缓存标识记录 | 改写本地 Session ID、账号路由或保证缓存命中 |
+| `tool-guidance.ts`、`subagent/tool-guidance.ts` | 按工具首次声明位置投影共同及专属指引，按系统段落标记去重 | 改写工具描述、授予执行权限或移除工具 |
 
 `subagent_create` 在本批 Runner 本地就绪后返回。本地就绪包括路由完成、会话创建、扩展与工具配置完成、初始输入就绪和 IPC 监听就绪。返回项包含 `id`、`socket`、`role` 与 `model`。它不等待首次模型流分发，也不把 `running` 当作启动成功证明。注册后的启动失败不会撤销同批其他节点，也不自动重试。运行时 Job 注册和执行状态仍由 Runtime 独立管理。
 
@@ -118,6 +121,12 @@ v1 转换只存在于独立离线脚本。生产运行时不转换、不恢复�
 
 Capability 通过共享执行句柄创建内部 SDK 会话，不要求公开 Subagent 工具激活。公共会话与检索会话共用 ModelRuntime 桥和 Budget 截止计时，但保留不同业务规则：Subagent 交付任务结果，Capability 交付验证过的 refs。
 
+Capability 与 Subagent 共用 `provider-session.ts` 的能力判断。Responses 和 Anthropic Messages 的工具追加、同名接口更新与中途 system 消息继续由 Pi 原生 provider 编码；Chat Completions 保持原生行为，不增加本轮适配。Capability 沿用捕获的 thinking level，不因缺少增量工具能力而降为 low。检索会话保留非 manual 的继承声明，并由 tool-call hook 和不持有父执行句柄的占位工具阻止执行。限制说明追加在上下文尾部。本轮不实现工具移除或显式缓存断点。
+
+Inherited 与检索会话保留独立本地 Session ID，Responses 请求仅替换原生默认 `prompt_cache_key` 为继承标识；既有自定义 key 与最终 payload hook 优先。`harness-cache-identity` 原生 custom 条目保存分支缓存标识，支持嵌套继承、恢复和续跑。Fresh 默认沿用自己的标识。主会话未安装出站观察 wrapper 时，任意外部 hook 改写的最终 key 不能保证被捕获，见[已知问题](known-issues.md)。
+
+Subagent namespace 保留稳定共同指引。由于 Pi 的原生工具编码不携带 namespace instructions，请求在首个成员声明后投影共同指引；create 与 msg_write 的专属指引在各自首次声明后投影。指引使用独立系统段落标记，不进入工具 description，也不使用工具元数据改写头部 rules。重复启用和已有标记不重复投影。
+
 内部引擎为 `src/capability/agent.ts`，外层装配为 `extensions/capability.ts`。唯一内部工具 `capability_step` 先增量接受已见 refs，再并行调用现有 Broker 搜索。内部选择先留在本次 Run，外层结束后统一保存、激活和投影。没有新增选择的 step 累计计数，上限默认为 3 加一次首轮额度，可配置 `capability.noSelectionLimit`；显式 finish 或达到上限后不再发模型请求。异常结束仍可交付此前已选成果，状态为 `partial`。具体语义和 Budget 见[内部批量检索](interface-contract.md#内部批量检索与增量提交)。
 
 本地来源由宿主固定，不再提供内部 `src` 参数。远端审批未实现前不搜索远端、不安装候选、不把远端未搜索解释成不存在资源。
@@ -136,9 +145,9 @@ Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返�
 
 宿主不从 Skill 文本猜测禁止事项、前置条件、静默失败、绑定关系或执行优先级，也不按未命中词项推断能力缺口。Skill 返回元数据和绝对入口路径，由 Agent 使用原生 `read` 阅读并理解正文。`src/capability/result.ts` 移除模型可见结果中的排序诊断；`src/capability/prompt.ts` 投影分支发现记忆。
 
-用户直接启用走独立入口：`src/capability/command.ts` 解析 `/capability`，`src/capability/manual.ts` 先调用共享的 `activation.ts` 激活工具，再把实际激活的成员以 `manual` 分类写入同一 `capability-discovery` 记录。先激活后记录使记录不会包含被激活阶段静默遮掉的成员；记录写入失败不回滚激活，命令单独报告该失败。
+`src/capability/command.ts` 解析 `/capability` 的目录浏览与启用参数；`src/capability/enable.ts` 把启用目标在**执行时**对照当前注册表解析（精确工具名、`mcp://<server>`、`namespace://<name>`），先调用共享的 `activation.ts` 激活，再把实际激活的成员以 `manual` 分类写入同一 `capability-discovery` 记录。先激活后记录使记录不会包含被激活阶段静默遮掉的成员；记录写入失败不回滚激活，命令单独报告该失败，缺少记录时 manual 工具在下一次请求被声明剪枝移除。实时解析让 Pi 原生 `/mcp` 重连后注册的工具无需重启或模型发现即可启用。
 
-`capability.manualTools` 的门禁收在 `scope.ts`：根作用域保存名单谓词，任何带父节点的视图在计算 `effective` 与 `allows` 时都排除名单内名字，因此子会话既看不到也不能继承。`tool-catalog.ts` 默认排除名单内工具，只有命令与执行守卫传 `includeManual`；`activation.ts` 对发现路径返回 `manual_only`。
+`capability.manualTools` 的门禁收在 `scope.ts`：根作用域保存名单谓词，任何带父节点的视图在计算 `effective` 与 `allows` 时都排除名单内名字，因此子会话既看不到也不能继承。`tool-catalog.ts` 默认排除名单内工具，只有目录浏览与执行守卫传 `includeManual`；`activation.ts` 对发现路径返回 `manual_only`。
 
 授权判定集中在 `admission.ts` 的单次操作视图：它一次解析作用域链、分支记录（一次扫描同时得到「已选择」与「用户已启用」两个集合）与当前激活集，再提供逐名字谓词。`declares` 用于声明准入（禁用原生工具、MCP 选择、manual 授权，不含作用域），`admits` 在声明规则上叠加作用域，供 Codemode 准入使用，`admitsServer` 判定资源读取。manual 工具必须处于根作用域且当前分支存在 `manual` 记录。
 

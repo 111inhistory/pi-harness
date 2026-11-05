@@ -117,7 +117,7 @@ test("/subagent sessions shows the renamed session without a restart", async (t)
   const root = service(harnessed, agentDir);
   try {
     await root.initialize();
-    installSubagentCommand(harnessed.api, async () => root);
+    installSubagentCommand(harnessed.api, async () => root, async () => root.listSessions());
     const command = harnessed.commands.get("subagent");
     assert.ok(command);
     const notifications: string[] = [];

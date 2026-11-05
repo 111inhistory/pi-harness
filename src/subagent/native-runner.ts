@@ -28,6 +28,7 @@ import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-age
 import { capabilityAllowsTool, capabilityAvailableTools } from "../capability/scope.ts";
 import { getAgentSocketPath } from "../ipc/socket.ts";
 import { installModelCallBudget } from "./pi-job-budget.ts";
+import { resolveSessionCacheKey } from "../session-cache-runtime.ts";
 import { childContext, childPromptBlocks, composeAssignment, continuationControlPrompt } from './prompt.ts';
 import { readTranscript } from "./view.ts";
 import { deliveryEntryFor, deliveryMessage, peerDeliveryEntry } from "./delivery.ts";
@@ -404,6 +405,11 @@ export class NativeJobRunner {
         deps.actors.retain(request.agentId, descriptor);
       };
       retain();
+      const inheritedCacheKey = snapshot !== null
+        ? (typeof snapshot["cacheKey"] === "string" || snapshot["cacheKey"] === null
+            ? (snapshot["cacheKey"] as string | null)
+            : resolveSessionCacheKey(manager))
+        : undefined;
       // The native manager now owns the isolated in-memory seed. Keep no second
       // seed in the Job registry.
       if (snapshot !== null) delete snapshot["entries"];
@@ -439,6 +445,7 @@ export class NativeJobRunner {
           excludedTools: finalExcludedTools,
         },
         signal: live.abort.signal,
+        cacheKey: inheritedCacheKey,
       });
       // Creation owns the SDK Session immediately: the returned execution handle
       // is registered here, before the next Budget check can throw.

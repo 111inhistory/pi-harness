@@ -68,15 +68,21 @@ export interface AdmissionHost extends CapabilityToolCatalog {
   getActiveTools(): readonly string[];
 }
 
-interface BranchSelection {
+/** What the branch records, resolved in one pass over its capability entries. */
+export interface BranchSelection {
   /** Names the branch records as selected, including manual enablement. */
   readonly selected: ReadonlySet<string>;
-  /** Names the user enabled through `/capability enable`. */
+  /** Names with explicit user authorization on the branch. */
   readonly manual: ReadonlySet<string>;
 }
 
-/** One pass over the branch records yields both sets. */
-function branchSelection(branch: readonly unknown[] | null | undefined): BranchSelection {
+/**
+ * One pass over the branch records yields both sets.
+ *
+ * The user command reads the same view, so "already recorded" and "authorized"
+ * cannot drift into two different answers.
+ */
+export function branchToolSelection(branch: readonly unknown[] | null | undefined): BranchSelection {
   const selected = new Set<string>();
   const manual = new Set<string>();
   for (const record of discoveryRecords(branch)) {
@@ -105,7 +111,7 @@ export function createToolAdmission(
   branch: readonly unknown[] | null | undefined,
 ): ToolAdmission {
   const scope = createCapabilityScopeView(host);
-  const { selected, manual } = branchSelection(branch);
+  const { selected, manual } = branchToolSelection(branch);
   const active = new Set(host.getActiveTools());
   const tools = host.getAllTools();
   const rootOnly: CapabilityRootOnlyPolicy | null = scope.rootOnly;

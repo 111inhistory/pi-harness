@@ -109,7 +109,13 @@ export default function subagentExtension(api: ExtensionAPI): void {
   });
   // The root surface is depth 0, below every valid configured maximum depth, so
   // its own create/stop registration does not depend on the resolved value.
-  installSubagentCommand(api, current);
+  installSubagentCommand(api, current, async () => {
+    const service = lifecycle.service;
+    if (service === null || transitionPending || lifecycle.retiring) return [];
+    const sessions = await service.listSessions();
+    if (service !== lifecycle.service || transitionPending || lifecycle.retiring) return [];
+    return sessions.filter(session => session.sessionId !== service.sessionId);
+  });
   installSessionSurface(api, current, {
     callerId: 'Main',
     depth: 0,

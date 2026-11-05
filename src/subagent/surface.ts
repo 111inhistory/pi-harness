@@ -181,8 +181,6 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
         defaultActive: false,
         label: "Create Subagent",
         description: TOOL_TEXT.create.description,
-        promptSnippet: TOOL_TEXT.create.snippet,
-        promptGuidelines: [...SUBAGENT_NAMESPACE.instructions?.split("\n") ?? [], TOOL_TEXT.create.guideline],
         parameters: createParameters,
         async execute(toolCallId, params, _signal, _onUpdate, ctx) {
           const host = await resolveHost(ctx);
@@ -208,8 +206,6 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
     defaultActive: false,
     label: "List Subagents",
     description: TOOL_TEXT.list.description,
-    promptSnippet: TOOL_TEXT.list.snippet,
-    promptGuidelines: [...SUBAGENT_NAMESPACE.instructions?.split("\n") ?? []],
     parameters: listParameters,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const host = await resolveHost(ctx);
@@ -224,8 +220,6 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
         defaultActive: false,
         label: "Stop Subagent",
         description: TOOL_TEXT.stop.description,
-        promptSnippet: TOOL_TEXT.stop.snippet,
-        promptGuidelines: [...SUBAGENT_NAMESPACE.instructions?.split("\n") ?? []],
         parameters: stopParameters,
         async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
           const host = await resolveHost(ctx);
@@ -301,7 +295,7 @@ const text = (...fields: string[]): string => promptString('subagent-tools.json'
 const TOOL_TEXT: SurfaceToolText = {
   namespace: text('namespace'),
   create: {
-    description: text('create', 'description'), snippet: text('create', 'snippet'), guideline: text('create', 'guideline'),
+    description: text('create', 'description'),
     capacity: text('create', 'capacity'),
     parameters: {
       context: text('create', 'parameters', 'context'),
@@ -316,11 +310,11 @@ const TOOL_TEXT: SurfaceToolText = {
     },
   },
   list: {
-    description: text('list', 'description'), snippet: text('list', 'snippet'),
+    description: text('list', 'description'),
     parameters: { all: text('list', 'parameters', 'all'), id: text('list', 'parameters', 'id') },
   },
   stop: {
-    description: text('stop', 'description'), snippet: text('stop', 'snippet'),
+    description: text('stop', 'description'),
     parameters: { id: text('stop', 'parameters', 'id') },
   },
 };
@@ -357,8 +351,6 @@ interface SurfaceToolText {
   readonly namespace: string;
   readonly create: {
     readonly description: string;
-    readonly snippet: string;
-    readonly guideline: string;
     readonly capacity: string;
     readonly parameters: {
       readonly context: string;
@@ -368,8 +360,8 @@ interface SurfaceToolText {
       };
     };
   };
-  readonly list: { readonly description: string; readonly snippet: string; readonly parameters: { readonly all: string; readonly id: string } };
-  readonly stop: { readonly description: string; readonly snippet: string; readonly parameters: { readonly id: string } };
+  readonly list: { readonly description: string; readonly parameters: { readonly all: string; readonly id: string } };
+  readonly stop: { readonly description: string; readonly parameters: { readonly id: string } };
 }
 
 // The declared tool parameter types, exported so callers can name a batch.

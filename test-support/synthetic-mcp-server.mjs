@@ -5,8 +5,13 @@
  * Newline-delimited JSON-RPC 2.0 over stdin/stdout, the framing Pi's
  * `StdioTransport` uses. It exposes one tool and one resource and never touches
  * the network, the filesystem or the environment.
+ *
+ * With `MCP_FIXTURE_TOOLS_FILE` set, `tools/list` answers from that JSON file on
+ * every call instead of the built-in tool. A test can rewrite the file and drive
+ * Pi's native `/mcp reconnect` to exercise a server whose tool list changed,
+ * without a second fixture server or a second MCP client.
  */
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import process from 'node:process';
 
 // A test that spawns this server records the pid so it can terminate it, since
@@ -18,12 +23,37 @@ if (process.env['MCP_FIXTURE_PID_FILE']) {
 const FALLBACK_PROTOCOL_VERSION = '2025-06-18';
 const TOOL_NAME = 'deploy';
 const RESOURCE_URI = 'memory://fixture';
+const TOOLS_FILE = process.env['MCP_FIXTURE_TOOLS_FILE'];
+
+/** Tools the server currently offers; the built-in fixture tool by default. */
+async function currentTools() {
+  if (!TOOLS_FILE) {
+    return [{
+      name: TOOL_NAME,
+      description: 'Deploy through the synthetic MCP fixture',
+      inputSchema: { type: 'object', properties: {} },
+    }];
+  }
+  try {
+    const parsed = JSON.parse(await readFile(TOOLS_FILE, 'utf8'));
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((tool) => typeof tool?.name === 'string' && tool.name !== '')
+      .map((tool) => ({
+        name: tool.name,
+        description: typeof tool.description === 'string' ? tool.description : '',
+        inputSchema: { type: 'object', properties: {} },
+      }));
+  } catch {
+    return [];
+  }
+}
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
-function handle(request) {
+async function handle(request) {
   const { id, method, params } = request;
   // Notifications carry no id and expect no answer.
   if (id === undefined) return;
@@ -46,13 +76,7 @@ function handle(request) {
       send({
         jsonrpc: '2.0',
         id,
-        result: {
-          tools: [{
-            name: TOOL_NAME,
-            description: 'Deploy through the synthetic MCP fixture',
-            inputSchema: { type: 'object', properties: {} },
-          }],
-        },
+        result: { tools: await currentTools() },
       });
       return;
     case 'tools/call':
@@ -85,6 +109,18 @@ function handle(request) {
 }
 
 let buffer = '';
+// `tools/list` may read the fixture file, so requests are answered in order
+// through one promise chain instead of inside the data callback.
+let queue = Promise.resolve();
+function enqueue(line) {
+  queue = queue.then(async () => {
+    try {
+      await handle(JSON.parse(line));
+    } catch (error) {
+      process.stderr.write(`synthetic-mcp-server: ${String(error)}\n`);
+    }
+  });
+}
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => {
   buffer += chunk;
@@ -94,11 +130,7 @@ process.stdin.on('data', (chunk) => {
     const line = buffer.slice(0, newline).trim();
     buffer = buffer.slice(newline + 1);
     if (line === '') continue;
-    try {
-      handle(JSON.parse(line));
-    } catch (error) {
-      process.stderr.write(`synthetic-mcp-server: ${String(error)}\n`);
-    }
+    enqueue(line);
   }
 });
-process.stdin.on('end', () => process.exit(0));
+process.stdin.on('end', () => { void queue.then(() => process.exit(0)); });

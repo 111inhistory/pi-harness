@@ -59,7 +59,7 @@ export interface DiscoveryMemory {
   readonly skills: readonly CapabilityHit[];
   readonly guidance?: readonly CapabilityHit[];
   /**
-   * Resources the user enabled directly through `/capability enable`, never
+   * Resources with explicit user authorization, never
    * through retrieval. The category is what distinguishes a user decision from
    * a model discovery in the projected section; both share the branch record.
    */
@@ -184,6 +184,8 @@ function parseRecord(data: unknown): StoredDiscovery | null {
  *
  * The branch is read, never a separately mutable capability list, so branch
  * switches and session reloads cannot leak discoveries between contexts.
+ * Entry timestamps are deliberately not read: a record's position in the branch
+ * is its order, and no consumer anchors on wall-clock time.
  */
 export function discoveryRecords(branch: readonly unknown[] | null | undefined): StoredDiscovery[] {
   const records: StoredDiscovery[] = [];
@@ -219,7 +221,7 @@ export function appendDiscoveryRecord(
 }
 
 /**
- * Tool names the user enabled through `/capability enable` on this branch.
+ * Tool names with explicit user authorization on this branch.
  *
  * This is the only authority that makes a manual tool usable. The command writes
  * the record after activation, so a tool that is active only because it is

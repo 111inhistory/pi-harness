@@ -5,6 +5,7 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ExtensionContext, FileEntry } from '@earendil-works/pi-coding-agent';
 import { isHarnessEntry, withoutEntries } from './subagent/storage.ts';
 import { physicalModelForCall } from './subagent/model-runtime.ts';
+import { resolveSessionCacheKey } from './session-cache-runtime.ts';
 
 export interface InheritedSnapshot {
   readonly capturedAt: number;
@@ -14,6 +15,7 @@ export interface InheritedSnapshot {
   readonly thinkingLevel: ThinkingLevel | null;
   readonly tools: readonly string[];
   readonly entries: readonly FileEntry[];
+  readonly cacheKey: string | null;
 }
 
 function withOwnSessionId(entries: readonly FileEntry[]): FileEntry[] {
@@ -51,9 +53,11 @@ export function captureInheritedContext(
   const header = ctx.sessionManager.getHeader();
   const branch = ctx.sessionManager.getBranch();
   const entries = withoutEntries(header === null ? branch : [header, ...branch], isHarnessEntry) as FileEntry[];
+  const cacheKey = resolveSessionCacheKey(ctx.sessionManager);
   return {
     capturedAt: Date.now(), cwd: ctx.cwd, systemPrompt: ctx.getSystemPrompt(), model,
     thinkingLevel: ctx.thinkingLevel ?? null, tools: pi.getActiveTools(),
     entries: withOwnSessionId(withoutInFlightToolCalls(entries)),
+    cacheKey,
   };
 }

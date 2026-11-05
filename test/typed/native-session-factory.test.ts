@@ -22,19 +22,25 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
-import { fauxProvider, InMemoryCredentialStore, getCurrentTools } from "@earendil-works/pi-ai";
-import type { Api, Model, TranscriptContext } from "@earendil-works/pi-ai";
+import { stream as streamAnthropic } from '@earendil-works/pi-ai/api/anthropic-messages';
+import { clampOpenAIPromptCacheKey } from '@earendil-works/pi-ai/api/openai-prompt-cache';
+import {
+  fauxProvider, getCurrentTools, InMemoryCredentialStore, normalizeContext,
+} from "@earendil-works/pi-ai";
+import type { Api, Message, Model, TranscriptContext } from "@earendil-works/pi-ai";
 
 import { DEFAULT_HARNESS_CONFIG, resolveHarnessConfig } from "../../src/harness-config.ts";
 import type { HarnessConfig } from "../../src/harness-config.ts";
 import { capabilityAllowsTool } from "../../src/capability/scope.ts";
 import type { CapabilityScopedTool, CapabilityToolCatalog } from "../../src/capability/scope.ts";
 import { ModelRuntimeBridgeError } from "../../src/subagent/model-runtime.ts";
+import { CACHE_IDENTITY_CUSTOM_TYPE } from "../../src/session-cache-runtime.ts";
 import { createNativeSessionFactory } from "../../src/subagent/native-session.ts";
 import { convertResponsesMessages } from '../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js';
 import { SubagentError } from "../../src/subagent/runtime.ts";
 import type {
   NativeChildSurfaceScope,
+  NativeOpenedSession,
   NativeSession,
   NativeSessionFactory,
   NativeSessionRequest,
@@ -140,6 +146,7 @@ interface RequestOptions {
   readonly excludedTools?: readonly string[];
   readonly surface?: NativeChildSurfaceScope;
   readonly signal?: AbortSignal;
+  readonly cacheKey?: string | null;
 }
 
 function request(h: Harness, options: RequestOptions = {}): NativeSessionRequest {
@@ -168,6 +175,7 @@ function request(h: Harness, options: RequestOptions = {}): NativeSessionRequest
       excludedTools: [...excludedTools],
     },
     signal: options.signal ?? new AbortController().signal,
+    ...(options.cacheKey === undefined ? {} : { cacheKey: options.cacheKey }),
   };
 }
 
@@ -199,6 +207,170 @@ function inspectSession(session: NativeSession): {
 
 async function close(h: Harness): Promise<void> {
   await rm(h.root, { recursive: true, force: true });
+}
+
+type UnknownRecord = Record<string, unknown>;
+
+const offlineFetch: typeof globalThis.fetch = async () => {
+  throw new Error('network access is forbidden in native-session-factory.test.ts');
+};
+
+function asRecord(value: unknown): UnknownRecord | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as UnknownRecord
+    : undefined;
+}
+
+function record(value: unknown): UnknownRecord {
+  const entry = asRecord(value);
+  assert.ok(entry !== undefined);
+  return entry;
+}
+
+function records(value: unknown): UnknownRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const parsed = asRecord(entry);
+    return parsed === undefined ? [] : [parsed];
+  });
+}
+
+function toolNames(value: unknown): string[] {
+  return records(value).flatMap((entry) => typeof entry['name'] === 'string' ? [entry['name']] : []);
+}
+
+function additionalToolNames(input: readonly unknown[]): string[] {
+  return input.flatMap((item) => {
+    const entry = asRecord(item);
+    return entry?.['type'] === 'additional_tools' ? toolNames(entry['tools']) : [];
+  });
+}
+
+function responsesInput(model: Model<Api>, messages: readonly unknown[]): readonly unknown[] {
+  return convertResponsesMessages(
+    model,
+    normalizeContext({ messages: messages as Message[] }),
+    new Set([model.provider]),
+    {
+      includeSystemPrompt: true,
+      supportsMidConvoSystemMessages: true,
+      supportsAdditionalTools: true,
+    },
+  ) as unknown as readonly unknown[];
+}
+
+async function anthropicPayload(
+  model: Model<'anthropic-messages'>,
+  messages: readonly unknown[],
+): Promise<UnknownRecord> {
+  let captured: unknown;
+  const stream = streamAnthropic(model, normalizeContext({ messages: messages as Message[] }), {
+    apiKey: 'offline-fixture',
+    cacheRetention: 'none',
+    fetch: offlineFetch,
+    onPayload: (payload) => {
+      captured = payload;
+      throw new Error('payload captured');
+    },
+  });
+  const result = await stream.result();
+  assert.equal(result.stopReason, 'error');
+  return record(captured);
+}
+
+interface InheritedRun {
+  readonly opened: NativeOpenedSession;
+  readonly manager: SessionManager;
+  readonly prefix: readonly unknown[];
+  readonly context: readonly unknown[];
+  readonly parentSystem: Message;
+}
+
+async function inheritedRun(
+  h: Harness,
+  model: Model<Api>,
+  options: {
+    readonly appendSystemPrompt?: readonly string[];
+    readonly excludedTools?: readonly string[];
+  } = {},
+): Promise<InheritedRun> {
+  const manager = SessionManager.inMemory(h.cwd);
+  const parentSystem: Message = {
+    role: 'system',
+    content: '',
+    sections: {
+      preamble: 'PARENT PROMPT',
+      tools: '<tools>\nPARENT TOOLS: surface_probe\n</tools>',
+      rules: '<rules>\nPARENT RULES\n</rules>',
+      cwd: `<cwd>\n${h.cwd.replace(/\\/g, '/')}\n</cwd>`,
+    },
+    toolsAdded: [{
+      name: 'surface_probe',
+      description: 'Parent surface probe',
+      parameters: { type: 'object', properties: {} },
+    }],
+    timestamp: 0,
+  };
+  manager.appendMessage(parentSystem);
+  manager.appendMessage({ role: 'user', content: 'PARENT TASK', timestamp: 1 });
+  const prefix = manager.buildSessionContext().messages;
+  const input: NativeSessionRequest = {
+    ...request(h, {
+      model,
+      ...(options.excludedTools === undefined ? {} : { excludedTools: options.excludedTools }),
+    }),
+    sessionManager: manager,
+    systemPrompt: 'PARENT PROMPT',
+    appendSystemPrompt: options.appendSystemPrompt ?? [
+      'COMMON CHILD INSTRUCTIONS',
+      'INHERITED CONTEXT',
+      'SOCKET CONTEXT',
+    ],
+    inheritedTools: ['read', 'surface_probe'],
+  };
+  const opened = await h.factory.open(input);
+  let context: readonly unknown[] = [];
+  h.runtime.streamSimple = (_requestModel, requestContext) => {
+    context = structuredClone(requestContext.messages) as unknown[];
+    const reply = {
+      role: 'assistant' as const,
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      content: [{ type: 'text' as const, text: 'DONE' }],
+      stopReason: 'stop' as const,
+      timestamp: Date.now(),
+      usage: {
+        input: 1, output: 1, totalTokens: 2, cacheRead: 0, cacheWrite: 0,
+        cost: { input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0 },
+      },
+    };
+    const stream = new AssistantMessageEventStream();
+    stream.push({ type: 'done', reason: 'stop', message: reply });
+    stream.end();
+    return stream;
+  };
+  try {
+    await opened.execution.prompt('CHILD TASK', { expandPromptTemplates: false });
+    return { opened, manager, prefix, context, parentSystem };
+  } catch (error) {
+    await opened.execution.dispose();
+    throw error;
+  }
+}
+
+function assertNoForbiddenExecution(run: InheritedRun): void {
+  const current = getCurrentTools(run.context as unknown as readonly { role: string }[]);
+  const registered = new Set(run.opened.capabilityScope.getAllTools().map((tool) => tool.name));
+  const active = new Set(run.opened.execution.session.getActiveToolNames());
+  for (const name of ['parent_only', 'manual_parent']) {
+    assert.ok(!registered.has(name), `${name} is not registered in the child`);
+    assert.ok(!active.has(name), `${name} is not active`);
+    assert.ok(!current.some((tool) => tool.name === name), `${name} is not declared`);
+  }
+  assert.equal(capabilityAllowsTool(run.opened.capabilityScope, 'blocked_child'), false);
+  assert.ok(!active.has('blocked_child'), 'blocked_child is not active');
+  assert.ok(!current.some((tool) => tool.name === 'blocked_child'), 'blocked_child is not declared');
 }
 
 test("the factory bridges the current root registry and refuses an unavailable runtime", async () => {
@@ -400,6 +572,211 @@ test("Inherited loads configured execution backends while retaining the captured
     };
     await opened.execution.prompt('Run the inherited tool.', {expandPromptTemplates:false});
     assert.equal(calls, 2);
+  } finally {
+    await opened.execution.dispose();
+    await close(h);
+  }
+});
+
+test("ordinary inherited Responses keeps the serialized parent prefix stable across the native tail patch", async () => {
+  const h = await harness();
+  h.parentTools.push({ name: 'manual_parent' });
+  const model = {
+    ...h.model,
+    api: 'openai-responses',
+    baseUrl: 'http://offline.invalid/v1',
+    compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+  } as Model<Api>;
+  const run = await inheritedRun(h, model, { excludedTools: ['bash', 'blocked_child'] });
+  try {
+    assert.deepEqual(run.context.slice(0, run.prefix.length), run.prefix);
+
+    const baseline = responsesInput(model, run.prefix);
+    const appended = responsesInput(model, run.context);
+    assert.deepEqual(appended.slice(0, baseline.length), baseline);
+
+    const baselineTools = additionalToolNames(baseline);
+    const appendedTools = additionalToolNames(appended);
+    assert.ok(baselineTools.includes('surface_probe'), 'the parent initial declaration is the anchor');
+    assert.deepEqual(appendedTools.slice(0, baselineTools.length), baselineTools);
+    assert.doesNotMatch(JSON.stringify(run.context), /toolsRemoved|tools_removed|tool_removal/);
+
+    assertNoForbiddenExecution(run);
+  } finally {
+    await run.opened.execution.dispose();
+    await close(h);
+  }
+});
+
+test("ordinary inherited Anthropic keeps its initial anchor and serialized parent prefix stable", async () => {
+  const h = await harness();
+  h.parentTools.push({ name: 'manual_parent' });
+  const model = {
+    ...h.model,
+    api: 'anthropic-messages',
+    baseUrl: 'http://offline.invalid',
+    compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true },
+  } as Model<Api>;
+  const run = await inheritedRun(h, model, { excludedTools: ['bash', 'blocked_child'] });
+  try {
+    assert.deepEqual(run.context.slice(0, run.prefix.length), run.prefix);
+
+    const baseline = await anthropicPayload(model as Model<'anthropic-messages'>, run.prefix);
+    const appended = await anthropicPayload(model as Model<'anthropic-messages'>, run.context);
+    assert.deepEqual(appended['system'], baseline['system']);
+    assert.deepEqual(appended['tools'], baseline['tools']);
+    assert.deepEqual(appended['betas'], baseline['betas']);
+    const baselineMessages = records(baseline['messages']);
+    assert.deepEqual(records(appended['messages']).slice(0, baselineMessages.length), baselineMessages);
+
+    assert.deepEqual(toolNames(appended['tools']), ['surface_probe', '__pi_deferred_placeholder__']);
+    const betas = appended['betas'];
+    assert.ok(Array.isArray(betas) && betas.includes('inline-tools-2026-09-15'));
+    assert.match(String(JSON.stringify(appended)), /COMMON CHILD INSTRUCTIONS/);
+    assert.doesNotMatch(String(JSON.stringify(appended)), /tool_removal|toolsRemoved|tools_removed/);
+
+    assertNoForbiddenExecution(run);
+  } finally {
+    await run.opened.execution.dispose();
+    await close(h);
+  }
+});
+
+type OnPayload = (payload: unknown, model: unknown) => unknown | Promise<unknown>;
+
+function assistantReply(model: Model<Api>): AssistantMessageEventStream {
+  const message = {
+    role: 'assistant' as const,
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    content: [{ type: 'text' as const, text: 'DONE' }],
+    stopReason: 'stop' as const,
+    timestamp: Date.now(),
+    usage: {
+      input: 1, output: 1, totalTokens: 2, cacheRead: 0, cacheWrite: 0,
+      cost: { input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+  };
+  const stream = new AssistantMessageEventStream();
+  stream.push({ type: 'done', reason: 'stop', message });
+  stream.end();
+  return stream;
+}
+
+test("native cache installer uses the inherited parent key instead of the local manager id", async () => {
+  const h = await harness();
+  const model = {
+    ...h.model,
+    api: 'openai-responses',
+    baseUrl: 'http://offline.invalid/v1',
+    compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+  } as Model<Api>;
+  const input = request(h, { model, cacheKey: 'parent-cache-key' });
+  const opened = await h.factory.open(input);
+  try {
+    let onPayload: OnPayload | undefined;
+    let sessionId: string | undefined;
+    h.runtime.streamSimple = (_requestModel, _context, options) => {
+      onPayload = options?.onPayload as OnPayload | undefined;
+      sessionId = options?.sessionId;
+      return assistantReply(model);
+    };
+    await opened.execution.prompt('cache probe', { expandPromptTemplates: false });
+
+    assert.ok(onPayload, 'the cache installer must compose an onPayload hook');
+    const nativeKey = clampOpenAIPromptCacheKey(sessionId);
+    assert.ok(nativeKey);
+    assert.equal(sessionId, input.sessionManager.getSessionId());
+    assert.notEqual(sessionId, 'parent-cache-key', 'local manager identity remains distinct');
+
+    const adapted = await onPayload({ prompt_cache_key: nativeKey }, model) as Record<string, unknown>;
+    assert.equal(adapted['prompt_cache_key'], 'parent-cache-key');
+
+    const entry = input.sessionManager.getBranch().findLast((candidate) => {
+      const value = candidate as { type?: string; customType?: string };
+      return value.type === 'custom' && value.customType === CACHE_IDENTITY_CUSTOM_TYPE;
+    }) as { data?: { key?: string } } | undefined;
+    assert.equal(entry?.data?.key, 'parent-cache-key');
+  } finally {
+    await opened.execution.dispose();
+    await close(h);
+  }
+});
+
+test("fresh native session keeps its own local cache key", async () => {
+  const h = await harness();
+  const model = {
+    ...h.model,
+    api: 'openai-responses',
+    baseUrl: 'http://offline.invalid/v1',
+    compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+  } as Model<Api>;
+  const input = request(h, { model, systemPrompt: null, appendSystemPrompt: ['FRESH CHILD'] });
+  const opened = await h.factory.open(input);
+  try {
+    let onPayload: OnPayload | undefined;
+    let sessionId: string | undefined;
+    h.runtime.streamSimple = (_requestModel, _context, options) => {
+      onPayload = options?.onPayload as OnPayload | undefined;
+      sessionId = options?.sessionId;
+      return assistantReply(model);
+    };
+    await opened.execution.prompt('fresh cache probe', { expandPromptTemplates: false });
+
+    assert.ok(onPayload, 'the cache installer must compose an onPayload hook');
+    const localKey = clampOpenAIPromptCacheKey(sessionId);
+    assert.ok(localKey);
+    assert.equal(sessionId, input.sessionManager.getSessionId());
+    const adapted = await onPayload({ prompt_cache_key: localKey }, model) as Record<string, unknown>;
+    assert.equal(adapted['prompt_cache_key'], localKey);
+    assert.ok(!input.sessionManager.getBranch().some((candidate) => {
+      const value = candidate as { type?: string; customType?: string };
+      return value.type === 'custom' && value.customType === CACHE_IDENTITY_CUSTOM_TYPE;
+    }), 'a fresh session writes no inherited identity');
+  } finally {
+    await opened.execution.dispose();
+    await close(h);
+  }
+});
+
+test("native cache hook gives an existing final onPayload override priority", async () => {
+  const h = await harness();
+  h.mutable.surfaceHook = (api) => {
+    api.on('before_provider_request', (event) => ({
+      ...(event.payload as Record<string, unknown>),
+      prompt_cache_key: 'hook-final-key',
+    }));
+  };
+  const model = {
+    ...h.model,
+    api: 'openai-responses',
+    baseUrl: 'http://offline.invalid/v1',
+    compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+  } as Model<Api>;
+  const input = request(h, { model, cacheKey: 'parent-cache-key' });
+  const opened = await h.factory.open(input);
+  try {
+    let onPayload: OnPayload | undefined;
+    let sessionId: string | undefined;
+    h.runtime.streamSimple = (_requestModel, _context, options) => {
+      onPayload = options?.onPayload as OnPayload | undefined;
+      sessionId = options?.sessionId;
+      return assistantReply(model);
+    };
+    await opened.execution.prompt('composition probe', { expandPromptTemplates: false });
+
+    assert.ok(onPayload);
+    const nativeKey = clampOpenAIPromptCacheKey(sessionId);
+    assert.ok(nativeKey);
+    const adapted = await onPayload({ prompt_cache_key: nativeKey }, model) as Record<string, unknown>;
+    assert.equal(adapted['prompt_cache_key'], 'hook-final-key', 'the existing hook has final authority');
+
+    const entry = input.sessionManager.getBranch().findLast((candidate) => {
+      const value = candidate as { type?: string; customType?: string };
+      return value.type === 'custom' && value.customType === CACHE_IDENTITY_CUSTOM_TYPE;
+    }) as { data?: { key?: string } } | undefined;
+    assert.equal(entry?.data?.key, 'hook-final-key', 'the observed final key is recorded on lineage');
   } finally {
     await opened.execution.dispose();
     await close(h);

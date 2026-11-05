@@ -1,7 +1,7 @@
 /**
  * The user-facing capability catalog.
  *
- * `/capability list` and the `/capability enable` picker read the same view:
+ * `/capability list` reads one current view:
  * one eligible-tool read, one classification, one filter and one stable order.
  * The view is a value for one command; it is not cached, it grants nothing, and
  * it never starts retrieval.

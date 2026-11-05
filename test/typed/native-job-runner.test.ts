@@ -659,6 +659,7 @@ test("a fresh Job routes, installs its child surface and completes with its own 
 
   const open = h.factory.requests[0];
   assert.ok(open !== undefined);
+  assert.equal(open.cacheKey, undefined, "fresh Job has no inherited cacheKey");
   assert.equal(open.model?.id, "fake-1");
   assert.equal(open.thinkingLevel, "low");
   assert.equal(open.systemPrompt, null);
@@ -1333,6 +1334,7 @@ test("an inherited Job keeps the captured identity and the transplantable loadou
     thinkingLevel: "high",
     tools: ["read", "extension_tool", "write"],
     entries: [{ id: "entry-1" }],
+    cacheKey: "parent-cache-key-xyz",
   };
   const h = harness({
     catalog: [
@@ -1353,6 +1355,7 @@ test("an inherited Job keeps the captured identity and the transplantable loadou
   assert.deepEqual(h.models.captured, [{ provider: "fake", id: "captured-1" }]);
   const open = h.factory.requests[0];
   assert.ok(open !== undefined);
+  assert.equal(open.cacheKey, "parent-cache-key-xyz");
   assert.equal(open.cwd, "/tmp/parent");
   assert.equal(open.systemPrompt, "PARENT PROMPT");
   assert.equal(open.thinkingLevel, "high");

@@ -1,19 +1,18 @@
 /**
- * Manual capability category and the `/capability` command.
+ * Manual capability category and the `/capability list` command.
  *
- * These cases pin the append-only contract: the command can enable registered
- * tools, records only what the session actually activated, and the request
- * projection re-checks live permissions for the `manual` category just like the
- * discovered ones.
+ * These cases pin the manual contract after the old `/capability enable` command
+ * was retired: a manual tool is usable only when the root branch carries the
+ * user's `manual` record, the request projection re-checks live permissions for
+ * that category, and `list` is the only command surface left. A preauthorized
+ * session is seeded with `appendManualRecord` plus the active set as a test
+ * fixture; no case drives a production enablement path.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand, Theme } from "@earendil-works/pi-coding-agent";
-import {
-  CombinedAutocompleteProvider, CURSOR_MARKER, getKeybindings, type AutocompleteProvider,
-  type Component, type Focusable, type KeybindingsManager,
-} from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
+import { CombinedAutocompleteProvider, type AutocompleteProvider } from "@earendil-works/pi-tui";
 
 import {
   appendManualRecord,
@@ -22,14 +21,12 @@ import {
   manualEnabledTools,
 } from "../../src/capability/discovery-record.ts";
 import { CAPABILITY_SECTION, capabilityPromptTranscript } from "../../src/capability/prompt.ts";
-import { enableManualTools, type ManualEnableHost } from "../../src/capability/manual.ts";
 import { createToolAdmission } from "../../src/capability/admission.ts";
 import {
   capabilityArgumentCompletions, installCapabilityCommand, parseCapabilityCommand,
 } from "../../src/capability/command.ts";
 import { argumentCompletionProvider } from "../../src/autocomplete.ts";
 import { createCapabilityCatalog } from "../../src/capability/catalog.ts";
-import { createCapabilitySelector } from "../../src/capability/selector.ts";
 import { setCapabilityParent, setCapabilityRootOnlyPolicy } from "../../src/capability/scope.ts";
 import { createEligibleToolCatalog } from "../../src/capability/tool-catalog.ts";
 import { activateToolNames } from "../../src/capability/activation.ts";
@@ -43,14 +40,19 @@ interface FakeTool {
   readonly namespace?: { readonly name: string; readonly aliases?: readonly string[] };
 }
 
+interface ManualHost {
+  readonly entries: { customType: string; data?: unknown }[];
+  getAllTools(): readonly FakeTool[];
+  getActiveTools(): string[];
+  setActiveTools(names: string[]): void;
+  appendEntry(customType: string, data?: unknown): void;
+  activeNames(): string[];
+}
+
 /** A host that behaves like the SDK's registry: unknown and hidden names are ignored. */
-function host(tools: FakeTool[], active: string[] = [], mask: readonly string[] = []) {
+function host(tools: FakeTool[], active: string[] = [], mask: readonly string[] = []): ManualHost {
   const state = { tools: [...tools], active: new Set(active), entries: [] as { customType: string; data?: unknown }[] };
-  const api: ManualEnableHost & {
-    readonly entries: { customType: string; data?: unknown }[];
-    readonly activeNames: () => string[];
-    failAppend(): void;
-  } = {
+  const api: ManualHost = {
     entries: state.entries,
     getAllTools: () => state.tools,
     getActiveTools: () => [...state.active],
@@ -61,15 +63,26 @@ function host(tools: FakeTool[], active: string[] = [], mask: readonly string[] 
       }));
     },
     appendEntry(customType: string, data?: unknown) {
-      if (failAppend) throw new Error("disk full");
       state.entries.push({ customType, data });
     },
     activeNames: () => [...state.active],
-    failAppend() { failAppend = true; },
   };
-  let failAppend = false;
   if (mask.length > 0) setCapabilityParent(api, null, mask);
   return api;
+}
+
+/**
+ * Test fixture, not a production path: seed the state the retired user command
+ * used to write — the names in the active set plus one `manual` branch record —
+ * so the admission and projection cases can start from an authorized session.
+ */
+function seedManualGrant(api: ManualHost, names: readonly string[]): void {
+  api.setActiveTools([...new Set([...api.getActiveTools(), ...names])]);
+  appendManualRecord(api, names.map((name) => ({ ref: `tool://${name}`, name, kind: "tool", status: "available" })));
+}
+
+function branchOf(entries: readonly { customType: string; data?: unknown }[]): unknown[] {
+  return entries.map((entry) => ({ type: "custom", customType: entry.customType, data: entry.data }));
 }
 
 const tools: FakeTool[] = [
@@ -81,144 +94,39 @@ const tools: FakeTool[] = [
   { name: "msg_write", description: "Send a message to a child", exposure: "deferred", namespace: { name: "subagent" } },
 ];
 
-test("the command line parser accepts only list and enable", () => {
+test("the command line parser accepts browsing and enabling", () => {
   assert.deepEqual(parseCapabilityCommand(""), { verb: "list", filter: "" });
   assert.deepEqual(parseCapabilityCommand("  list "), { verb: "list", filter: "" });
   assert.deepEqual(parseCapabilityCommand("list mcp"), { verb: "list", category: "mcp", filter: "" });
   assert.deepEqual(parseCapabilityCommand("list tool git status"), { verb: "list", category: "tool", filter: "git status" });
   assert.deepEqual(parseCapabilityCommand("list git status"), { verb: "list", filter: "git status" });
-  assert.deepEqual(parseCapabilityCommand("enable"), { verb: "enable", names: [] });
-  assert.deepEqual(parseCapabilityCommand("enable deck_pages read"), { verb: "enable", names: ["deck_pages", "read"] });
+  assert.deepEqual(parseCapabilityCommand("enable"), { verb: "enable", targets: [] });
+  assert.deepEqual(parseCapabilityCommand("enable deck_pages read"), { verb: "enable", targets: ["deck_pages", "read"] });
   assert.throws(() => parseCapabilityCommand("search git"), /Unknown subcommand/);
   assert.throws(() => parseCapabilityCommand("disable read"), /Unknown subcommand/);
 });
 
-test("enablement activates and records only the tools the session really activated", () => {
-  const api = host(tools, ["read"]);
-  const result = enableManualTools(api, ["deck_pages", "read", "missing", "secret"]);
-  assert.deepEqual(result.enabled, ["deck_pages"]);
-  assert.deepEqual(result.alreadyActive, ["read"]);
-  assert.deepEqual(result.skipped, [
-    { name: "missing", reason: "not_registered" },
-    { name: "secret", reason: "hidden" },
-  ]);
-  assert.equal(result.recordError, null);
-  assert.deepEqual(api.activeNames().sort(), ["deck_pages", "read"]);
-  assert.equal(api.entries.length, 1);
-  assert.equal(api.entries[0]?.customType, CAPABILITY_DISCOVERY_RECORD);
-  const record = api.entries[0]?.data as { toolCallId?: string; result: { manual: { ref: string; name: string; kind: string }[] } };
-  assert.equal("toolCallId" in record, false, "a manual record is not anchored to a tool result");
-  assert.deepEqual(record.result.manual.map((hit) => hit.ref), ["tool://deck_pages"]);
-  assert.equal(record.result.manual[0]?.kind, "tool");
-});
-
-test("enable expands a namespace ref to its registered members", () => {
-  const api = host(tools, []);
-  const result = enableManualTools(api, ["namespace://subagent"]);
-  assert.deepEqual(result.enabled, ["msg_write"]);
-  assert.deepEqual(result.namespaces, [{ name: "subagent", tools: ["msg_write"] }]);
-  assert.deepEqual(api.activeNames(), ["msg_write"]);
-  assert.equal(api.entries.length, 1);
-  const record = api.entries[0]?.data as { result: { manual: { ref: string }[] } };
-  assert.deepEqual(record.result.manual.map((hit) => hit.ref), ["tool://msg_write"]);
-});
-
-test("a bare namespace name expands when no tool has that name", () => {
-  const api = host(tools, []);
-  const result = enableManualTools(api, ["subagent"]);
-  assert.deepEqual(result.enabled, ["msg_write"]);
-  assert.deepEqual(result.namespaces.map((namespace) => namespace.name), ["subagent"]);
-  assert.deepEqual(api.activeNames(), ["msg_write"]);
-});
-
-test("a tool name wins over a namespace with the same text", () => {
-  const api = host([...tools, { name: "subagent", description: "A plain tool", exposure: "deferred" }], []);
-  const result = enableManualTools(api, ["subagent"]);
-  assert.deepEqual(result.enabled, ["subagent"]);
-  assert.deepEqual(result.namespaces, []);
-  assert.ok(!api.activeNames().includes("msg_write"));
-});
-
-test("the command reports a namespace and enables its members", async () => {
-  const fixture = install(tools, []);
-  await fixture.run("enable namespace://subagent");
-  const text = fixture.notifications[0]?.text ?? "";
-  assert.match(text, /Enabled: msg_write/);
-  assert.match(text, /Namespace subagent: msg_write/);
-  assert.deepEqual(fixture.activeNames(), ["msg_write"]);
-});
-
-test("a tool outside the current qualification is refused, not activated", () => {
-  const api = host(tools, [], ["mcp__git__status"]);
-  const result = enableManualTools(api, ["mcp__git__status"]);
-  assert.deepEqual(result.enabled, []);
-  assert.deepEqual(result.skipped, [{ name: "mcp__git__status", reason: "not_permitted" }]);
-  assert.deepEqual(api.activeNames(), []);
-  assert.equal(api.entries.length, 0, "nothing is remembered when nothing was activated");
-});
-
-test("a repeated enable is idempotent and never removes existing memory", () => {
-  const api = host(tools, []);
-  enableManualTools(api, ["deck_pages"]);
-  const again = enableManualTools(api, ["deck_pages"], { recorded: new Set(["deck_pages"]) });
-  assert.deepEqual(again.enabled, []);
-  assert.deepEqual(again.alreadyActive, ["deck_pages"]);
-  assert.equal(api.entries.length, 1, "an already recorded tool is not recorded again");
-  assert.deepEqual(api.activeNames(), ["deck_pages"]);
-});
-
-test("a remembered but inactive manual tool is activated and reported", () => {
-  const api = host(tools, []);
-  setCapabilityRootOnlyPolicy(api, manualToolMatcher(["deck_pages"]));
-  const result = enableManualTools(api, ["deck_pages"], { recorded: new Set(["deck_pages"]) });
-  assert.deepEqual(result.enabled, ["deck_pages"], "activation is reported even when the record already exists");
-  assert.deepEqual(result.alreadyActive, []);
-  assert.deepEqual(api.activeNames(), ["deck_pages"]);
-  assert.equal(api.entries.length, 0, "an existing record is not duplicated");
-});
-
-test("an already-active manual tool is authorized by the user command", () => {
-  const api = host(tools, ["deck_pages"]);
-  setCapabilityRootOnlyPolicy(api, manualToolMatcher(["deck_pages"]));
-  const result = enableManualTools(api, ["deck_pages"]);
-  assert.deepEqual(result.enabled, ["deck_pages"], "activation alone never authorizes a manual tool");
-  assert.deepEqual(result.alreadyActive, ["deck_pages"]);
-  assert.equal(api.entries.length, 1);
-  const record = api.entries[0]?.data as { result: { manual: { name: string }[] } };
-  assert.deepEqual(record.result.manual.map((hit) => hit.name), ["deck_pages"]);
-});
-
-test("manual usage needs the root session and a user enablement record", () => {
+test("a manual tool needs the root session and a user record, not activation", () => {
   const root = host(tools, []);
   setCapabilityRootOnlyPolicy(root, manualToolMatcher(["deck_pages"]));
-  const branch: unknown[] = [];
-  const before = createToolAdmission(root, branch);
-  assert.equal(before.admitsManual("deck_pages"), false, "active or registered alone is not authority");
-  assert.equal(before.admits("read"), true, "other tools are unaffected");
+  assert.equal(createToolAdmission(root, []).admitsManual("deck_pages"), false, "registration is not authority");
+  root.setActiveTools(["deck_pages"]);
+  assert.equal(createToolAdmission(root, []).admits("deck_pages"), false, "an active manual tool is still unauthorized");
+  assert.equal(createToolAdmission(root, []).admits("read"), true, "other tools are unaffected");
 
-  enableManualTools(root, ["deck_pages"]);
-  const record = root.entries[0]?.data;
-  const enabledBranch = [{ type: "custom", customType: CAPABILITY_DISCOVERY_RECORD, data: record }];
-  assert.deepEqual([...manualEnabledTools(enabledBranch)], ["deck_pages"]);
-  assert.equal(createToolAdmission(root, enabledBranch).admits("deck_pages"), true);
+  seedManualGrant(root, ["deck_pages"]);
+  const granted = branchOf(root.entries);
+  assert.deepEqual([...manualEnabledTools(granted)], ["deck_pages"]);
+  assert.equal(createToolAdmission(root, granted).admits("deck_pages"), true);
 
   const child = host(tools, []);
   setCapabilityParent(child, root);
-  const childAdmission = createToolAdmission(child, enabledBranch);
+  const childAdmission = createToolAdmission(child, granted);
   assert.equal(childAdmission.admitsManual("deck_pages"), false, "a subagent never holds a manual tool");
   assert.equal(childAdmission.admits("deck_pages"), false);
 });
 
-test("a failed branch write is reported instead of claiming durable memory", () => {
-  const api = host(tools, []);
-  api.failAppend();
-  const result = enableManualTools(api, ["deck_pages"]);
-  assert.deepEqual(result.enabled, ["deck_pages"]);
-  assert.match(result.recordError ?? "", /disk full/);
-  assert.deepEqual(api.activeNames(), ["deck_pages"], "activation is not rolled back");
-});
-
-test("manual records project under their own category and obey live permissions", () => {
+test("a user enablement is branch authority, never request state", () => {
   const entries: { customType: string; data?: unknown }[] = [];
   appendManualRecord({ appendEntry: (customType, data) => { entries.push({ customType, data }); } }, [
     { ref: "tool://deck_pages", name: "deck_pages", description: "List deck pages", exposure: "deferred", kind: "tool" },
@@ -226,12 +134,47 @@ test("manual records project under their own category and obey live permissions"
   const branch = entries.map((entry) => ({ type: "custom", customType: entry.customType, data: entry.data }));
   const records = discoveryRecords(branch);
   assert.deepEqual(records[0]?.result.manual?.map((hit) => hit.ref), ["tool://deck_pages"]);
+  assert.equal(createToolAdmission(rootWith(tools), branch).admits("deck_pages"), true,
+    "the record is the authority");
 
+  // The declaration carries the interface, so projecting the authorization again
+  // would only change the leading system prompt. Pi folds a mid-conversation
+  // system section into that head for every transport without native support,
+  // which invalidates the whole cached prefix.
   const head = [{ role: "system", content: "base", sections: { preamble: "Base" }, timestamp: 0 }];
-  const allowed = capabilityPromptTranscript(head, branch, { allowsTool: () => true });
-  assert.match(allowed[0]?.sections?.[CAPABILITY_SECTION] ?? "", /"category":"manual"/);
-  const denied = capabilityPromptTranscript(head, branch, { allowsTool: () => false });
-  assert.equal(denied[0]?.sections?.[CAPABILITY_SECTION], undefined);
+  assert.deepEqual(capabilityPromptTranscript(head, branch, { allowsTool: () => true }), head,
+    "an enablement adds no system section and no message");
+  assert.deepEqual(capabilityPromptTranscript(head, branch, { allowsTool: () => false }), head,
+    "a denied manual tool changes nothing either");
+});
+
+function rootWith(registered: FakeTool[]): ManualHost {
+  const api = host(registered, []);
+  setCapabilityRootOnlyPolicy(api, manualToolMatcher(["deck_pages"]));
+  return api;
+}
+
+test("projecting the same branch twice produces the same transcript", () => {
+  const branch = [{
+    type: "custom", customType: CAPABILITY_DISCOVERY_RECORD,
+    data: {
+      version: 1, result: {
+        status: "ok", tools: [], mcp: [], skills: [],
+        manual: [{ ref: "tool://deck_pages", name: "deck_pages", kind: "tool" }],
+        coverage: { local: "not_searched", remote: "not_searched" },
+      },
+    },
+  }];
+  const messages = [
+    { role: "system", content: "base", sections: { preamble: "Base" }, timestamp: 1_793_789_005_311 },
+    { role: "user", content: "first", timestamp: 1_793_789_005_311 },
+    { role: "assistant", content: "ok", timestamp: 1_793_789_005_316 },
+    { role: "user", content: "second", timestamp: 1_793_789_005_400 },
+  ];
+  const first = capabilityPromptTranscript(messages, branch, { allowsTool: () => true });
+  const second = capabilityPromptTranscript(messages, branch, { allowsTool: () => true });
+  assert.deepEqual(first, second);
+  assert.deepEqual(first, messages, "a branch with only a user record reproduces the request exactly");
 });
 
 test("appendManualRecord refuses an empty selection", () => {
@@ -245,12 +188,7 @@ test("appendManualRecord refuses an empty selection", () => {
 
 type Notification = { text: string; type: string };
 
-interface InstallOptions {
-  readonly mode?: "tui" | "rpc" | "print";
-  readonly custom?: (factory: unknown) => Promise<unknown>;
-}
-
-function install(tools: FakeTool[], active: string[] = [], branch: unknown[] = [], options: InstallOptions = {}) {
+function install(tools: FakeTool[], active: string[] = []) {
   const notifications: Notification[] = [];
   const entries: { customType: string; data?: unknown }[] = [];
   let registered: RegisteredCommand | undefined;
@@ -267,14 +205,10 @@ function install(tools: FakeTool[], active: string[] = [], branch: unknown[] = [
   } as unknown as ExtensionAPI;
   installCapabilityCommand(pi);
   const ctx = {
-    mode: options.mode ?? "tui",
     ui: {
       notify: (text: string, type: string = "info") => { notifications.push({ text, type }); },
-      custom: (factory: unknown) => options.custom === undefined
-        ? Promise.reject(new Error("no custom UI in this fixture"))
-        : options.custom(factory),
     },
-    sessionManager: { getBranch: () => branch },
+    sessionManager: { getBranch: () => [] },
   } as unknown as ExtensionCommandContext;
   assert.ok(registered);
   const command = registered;
@@ -285,21 +219,6 @@ function install(tools: FakeTool[], active: string[] = [], branch: unknown[] = [
     activeNames: () => [...activeNames],
     completions: async (prefix: string) => (await command.getArgumentCompletions?.(prefix)) ?? null,
     run: async (raw: string) => { await command.handler(raw, ctx); },
-  };
-}
-
-const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as unknown as Theme;
-
-/** Run the picker through the real component and return what the user chose. */
-function drivePicker(keys: readonly string[]): (factory: unknown) => Promise<unknown> {
-  return async (factory: unknown) => {
-    let resolve!: (value: unknown) => void;
-    const result = new Promise<unknown>((done) => { resolve = done; });
-    const component = (factory as (
-      tui: unknown, theme: Theme, keybindings: KeybindingsManager, done: (value: unknown) => void,
-    ) => Component)(undefined, theme, getKeybindings(), resolve);
-    for (const key of keys) component.handleInput?.(key);
-    return result;
   };
 }
 
@@ -338,100 +257,48 @@ test("list filters by category and by free text, with a recoverable empty result
   assert.match(fixture.notifications[3]?.text ?? "", /Try \/capability list/);
 });
 
-test("the command enables tools and reports every refused name", async () => {
+test("the user command is the one path that authorizes a manual tool", async () => {
   const fixture = install(tools, ["read"]);
-  await fixture.run("enable deck_pages read missing secret");
+  setCapabilityRootOnlyPolicy(fixture.pi, manualToolMatcher(["deck_pages"]));
+  await fixture.run("enable deck_pages");
   const text = fixture.notifications[0]?.text ?? "";
-  assert.match(text, /Enabled: deck_pages/);
-  assert.match(text, /Already active: read/);
-  assert.match(text, /Not registered: missing/);
-  assert.match(text, /Hidden: secret/);
-  assert.deepEqual(fixture.activeNames().sort(), ["deck_pages", "read"]);
-  assert.equal(fixture.entries.length, 1);
+  assert.match(text, /Enabled\n {2}✔ deck_pages/);
+  assert.deepEqual(fixture.activeNames(), ["read", "deck_pages"], "the user's own command activates it");
+  assert.equal(fixture.entries.length, 1, "one append-only authorization record");
+  const branch = branchOf(fixture.entries);
+  assert.deepEqual([...manualEnabledTools(branch)], ["deck_pages"]);
+  assert.equal(createToolAdmission(fixture.pi, branch).admits("deck_pages"), true,
+    "the command's record is what admits the tool");
+  await fixture.run("list deck_pages");
+  assert.match(fixture.notifications[1]?.text ?? "", /✔ deck_pages {2}\[active, manual\]/);
 });
 
-test("the command reports an invalid subcommand without touching tools", async () => {
-  const fixture = install(tools, []);
-  await fixture.run("disable read");
-  assert.equal(fixture.notifications[0]?.type, "error");
-  assert.match(fixture.notifications[0]?.text ?? "", /invalid_command_args/);
-  assert.deepEqual(fixture.activeNames(), []);
+test("browsing a manual tool grants nothing", async () => {
+  const fixture = install(tools, ["read"]);
+  setCapabilityRootOnlyPolicy(fixture.pi, manualToolMatcher(["deck_pages"]));
+  await fixture.run("list deck");
+  await fixture.run("list deck_pages");
+  assert.match(fixture.notifications[0]?.text ?? "", /deck_pages/);
+  assert.deepEqual(fixture.activeNames(), ["read"], "no tool is activated");
+  assert.deepEqual(fixture.entries, [], "no manual record is written");
+  assert.equal(createToolAdmission(fixture.pi, []).admits("deck_pages"), false);
 });
 
-test("completions cover verbs, list categories and enable names, including trailing spaces", async () => {
+test("completions cover both verbs, the list categories and enable targets", async () => {
   const fixture = install(tools, []);
   assert.deepEqual((await fixture.completions(""))?.map((item) => item.value), ["list ", "enable "]);
   assert.deepEqual((await fixture.completions("li"))?.map((item) => item.value), ["list "]);
-  assert.equal(await fixture.completions("se"), null, "search is gone");
+  assert.deepEqual((await fixture.completions("en"))?.map((item) => item.value), ["enable "]);
+  assert.equal(await fixture.completions("se"), null, "search is not a verb");
   assert.deepEqual((await fixture.completions("list "))?.map((item) => item.value),
     ["list tool ", "list mcp ", "list namespace "]);
   assert.deepEqual((await fixture.completions("list to"))?.map((item) => item.value), ["list tool "]);
   assert.equal(await fixture.completions("list tool "), null, "the rest of a category line is a free filter");
   assert.equal(await fixture.completions("list tool gi"), null);
-  assert.deepEqual((await fixture.completions("enable "))?.map((item) => item.label),
-    ["deck_pages", "read", "mcp__git__log", "mcp__git__status", "msg_write", "namespace://subagent"]);
-  assert.deepEqual((await fixture.completions("enable de"))?.map((item) => item.value), ["enable deck_pages "]);
-  assert.deepEqual((await fixture.completions("enable deck_pages "))?.map((item) => item.label),
-    ["read", "mcp__git__log", "mcp__git__status", "msg_write", "namespace://subagent"]);
-  assert.deepEqual((await fixture.completions("enable deck_pages re"))?.map((item) => item.value),
-    ["enable deck_pages read "]);
+  assert.ok((await fixture.completions("enable "))?.some((item) => item.value === "enable deck_pages "));
 });
 
-test("enable without a name opens the native picker and enables the chosen tool", async () => {
-  const fixture = install(tools, [], [], {
-    mode: "tui",
-    custom: drivePicker([...Array.from("stat"), "\r"]),
-  });
-  await fixture.run("enable");
-  assert.match(fixture.notifications.at(-1)?.text ?? "", /Enabled: mcp__git__status/);
-  assert.deepEqual(fixture.activeNames(), ["mcp__git__status"]);
-  assert.equal(fixture.entries.length, 1, "the explicit selection is recorded once");
-});
-
-test("the picker is a native filterable list: typing narrows it, Enter selects", async () => {
-  let rendered = "";
-  const fixture = install(tools, [], [], {
-    mode: "tui",
-    custom: async (factory: unknown) => {
-      let resolve!: (value: unknown) => void;
-      const result = new Promise<unknown>((done) => { resolve = done; });
-      const component = (factory as (
-        tui: unknown, theme: Theme, keybindings: KeybindingsManager, done: (value: unknown) => void,
-      ) => Component)(undefined, theme, getKeybindings(), resolve);
-      const initial = component.render(100).join("\n");
-      assert.match(initial, /Enable a capability/);
-      assert.match(initial, /○ status/);
-      assert.match(initial, /git · Show repository status/);
-      assert.match(initial, /\[manual\]|○ deck_pages/, "manual tools are browsable in the picker");
-      for (const key of "log") component.handleInput?.(key);
-      rendered = component.render(100).join("\n");
-      component.handleInput?.("\r");
-      return result;
-    },
-  });
-  await fixture.run("enable");
-  assert.match(rendered, /log/);
-  assert.doesNotMatch(rendered, /status/);
-  assert.match(fixture.notifications.at(-1)?.text ?? "", /Enabled: mcp__git__log/);
-});
-
-test("Esc closes the picker without activating or recording anything", async () => {
-  const fixture = install(tools, [], [], { mode: "tui", custom: drivePicker(["\x1b"]) });
-  await fixture.run("enable");
-  assert.deepEqual(fixture.activeNames(), []);
-  assert.equal(fixture.entries.length, 0);
-  assert.match(fixture.notifications.at(-1)?.text ?? "", /Cancelled/);
-});
-
-test("enable without a name reports the terminal UI requirement instead of guessing", async () => {
-  const fixture = install(tools, [], [], { mode: "print" });
-  await fixture.run("enable");
-  assert.deepEqual(fixture.activeNames(), []);
-  assert.equal(fixture.entries.length, 0);
-  assert.match(fixture.notifications[0]?.text ?? "", /needs the terminal UI/);
-});
-
-test("a child scope's catalog never offers manual tools to list or the picker", () => {
+test("a child scope's catalog never offers manual tools to list", () => {
   const rootHost = host(tools, []);
   setCapabilityRootOnlyPolicy(rootHost, manualToolMatcher(["deck_pages"]));
   const child = {
@@ -441,75 +308,24 @@ test("a child scope's catalog never offers manual tools to list or the picker", 
   setCapabilityParent(child, rootHost);
   const view = createCapabilityCatalog(child as unknown as ExtensionAPI);
   assert.deepEqual(view.entries.some((entry) => entry.name === "deck_pages"), false,
-    "the child list and picker exclude manual tools even though the root lists them");
+    "the child list excludes manual tools even though the root lists them");
   assert.deepEqual(view.entries.map((entry) => entry.name).sort(),
     ["mcp__git__log", "mcp__git__status", "msg_write", "read"]);
   assert.deepEqual(createCapabilityCatalog(rootHost as unknown as ExtensionAPI).entries
     .some((entry) => entry.name === "deck_pages"), true, "Main keeps the manual tool browsable");
 });
 
-test("list and the picker share one filter rule, including the description tail", async () => {
+test("list matches a word past the display truncation", async () => {
   const catalog = [...tools, {
     name: "long_tail",
     description: `${"x".repeat(90)} TAILWORD`,
     exposure: "deferred" as const,
   }];
-  const listFixture = install(catalog, []);
-  await listFixture.run("list tailword");
-  assert.match(listFixture.notifications[0]?.text ?? "", /1 matches for "tailword"/);
-  const fixture = install(catalog, [], [], {
-    mode: "tui",
-    custom: async (factory: unknown) => {
-      let resolve!: (value: unknown) => void;
-      const result = new Promise<unknown>((done) => { resolve = done; });
-      const component = (factory as (
-        tui: unknown, theme: Theme, keybindings: KeybindingsManager, done: (value: unknown) => void,
-      ) => Component)(undefined, theme, getKeybindings(), resolve);
-      for (const key of "tailword") component.handleInput?.(key);
-      assert.match(component.render(120).join("\n"), /long_tail/,
-        "a word past the display truncation still matches in the picker");
-      component.handleInput?.("\r");
-      return result;
-    },
-  });
-  await fixture.run("enable");
-  assert.match(fixture.notifications.at(-1)?.text ?? "", /Enabled: long_tail/);
-});
-
-test("an empty filter shows the same full catalog in list and the picker", async () => {
-  const fixture = install(tools, []);
-  await fixture.run("list");
-  const listText = fixture.notifications[0]?.text ?? "";
-  const entries = createCapabilityCatalog(fixture.pi).entries;
-  assert.equal(entries.length, 5, "hidden tools stay out of both views");
-  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  for (const entry of entries) {
-    assert.match(listText, new RegExp(escape(entry.display)), `list shows ${entry.display}`);
-  }
-  const component = createCapabilitySelector(entries, theme, getKeybindings(), () => {});
-  const rendered = component.render(120).join("\n");
-  for (const entry of entries) {
-    assert.match(rendered, new RegExp(escape(entry.display)), `the picker shows ${entry.display}`);
-  }
-});
-
-test("the picker forwards focus to its input and re-themes on render", () => {
-  const entries = createCapabilityCatalog(install(tools, []).pi).entries;
-  let accent = "A";
-  const liveTheme = {
-    fg: (color: string, text: string) => (color === "accent" ? `${accent}${text}` : text),
-    bold: (text: string) => text,
-  } as unknown as Theme;
-  const component = createCapabilitySelector(entries, liveTheme, getKeybindings(), () => {}) as Component & Focusable;
-  assert.equal(component.focused, false);
-  component.focused = true;
-  assert.equal(component.focused, true, "focus reaches the wrapped input");
-  assert.ok(component.render(100).some((line) => line.includes(CURSOR_MARKER)),
-    "the focused input renders its cursor marker for IME positioning");
-  assert.match(component.render(100).join("\n"), /AEnable a capability/);
-  accent = "B";
-  assert.match(component.render(100).join("\n"), /BEnable a capability/,
-    "themed text is rebuilt on render, not frozen in constructor state");
+  const fixture = install(catalog, []);
+  await fixture.run("list tailword");
+  const text = fixture.notifications[0]?.text ?? "";
+  assert.match(text, /1 matches for "tailword"/);
+  assert.match(text, /long_tail/, "a word past the display truncation still matches");
 });
 
 test("the editor's forced Tab request reaches argument completions through the wrapper", async () => {
@@ -548,18 +364,6 @@ test("the editor's forced Tab request reaches argument completions through the w
   assert.equal(toolApplied.lines[0], "/capability list tool ");
   assert.equal(await wrapped.getSuggestions(toolApplied.lines, 0, toolApplied.cursorCol, { signal, force: true }), null,
     "a free filter has no candidates, but the cursor is in the right position");
-
-  // Enable keeps the name shortcut and appends further names after a space.
-  const enableApplied = wrapped.applyCompletion(["/capability enable "], 0, "/capability enable ".length,
-    { value: "enable deck_pages ", label: "deck_pages" }, "enable ");
-  assert.equal(enableApplied.lines[0], "/capability enable deck_pages ");
-  const more = await wrapped.getSuggestions(enableApplied.lines, 0, enableApplied.cursorCol, { signal, force: true });
-  assert.ok(more);
-  assert.ok(more.items.some((item) => item.value === "enable deck_pages read "));
-  assert.ok(!more.items.some((item) => item.value.startsWith("enable deck_pages deck_pages")),
-    "an already chosen name is excluded");
-  assert.ok(more.items.some((item) => item.value === "enable deck_pages namespace://subagent "),
-    "a namespace completes as an explicit ref");
 });
 
 test("the /subagent wrapper restores its verb candidates on a forced Tab too", async () => {
@@ -589,7 +393,7 @@ test("a manual tool is invisible to discovery and cannot be activated by it", ()
 
   assert.deepEqual(createEligibleToolCatalog(api).names.has("deck_pages"), false, "discovery never sees it");
   assert.deepEqual(createEligibleToolCatalog(api, { includeManual: true }).names.has("deck_pages"), true,
-    "the user command and the execution guard see it");
+    "the execution guard sees it");
 
   const refused = activateToolNames(api, ["deck_pages"]);
   assert.deepEqual(refused.skipped, [{ name: "deck_pages", reason: "manual_only" }]);
@@ -599,10 +403,10 @@ test("a manual tool is invisible to discovery and cannot be activated by it", ()
   assert.deepEqual(enabled.activated, ["deck_pages"]);
 });
 
-test("a child scope never holds a manual tool, even after the root enabled it", () => {
+test("a child scope never holds a manual tool, even after the root authorized it", () => {
   const root = host(tools, []);
   setCapabilityRootOnlyPolicy(root, manualToolMatcher(["deck_pages"]));
-  enableManualTools(root, ["deck_pages"]);
+  seedManualGrant(root, ["deck_pages"]);
   assert.deepEqual(root.activeNames(), ["deck_pages"]);
 
   const child = host(tools, []);

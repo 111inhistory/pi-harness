@@ -2,10 +2,10 @@
  * Receipt activation respects a manual reply tool.
  *
  * When `msg_write` is configured as manual, a peer message must not grant it.
- * If the user already enabled it, the active set is authoritative and the
- * receipt must not report a false `manual_only` failure; if it is not enabled,
- * the tool stays inactive and the receipt reports the refusal without writing a
- * capability record.
+ * If the branch already authorizes it, the active set is authoritative and the
+ * receipt must not report a false `manual_only` failure; if it is not
+ * authorized, the tool stays inactive and the receipt reports the refusal
+ * without writing a capability record.
  */
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -21,7 +21,7 @@ import { fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 
-import { CAPABILITY_DISCOVERY_RECORD } from "../../src/capability/discovery-record.ts";
+import { appendManualRecord, CAPABILITY_DISCOVERY_RECORD } from "../../src/capability/discovery-record.ts";
 
 const cwd = await mkdtemp(path.join(tmpdir(), "reply-manual-"));
 const agentDir = path.join(cwd, "agent");
@@ -127,15 +127,19 @@ async function deliver(session: AgentSession, content: string, turn: Promise<voi
   }
 }
 
-test("an explicitly enabled manual reply tool is not reported unavailable", { timeout: 20_000 }, async () => {
+test("an authorized manual reply tool is not reported unavailable", { timeout: 20_000 }, async () => {
   const started = await startSession();
   const { session } = started;
   try {
     assert.ok(!session.getActiveToolNames().includes("msg_write"), "manual tool starts inactive");
-    const command = session.extensionRunner.getRegisteredCommands().find((entry) => entry.name === "capability");
-    assert.ok(command);
-    await command.handler("enable msg_write", session.extensionRunner.createCommandContext());
-    assert.ok(session.getActiveToolNames().includes("msg_write"), "the user enabled the reply tool");
+    // Test fixture, not a production path: seed the active tool and the branch's
+    // `manual` record that the retired user command used to write.
+    appendManualRecord(
+      { appendEntry: (customType, data) => { session.sessionManager.appendCustomEntry(customType, data); } },
+      [{ ref: "tool://msg_write", name: "msg_write", kind: "tool", status: "available" }],
+    );
+    session.setActiveToolsByName([...session.getActiveToolNames(), "msg_write"]);
+    assert.ok(session.getActiveToolNames().includes("msg_write"), "the reply tool is authorized and active");
     started.notices.length = 0;
 
     await deliver(session, "peer ping", started.turnStarted);

@@ -20,6 +20,9 @@
 | [旧历史批量迁移记录](subagent-migration-batch.md) | 一次离线数据迁移的操作与验证 |
 | [迁移样本人工验收](subagent-migration-smoke.md) | 单样本恢复、工具调用和在线续跑 |
 | [Manual 能力验收](capability-manual-acceptance.md) | 完整 SDK 会话、在线组合与准入开销 |
+| [Capability 启用重写交接计划](capability-enable-rewrite-plan.md) | 重写范围、实现步骤与验收要求 |
+| [共享 Provider 与继承上下文设计](shared-provider-context-design.md) | Capability／Subagent 共用适配、独立缓存标识、工具追加与伪移除的设计和边界 |
+| [Capability 启用与缓存边界](capability-enable-cache.md) | 请求前缀稳定性、提供方转换分档与未解决限制 |
 
 ## 使用边界
 

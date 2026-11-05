@@ -7,13 +7,10 @@ import { resolveTranscriptTools } from "../../node_modules/@earendil-works/pi-ai
 
 import { capabilityPublicResult } from "../../src/capability/result.ts";
 import type { ProjectionMessage } from "../../src/capability/prompt.ts";
-import {
-  additiveToolTranscript,
-  capabilityModelResult,
-  capabilityToolDelta,
-  retrievalToolLoadout,
-  supportsAdditiveResponses,
-} from "../../src/responses-tool-prefix.ts";
+import { capabilityModelResult, capabilityToolDelta } from "../../src/capability/model-result.ts";
+import { retrievalToolLoadout } from "../../src/capability/retrieval-tools.ts";
+import { providerSessionPolicy } from "../../src/provider-session.ts";
+import { additiveToolTranscript } from "../../src/session-transcript.ts";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -63,10 +60,10 @@ function wireTools(wire: readonly unknown[]): UnknownRecord[] {
 }
 
 test("additive Responses requires both transport and model compatibility", () => {
-  assert.equal(supportsAdditiveResponses(model), true);
-  assert.equal(supportsAdditiveResponses({ ...model, api: "anthropic-messages" }), false);
-  assert.equal(supportsAdditiveResponses({ ...model, compat: { supportsAdditionalTools: true } }), false);
-  assert.equal(supportsAdditiveResponses({ ...model, compat: { supportsToolSearch: true, supportsMidConvoSystemMessages: true } }), true);
+  assert.equal(providerSessionPolicy(model).toolSupport, "changes");
+  assert.equal(providerSessionPolicy({ ...model, api: "anthropic-messages" }).transport, "anthropic");
+  assert.equal(providerSessionPolicy({ ...model, compat: { supportsAdditionalTools: true } }).toolSupport, "none");
+  assert.equal(providerSessionPolicy({ ...model, compat: { supportsToolSearch: true, supportsMidConvoSystemMessages: true } }).toolSupport, "additions");
 });
 
 test("disable, re-enable and description changes preserve the original declaration prefix", () => {
@@ -119,8 +116,13 @@ test("a same-name schema change is replayed as a replacement declaration, not dr
 
 test("retrieval placeholders reject execution and derive allowed names from the retrieval tools", async () => {
   const allowed = { ...tool("capability_step"), label: "Step", execute: async () => "stepped" };
-  const loadout = retrievalToolLoadout([{ role: "system", toolsAdded: [tool("write"), tool("codemode")] }], [allowed]);
+  const parentWrite = async () => "parent write";
+  const loadout = retrievalToolLoadout(
+    [{ role: "system", toolsAdded: [{ ...tool("write"), execute: parentWrite }, tool("codemode")] }],
+    [allowed],
+  );
   assert.deepEqual(loadout.map((entry) => entry.name), ["write", "codemode", "capability_step"]);
+  assert.notEqual(loadout[0]!.execute, parentWrite);
   await assert.rejects(loadout[0]!.execute(), /unavailable in capability discovery/);
   await assert.rejects(loadout[1]!.execute(), /Only capability_step may execute/);
   assert.equal(await loadout[2]!.execute(), "stepped");

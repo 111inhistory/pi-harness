@@ -263,6 +263,7 @@ export interface NativeSessionRequest {
   readonly sessionManager: SessionManager;
   readonly surface: NativeChildSurfaceScope;
   readonly signal: AbortSignal;
+  readonly cacheKey?: string | null | undefined;
 }
 
 /** A session the factory opened and the child surface it installed. */

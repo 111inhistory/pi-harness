@@ -1,7 +1,7 @@
 /**
  * Manual tool classification.
  *
- * A manual tool is enabled only by the user through `/capability enable`. The
+ * A manual tool requires explicit user authorization on the branch. The
  * classification is a name policy, resolved against the live registry on every
  * use: an exact tool name, or a trailing `*` that matches a name prefix.
  *

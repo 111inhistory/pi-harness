@@ -3,10 +3,11 @@
  *
  * The command owns argument parsing, service resolution and error reporting.
  * Rendering lives in `status-view.ts`; state changes go through `RootService`
- * and `Runtime` only. It never sends messages to a subagent.
+ * and `Runtime` only. It never sends a message to a subagent or a peer session:
+ * `sessions connect` only appends local context to the current conversation.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { RootService } from "./root-service.ts";
+import type { RootService, SessionConnect } from "./root-service.ts";
 import { SubagentError, type StopResult } from "./runtime.ts";
 import { renderSubagentList } from "./status-view.ts";
 import { crossSessionSupported, sessionMainAddress, type LiveSession } from "./session-directory.ts";
@@ -15,7 +16,8 @@ export type SubagentCommand =
   | { readonly verb: "list"; readonly all: boolean; readonly id: string | null }
   | { readonly verb: "stop"; readonly actorId: string }
   | { readonly verb: "stopAll" }
-  | { readonly verb: "sessions" };
+  | { readonly verb: "sessions" }
+  | { readonly verb: "sessionsConnect"; readonly target: string };
 
 /** Parse the raw argument string without touching any service. */
 export function parseCommand(raw: string): SubagentCommand {
@@ -47,8 +49,16 @@ export function parseCommand(raw: string): SubagentCommand {
   }
 
   if (verb === "sessions") {
-    if (rest.length > 0) throw new SubagentError("invalid_command_args", "sessions takes no arguments.", { field: "sessions" });
-    return { verb: "sessions" };
+    const [action, ...args] = rest;
+    if (action === undefined) return { verb: "sessions" };
+    if (action !== "connect") {
+      throw new SubagentError("invalid_command_args", `Unknown sessions action: ${action}.`, { field: "sessions" });
+    }
+    const target = args.length === 1 ? args[0]!.trim() : "";
+    if (target === "" || target.startsWith("-")) {
+      throw new SubagentError("invalid_command_args", "sessions connect requires one live session uid or session id.", { field: "sessions" });
+    }
+    return { verb: "sessionsConnect", target };
   }
 
   if (verb === "stop") {
@@ -164,6 +174,30 @@ function renderSessions(sessions: readonly LiveSession[], currentSessionId: stri
   return lines.join("\n");
 }
 
+/** The result of a user-issued connect, as the command reports it. */
+function renderConnect(result: SessionConnect): string {
+  const label = result.session.name === null
+    ? result.session.uid
+    : `${result.session.uid} (${result.session.name})`;
+  const grant = result.alreadyEnabled.includes("msg_write") ? "already enabled" : "enabled";
+  // A failed branch record is a partial result: the contact is appended and the
+  // tool is active now, but the user grant is not durable, so only a manual
+  // `msg_write` is guaranteed to be pruned from the next request's declarations.
+  if (result.recordError !== null) {
+    return [
+      `Appended the contact information for ${label} at ${result.session.cwd}`,
+      `main: ${result.address}`,
+      `msg_write: activated, but the user grant was not recorded: ${result.recordError}`,
+      "A manual msg_write is not declared on the next request without that record; run connect again to record it.",
+    ].join("\n");
+  }
+  return [
+    `Connected ${label} at ${result.session.cwd}`,
+    `main: ${result.address}`,
+    `msg_write: ${grant}`,
+  ].join("\n");
+}
+
 async function run(raw: string, ctx: ExtensionContext, current: (ctx: ExtensionContext) => Promise<RootService>): Promise<void> {
   let command: SubagentCommand;
   try {
@@ -194,6 +228,11 @@ async function run(raw: string, ctx: ExtensionContext, current: (ctx: ExtensionC
       ctx.ui.notify(renderSessions(await service.listSessions(), service.sessionId), "info");
       return;
     }
+    if (command.verb === "sessionsConnect") {
+      const result = await service.connectSession(command.target);
+      ctx.ui.notify(renderConnect(result), result.recordError === null ? "info" : "error");
+      return;
+    }
     ctx.ui.notify(stopAll(service), "info");
   } catch (error) {
     report(ctx, error);
@@ -204,10 +243,33 @@ async function run(raw: string, ctx: ExtensionContext, current: (ctx: ExtensionC
 export function installSubagentCommand(
   api: ExtensionAPI,
   current: (ctx: ExtensionContext) => Promise<RootService>,
+  sessionCandidates: () => Promise<readonly LiveSession[]>,
 ): void {
   api.registerCommand("subagent", {
-    description: "Inspect subagents of the current root, stop them, and list live sessions",
-    getArgumentCompletions: (prefix) => {
+    description: "Inspect subagents of the current root, stop them, list live sessions, and connect one",
+    getArgumentCompletions: async (prefix) => {
+      const text = prefix.trimStart();
+      const action = /^sessions\s+(\S*)$/.exec(text);
+      if (action !== null) {
+        return "connect".startsWith(action[1]!)
+          ? [{ value: "sessions connect ", label: "connect", description: "Append a live session's contact information and enable msg_write" }]
+          : null;
+      }
+      const target = /^sessions\s+connect\s+(\S*)$/.exec(text);
+      if (target !== null) {
+        const fragment = target[1]!.toLowerCase();
+        const sessions = await sessionCandidates();
+        const items = sessions.filter(session =>
+          session.uid.toLowerCase().startsWith(fragment)
+          || session.sessionId.toLowerCase().startsWith(fragment)
+          || session.name?.toLowerCase().includes(fragment))
+          .map(session => ({
+            value: `sessions connect ${session.uid}`,
+            label: session.name === null ? session.uid : `${session.uid} · ${session.name}`,
+            description: `${session.cwd} · ${session.sessionId}`,
+          }));
+        return items.length === 0 ? null : items;
+      }
       const items = [
         { value: "list", label: "list", description: "Show the subagent tree" },
         { value: "stop", label: "stop", description: "Stop one actor or --all" },

@@ -2,7 +2,7 @@ import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import path from 'node:path';
 import { isIpcPath, isWindowsPipe, type EndpointResolverResult } from '../ipc/socket.ts';
-import { promptString, promptStrings } from '../prompt-text.ts';
+import { promptString } from '../prompt-text.ts';
 import { SubagentError, type BroadcastReceipt, type MessageReceipt } from './runtime.ts';
 import type { LiveSession } from './session-directory.ts';
 
@@ -39,8 +39,6 @@ export interface ManagedWriteHost {
 
 const text = {
   description: promptString('subagent-tools.json', 'msg_write', 'description'),
-  snippet: promptString('subagent-tools.json', 'msg_write', 'snippet'),
-  guidelines: promptStrings('subagent-tools.json', 'msg_write', 'guidelines'),
   parameters: {
     path: promptString('subagent-tools.json', 'msg_write', 'parameters', 'path'),
     content: promptString('subagent-tools.json', 'msg_write', 'parameters', 'content'),
@@ -64,8 +62,6 @@ export function createMessageWriteTool(options: {
     defaultActive: false,
     label: 'Send Agent Message',
     description: text.description,
-    promptSnippet: text.snippet,
-    promptGuidelines: [...text.guidelines],
     parameters,
     async execute(_id, args, signal) {
       if (!isIpcPath(args.path) && !isWindowsPipe(args.path)) {
