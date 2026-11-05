@@ -23,11 +23,17 @@
  *   never injected with OpenAI prompt cache fields.
  */
 
-import { clampOpenAIPromptCacheKey } from '@earendil-works/pi-ai/api/openai-prompt-cache';
 import {
   classifyProviderTransport,
   type ProviderTransport,
 } from './provider-session.ts';
+
+// The provider key limit counts Unicode code points, not UTF-16 code units.
+// Keep this small wire constraint here: Pi's extension loader does not expose
+// the provider-specific helper through its supported package-root entrypoint.
+export function limitSessionCacheKey(key: string | undefined): string | undefined {
+  return key === undefined ? undefined : Array.from(key).slice(0, 64).join('');
+}
 
 export type CacheRetention = 'none' | 'short' | 'long';
 
@@ -57,7 +63,7 @@ export type SessionCacheOptionsSource =
 export interface SessionCacheIdentity {
   /**
    * Effective outbound cache key, or undefined if caching is disabled or no key is set.
-   * Clamped to OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH (64) when present.
+   * Limited to 64 Unicode code points when present.
    */
   readonly effectiveKey: string | undefined;
 
@@ -110,7 +116,7 @@ export function resolveSessionCacheIdentity(
   const rawInherited = normalizeKey(options.inheritedKey);
   if (rawInherited !== undefined) {
     return {
-      effectiveKey: clampOpenAIPromptCacheKey(rawInherited),
+      effectiveKey: limitSessionCacheKey(rawInherited),
       disabled: false,
       isInherited: true,
     };
@@ -119,7 +125,7 @@ export function resolveSessionCacheIdentity(
   const rawNative = normalizeKey(options.nativeSessionId);
   if (rawNative !== undefined) {
     return {
-      effectiveKey: clampOpenAIPromptCacheKey(rawNative),
+      effectiveKey: limitSessionCacheKey(rawNative),
       disabled: false,
       isInherited: false,
     };
@@ -160,7 +166,7 @@ export function applySessionCacheToPayload(
     return payload;
   }
 
-  const nativeDefault = clampOpenAIPromptCacheKey(normalizeKey(options.nativeSessionId));
+  const nativeDefault = limitSessionCacheKey(normalizeKey(options.nativeSessionId));
   if (nativeDefault === undefined || existingKey !== nativeDefault) {
     // Existing key is not the native default (e.g. custom key via samplingParams); keep unchanged.
     return payload;
@@ -172,7 +178,7 @@ export function applySessionCacheToPayload(
     return rest;
   }
 
-  const inherited = clampOpenAIPromptCacheKey(normalizeKey(options.inheritedKey));
+  const inherited = limitSessionCacheKey(normalizeKey(options.inheritedKey));
   if (inherited !== undefined) {
     return {
       ...payload,

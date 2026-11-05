@@ -1,10 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
-  clampOpenAIPromptCacheKey,
-  OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH,
-} from '@earendil-works/pi-ai/api/openai-prompt-cache';
+import { clampOpenAIPromptCacheKey } from '@earendil-works/pi-ai/api/openai-prompt-cache';
 import {
   applySessionCacheToPayload,
   resolveSessionCacheIdentity,
@@ -12,21 +9,16 @@ import {
   type SessionCacheOptions,
 } from '../../src/session-cache.ts';
 
-test('native clampOpenAIPromptCacheKey clamps to 64 code points', () => {
-  assert.equal(OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH, 64);
-  assert.equal(clampOpenAIPromptCacheKey(undefined), undefined);
-
-  const shortKey = 'subagent-task-123';
-  assert.equal(clampOpenAIPromptCacheKey(shortKey), shortKey);
-
-  const longKey = 'a'.repeat(80);
-  assert.equal(clampOpenAIPromptCacheKey(longKey), 'a'.repeat(64));
-
-  // Preserves multi-byte Unicode code points without surrogate corruption
-  const unicodeKey = '🚀'.repeat(70);
-  const clamped = clampOpenAIPromptCacheKey(unicodeKey)!;
-  assert.equal(Array.from(clamped).length, 64);
-  assert.equal(clamped, '🚀'.repeat(64));
+test('payload replacement recognizes native Unicode truncation and preserves inherited code points', () => {
+  const nativeSessionId = '🚀'.repeat(70);
+  const inheritedKey = '🌍'.repeat(70);
+  const payload = { prompt_cache_key: clampOpenAIPromptCacheKey(nativeSessionId) };
+  const result = applySessionCacheToPayload(payload, { api: 'openai-responses' }, {
+    nativeSessionId, inheritedKey,
+  }) as { prompt_cache_key: string };
+  assert.equal(result.prompt_cache_key, clampOpenAIPromptCacheKey(inheritedKey));
+  assert.equal(result.prompt_cache_key, '🌍'.repeat(64));
+  assert.equal(payload.prompt_cache_key, '🚀'.repeat(64), 'the native payload is not mutated');
 });
 
 test('resolveSessionCacheIdentity: native default vs explicit inherited key', () => {

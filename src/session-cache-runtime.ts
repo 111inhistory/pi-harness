@@ -23,10 +23,9 @@
 
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import type { Api, Model } from '@earendil-works/pi-ai';
-import { clampOpenAIPromptCacheKey } from '@earendil-works/pi-ai/api/openai-prompt-cache';
 import { classifyProviderTransport } from './provider-session.ts';
 import {
-  applySessionCacheToPayload,
+  applySessionCacheToPayload, limitSessionCacheKey,
   type SessionCacheOptions,
 } from './session-cache.ts';
 
@@ -70,7 +69,7 @@ function getBranchCacheIdentityKey(manager: { getBranch(): readonly unknown[] })
       }
       if (key === null) return null;
       if (key.length === 0) return null;
-      return clampOpenAIPromptCacheKey(key) ?? null;
+      return limitSessionCacheKey(key) ?? null;
     }
   }
   return undefined;
@@ -96,7 +95,7 @@ export function resolveSessionCacheKey(manager: {
 
   const sessionId = manager.getSessionId();
   if (typeof sessionId === 'string' && sessionId.length > 0) {
-    return clampOpenAIPromptCacheKey(sessionId) ?? null;
+    return limitSessionCacheKey(sessionId) ?? null;
   }
   return null;
 }
@@ -111,7 +110,7 @@ export function recordSessionCacheIdentity(
   const normalizedKey = key === null
     ? null
     : (typeof key === 'string' && key.length > 0
-        ? clampOpenAIPromptCacheKey(key) ?? null
+        ? limitSessionCacheKey(key) ?? null
         : null);
   return manager.appendCustomEntry(CACHE_IDENTITY_CUSTOM_TYPE, { key: normalizedKey });
 }
@@ -150,7 +149,7 @@ export function installSessionCacheIdentity(
   // Fresh sessions (key === undefined) write no entry and default to local session ID.
   if (key !== undefined) {
     const currentRecorded = getBranchCacheIdentityKey(manager);
-    const normalizedKey = key === null ? null : (clampOpenAIPromptCacheKey(key) ?? null);
+    const normalizedKey = key === null ? null : (limitSessionCacheKey(key) ?? null);
     if (currentRecorded !== normalizedKey) {
       recordSessionCacheIdentity(manager, normalizedKey);
     }
@@ -191,7 +190,7 @@ export function installSessionCacheIdentity(
       // record the actual update to lineage so capture can observe it, avoiding duplicate writes.
       if (classifyProviderTransport(requestModel) === 'responses' && isRecord(finalPayload)) {
         const finalKey = typeof finalPayload['prompt_cache_key'] === 'string'
-          ? (clampOpenAIPromptCacheKey(finalPayload['prompt_cache_key']) ?? null)
+          ? (limitSessionCacheKey(finalPayload['prompt_cache_key']) ?? null)
           : null;
         const currentBranchKey = resolveSessionCacheKey(manager);
         if (finalKey !== currentBranchKey) {
