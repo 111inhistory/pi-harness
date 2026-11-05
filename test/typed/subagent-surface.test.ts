@@ -25,7 +25,7 @@ import type { Api, Message, Model, SystemMessage, Tool } from '@earendil-works/p
 import { stream as streamAnthropic } from '@earendil-works/pi-ai/api/anthropic-messages';
 import { stream as streamChatCompletions } from '@earendil-works/pi-ai/api/openai-completions';
 import { convertResponsesMessages } from '../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js';
-import type { EndpointResolverResult } from "../../src/ipc/socket.ts";
+import { getAgentSocketPath, type EndpointResolverResult } from "../../src/ipc/socket.ts";
 import {
   captureContextForChild,
   createSurfaceTools,
@@ -133,6 +133,9 @@ interface RecordedCreate {
   readonly ctx: ExtensionContext;
 }
 
+/** A real managed endpoint address for this platform: a socket file or a pipe. */
+const agentAddress = (id: string): string => getAgentSocketPath(id, path.join("/tmp/project", ".pi"));
+
 class RecordingHost implements SubagentSurfaceHost {
   maxDepth = MAX_DEPTH;
   readonly creates: RecordedCreate[] = [];
@@ -150,8 +153,8 @@ class RecordingHost implements SubagentSurfaceHost {
     this.crossSessions.push(command);
   }
 
-  async sessionEndpoint(address: string): Promise<SessionEndpoint> {
-    return address.startsWith("/tmp/sockets/aaaaaa") ? { kind: "local" } : { kind: "local" };
+  async sessionEndpoint(): Promise<SessionEndpoint> {
+    return { kind: "local" };
   }
 
   readonly crossSessions: unknown[] = [];
@@ -693,7 +696,7 @@ test("msg_write sends messages and keeps routing metadata internal", async () =>
 
   const result = await tools.msg_write.execute(
     "m1",
-    { path: "/tmp/project/.pi/sub_02.sock", content: "hello agent" },
+    { path: agentAddress("sub_02"), content: "hello agent" },
     undefined,
     undefined,
     ctx,
@@ -744,7 +747,7 @@ test("endpoint ownership and send share one cached resolution per execute", asyn
 
   const result = await tools.msg_write.execute(
     "m3",
-    { path: "/tmp/project/.pi/sub_02.sock", content: "once" },
+    { path: agentAddress("sub_02"), content: "once" },
     undefined,
     undefined,
     ctx,
@@ -771,8 +774,8 @@ test("concurrent managed sends keep per-execution hosts isolated", async () => {
   });
 
   const [a, b] = await Promise.all([
-    tools.msg_write.execute("c1", { path: "/tmp/project/.pi/sub_02.sock", content: "first" }, undefined, undefined, ctxA),
-    tools.msg_write.execute("c2", { path: "/tmp/project/.pi/sub_03.sock", content: "second" }, undefined, undefined, ctxB),
+    tools.msg_write.execute("c1", { path: agentAddress("sub_02"), content: "first" }, undefined, undefined, ctxA),
+    tools.msg_write.execute("c2", { path: agentAddress("sub_03"), content: "second" }, undefined, undefined, ctxB),
   ]);
 
   assert.deepEqual(first.sends, [{ from: "Main", to: "sub_02", content: "first" }]);

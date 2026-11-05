@@ -82,7 +82,9 @@ test("owned endpoint buffers an incomplete frame across actual data events", opt
   client.write('{"content":"par');
   await firstChunk;
   assert.deepEqual(received, [], "a partial frame must not be parsed or delivered");
-  client.end('tial"}\n{"sequence":2}\n');
+  // A Windows named pipe has no half-close that flushes the final frame, so the
+  // raw client writes it and the delivery is awaited; teardown owns the socket.
+  client.write('tial"}\n{"sequence":2}\n');
   await delivered.promise;
   assert.deepEqual(received, [{ content: "partial" }, { sequence: 2 }]);
 });
@@ -101,7 +103,7 @@ test("UTF-8 characters split across data events are decoded without corruption",
   const partialReceived = once(accepted, "data");
   client.write(payload.subarray(0, split));
   await partialReceived;
-  client.end(payload.subarray(split));
+  client.write(payload.subarray(split));
   assert.deepEqual(await delivered.promise, { content: "你好🙂" });
 });
 
@@ -123,9 +125,9 @@ test("connection buffers are independent and invalid frames do not block subsequ
   first.write('{"first":');
   await partialReceived;
   const second = await fixture.connect(server.address);
-  second.end('not-json\n\n{"second":2}\n');
+  second.write('not-json\n\n{"second":2}\n');
   // The first connection is completed independently, even if the second batch is coalesced.
-  first.end('1}\n');
+  first.write('1}\n');
   await complete.promise;
   assert.deepEqual(received.sort((a, b) => Object.keys(a)[0].localeCompare(Object.keys(b)[0])), [{ first: 1 }, { second: 2 }]);
   assert.equal(errors.length, 1);

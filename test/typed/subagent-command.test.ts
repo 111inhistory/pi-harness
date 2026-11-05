@@ -14,6 +14,7 @@ import { installSubagentCommand, parseCommand } from "../../src/subagent/command
 import type { RootService } from "../../src/subagent/root-service.ts";
 import { SubagentError, type AgentView, type DetailedAgentItem, type JobView } from "../../src/subagent/runtime.ts";
 import { renderSubagentList } from "../../src/subagent/status-view.ts";
+import { sessionMainAddress } from "../../src/subagent/session-directory.ts";
 
 const actor = (agentId: string, kind: AgentView["kind"], status: AgentView["status"], depth: number): AgentView => ({
   agentId, name: null, parentAgentId: null, status, depth, kind,
@@ -343,12 +344,11 @@ test("the harness extension registers the subagent command", () => {
 
 test("sessions lists live sessions with their managed Main address and native name", async () => {
   const notifications: Array<{ text: string; type: string }> = [];
+  const current = { sessionId: "current-session", uid: "aaaaaa", socketDir: "/tmp/sockets/aaaaaa", pid: 11, cwd: "/tmp/project-a", name: null, startedAt: 1 };
+  const other = { sessionId: "other-session", uid: "bbbbbb", socketDir: "/tmp/sockets/bbbbbb", pid: 22, cwd: "/tmp/project-b", name: "parser work", startedAt: 2 };
   const service = {
     sessionId: "current-session",
-    listSessions: async () => [
-      { sessionId: "current-session", uid: "aaaaaa", socketDir: "/tmp/sockets/aaaaaa", pid: 11, cwd: "/tmp/project-a", name: null, startedAt: 1 },
-      { sessionId: "other-session", uid: "bbbbbb", socketDir: "/tmp/sockets/bbbbbb", pid: 22, cwd: "/tmp/project-b", name: "parser work", startedAt: 2 },
-    ],
+    listSessions: async () => [current, other],
   } as unknown as RootService;
   const { handler } = install(service);
   await handler("sessions", context(notifications));
@@ -356,7 +356,8 @@ test("sessions lists live sessions with their managed Main address and native na
   assert.match(text, /^Live sessions \(2\):/m);
   assert.match(text, /^\* aaaaaa\s+\(unnamed\)\s+pid 11\s+\/tmp\/project-a$/m);
   assert.match(text, /^ {2}bbbbbb\s+parser work\s+pid 22\s+\/tmp\/project-b$/m);
-  assert.match(text, /main: \/tmp\/sockets\/aaaaaa\/Main\.sock/);
-  assert.match(text, /main: \/tmp\/sockets\/bbbbbb\/Main\.sock/);
+  // The displayed Main address is the native managed endpoint of each session.
+  assert.ok(text.includes(`main: ${sessionMainAddress(current)}`), text);
+  assert.ok(text.includes(`main: ${sessionMainAddress(other)}`), text);
   assert.match(text, /session other-session/);
 });

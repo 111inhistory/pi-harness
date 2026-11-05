@@ -240,6 +240,14 @@ function wire(messages: readonly AgentMessage[], midConversationSystemMessages: 
   return resolveTranscript({ messages } as unknown as Transcript, midConversationSystemMessages).messages;
 }
 
+/** The visible text blocks of the user messages in one provider request. */
+function userText(messages: readonly AgentMessage[]): string[] {
+  return messages.flatMap((message) => {
+    if (message.role !== 'user' || typeof message.content === 'string') return [];
+    return message.content.flatMap((block) => block.type === 'text' ? [block.text] : []);
+  });
+}
+
 /** A real SDK session running the real harness, with a scripted offline model. */
 async function sdkFixture(t: TestContext, options: { manual?: boolean } = {}) {
   const cwd = await mkdtemp(path.join(tmpdir(), 'pi-session-connect-sdk-'));
@@ -395,12 +403,21 @@ test('connect appends to the provider request and never rewrites its prefix', { 
   assert.deepEqual(declared[1], [...declared[0]!, 'msg_write'], 'the declaration is appended, existing order kept');
 
   // 3) The contact lives only in the appended region, with the selected identity.
-  const appended = JSON.stringify(after.slice(before.length));
-  assert.ok(appended.includes(f.peer.uid), 'the contact uid reaches the provider request');
-  assert.ok(appended.includes(f.peer.sessionId), 'the full session id reaches the provider request');
-  assert.ok(appended.includes(f.address), 'the contact address reaches the provider request');
-  assert.ok(appended.includes('Use msg_write'), 'the contact states how to reach the peer');
-  assert.equal(JSON.stringify(before).includes(f.peer.uid), false, 'nothing about the peer predates the connect');
+  //    The visible text is read as-is: a serialized payload escapes the address
+  //    separators, so a substring test on JSON would depend on the transport.
+  const contact = userText(after.slice(before.length))
+    .find((text) => text.startsWith('The user connected a live Pi session'));
+  assert.ok(contact, 'the contact is appended as a user text message');
+  const identity = [
+    ['uid', f.peer.uid],
+    ['session id', f.peer.sessionId],
+    ['address', f.address],
+    ['tool hint', 'Use msg_write'],
+  ] as const;
+  for (const [label, needle] of identity) {
+    assert.ok(contact.includes(needle), `the contact ${label} reaches the provider request verbatim`);
+  }
+  assert.equal(userText(before).some((text) => text.includes(f.peer.uid)), false, 'nothing about the peer predates the connect');
 
   // 4) The additive transport keeps the head and the prefix. The collapsed
   //    transport is checked only for its earlier conversation; the baseline

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import { DEFAULT_HARNESS_CONFIG } from "../../src/harness-config.ts";
@@ -55,10 +56,12 @@ const WITHDRAWN = {
 const TOOLS = [BASH, LIST_PAGES, RESTART_FIREFOX, WITHDRAWN];
 const ACTIVE_TOOLS = [LIST_PAGES.name];
 
+// Skill paths are native filesystem paths: the broker resolves each discovered
+// path against the working directory, so the fixture states the resolved form.
 const FIREFOX_SKILL = {
   name: "firefox-existing-profile",
   description: "Workflow for connecting to existing Firefox profile and devtools.",
-  filePath: "/skills/firefox-existing-profile/SKILL.md",
+  filePath: path.resolve("/skills/firefox-existing-profile/SKILL.md"),
 };
 
 const FIREFOX_SKILL_BODY = [
@@ -336,7 +339,7 @@ test("reads skill bodies through bounded reader capped at skillBodies limit", as
       skills: Array.from({ length: candidateCount }, (_, i) => ({
         name: `deploy-step-${i}`,
         description: `Deployment pipeline workflow step ${i}`,
-        filePath: `/skills/deploy-${i}/SKILL.md`,
+        filePath: path.resolve(`/skills/deploy-${i}/SKILL.md`),
       })),
       diagnostics: [],
     }),
@@ -359,13 +362,13 @@ test("tolerates unreadable skill body and records normalized warning", async () 
     listActiveTools: () => [],
     discoverSkills: () => ({
       skills: [
-        { name: "broken-skill", description: "Broken skill workflow", filePath: "/missing/SKILL.md" },
-        { name: "healthy-skill", description: "Healthy skill workflow", filePath: "/ok/SKILL.md" },
+        { name: "broken-skill", description: "Broken skill workflow", filePath: path.resolve("/missing/SKILL.md") },
+        { name: "healthy-skill", description: "Healthy skill workflow", filePath: path.resolve("/ok/SKILL.md") },
       ],
-      diagnostics: [{ type: "error", message: "frontmatter invalid", path: "/side/SKILL.md" }],
+      diagnostics: [{ type: "error", message: "frontmatter invalid", path: path.resolve("/side/SKILL.md") }],
     }),
     readSkillFile: async (filePath) => {
-      if (filePath === "/missing/SKILL.md") throw new Error("ENOENT file not found");
+      if (filePath === path.resolve("/missing/SKILL.md")) throw new Error("ENOENT file not found");
       return "Healthy workflow body content.";
     },
   });
