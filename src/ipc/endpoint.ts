@@ -462,10 +462,18 @@ export function createOwnedServer({
         // the temporary bind name internally for its own close-time unlink.
         (server as unknown as { _pipeName?: string })._pipeName = address;
       }
-      const identity = inspectEndpoint(address);
-      boundLease = identity.kind === "socket"
-        ? { ...lease, identity: identity.identity }
-        : lease;
+      if (lease.namespace) {
+        // A kernel-namespace endpoint owns no file identity: nothing is recorded
+        // and nothing is probed. `fs.lstat` on an active Windows Named Pipe opens
+        // a client handle to the endpoint this server just bound, which accepts as
+        // a phantom connection that never carries a frame.
+        boundLease = lease;
+      } else {
+        const identity = inspectEndpoint(address);
+        boundLease = identity.kind === "socket"
+          ? { ...lease, identity: identity.identity }
+          : lease;
+      }
       server.on("error", (error) => onError?.(error));
     } catch (error) {
       if (lease !== null && !lease.namespace) {

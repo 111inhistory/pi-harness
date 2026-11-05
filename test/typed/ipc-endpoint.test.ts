@@ -80,18 +80,28 @@ test("a closed endpoint can be rebound immediately and still serves a request", 
   const { root } = await fixture(t);
   const address = nativeAddress(root, "agent");
   const replies: unknown[] = [];
-  const open = () => createOwnedNdjsonServer({ address, root, onMessage(message: unknown) { replies.push(message); } });
+  // Connections are counted from before binding: binding itself must accept no
+  // client. A namespace probe (a stat on an active Named Pipe opens a client
+  // handle) would show up here as a second, frame-less connection.
+  const open = () => {
+    const accepted: net.Socket[] = [];
+    const server = createOwnedNdjsonServer({ address, root, onMessage(message: unknown) { replies.push(message); } });
+    server.server.on("connection", (socket: net.Socket) => accepted.push(socket));
+    return { server, accepted };
+  };
 
   const first = open();
-  await first.ready;
+  await first.server.ready;
   await writeSocket(address, { from: "sub_01", content: "before close" });
-  await first.close();
+  assert.equal(first.accepted.length, 1, "the only accepted connection is the request that carried a frame");
+  await first.server.close();
   await assert.rejects(fsp.stat(address), { code: "ENOENT" });
 
   const second = open();
-  t.after(() => second.close());
-  await second.ready;
+  t.after(() => second.server.close());
+  await second.server.ready;
   await writeSocket(address, { from: "sub_01", content: "after rebind" });
+  assert.equal(second.accepted.length, 1, "the rebound endpoint accepts only the request, not a probe of itself");
   assert.deepEqual(replies, [
     { from: "sub_01", content: "before close" },
     { from: "sub_01", content: "after rebind" },
