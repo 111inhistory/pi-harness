@@ -1,6 +1,6 @@
 import { defaultSocketRoot, effectiveUserId } from '../../src/ipc/address.ts';
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -39,6 +39,27 @@ function ownershipError(code: string) {
 
 /** A bound endpoint is a socket file on Unix and a kernel pipe name on Windows. */
 const releasedOnClose = (address: string): boolean => !ipc.isNamespace(address);
+
+test("Windows directory privacy checks ACLs and refuses a broad Allow without repairing it", { skip: posix, timeout: 60000 }, async (t) => {
+  const { root } = await fixture(t);
+  const directory = path.join(root, "private ACL 目录");
+  ensurePrivateDirectory(directory);
+  assert.equal(ensurePrivateSocketRoot(directory).created, false);
+  const grant = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `
+$ErrorActionPreference = 'Stop'
+$acl = Get-Acl -LiteralPath $env:PI_TEST_ACL_DIRECTORY
+$sid = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $env:PI_TEST_ACL_DIRECTORY -AclObject $acl
+`], {
+    env: { ...process.env, PI_TEST_ACL_DIRECTORY: directory },
+    encoding: "utf8", timeout: 10000, windowsHide: true,
+  });
+  assert.equal(grant.status, 0, grant.stderr);
+  assert.throws(() => ensurePrivateDirectory(directory), ownershipError("ipc_directory_insecure"));
+  assert.throws(() => ensurePrivateSocketRoot(directory), ownershipError("ipc_root_insecure"));
+});
 
 test("an active endpoint refuses a competing server without disturbing the live listener", async (t) => {
   const { root } = await fixture(t);

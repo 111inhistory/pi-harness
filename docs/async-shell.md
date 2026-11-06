@@ -38,6 +38,8 @@ pi-job cancel TASK_ID
 
 任务状态、原始 PTY 日志与过滤后的文本日志保存在 `os.tmpdir()/pi-async-shell-<uid>/<任务ID>/`。Windows 通常使用 `%TEMP%/pi-async-shell-0/<任务ID>/`，其中 `0` 是缺少 Unix UID 时的目录后缀。每个任务使用独立 tmux server 或 psmux `-L pi-job-<任务ID>` 命名空间，不使用当前用户正在操作的会话。
 
+Windows 按实际目录 ACL 验证私有性，共享临时目录中的宽泛访问授权会被拒绝，Harness 不会自动改写已有目录权限。
+
 ## 输入
 
 `create --` 后的内容按可执行文件与参数传递。需要 Shell 语法时显式启动 Shell：

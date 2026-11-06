@@ -13,6 +13,7 @@ import fs from "node:fs";
 import net from "node:net";
 import { defaultSocketRoot, effectiveUserId } from "./address.ts";
 import path from "node:path";
+import { windowsPrivateDirectory } from "./private-directory-windows.ts";
 
 export type EndpointKind = "missing" | "socket" | "symlink" | "file" | "directory" | "other";
 
@@ -116,8 +117,9 @@ export function inspectEndpoint(address: string): EndpointInspection {
   }
 }
 
-function privateDirectory(stats: fs.Stats, userId: number | null): boolean {
+function privateDirectory(directory: string, stats: fs.Stats, userId: number | null): boolean {
   if (!stats.isDirectory() || stats.isSymbolicLink()) return false;
+  if (process.platform === "win32") return windowsPrivateDirectory(directory);
   if (userId !== null && stats.uid !== userId) return false;
   return (stats.mode & 0o077) === 0;
 }
@@ -142,7 +144,7 @@ export function ensurePrivateDirectory(directory: string, userId: number | null 
   if (!stats.isDirectory()) {
     throw new IpcOwnershipError("ipc_directory_not_directory", `IPC parent is not a directory: ${directory}`, { path: directory });
   }
-  if (!privateDirectory(stats, userId)) {
+  if (!privateDirectory(directory, stats, userId)) {
     throw new IpcOwnershipError(
       "ipc_directory_insecure",
       `IPC directory is not private to the effective user: ${directory}`,
@@ -179,7 +181,7 @@ export function ensurePrivateSocketRoot(
   if (!stats.isDirectory()) {
     throw new IpcOwnershipError("ipc_root_not_directory", `IPC root is not a directory: ${resolved}`, { root: resolved });
   }
-  if (!privateDirectory(stats, userId)) {
+  if (!privateDirectory(resolved, stats, userId)) {
     throw new IpcOwnershipError(
       "ipc_root_insecure",
       `IPC root is not private to the effective user: ${resolved}`,
