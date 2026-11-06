@@ -8,7 +8,8 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 const execute = promisify(execFile);
-const available = process.platform !== 'win32' && spawnSync('tmux', ['-V'], { stdio: 'ignore' }).status === 0;
+const backend = process.platform === 'win32' ? 'psmux.exe' : 'tmux';
+const available = spawnSync(backend, ['-V'], { stdio: 'ignore', timeout: 5000 }).status === 0;
 const fixture = fileURLToPath(new URL('../test-support/subagent-sdk-scenario.mjs', import.meta.url));
 const build = fileURLToPath(new URL('../scripts/build-async-shell.mjs', import.meta.url));
 

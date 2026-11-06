@@ -4,16 +4,23 @@
 
 ## 安装
 
-需要 POSIX 主机、tmux 和项目要求的 Node.js 版本。此后端不支持原生 Windows。
+需要项目要求的 Node.js 版本。POSIX 主机使用 tmux；Windows 使用原生 ConPTY 后端 psmux 3.4.0 或更新版本，可通过 winget 安装和更新：
+
+```powershell
+winget install --id marlocarlo.psmux --exact
+winget upgrade --id marlocarlo.psmux --exact
+```
+
+从 Harness 仓库安装 CLI 和 Skill：
 
 ```sh
 npm ci
 npm run install:async-shell
 ```
 
-安装命令构建 `dist/pi-job.mjs`，并在 Pi 用户目录的 `bin/pi-job` 创建指向构建产物的链接，同时把 [pi-job Skill](../skills/pi-job/SKILL.md) 链接到用户目录的 `skills/pi-job`。Pi 用户目录遵循 `PI_CODING_AGENT_DIR`，默认是 `~/.pi/agent`。Pi 内置 Shell 会将该目录加入 PATH。更新代码后重新执行安装命令。
+安装命令构建 `dist/pi-job.mjs`。POSIX 在 Pi 用户目录的 `bin/pi-job` 创建指向构建产物的链接；Windows 将 bundle 安装到 `bin/pi-job.mjs`，并生成 PowerShell、cmd 和 Bash 启动入口。两者都会安装 [pi-job Skill](../skills/pi-job/SKILL.md) 到用户目录的 `skills/pi-job`（Windows 使用目录联接）。Pi 用户目录遵循 `PI_CODING_AGENT_DIR`，默认是 `~/.pi/agent`。Pi 内置 Shell 会将该目录加入 PATH。更新代码后重新执行安装命令。
 
-加载 Harness 后，Agent 通过原有 Bash 工具调用 CLI；无需启用额外的模型工具。Skill 可通过 Capability 发现，也可显式使用 `/skill:pi-job`。以 Pi package 安装仓库时，manifest 同样声明了 Skill 资源。普通终端也可以执行构建产物，未设置宿主回调环境时以独立模式运行。
+加载 Harness 后，Agent 通过原有 Bash／PowerShell 工具调用 CLI；无需启用额外的模型工具。Windows 后端明确调用 `psmux.exe`，不依赖其他发行版的 `tmux.exe` 别名。Skill 可通过 Capability 发现，也可显式使用 `/skill:pi-job`。以 Pi package 安装仓库时，manifest 同样声明了 Skill 资源。普通终端也可以执行构建产物，未设置宿主回调环境时以独立模式运行。
 
 ## 创建与查询
 
@@ -29,7 +36,7 @@ pi-job cancel TASK_ID
 
 `poll` 不等待新输出，默认读取尚未返回的增量。结果包含 `id`、`status`、`exitCode`、`output`、`cursor`、`logPath` 和 `truncated`。游标是过滤后日志的 UTF-8 字节偏移。单次响应有长度上限，累计日志保留；`truncated` 表示本次没有容纳全部输出，可继续查询或读取日志文件。
 
-任务状态、原始 PTY 日志与过滤后的文本日志保存在主机临时目录的用户私有子目录中。每个任务使用独立 tmux server，不使用当前用户正在操作的 tmux 会话。
+任务状态、原始 PTY 日志与过滤后的文本日志保存在 `os.tmpdir()/pi-async-shell-<uid>/<任务ID>/`。Windows 通常使用 `%TEMP%/pi-async-shell-0/<任务ID>/`，其中 `0` 是缺少 Unix UID 时的目录后缀。每个任务使用独立 tmux server 或 psmux `-L pi-job-<任务ID>` 命名空间，不使用当前用户正在操作的会话。
 
 ## 输入
 
@@ -51,7 +58,19 @@ pi-job key TASK_ID Enter
 pi-job key TASK_ID C-c
 ```
 
-`send --enter` 可在文本后显式发送 Enter。heredoc 自身包含末尾换行；目标程序如何解释换行与粘贴，由其终端模式决定。按键名称遵循 tmux `send-keys`。
+PowerShell 可用字面 here-string：
+
+```powershell
+@'
+first line
+literal "$value" and $(command)
+'@ | pi-job send TASK_ID
+pi-job key TASK_ID Enter
+```
+
+`send --enter` 可在文本后显式发送 Enter。heredoc 和 PowerShell 管道产生的换行是输入的一部分；目标程序如何解释换行与粘贴，由其终端模式决定。Windows 控制台的规范模式可能等到 CR／Enter 才提交一行，并产生 CRLF；raw mode 的行为由程序控制。按键名称遵循 tmux `send-keys`。
+
+Windows 的 `.cmd`／`.bat` 目标经 `cmd.exe` 启动并转义参数，包括 `npm` 等 PATH／PATHEXT 启动器；这类目标不接受含裸 CR／LF 的参数。需要传递这类正文时使用可执行程序或 stdin。
 
 命令和输入正文不删除 Shell 特殊字符。模型看到的输出会过滤终端控制序列，原始日志保留 PTY 字节。PTY 会合并终端上的 stdout 与 stderr，且程序可能因检测到终端而改变输出格式；过滤文本不是原始 stdout 的逐字节副本。
 

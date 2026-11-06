@@ -15,8 +15,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { AsyncShellError } from "./errors.ts";
 import {
-  AsyncShellError,
   MAX_SEND_BYTES,
   callbackFromEnv,
   cancelTask,
@@ -223,9 +223,6 @@ async function main(): Promise<void> {
       emit({ error: { code, message } });
     }
     process.exitCode = 1;
-    if (error instanceof AsyncShellError && code === "unsupported_platform") {
-      process.stderr.write("pi-job: the async-shell backend requires POSIX with tmux.\n");
-    }
   }
 }
 

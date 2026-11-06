@@ -1,7 +1,7 @@
 ---
 name: pi-job
 description: Run and interact with asynchronous terminal commands using pi-job. Use for long builds, tests, REPLs, progress checks, or multiline terminal input while continuing other work.
-compatibility: Requires the installed pi-job CLI and its tmux backend.
+compatibility: Requires the installed pi-job CLI, tmux on POSIX or psmux 3.4.0+ on Windows.
 ---
 
 # Async terminal tasks with pi-job
@@ -22,6 +22,8 @@ pi-job create --wait 5s --timeout 10m -- npm run build
 ```bash
 pi-job create --wait 5s --timeout 10m -- bash -c 'npm run build && npm test'
 ```
+
+Windows `.cmd` and `.bat` launchers, including `npm`, are resolved using PATH and PATHEXT. Their arguments are escaped for cmd.exe; literal CR/LF inside an argument is refused. Use an executable or stdin for multiline payloads.
 
 Completion is delivered automatically to the Agent that created the task. When nothing else can advance, end the current turn and wait for that event. A Subagent remains in its current assignment while its terminal tasks are running; provide the final handoff after consuming and verifying their results.
 
@@ -56,7 +58,16 @@ literal "$value" and $(command)
 EOF
 ```
 
-Quoting `EOF` prevents the calling Bash from expanding the payload. The heredoc's trailing newline is part of the input. `send` pastes the text as supplied; the target program's terminal mode determines how it interprets newlines.
+Quoting `EOF` prevents the calling Bash from expanding the payload. In PowerShell, use a literal here-string:
+
+```powershell
+@'
+first line
+literal "$value" and $(command)
+'@ | pi-job send TASK_ID
+```
+
+The heredoc or pipeline's trailing newline is part of the input. `send` pastes the text as supplied; the target program's terminal mode determines how it interprets newlines. In Windows console line mode, a bare LF may remain buffered until CR or Enter submits the line; raw-mode programs control their own input behavior.
 
 Send terminal keys explicitly, using tmux key names:
 

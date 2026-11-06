@@ -21,7 +21,7 @@ export function installAsyncShellSurface(
       ...definition,
       promptGuidelines: [
         ...(definition.promptGuidelines ?? []),
-        ...(process.platform === 'win32' ? [] : promptStrings('async-shell.json', 'guidelines')),
+        ...promptStrings('async-shell.json', 'guidelines'),
       ],
       async execute(id, input, signal, onUpdate, context) {
         const host = await current(context);

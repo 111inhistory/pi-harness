@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -24,8 +24,14 @@ import { waitFor } from '../../test-support/async.ts';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const posix = process.platform !== 'win32';
-const tmuxAvailable = posix && spawnSync('tmux', ['-V']).status === 0;
-const options = { skip: !tmuxAvailable, timeout: 40_000 };
+/** POSIX drives `tmux -S`, Windows drives native `psmux -L`; same CLI either way. */
+const BACKEND = posix ? 'tmux' : 'psmux';
+const backendAvailable = spawnSync(BACKEND, ['-V']).status === 0;
+/** `npm` is a shell script on POSIX and a `.cmd` launcher on Windows. */
+const npmAvailable = posix
+  ? spawnSync('npm', ['--version']).status === 0
+  : spawnSync('cmd.exe', ['/d', '/s', '/c', 'npm --version'], { windowsHide: true }).status === 0;
+const options = { skip: !backendAvailable, timeout: posix ? 40_000 : 90_000 };
 
 /**
  * The tests drive the built artifact, not the sources: the pane, the monitor and
@@ -36,7 +42,7 @@ let bundle = '';
 let bundleDir = '';
 
 test.before(async () => {
-  if (!tmuxAvailable) return;
+  if (!backendAvailable) return;
   bundleDir = await mkdtemp(path.join(tmpdir(), 'async-shell-bundle-'));
   bundle = path.join(bundleDir, 'pi-job.mjs');
   const build = spawnSync(process.execPath, [path.join(ROOT, 'scripts/build-async-shell.mjs'), bundle], { encoding: 'utf8' });
@@ -153,7 +159,7 @@ test('send preserves literal bytes, and Enter is a separate key', options, async
   assert.equal(sent.output.includes('ready'), false, 'send returns only new text, never a replay');
   const pasted = await waitFor(async () => {
     const seen = await job(['poll', started.id, '--cursor', '0']);
-    return seen.output.includes('got:"abc\\n"') ? seen.output : null;
+    return /got:"abc(?:\\r)?\\n"/.test(seen.output) ? seen.output : null;
   }, { label: 'pasted bytes' });
 
   // Without a newline the payload is typed but not submitted; the explicit Enter
@@ -163,10 +169,10 @@ test('send preserves literal bytes, and Enter is a separate key', options, async
   assert.equal(keyed.output.includes('ready'), false, 'key returns only new text, never a replay');
   const submitted = await waitFor(async () => {
     const seen = await job(['poll', started.id, '--cursor', '0']);
-    return seen.output.includes('got:"xyz\\r"') ? seen.output : null;
+    return /got:"xyz\\r/.test(seen.output) ? seen.output : null;
   }, { label: 'explicit Enter' });
-  assert.ok(submitted.includes('got:"abc\\n"'), pasted);
-  assert.equal(submitted.includes('got:"xyz\\n"'), false, 'the newline came from the key, not from the payload');
+  assert.match(submitted, /got:"abc(?:\\r)?\\n"/, pasted);
+  assert.doesNotMatch(submitted, /got:"xyz\\n"/, 'the line break came from the key, not from the payload');
   await cancelTask(taskDirOf(started));
 });
 
@@ -310,7 +316,8 @@ test('an ambiguous registration keeps the task directory and never replays it', 
   t.after(() => rm(dir, { recursive: true, force: true }));
   assert.equal(JSON.parse(await readFile(path.join(dir, 'state.json'), 'utf8')).status, 'failed');
   assert.ok(existsSync(path.join(dir, 'closed')), 'the directory is already released');
-  assert.equal(existsSync(path.join(dir, 'tmux.sock')), false, 'no server was started');
+  assert.equal(serverStopped(dir), true, 'no server was started');
+  if (posix) assert.equal(existsSync(path.join(dir, 'tmux.sock')), false, 'no socket file was created');
   await cancelTask(dir);
 });
 
@@ -324,7 +331,9 @@ test('a completion frame cannot report a running task', () => {
   );
 });
 
-test('a task never touches another tmux server on the same host', options, async (t) => {
+// A foreign server on a *socket path* only exists on POSIX; on Windows a task is
+// addressed by its own label, and the isolation test below covers that namespace.
+test('a task never touches another tmux server on the same host', { ...options, skip: !options.skip && posix ? false : 'POSIX socket server only' }, async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), 'async-shell-foreign-'));
   const socket = path.join(dir, 'foreign.sock');
   const launch = spawnSync('tmux', ['-S', socket, 'new-session', '-d', '-s', 'foreign', 'sleep 60']);
@@ -340,6 +349,121 @@ test('a task never touches another tmux server on the same host', options, async
 
   const alive = spawnSync('tmux', ['-S', socket, 'has-session', '-t', 'foreign']);
   assert.equal(alive.status, 0, 'the unrelated tmux server and its session are untouched');
+});
+
+test('a direct executable keeps every argv byte, including Windows metacharacters', options, async (t) => {
+  const cwd = await mkdtemp(path.join(tmpdir(), 'async-shell-meta-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const literal = ['a&b', 'c^d', 'e!f', 'g%PATH%', 'h"i', 'j|k', 'l<m>n', ' spaced ', 'semi;colon', 'back\\slash\\'];
+  const script = 'process.stdout.write(JSON.stringify(process.argv.slice(1)) + "\\n")';
+  const result = await job(['create', '--wait', '10s', '--cwd', cwd, '--', process.execPath, '-e', script, ...literal]);
+  t.after(() => cleanup(taskDirOf(result)));
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(JSON.parse(result.output.trim()), literal, 'an executable target is never re-parsed by a shell');
+});
+
+test('a .cmd target carries literal arguments, even from a spaced non-ASCII directory', { ...options, skip: posix ? 'cmd.exe transport is Windows only' : options.skip }, async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'async shell cmd 目录-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dump = path.join(root, 'dump.mjs');
+  const out = path.join(root, 'argv.json');
+  await writeFile(dump, 'import { writeFileSync } from "node:fs";\nwriteFileSync(process.argv[2], JSON.stringify(process.argv.slice(3)));\n');
+  const script = path.join(root, 'probe.cmd');
+  await writeFile(script, `@echo off\r\n"${process.execPath}" "${dump}" "${out}" %*\r\n`);
+
+  const args = ['plain', 'a b', 'amp&and', 'caret^here', 'bang!x', 'percent%PATH%', 'quote"inside', 'semi;colon', 'pipe|bar', 'lt<gt>', 'trail\\'];
+  const result = await job(['create', '--wait', '20s', '--cwd', root, '--', 'probe.cmd', ...args]);
+  t.after(() => cleanup(taskDirOf(result)));
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(JSON.parse(await readFile(out, 'utf8')), args,
+    'a .cmd target is reached through cmd.exe without losing a metacharacter, a quote or a percent expression');
+});
+
+test('npm run reaches a script through the resolved npm launcher', { ...options, skip: !npmAvailable ? 'npm is not on PATH' : options.skip }, async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'async-shell-npm-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'fixture', private: true, scripts: { probe: 'node -e "process.stdout.write(\'npm-script-ran\\n\')"' } }));
+  const result = await job(['create', '--wait', '60s', '--cwd', root, '--', 'npm', 'run', 'probe', '--silent']);
+  t.after(() => cleanup(taskDirOf(result)));
+  assert.equal(result.status, 'completed');
+  assert.equal(result.output.trim(), 'npm-script-ran', 'the resolved launcher ran the script in the requested directory');
+});
+
+test('a state root with spaces and non-ASCII characters works end to end', options, async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'async shell 中文-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const env = { TMPDIR: root, TEMP: root, TMP: root };
+
+  const result = await job(['create', '--wait', '10s', '--', ...nodeScript('process.stdout.write("spaced root\\n")')], { env });
+  assert.equal(result.status, 'completed');
+  assert.equal(result.output, 'spaced root\n');
+  assert.ok(result.logPath.startsWith(root), `the task lives under the caller's temp root: ${result.logPath}`);
+  assert.ok(path.basename(result.logPath) === 'output.log');
+  // The capture log is written by the backend's own sink, never through a shell
+  // that could mangle a space or a non-ASCII path.
+  const raw = await readFile(path.join(taskDirOf(result), 'raw.log'), 'utf8');
+  assert.ok(raw.includes('spaced root'), 'the raw capture reached the spaced directory');
+  assert.equal((await job(['poll', result.id], { env })).status, 'completed');
+});
+
+test('two tasks own separate servers, and cancelling one leaves the other running', options, async (t) => {
+  const first = await job(['create', '--', ...nodeScript('process.stdout.write("first\\n"); setTimeout(()=>process.exit(0), 30000);')]);
+  const second = await job(['create', '--', ...nodeScript('process.stdout.write("second\\n"); setTimeout(()=>process.exit(0), 30000);')]);
+  t.after(() => cleanup(taskDirOf(first)));
+  t.after(() => cleanup(taskDirOf(second)));
+
+  await waitFor(async () => (await job(['poll', second.id, '--cursor', '0'])).output.includes('second'), { label: 'second task output', timeoutMs: 10_000 });
+  await job(['cancel', first.id]);
+  assert.equal(serverStopped(taskDirOf(first)), true, 'the cancelled task released its own server');
+  assert.equal(serverStopped(taskDirOf(second)), false, 'the other task keeps its server');
+
+  const alive = await job(['poll', second.id, '--cursor', '0']);
+  assert.equal(alive.status, 'running');
+  assert.ok(alive.output.includes('second'));
+  const cancelledSecond = await job(['cancel', second.id]);
+  assert.equal(cancelledSecond.status, 'cancelled');
+});
+
+test('the task inherits the caller environment, including the callback contract', options, async (t) => {
+  const host = await callbackHost(t);
+  const script = 'const e=process.env; process.stdout.write([e.PI_AGENT_ID,e.PI_AGENT_SOCKET,e.PI_ASYNC_SHELL_TOKEN,e.PI_TEST_MARK].join("|")+"\\n")';
+  const env = {
+    PI_AGENT_ID: 'Child', PI_AGENT_SOCKET: host.socket, PI_ASYNC_SHELL_TOKEN: 'token-env', PI_TEST_MARK: 'inherited',
+  };
+  const result = await job(['create', '--wait', '10s', '--', ...nodeScript(script)], { env });
+  t.after(() => cleanup(taskDirOf(result)));
+  assert.equal(result.status, 'completed');
+  assert.equal(result.output.trim(), `Child|${host.socket}|token-env|inherited`,
+    'the command can report back over the same named endpoint it was started with');
+});
+
+test('a long transcript is complete while it is read concurrently', options, async (t) => {
+  const lines = 200;
+  const script = `let i=0; const t=setInterval(()=>{ process.stdout.write("line-"+(++i)+"\\n"); if(i===${String(lines)}){ clearInterval(t); process.exit(0); } }, 5);`;
+  const started = await job(['create', '--', ...nodeScript(script)]);
+  t.after(() => cleanup(taskDirOf(started)));
+
+  let text = '';
+  let round = 0;
+  const done = await waitFor(async () => {
+    const poll = await job(['poll', started.id]);
+    text += poll.output;
+    // Read the whole transcript from zero while capture is still being written:
+    // the snapshot must be a prefix-consistent view, never a torn or reordered one.
+    if (round % 5 === 0) {
+      const full = await job(['read', started.id, '--cursor', '0']);
+      assert.equal(full.output.slice(0, text.length), text, 'a concurrent full read agrees with what was already consumed');
+    }
+    round += 1;
+    return poll.status === 'running' ? null : poll;
+  }, { label: 'complete transcript', timeoutMs: 30_000 });
+
+  const expected = Array.from({ length: lines }, (_, index) => `line-${String(index + 1)}`).join('\n') + '\n';
+  assert.equal(done.status, 'completed');
+  assert.equal(text, expected, 'every line appears exactly once');
+  assert.equal(text.includes('\r'), false, 'the transcript is normalized to LF whatever the terminal emits');
+  const replay = await job(['read', started.id, '--cursor', '0']);
+  assert.equal(replay.output, expected);
 });
 
 test('output larger than one response is truncated per chunk and continues on the next poll', options, async (t) => {
@@ -368,7 +492,10 @@ test('output larger than one response is truncated per chunk and continues on th
 
 /** A task's own server answers only while it is running. */
 function serverStopped(dir: string): boolean {
-  return spawnSync('tmux', ['-S', path.join(dir, 'tmux.sock'), 'list-sessions']).status !== 0;
+  const args = posix
+    ? ['-S', path.join(dir, 'tmux.sock'), 'list-sessions']
+    : ['-L', `pi-job-${path.basename(dir)}`, 'list-sessions'];
+  return spawnSync(BACKEND, args).status !== 0;
 }
 
 /** Wait until the pane's first output is visible before typing into it. */

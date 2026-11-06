@@ -25,7 +25,7 @@ await build({
   format: 'esm',
   target: 'node22',
   logLevel: 'warning',
-  banner: { js: '#!/usr/bin/env node' },
+  banner: { js: '#!/usr/bin/env node\n// pi-harness: pi-job CLI' },
 });
 chmodSync(outfile, 0o755);
 process.stdout.write(`${outfile}\n`);

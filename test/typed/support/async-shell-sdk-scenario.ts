@@ -9,11 +9,11 @@ const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 export async function runAsyncShellScenario(fixture: ScenarioFixture): Promise<void> {
   const executable = process.env.PI_ASYNC_SHELL_CLI;
   assert.ok(executable);
-  const command = (args: string[]) => [process.execPath, executable, ...args].map(quote).join(' ');
+  const command = (args: string[]) => [process.execPath.replaceAll('\\', '/'), executable.replaceAll('\\', '/'), ...args].map(quote).join(' ');
   const started = path.join(fixture.cwd, 'async-started.json');
   const release = path.join(fixture.cwd, 'async-release');
   const marker = 'ASYNC_PTY_RESULT';
-  const script = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(started)},JSON.stringify({agentId:process.env.PI_AGENT_ID,socket:process.env.PI_AGENT_SOCKET,tty:process.stdout.isTTY,pid:process.pid}));const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)})){console.log(${JSON.stringify(marker)});clearInterval(timer)}},10)`;
+  const script = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(`${started}.tmp`)},JSON.stringify({agentId:process.env.PI_AGENT_ID,socket:process.env.PI_AGENT_SOCKET,tty:process.stdout.isTTY,pid:process.pid}));fs.renameSync(${JSON.stringify(`${started}.tmp`)},${JSON.stringify(started)});const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)})){console.log(${JSON.stringify(marker)});clearInterval(timer)}},10)`;
   let waiting = false;
   let shellFailure: string | null = null;
   let childTurns = 0;
@@ -41,6 +41,9 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture): Promise<v
   await waitForCondition(() => waiting, 'child model yielding after create');
   assert.equal(shellFailure, null, shellFailure ?? undefined);
   await new Promise<void>(resolve => setImmediate(resolve));
+  await waitForCondition(async () => {
+    try { await fsp.access(started); return true; } catch { return false; }
+  }, 'command publishing its terminal environment');
   const environment = JSON.parse(await fsp.readFile(started, 'utf8')) as { agentId: string; socket: string; tty: boolean };
   assert.equal(environment.agentId, actor.id);
   assert.equal(environment.socket, actor.socket);

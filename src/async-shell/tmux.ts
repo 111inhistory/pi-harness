@@ -1,10 +1,14 @@
 /**
- * POSIX tmux backend for the async-shell CLI.
+ * Async-shell task engine, shared by every platform.
  *
- * Each task owns one private tmux server (`-S <taskDir>/tmux.sock`), so a task
- * can never address or disturb the user's own sessions. The pane runs this same
- * binary in `__run` mode; the real command's argv is written to the task file and
- * handed to `spawn`, so no user text ever reaches tmux's shell parser.
+ * A task owns one private multiplexer server: `tmux` on POSIX, `psmux` on
+ * Windows (see `platform*.ts`). Either way the server is addressed only by the
+ * task directory, so a task can never reach the user's own sessions. The pane
+ * runs this same binary in `__run` mode; the real command's argv is written to
+ * the task file and handed to `spawn`, so an executable target is never touched
+ * by a shell. The one exception is a Windows `.cmd`/`.bat` target, which no
+ * process can start without `cmd.exe`; `platform.ts` escapes its arguments for
+ * exactly that one hop and refuses only what cmd cannot represent.
  *
  * Capture starts before the command: the pane is attached to a `pipe-pane` raw
  * log, the runner announces itself with an OSC marker that the filter strips,
@@ -19,7 +23,7 @@
  * monitor has finalized the task and finished its cleanup.
  */
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -27,7 +31,16 @@ import path from "node:path";
 
 import { ensurePrivateDirectory } from "../ipc/endpoint.ts";
 import { writeSocket } from "../ipc/socket.ts";
+import { AsyncShellError } from "./errors.ts";
 import { OutputFilter } from "./output.ts";
+import {
+  childCommand,
+  selfArgv,
+  SESSION,
+  type ShellBackend,
+} from "./platform.ts";
+import { posixBackend } from "./platform-posix.ts";
+import { windowsBackend } from "./platform-windows.ts";
 import {
   ASYNC_SHELL_KIND,
   MAX_RESULT_BYTES,
@@ -36,18 +49,9 @@ import {
   type ShellStatus,
 } from "./protocol.ts";
 
-/** A task operation the caller can act on. */
-export class AsyncShellError extends Error {
-  readonly code: string;
+/** The multiplexer backend this process drives. */
+const backend: ShellBackend = process.platform === "win32" ? windowsBackend : posixBackend;
 
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = "AsyncShellError";
-    this.code = code;
-  }
-}
-
-const SESSION = "task";
 const MONITOR_TICK_MS = 60;
 const QUIET_FLUSH_MS = 150;
 const DRAIN_QUIET_MS = 200;
@@ -85,7 +89,6 @@ export interface TaskPaths {
   readonly monitorPid: string;
   readonly runnerPid: string;
   readonly childPid: string;
-  readonly socket: string;
 }
 
 export interface CallbackTarget {
@@ -117,15 +120,9 @@ interface ExitFile {
   readonly error: string | null;
 }
 
-/** The backend runs on POSIX with a real tmux; Windows is refused explicitly. */
-export function assertSupported(): void {
-  if (process.platform === "win32") {
-    throw new AsyncShellError("unsupported_platform", "The async-shell tmux backend is not available on Windows.");
-  }
-  const probe = spawnSync("tmux", ["-V"], { encoding: "utf8" });
-  if (probe.error !== undefined || probe.status !== 0) {
-    throw new AsyncShellError("tmux_unavailable", "tmux is required for async shell tasks and was not found.");
-  }
+/** Fail with an actionable error unless this platform's multiplexer can run. */
+function assertSupported(): void {
+  backend.assertAvailable();
 }
 
 export function stateRoot(): string {
@@ -153,7 +150,7 @@ function checkedTaskDirectory(dir: string): string {
   return resolved;
 }
 
-export function taskPaths(dir: string): TaskPaths {
+function taskPaths(dir: string): TaskPaths {
   const file = (name: string): string => path.join(dir, name);
   return {
     dir,
@@ -170,7 +167,6 @@ export function taskPaths(dir: string): TaskPaths {
     monitorPid: file("monitor.pid"),
     runnerPid: file("runner.pid"),
     childPid: file("child.pid"),
-    socket: file("tmux.sock"),
   };
 }
 
@@ -258,7 +254,7 @@ export interface OutputChunk {
 }
 
 /** Read at most one bounded, character-aligned chunk of the filtered log. */
-export function readOutput(file: string, cursor: number): OutputChunk {
+function readOutput(file: string, cursor: number): OutputChunk {
   let handle: number;
   try {
     handle = fs.openSync(file, "r");
@@ -362,69 +358,6 @@ function exists(file: string): boolean {
 }
 
 /**
- * Quote one argument for the pane's shell. Only this process's own absolute
- * paths (node, this bundle, the task directory) are ever quoted here; user argv
- * never passes through a shell.
- */
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-interface CommandResult {
-  readonly code: number | null;
-  readonly stdout: string;
-  readonly stderr: string;
-}
-
-function tmux(socket: string, args: readonly string[], stdin?: string): CommandResult {
-  const result = spawnSync("tmux", ["-S", socket, ...args], {
-    encoding: "utf8",
-    ...(stdin === undefined ? {} : { input: stdin }),
-  });
-  if (result.error !== undefined) throw new AsyncShellError("tmux_unavailable", messageOf(result.error));
-  return { code: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
-}
-
-function tmuxOk(socket: string, args: readonly string[], code: string, stdin?: string): CommandResult {
-  const result = tmux(socket, args, stdin);
-  if (result.code !== 0) {
-    throw new AsyncShellError(code, `tmux ${args[0] ?? ""} failed: ${result.stderr.trim() || `exit ${String(result.code)}`}`);
-  }
-  return result;
-}
-
-/**
- * Stop the task's own server. The socket path is never removed: this process only
- * signals the server it started, and deleting a path it does not own could reach
- * a different server.
- */
-function killServer(socket: string): void {
-  tmux(socket, ["kill-server"]);
-}
-
-/** Whether the task's own server still answers on its socket. */
-function serverRunning(socket: string): boolean {
-  return tmux(socket, ["list-sessions"]).code === 0;
-}
-
-/** Whether the process at `pid` is this task's internal runner or monitor. */
-function ownsProcess(pid: number, marker: string, dir: string): boolean {
-  const probe = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
-  if (probe.status !== 0) return false;
-  const command = probe.stdout ?? "";
-  return command.includes(marker) && command.includes(dir);
-}
-
-/** The process to run inside the pane: this same binary in internal mode. */
-function selfCommand(dir: string, mode: string): string {
-  const script = process.argv[1];
-  if (typeof script !== "string" || script === "") {
-    throw new AsyncShellError("self_unresolved", "The async-shell CLI cannot locate its own entry point.");
-  }
-  return [process.execPath, ...process.execArgv, path.resolve(script), mode, dir].map(shellQuote).join(" ");
-}
-
-/**
  * The creator's delivery decision: `sync` means this reply already carried the
  * final result, `async` means a later completion must be notified. Without a
  * decision (a creator that died) a completion is notified, never dropped.
@@ -520,7 +453,7 @@ export async function createTask(options: CreateTaskOptions): Promise<ShellResul
   }
 
   const failed = (message: string): ShellResult => {
-    killServer(paths.socket);
+    backend.killServer(dir);
     const state: TaskState = { id, status: "failed", exitCode: null, createdAt, finalizedAt: Date.now() };
     fs.appendFileSync(paths.filtered, `async-shell: ${message}\n`);
     writeState(paths, state);
@@ -528,8 +461,7 @@ export async function createTask(options: CreateTaskOptions): Promise<ShellResul
   };
 
   try {
-    tmuxOk(paths.socket, ["new-session", "-d", "-s", SESSION, "-x", "200", "-y", "50", selfCommand(dir, "__run")], "session_failed");
-    tmuxOk(paths.socket, ["pipe-pane", "-t", SESSION, "-o", `cat >> ${shellQuote(paths.raw)}`], "capture_failed");
+    backend.start(dir, selfArgv(dir, "__run"), paths.raw);
     const monitor = spawn(process.execPath, [...process.execArgv, path.resolve(process.argv[1]!), "__monitor", dir], {
       detached: true,
       stdio: "ignore",
@@ -613,16 +545,8 @@ export function sendInput(dir: string, input: string, enter: boolean): void {
   if (Buffer.byteLength(input, "utf8") > MAX_SEND_BYTES) {
     throw new AsyncShellError("input_too_large", `Input must not exceed ${MAX_SEND_BYTES} bytes.`);
   }
-  if (input !== "") {
-    const buffer = `pi-${path.basename(dir)}`;
-    tmuxOk(paths.socket, ["load-buffer", "-b", buffer, "-"], "send_failed", input);
-    try {
-      tmuxOk(paths.socket, ["paste-buffer", "-p", "-r", "-b", buffer, "-t", SESSION], "send_failed");
-    } finally {
-      tmux(paths.socket, ["delete-buffer", "-b", buffer]);
-    }
-  }
-  if (enter) tmuxOk(paths.socket, ["send-keys", "-t", SESSION, "Enter"], "send_failed");
+  backend.sendInput(dir, input);
+  if (enter) backend.sendKey(dir, "Enter");
 }
 
 /** Send one named key (Enter, C-c, Up, BSpace, ...). */
@@ -632,7 +556,7 @@ export function sendKey(dir: string, key: string): void {
   if (!/^[A-Za-z0-9-]{1,32}$/.test(key)) {
     throw new AsyncShellError("invalid_key", `Not a tmux key name: ${key}`);
   }
-  tmuxOk(paths.socket, ["send-keys", "-t", SESSION, key], "send_failed");
+  backend.sendKey(dir, key);
 }
 
 /**
@@ -644,17 +568,17 @@ export async function cancelTask(dir: string): Promise<void> {
   if (exists(paths.closed)) return;
   const task = readTaskFile(paths);
   fs.writeFileSync(paths.cancel, "", { mode: 0o600 });
-  killServer(paths.socket);
+  backend.killServer(paths.dir);
   if (await waitForClose(paths, 400)) return;
-  if (serverRunning(paths.socket)) {
-    throw new AsyncShellError("cancel_incomplete", `The tmux server of task ${task.id} did not stop.`);
+  if (backend.serverRunning(paths.dir)) {
+    throw new AsyncShellError("cancel_incomplete", `The multiplexer server of task ${task.id} did not stop.`);
   }
 
   // The monitor is the only finalizer. It is given the cancellation deadline, and
   // its pid is only ever signalled when the command line proves it is this task's
   // monitor: a recycled pid is a different process.
   const monitorPid = readPid(paths.monitorPid);
-  const ours = monitorPid !== null && alive(monitorPid) && ownsProcess(monitorPid, "__monitor", dir);
+  const ours = monitorPid !== null && alive(monitorPid) && backend.ownsProcess(monitorPid, "__monitor", paths.dir);
   if (ours && await waitForClose(paths, CANCEL_WAIT_MS)) return;
   if (ours && monitorPid !== null) {
     try { process.kill(monitorPid, "SIGKILL"); } catch { /* already gone */ }
@@ -662,10 +586,10 @@ export async function cancelTask(dir: string): Promise<void> {
   }
   if (await waitForClose(paths, 200)) return;
 
-  if (serverRunning(paths.socket)) {
-    throw new AsyncShellError("cancel_incomplete", `The tmux server of task ${task.id} is still running.`);
+  if (backend.serverRunning(paths.dir)) {
+    throw new AsyncShellError("cancel_incomplete", `The multiplexer server of task ${task.id} is still running.`);
   }
-  if (monitorPid !== null && alive(monitorPid) && ownsProcess(monitorPid, "__monitor", dir)) {
+  if (monitorPid !== null && alive(monitorPid) && backend.ownsProcess(monitorPid, "__monitor", paths.dir)) {
     // The monitor neither finalized nor died: keep the fence instead of claiming
     // a cleanup that cannot be proved.
     throw new AsyncShellError("cancel_incomplete", `The monitor of task ${task.id} did not report cleanup.`);
@@ -715,7 +639,19 @@ export async function runnerMain(dir: string): Promise<number> {
     await sleep(40);
   }
 
-  const child = spawn(task.argv[0]!, task.argv.slice(1), { cwd: task.cwd, env: process.env, stdio: "inherit" });
+  let child: ChildProcess;
+  try {
+    const command = childCommand(task.argv, process.platform, process.env, task.cwd);
+    child = spawn(command.file, [...command.args], {
+      cwd: task.cwd,
+      env: process.env,
+      stdio: "inherit",
+      windowsVerbatimArguments: command.verbatim,
+    });
+  } catch (error) {
+    writeExit(paths, { code: null, signal: null, error: messageOf(error) });
+    return 1;
+  }
   if (child.pid !== undefined) fs.writeFileSync(paths.childPid, `${child.pid}\n`, { mode: 0o600 });
 
   const stopped = (signal: NodeJS.Signals): void => {
@@ -802,10 +738,7 @@ export async function monitorMain(dir: string): Promise<void> {
     lastFlush = Date.now();
   };
 
-  const paneAlive = (): boolean => {
-    const result = tmux(paths.socket, ["list-panes", "-t", SESSION, "-F", "#{pane_dead}"]);
-    return result.code === 0 && result.stdout.trim() === "0";
-  };
+  const paneAlive = (): boolean => !backend.paneGone(dir);
 
   const finish = async (): Promise<void> => {
     // Drain the capture pipe: the pane is (or soon will be) gone, so the raw log
@@ -849,7 +782,7 @@ export async function monitorMain(dir: string): Promise<void> {
     const finalizedAt = Date.now();
     const state: TaskState = { id: task.id, status, exitCode, createdAt: task.createdAt, finalizedAt };
     writeState(paths, state);
-    killServer(paths.socket);
+    backend.killServer(dir);
 
     const callback = callbackFromEnv(process.env);
     if (callback !== null) {
@@ -878,7 +811,7 @@ export async function monitorMain(dir: string): Promise<void> {
     if (!cancelled && task.timeoutMs !== null && Date.now() >= task.createdAt + task.timeoutMs) timedOut = true;
     if ((cancelled || timedOut) && !closing) {
       closing = true;
-      killServer(paths.socket);
+      backend.killServer(dir);
     }
 
     if (!closing) {

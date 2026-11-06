@@ -20,7 +20,7 @@ Harness 为 Pi 增加两项能力：缺少工具或领域指引时按需查找�
 
 ## 开始使用
 
-需要 Node.js **22.19.0 或更新版本**。当前适配 Pi **1.5.0**，主要验证环境是 Linux。Windows 的跨会话协作尚未开放，其他 Windows 路径仍需实机验收。
+需要 Node.js **22.19.0 或更新版本**。当前适配 Pi **1.5.0**。跨会话协作支持 Linux 和原生 Windows；异步 Shell 在 POSIX 上使用 tmux，在 Windows 上使用 psmux。
 
 ### 安装与启动
 
@@ -87,7 +87,7 @@ Pi 用户目录默认为 `~/.pi/agent/`；设置 `PI_CODING_AGENT_DIR` 时使用
 
 ### 异步运行命令
 
-在 POSIX 主机安装 tmux 后，从 Harness 仓库执行：
+在主机安装终端后端：POSIX 使用 tmux；Windows 使用 winget 安装 `marlocarlo.psmux`。然后从 Harness 仓库执行：
 
 ```sh
 npm run install:async-shell
@@ -112,7 +112,7 @@ npm run install:async-shell
 
 > 请把这个问题发给刚连接的会话，让它只读检查相关实现，收到回复后汇总给我。
 
-对方需要保持运行。跨会话协作当前仅支持 POSIX 平台；Windows 支持是下一步工作。
+对方需要保持运行。跨会话协作支持同一机器、同一系统用户下的 Linux 和原生 Windows 会话。
 
 ## 配置和使用边界
 

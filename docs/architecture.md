@@ -23,7 +23,8 @@
 | `inherited-context.ts` | 共享分支捕获，在清理未决工具前锁定物理模型，并捕获独立的出站缓存标识 | 伪造身份或跨分支泄漏 |
 | `provider-session.ts`、`session-transcript.ts` | 按明确模型能力判断原生追加路径，组装尾部指令与工具声明；请求编码交给 Pi | 路由、执行授权、手写协议请求 |
 | `session-cache.ts`、`session-cache-runtime.ts` | Responses 出站缓存标识、现有 payload hook 组合、原生分支缓存标识记录 | 改写本地 Session ID、账号路由或保证缓存命中 |
-| `async-shell/cli.ts`、`async-shell/tmux.ts`、`async-shell/output.ts` | 异步命令接口、每任务 tmux 资源、完整 PTY 日志、增量过滤输出和完成回调 | Agent 拓扑、模型轮次或执行授权 |
+| `async-shell/cli.ts`、`async-shell/tmux.ts`、`async-shell/output.ts` | 异步命令接口、每任务终端资源、完整 PTY 日志、增量过滤输出和完成回调 | Agent 拓扑、模型轮次或执行授权 |
+| `async-shell/platform*.ts` | POSIX tmux Socket／Windows psmux label、终端启动与输入、进程归属查询、Windows batch 参数传输 | 任务状态、输出游标或通知路由 |
 | `async-shell/host.ts`、`async-shell/surface.ts` | 每次 Shell 的调用者环境、执行代次归属、未完成任务登记与取消 | tmux 状态机、消息工具授予或跨主机调度 |
 | `tool-guidance.ts`、`subagent/tool-guidance.ts` | 按工具首次声明位置投影共同及专属指引，按系统段落标记去重 | 改写工具描述、授予执行权限或移除工具 |
 

@@ -344,7 +344,7 @@ Harness 为没有专用结果渲染器的工具提供统一预览，包括 Capab
 
 ## 异步 Shell
 
-POSIX 主机可安装 `pi-job`，由原有 Bash 工具运行 tmux 任务。`create --wait` 在指定窗口内等待，否则返回任务 ID；`poll` 默认返回新增输出；`send` 从 stdin 接收多行文字，`key` 发送显式按键。运行上限由独立的 `--timeout` 控制。完整命令、输出和安装契约见[异步 Shell](async-shell.md)。
+主机可安装 `pi-job`，由原有 Bash／PowerShell 工具运行终端任务（POSIX tmux，Windows psmux 3.4.0+）。`create --wait` 在指定窗口内等待，否则返回任务 ID；`poll` 默认返回新增输出；`send` 从 stdin 接收多行文字，`key` 发送显式按键。运行上限由独立的 `--timeout` 控制。完整命令、输出和安装契约见[异步 Shell](async-shell.md)。
 
 注册和完成事件回到发起调用的 Actor 端点。Main 和子会话在每次 Shell 启动时获得各自的 `PI_AGENT_ID`、`PI_AGENT_SOCKET` 和执行代次标识；事件不占用 Agent 消息发送者身份，也不产生消息工具授权。未完成异步 Shell 与直接子节点共同保留 Subagent 当前 Job；完成事件先入队，后释放等待。
 
