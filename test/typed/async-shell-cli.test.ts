@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -19,6 +20,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { cancelTask, stateRoot } from '../../src/async-shell/tmux.ts';
+import { pipePath } from '../../src/ipc/address.ts';
 import { validateAsyncShellFrame, type AsyncShellFrame, type ShellResult } from '../../src/async-shell/protocol.ts';
 import { waitFor } from '../../test-support/async.ts';
 
@@ -155,6 +157,8 @@ test('send preserves literal bytes, and Enter is a separate key', options, async
   await sendWhenReady(started.id, 'ready\n');
 
   // A heredoc keeps its own final newline: the payload arrives byte for byte.
+  // The literal-paste transport carries the LF itself on both platforms (a CRLF
+  // pair is collapsed to one LF by the Windows console, a lone LF is preserved).
   const sent = await job(['send', started.id], { input: 'abc\n' });
   assert.equal(sent.output.includes('ready'), false, 'send returns only new text, never a replay');
   const pasted = await waitFor(async () => {
@@ -198,8 +202,18 @@ test('terminal escapes are filtered, carriage returns collapse, and split UTF-8 
   const result = await job(['create', '--wait', '10s', '--', ...nodeScript(script)]);
   t.after(() => cleanup(taskDirOf(result)));
   assert.equal(result.status, 'completed');
-  assert.equal(result.output, 'red\ndone\n你!\n',
-    'ANSI and OSC are removed, the carriage-return overwrite keeps one line, and a split character is one character');
+  // POSIX forwards the pane's raw bytes, so our filter collapses the carriage
+  // returns to the final line. ConPTY is a terminal: it re-emits only the cells
+  // that changed, so overwriting a longer progress line leaves its tail behind.
+  // Everything else — ANSI/OSC removal, one line per break, split UTF-8 — is the
+  // same guarantee on both platforms.
+  if (posix) {
+    assert.equal(result.output, 'red\ndone\n你!\n',
+      'ANSI and OSC are removed, the carriage-return overwrite keeps one line, and a split character is one character');
+  } else {
+    assert.match(result.output, /^red\ndone(?:ress 99%)?\n你!\n$/,
+      'ANSI and OSC are removed, the progress line collapses to its final write, and a split character is one character');
+  }
 });
 
 test('a nonzero exit, a timeout and a cancel each finalize the task and leave no server', options, async (t) => {
@@ -362,6 +376,51 @@ test('a direct executable keeps every argv byte, including Windows metacharacter
   assert.deepEqual(JSON.parse(result.output.trim()), literal, 'an executable target is never re-parsed by a shell');
 });
 
+test('a large literal send reaches the pane byte for byte', options, async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'async-shell-big-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sink = path.join(root, 'sink.mjs');
+  const out = path.join(root, 'received.bin');
+  // The readiness file is published only after raw mode and the data listener are
+  // in place: `create` reporting a spawned pid does not mean the app is reading.
+  await writeFile(sink, [
+    'import { appendFileSync, writeFileSync } from "node:fs";',
+    'const out = process.argv[2];',
+    'writeFileSync(out, "");',
+    'process.stdin.setRawMode(true);',
+    'process.stdin.on("data", (chunk) => appendFileSync(out, chunk));',
+    'process.stdin.resume();',
+    'writeFileSync(out + ".ready", "");',
+  ].join('\n'));
+  const started = await job(['create', '--', process.execPath, sink, out]);
+  t.after(() => cleanup(taskDirOf(started)));
+  await waitFor(() => existsSync(`${out}.ready`), { label: 'the sink is reading', timeoutMs: 30_000 });
+
+  // 58 KiB of mixed-width UTF-8 stays under the public 64 KiB limit while
+  // crossing the 32767-character Windows command line by a wide margin, so the
+  // payload must travel on the multiplexer's stdin, never on an argv.
+  const unit = '中文😀ABC&^%!";';
+  let payload = '';
+  while (Buffer.byteLength(payload, 'utf8') < 58 * 1024) payload += unit;
+  payload = payload.slice(0, payload.length - (payload.length % unit.length));
+  const bytes = Buffer.from(payload, 'utf8');
+  assert.ok(bytes.length > 24 * 1024);
+
+  const sent = await cli(['send', started.id], { input: payload });
+  assert.equal(sent.code, 0, `send failed: ${sent.stdout}${sent.stderr}`);
+
+  // The sink receives nothing but this payload, so the whole file — not a prefix
+  // of it — must equal the input: extra or duplicated bytes are a failure too.
+  const received = await waitFor(async () => {
+    const seen = await readFile(out);
+    return seen.length >= bytes.length ? seen : null;
+  }, { label: 'the whole payload', timeoutMs: 60_000 });
+  assert.equal(received.length, bytes.length, 'no byte is dropped, duplicated or re-encoded');
+  assert.equal(received.equals(bytes), true, 'the complete received payload is unchanged');
+  assert.equal(createHash('sha256').update(received).digest('hex'), createHash('sha256').update(bytes).digest('hex'));
+  await cancelTask(taskDirOf(started));
+});
+
 test('a .cmd target carries literal arguments, even from a spaced non-ASCII directory', { ...options, skip: posix ? 'cmd.exe transport is Windows only' : options.skip }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'async shell cmd 目录-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -514,7 +573,9 @@ interface CallbackHost {
 /** A minimal host endpoint: NDJSON in, one empty line back, frames validated. */
 async function callbackHost(t: test.TestContext): Promise<CallbackHost> {
   const dir = await mkdtemp(path.join(tmpdir(), 'async-shell-host-'));
-  const socket = path.join(dir, 'host.sock');
+  // A host endpoint is a Unix socket path on POSIX and a named pipe on Windows;
+  // both sides must agree on that one address.
+  const socket = posix ? path.join(dir, 'host.sock') : pipePath(dir, 'host');
   const frames: AsyncShellFrame[] = [];
   const server = net.createServer((connection) => {
     connection.setEncoding('utf8');

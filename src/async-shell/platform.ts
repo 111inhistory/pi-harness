@@ -50,6 +50,28 @@ export interface ShellBackend {
   ownsProcess(pid: number, marker: string, dir: string): boolean;
 }
 
+/** One backend's control client, as consumed by the shared literal-paste path. */
+export interface ControlClient {
+  run(dir: string, args: readonly string[], stdin?: string): CommandResult;
+  runOk(dir: string, args: readonly string[], code: string, stdin?: string): CommandResult;
+}
+
+/**
+ * Deliver literal bytes through the multiplexer's named buffer, never through
+ * argv: the payload goes in on stdin (`load-buffer -`) and is pasted once, so a
+ * 64 KiB input stays far below every command-line limit. Nothing filters,
+ * trims or re-encodes it, and the buffer is deleted afterwards.
+ */
+export function pasteLiteral(client: ControlClient, dir: string, input: string, target: string): void {
+  const buffer = `pi-${path.basename(dir)}`;
+  client.runOk(dir, ["load-buffer", "-b", buffer, "-"], "send_failed", input);
+  try {
+    client.runOk(dir, ["paste-buffer", "-p", "-r", "-b", buffer, "-t", target], "send_failed");
+  } finally {
+    client.run(dir, ["delete-buffer", "-b", buffer]);
+  }
+}
+
 /** The argv that runs this same binary in an internal mode inside the pane. */
 export function selfArgv(dir: string, mode: string): readonly string[] {
   const script = process.argv[1];

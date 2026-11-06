@@ -10,15 +10,25 @@
  * Two behaviours differ from POSIX and are handled here, not above:
  * - The pane command is passed as structured arguments (psmux quotes them), so
  *   the runner is started without any shell at all.
- * - Input is delivered with `send-paste`, which takes base64 and therefore never
- *   lets bytes be read as a command; `pipe-pane 'cat >> "<path>"'` is served by
- *   the psmux server itself, so capture never runs through a Windows shell.
+ * - Input is delivered through the multiplexer's own literal buffer (payload on
+ *   stdin, one bracketed paste), exactly like POSIX: base64 or other payload on
+ *   the command line would cross the 32767-character Windows command line at
+ *   ~24 KiB of input, and `send-paste` rewrote the payload's newline.
+ *   `pipe-pane 'cat >> "<path>"'` is served by the psmux server itself, so
+ *   capture never runs through a Windows shell.
  */
 
 import { spawnSync } from "node:child_process";
 
 import { AsyncShellError } from "./errors.ts";
-import { CONTROL_TIMEOUT_MS, SESSION, type CommandResult, type ShellBackend } from "./platform.ts";
+import {
+  CONTROL_TIMEOUT_MS,
+  pasteLiteral,
+  SESSION,
+  type CommandResult,
+  type ControlClient,
+  type ShellBackend,
+} from "./platform.ts";
 
 const BINARY = "psmux.exe";
 const MIN_VERSION: readonly [number, number, number] = [3, 4, 0];
@@ -109,8 +119,10 @@ function start(dir: string, selfArgv: readonly string[], rawPath: string): void 
 
 function sendInput(dir: string, input: string): void {
   if (input === "") return;
-  // base64 is decoded by psmux, so a payload can never be read as a command.
-  runOk(dir, ["send-paste", "-t", SESSION, Buffer.from(input, "utf8").toString("base64")], "send_failed");
+  // The payload travels on stdin, not on the command line: Windows caps a
+  // process command line at 32767 UTF-16 characters, and base64 on argv would
+  // cross it at ~24 KiB of input. One buffer, one paste, nothing interpreted.
+  pasteLiteral(client, dir, input, SESSION);
 }
 
 function sendKey(dir: string, key: string): void {
@@ -158,6 +170,8 @@ function ownsProcess(pid: number, marker: string, dir: string): boolean {
   const command = probe.stdout ?? "";
   return command.includes(marker) && command.includes(dir);
 }
+
+const client: ControlClient = { run, runOk };
 
 export const windowsBackend: ShellBackend = {
   kind: "windows",

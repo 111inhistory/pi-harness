@@ -70,7 +70,7 @@ literal "$value" and $(command)
 pi-job key TASK_ID Enter
 ```
 
-`send --enter` 可在文本后显式发送 Enter。heredoc 和 PowerShell 管道产生的换行是输入的一部分；目标程序如何解释换行与粘贴，由其终端模式决定。Windows 控制台的规范模式可能等到 CR／Enter 才提交一行，并产生 CRLF；raw mode 的行为由程序控制。按键名称遵循 tmux `send-keys`。
+`send --enter` 可在文本后显式发送 Enter。heredoc 和 PowerShell 管道产生的换行是输入的一部分；目标程序如何解释换行与粘贴，由其终端模式决定。Windows 控制台的规范模式可能等到 CR／Enter 才提交一行；raw mode 下 LF 可原样送达，CRLF 在 Windows 终端路径中可能折叠为 LF，单独的 Enter 送入 CR。按键名称遵循 tmux `send-keys`。
 
 Windows 的 `.cmd`／`.bat` 目标经 `cmd.exe` 启动并转义参数，包括 `npm` 等 PATH／PATHEXT 启动器；这类目标不接受含裸 CR／LF 的参数。需要传递这类正文时使用可执行程序或 stdin。
 

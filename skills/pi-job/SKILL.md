@@ -67,7 +67,7 @@ literal "$value" and $(command)
 '@ | pi-job send TASK_ID
 ```
 
-The heredoc or pipeline's trailing newline is part of the input. `send` pastes the text as supplied; the target program's terminal mode determines how it interprets newlines. In Windows console line mode, a bare LF may remain buffered until CR or Enter submits the line; raw-mode programs control their own input behavior.
+The heredoc or pipeline's trailing newline is part of the input. `send` pastes the text as supplied; the target program's terminal mode determines how it interprets newlines. In Windows console line mode, a bare LF may remain buffered until CR or Enter submits the line. A raw-mode reader can receive LF unchanged, but CRLF may become LF through the Windows terminal path; a separate Enter sends CR.
 
 Send terminal keys explicitly, using tmux key names:
 

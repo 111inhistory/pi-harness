@@ -13,7 +13,14 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 
 import { AsyncShellError } from "./errors.ts";
-import { CONTROL_TIMEOUT_MS, SESSION, type CommandResult, type ShellBackend } from "./platform.ts";
+import {
+  CONTROL_TIMEOUT_MS,
+  pasteLiteral,
+  SESSION,
+  type CommandResult,
+  type ControlClient,
+  type ShellBackend,
+} from "./platform.ts";
 
 /** The pane's shell only ever sees this process's own absolute paths. */
 function shellQuote(value: string): string {
@@ -71,13 +78,7 @@ function start(dir: string, selfArgv: readonly string[], rawPath: string): void 
 
 function sendInput(dir: string, input: string): void {
   if (input === "") return;
-  const buffer = `pi-${path.basename(dir)}`;
-  runOk(dir, ["load-buffer", "-b", buffer, "-"], "send_failed", input);
-  try {
-    runOk(dir, ["paste-buffer", "-p", "-r", "-b", buffer, "-t", SESSION], "send_failed");
-  } finally {
-    run(dir, ["delete-buffer", "-b", buffer]);
-  }
+  pasteLiteral(client, dir, input, SESSION);
 }
 
 function sendKey(dir: string, key: string): void {
@@ -95,6 +96,8 @@ function ownsProcess(pid: number, marker: string, dir: string): boolean {
   const command = probe.stdout ?? "";
   return command.includes(marker) && command.includes(dir);
 }
+
+const client: ControlClient = { run, runOk };
 
 export const posixBackend: ShellBackend = {
   kind: "posix",
