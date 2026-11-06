@@ -162,12 +162,14 @@ function ownsProcess(pid: number, marker: string, dir: string): boolean {
   // The command line must be read as UTF-8: a task directory may be non-ASCII,
   // and Windows PowerShell defaults to the console code page. A command line that
   // cannot be read back proves nothing, so the caller keeps its fence.
+  // Report absence, unreadable metadata, or the command line explicitly.
   const script = [
     "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
     `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction Stop`,
-    "if (-not $p) { [Console]::Out.Write('absent') }",
-    "elseif ([string]::IsNullOrEmpty($p.CommandLine)) { [Console]::Out.Write('unreadable') }",
-    "else { [Console]::Out.Write('cmd:' + $p.CommandLine) }",
+    `$answer = 'absent'`,
+    `if ($p) { $answer = 'unreadable' }`,
+    `if ($p -and -not [string]::IsNullOrEmpty($p.CommandLine)) { $answer = 'cmd:' + $p.CommandLine }`,
+    "[Console]::Out.Write($answer)",
   ].join("; ");
   const probe = spawnSync(shell[0]!, [...shell.slice(1), script], {
     encoding: "utf8",
