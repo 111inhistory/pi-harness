@@ -74,7 +74,7 @@ pi-job key TASK_ID Enter
 
 Windows 的 `.cmd`／`.bat` 目标经 `cmd.exe` 启动并转义参数，包括 `npm` 等 PATH／PATHEXT 启动器；这类目标不接受含裸 CR／LF 的参数。需要传递这类正文时使用可执行程序或 stdin。
 
-命令和输入正文不删除 Shell 特殊字符。模型看到的输出会过滤终端控制序列，原始日志保留 PTY 字节。PTY 会合并终端上的 stdout 与 stderr，且程序可能因检测到终端而改变输出格式；过滤文本不是原始 stdout 的逐字节副本。
+命令和输入正文不删除 Shell 特殊字符。模型看到的输出会过滤终端控制序列，原始日志保留 PTY 字节。PTY 会合并终端上的 stdout 与 stderr，且程序可能因检测到终端而改变输出格式；过滤文本不是原始 stdout 的逐字节副本。Windows ConPTY 会按面板宽度折行，并可能重发屏幕单元格，因此过滤文本可能出现额外换行或重复字符。需要程序原始字节流时，让程序写入日志文件再读取。
 
 ## Harness 接入
 

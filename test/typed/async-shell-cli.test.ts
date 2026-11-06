@@ -428,10 +428,13 @@ test('a .cmd target carries literal arguments, even from a spaced non-ASCII dire
   const out = path.join(root, 'argv.json');
   await writeFile(dump, 'import { writeFileSync } from "node:fs";\nwriteFileSync(process.argv[2], JSON.stringify(process.argv.slice(3)));\n');
   const script = path.join(root, 'probe.cmd');
-  await writeFile(script, `@echo off\r\n"${process.execPath}" "${dump}" "${out}" %*\r\n`);
+  // Batch text is read in the OEM code page, so the fixture keeps it ASCII: the
+  // script's own directory is expanded by cmd (`%~dp0`) and the interpreter path
+  // arrives through the environment, which is Unicode all the way down.
+  await writeFile(script, `@echo off\r\n"%PI_JOB_TEST_NODE%" "%~dp0dump.mjs" "%~dp0argv.json" %*\r\n`);
 
   const args = ['plain', 'a b', 'amp&and', 'caret^here', 'bang!x', 'percent%PATH%', 'quote"inside', 'semi;colon', 'pipe|bar', 'lt<gt>', 'trail\\'];
-  const result = await job(['create', '--wait', '20s', '--cwd', root, '--', 'probe.cmd', ...args]);
+  const result = await job(['create', '--wait', '20s', '--cwd', root, '--', 'probe.cmd', ...args], { env: { PI_JOB_TEST_NODE: process.execPath } });
   t.after(() => cleanup(taskDirOf(result)));
   assert.equal(result.status, 'completed');
   assert.deepEqual(JSON.parse(await readFile(out, 'utf8')), args,
@@ -526,15 +529,18 @@ test('a long transcript is complete while it is read concurrently', options, asy
 });
 
 test('output larger than one response is truncated per chunk and continues on the next poll', options, async (t) => {
-  const size = 40_000;
-  const result = await job(['create', '--wait', '10s', '--', ...nodeScript(
-    `process.stdout.write("y".repeat(${String(size)}) + "\\n")`,
+  // Short lines keep this about chunking: a line wider than the pane is the
+  // terminal's own wrapping behaviour and is covered separately.
+  const lines = 5000;
+  const expected = Array.from({ length: lines }, (_, index) => `line-${String(index).padStart(4, '0')}`).join('\n') + '\n';
+  const result = await job(['create', '--wait', '20s', '--', ...nodeScript(
+    `for (let i = 0; i < ${String(lines)}; i += 1) process.stdout.write("line-" + String(i).padStart(4, "0") + "\\n")`,
   )]);
   t.after(() => cleanup(taskDirOf(result)));
   assert.equal(result.status, 'completed');
   assert.equal(result.truncated, true, 'one response does not carry the whole transcript');
   assert.ok(Buffer.byteLength(result.output) <= 32 * 1024);
-  assert.match(result.output, /^y+$/);
+  assert.ok(expected.startsWith(result.output), 'a response is a prefix of the transcript');
 
   let seen = result.cursor;
   let text = result.output;
@@ -545,8 +551,27 @@ test('output larger than one response is truncated per chunk and continues on th
     seen = next.cursor;
     if (!next.truncated) break;
   }
-  assert.equal(Buffer.byteLength(text), size + 1, 'every byte of the transcript is still reachable');
-  assert.equal(text, `${'y'.repeat(size)}\n`);
+  assert.equal(text, expected, 'every byte of the transcript is still reachable, in order');
+});
+
+test('ConPTY wrapping and repainting remain readable across bounded incremental responses', { ...options, skip: posix ? 'ConPTY renders wrapping; a POSIX pty forwards the bytes it was given' : options.skip }, async (t) => {
+  const size = 40_000;
+  const result = await job(['create', '--wait', '20s', '--', ...nodeScript(
+    `process.stdout.write("y".repeat(${String(size)}) + "\\n")`,
+  )]);
+  t.after(() => cleanup(taskDirOf(result)));
+  assert.equal(result.status, 'completed');
+  assert.ok(Buffer.byteLength(result.output) <= 32 * 1024, 'a response is still bounded');
+  let text = result.output;
+  let chunk = result;
+  while (chunk.truncated) {
+    chunk = await job(['poll', result.id]);
+    assert.ok(Buffer.byteLength(chunk.output) <= 32 * 1024, 'every response is bounded');
+    text += chunk.output;
+  }
+  const flat = text.replace(/\n/g, '');
+  assert.match(flat, /^y+$/, 'the terminal transcript contains payload characters and rendered line breaks');
+  assert.ok(flat.length >= size, 'the transcript includes the long line and possible cell repaints');
 });
 
 /** A task's own server answers only while it is running. */
