@@ -68,7 +68,14 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
   assert.equal(shellCallbackRequests.length, 1, 'the callback is delivered once to its owning child');
 
   // Main receives its own completion, using the same environment-based route.
-  await fixture.call(shellName, { command: command(['create', '--wait', '0s', '--', process.execPath, '-e', "setTimeout(()=>console.log('MAIN_SHELL_RESULT'),100)"]) });
+  // Hold Main's command until create returns, so completion is necessarily async.
+  const mainStarted = path.join(fixture.cwd, 'main-started.json').replaceAll('\\', '/');
+  const mainRelease = path.join(fixture.cwd, 'main-release').replaceAll('\\', '/');
+  const mainResult = await fixture.call(shellName, {
+    command: command(['create', '--wait', '0s', '--timeout', '20s', '--', ...[process.execPath, probe].map(value => value.replaceAll('\\', '/')), mainStarted, mainRelease, 'MAIN_SHELL_RESULT']),
+  });
+  assert.notEqual(mainResult.isError, true, JSON.stringify(mainResult.content));
+  await fsp.writeFile(mainRelease, 'release');
   await waitForCondition(() => mainCompleted, 'Main shell completion turn');
 
   // Cancellation of a held Subagent also stops its outstanding shell resources.
