@@ -23,6 +23,8 @@
 | `inherited-context.ts` | 共享分支捕获，在清理未决工具前锁定物理模型，并捕获独立的出站缓存标识 | 伪造身份或跨分支泄漏 |
 | `provider-session.ts`、`session-transcript.ts` | 按明确模型能力判断原生追加路径，组装尾部指令与工具声明；请求编码交给 Pi | 路由、执行授权、手写协议请求 |
 | `session-cache.ts`、`session-cache-runtime.ts` | Responses 出站缓存标识、现有 payload hook 组合、原生分支缓存标识记录 | 改写本地 Session ID、账号路由或保证缓存命中 |
+| `async-shell/cli.ts`、`async-shell/tmux.ts`、`async-shell/output.ts` | 异步命令接口、每任务 tmux 资源、完整 PTY 日志、增量过滤输出和完成回调 | Agent 拓扑、模型轮次或执行授权 |
+| `async-shell/host.ts`、`async-shell/surface.ts` | 每次 Shell 的调用者环境、执行代次归属、未完成任务登记与取消 | tmux 状态机、消息工具授予或跨主机调度 |
 | `tool-guidance.ts`、`subagent/tool-guidance.ts` | 按工具首次声明位置投影共同及专属指引，按系统段落标记去重 | 改写工具描述、授予执行权限或移除工具 |
 
 `subagent_create` 在本批 Runner 本地就绪后返回。本地就绪包括路由完成、会话创建、扩展与工具配置完成、初始输入就绪和 IPC 监听就绪。返回项包含 `id`、`socket`、`role` 与 `model`。它不等待首次模型流分发，也不把 `running` 当作启动成功证明。注册后的启动失败不会撤销同批其他节点，也不自动重试。运行时 Job 注册和执行状态仍由 Runtime 独立管理。
@@ -39,7 +41,9 @@ Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定�
 
 Runner 通过 `openSubagentExecution` 获得 SDK Session。共享执行句柄负责 abort 和 cleanup；Root 不用超时竞争强制 dispose 一个仍在执行的 Session。
 
-父 Subagent 回复结束后，若直接子节点仍处于 `running`、`stopping` 或 `finalizing`，Runner 保留会话并等待事件，不结束当前 Job。Runtime 暂停活跃时间并重排到 lifetime 截止时间；消息、子节点通知或最后一个子节点结束会唤醒原循环，恢复活跃时间后重排 deadline。队列和直接子节点均为空才正常收尾，期间不分配新 Job 或 Budget。取消会释放等待；失败或取消后的晚到子节点通知只追加保留历史。
+父 Subagent 回复结束后，若直接子节点仍处于 `running`、`stopping` 或 `finalizing`，或当前执行仍持有未完成的异步 Shell 任务，Runner 保留会话并等待事件，不结束当前 Job。Runtime 暂停活跃时间并重排到 lifetime 截止时间；消息、子节点通知或最后一项工作结束会唤醒原循环，恢复活跃时间后重排 deadline。队列和所属工作均为空才正常收尾，期间不分配新 Job 或 Budget。取消会释放等待；失败或取消后的晚到子节点通知只追加保留历史。
+
+异步 Shell 的注册与完成走所属 Actor 的受管端点，通过执行代次标识与普通 Agent 消息区分。完成结果先进入原生输入队列，再撤销未完成登记并唤醒 Runner；不伪造发送者，不创建续跑 Job。子会话关闭与 Root 退役取消所持任务，底层资源未退出时不释放归属围栏。命令接口见[异步 Shell](async-shell.md)。
 
 Runtime 先尝试投递子节点终态，再发最后子节点结束的唤醒信号。信号不创建执行轮次，模型不需要轮询或调用等待工具。显式消息仍可将停止节点唤醒为新轮次。
 

@@ -556,7 +556,7 @@ function harness(options: {
     models,
     routing,
     tools,
-    children: { hasActiveChildren: options.hasActiveChildren ?? (() => false) },
+    work: { hasPending: options.hasActiveChildren ?? (() => false) },
     notify: (message) => { notifications.push(message); },
   };
   return { runner: new NativeJobRunner(deps), actors, factory, models, routing, tools, root, notifications };

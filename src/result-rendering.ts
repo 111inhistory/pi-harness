@@ -1,6 +1,7 @@
 import { stripVTControlCharacters } from 'node:util';
 import { Box, Markdown, MouseRegion, Spacer, Text, getCapabilities, getImageDimensions, imageFallback, truncateToWidth, type Component } from '@earendil-works/pi-tui';
 import { getMarkdownTheme, keyHint, type ExtensionAPI, type MessageRenderer, type Theme, type ToolDefinition } from '@earendil-works/pi-coding-agent';
+import type { ShellResult } from './async-shell/protocol.ts';
 import { DELIVERY_CUSTOM_TYPE, type DeliveryCustomMessage } from './subagent/delivery.ts';
 
 const PREVIEW_LINES = 10;
@@ -53,7 +54,7 @@ const renderResult: NonNullable<ToolDefinition['renderResult']> = (result, optio
   return fold(new Text(theme.fg('toolOutput', blocks.join('\n')), 0, 0), options.expanded, theme);
 };
 
-function createDeliveryRenderer(): MessageRenderer<DeliveryCustomMessage['details']> {
+function createDeliveryRenderer(): MessageRenderer<DeliveryCustomMessage['details'] | { source: 'host'; result: ShellResult }> {
   // CustomMessageComponent rebuilds renderers on invalidation. Keep pointer state
   // per message across those rebuilds; a changed Ctrl+O state takes precedence.
   const states = new WeakMap<object, { expanded: boolean; globalExpanded: boolean }>();
@@ -67,16 +68,20 @@ function createDeliveryRenderer(): MessageRenderer<DeliveryCustomMessage['detail
     const text = typeof message.content === 'string' ? message.content
       : message.content.filter(part => part.type === 'text').map(part => part.text).join('\n');
     const details = message.details;
+    const shell = details !== undefined && 'result' in details ? details.result : undefined;
     const title = details === undefined ? message.customType
+      : 'result' in details ? `shell ${details.result.id} · ${details.result.status}`
       : details.status === undefined
         ? details.sourceId
         : `${details.sourceId} · ${details.status} · round ${details.round}`;
     const box = new Box(options.outputPad ?? 1, 1, line => theme.bg('customMessageBg', line));
     box.addChild(new Text(theme.fg('customMessageLabel', theme.bold(`[${title}]`)), 0, 0));
     box.addChild(new Spacer(1));
-    const body = fold(new Markdown(text, 0, 0, getMarkdownTheme(), {
-      color: line => theme.fg('customMessageText', line),
-    }), current.expanded, theme, expanded => { current.expanded = expanded; });
+    const content = shell === undefined
+      ? new Markdown(text, 0, 0, getMarkdownTheme(), { color: line => theme.fg('customMessageText', line) })
+      : new Text(theme.fg('customMessageText', stripVTControlCharacters(shell.output)
+        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\r\uFFF9-\uFFFB]/g, '')), 0, 0);
+    const body = fold(content, current.expanded, theme, expanded => { current.expanded = expanded; });
     box.addChild(body);
     return new MouseRegion(box, event => {
       if (event.type !== 'click' || event.button !== 'left' || !body.toggle()) return undefined;
@@ -92,4 +97,5 @@ export function installResultRendering(pi: Pick<ExtensionAPI, 'registerToolRende
     return current?.renderResult ? current : { ...current, renderResult };
   });
   pi.registerMessageRenderer(DELIVERY_CUSTOM_TYPE, createDeliveryRenderer());
+  pi.registerMessageRenderer('async-shell-result', createDeliveryRenderer());
 }

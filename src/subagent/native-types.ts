@@ -347,6 +347,7 @@ export interface NativeJobRunnerDeps {
   readonly models: NativeModelResolver;
   readonly routing: NativeRoutingPort;
   readonly tools: NativeToolCatalogProvider;
-  readonly children: { hasActiveChildren(agentId: string): boolean };
+  /** Direct children and external shell tasks owned by the current execution. */
+  readonly work: { hasPending(agentId: string): boolean };
   readonly notify?: ((message: string, level: "error") => void) | undefined;
 }

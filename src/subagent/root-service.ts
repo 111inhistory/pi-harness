@@ -1,4 +1,8 @@
 import path from 'node:path';
+import { AsyncShellHost } from '../async-shell/host.ts';
+import { installAsyncShellSurface } from '../async-shell/surface.ts';
+import { cancelTask } from '../async-shell/tmux.ts';
+import type { ShellResult } from '../async-shell/protocol.ts';
 import { existsSync } from 'node:fs';
 import { temporaryResultDirectory } from './temporary-results.ts';
 import { resultNeedsFile } from './result.ts';
@@ -129,6 +133,7 @@ export class RootService implements ManagedWriteHost {
   readonly actors: ActorSessionStore;
   readonly runner: NativeJobRunner;
   readonly listeners: AgentListeners;
+  readonly shell: AsyncShellHost;
   readonly #delivery: NativeDeliveryRouter;
   readonly #store: ReturnType<typeof createSubagentStore<SessionManager>>;
   readonly #historyDir: string;
@@ -176,12 +181,20 @@ export class RootService implements ManagedWriteHost {
         appendAnchor: (data) => this.#append(EVENTS.anchor, data),
       },
     });
+    this.shell = new AsyncShellHost({
+      address: (actorId) => getAgentSocketPath(actorId, socketDir),
+      accepting: () => this.active,
+      wake: (actorId) => this.runner.wake(actorId),
+      deliver: (actorId, result) => this.#shellResult(actorId, result),
+      cancel: cancelTask,
+    });
     this.listeners = new AgentListeners({
       socketDir, baseSocketDir: socketRoot, sessionId: this.sessionId,
       maxDepth: this.#options.config.subagent.maxDepth,
       actors: () => this.runtime.list().agents,
       isAccepting: () => this.active,
       send: (command) => this.sendMessage(command),
+      receiveShell: (actorId, frame) => this.shell.receive(actorId, frame),
       onError: (error) => this.#report(error),
     });
     const sessions = createNativeSessionFactory({
@@ -189,17 +202,23 @@ export class RootService implements ManagedWriteHost {
       config: this.#options.config,
       modelRegistry: () => this.#registry,
       parentCapabilityScope: (id) => this.#parentScope(id),
-      installChildSurface: (api, scope) => installSessionSurface(api, async () => {
-        this.assertOperational();
-        return this;
-      }, {
-        callerId: scope.senderId,
-        depth: scope.depth,
-        allowInherited: scope.allowInherited,
-        cwd: scope.cwd,
-        maxDepth: scope.maxDepth,
-        capacityFor: () => this.#options.config.subagent,
-      }),
+      installChildSurface: (api, scope) => {
+        installAsyncShellSurface(api, async () => {
+          this.assertOperational();
+          return this.shell;
+        }, scope.senderId);
+        installSessionSurface(api, async () => {
+          this.assertOperational();
+          return this;
+        }, {
+          callerId: scope.senderId,
+          depth: scope.depth,
+          allowInherited: scope.allowInherited,
+          cwd: scope.cwd,
+          maxDepth: scope.maxDepth,
+          capacityFor: () => this.#options.config.subagent,
+        });
+      },
     });
     const owner = this;
     this.runner = new NativeJobRunner({
@@ -212,7 +231,7 @@ export class RootService implements ManagedWriteHost {
       models: { inherited: (model) => capturedModel(model, this.#registry) },
       routing: { route: (input) => this.#route(input) },
       tools: { catalog: () => options.api.getAllTools() },
-      children: { hasActiveChildren: (agentId) => this.runtime.hasActiveChildren(agentId) },
+      work: { hasPending: (agentId) => this.runtime.hasActiveChildren(agentId) || this.shell.hasPending(agentId) },
       notify: (message) => this.#report(new Error(message)),
     });
     this.runtime = createSubagentRuntime({
@@ -399,6 +418,36 @@ export class RootService implements ManagedWriteHost {
   sendMessage(command: Parameters<SubagentRuntime['sendMessage']>[0]) {
     this.assertOperational();
     return this.runtime.sendMessage(command);
+  }
+
+  async #shellResult(actorId: string, result: ShellResult): Promise<void> {
+    const gate = this.#compaction;
+    if (gate !== null) await gate.promise;
+    this.assertOperational();
+    const message = {
+      customType: 'async-shell-result',
+      content: JSON.stringify(result),
+      display: true,
+      details: { source: 'host', result },
+    };
+    if (actorId === 'Main') {
+      await this.#options.api.sendMessage(message, { triggerTurn: true, deliverAs: 'steer' });
+      return;
+    }
+    const job = this.runtime.jobs().jobs.find(item => item.agentId === actorId && item.status === 'running');
+    // Cancellation may already have closed input before surface shutdown
+    // revokes the lease. Keep that result in task logs; never revive a cancelled
+    // Actor just to consume its command's terminal event.
+    if (job === undefined) throw new SubagentError('job_closed', 'The async shell owner no longer has a live Job.');
+    try {
+      const outcome = await this.runner.handoffCustom(job.jobId, { from: 'async-shell', ...message });
+      if (!outcome.accepted) throw new SubagentError('job_closed', 'The async shell owner no longer accepts input.');
+    } catch (error) {
+      // A failed handoff may already be queued. Stop this Job and report the
+      // failure; never replay the event or complete from its old waiting text.
+      this.runtime.cancelJob(job.jobId);
+      throw error;
+    }
   }
 
   /** The socket root every live session of this user publishes itself under. */
@@ -593,6 +642,7 @@ export class RootService implements ManagedWriteHost {
     for (const job of jobs) if (job.status === 'running') this.runtime.cancelJob(job.jobId);
     this.#retirement = (async () => {
       const results = await Promise.allSettled([
+        this.shell.close(),
         this.listeners.close(),
         unregisterSession(this.#socketRoot, this.sessionId),
         ...jobs.map((job) => this.runtime.jobDone(job.jobId)),

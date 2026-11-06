@@ -85,6 +85,16 @@ Pi 用户目录默认为 `~/.pi/agent/`；设置 `PI_CODING_AGENT_DIR` 时使用
 
 如需把某些工具保留给用户明确授权，可在 `capability.manualTools` 中配置。模型发现不会推荐这些工具，子会话也不会继承。详细配置见[Harness 参数配置](docs/harness-configuration.md)。
 
+### 异步运行命令
+
+在 POSIX 主机安装 tmux 后，从 Harness 仓库执行：
+
+```sh
+npm run install:async-shell
+```
+
+随后 Agent 可以通过 Bash 使用 `pi-job create --wait 5s -- COMMAND ARGS`：短任务直接返回结果，长任务返回 ID 并继续运行。`pi-job poll ID` 默认读取新增输出，完成结果自动送回发起任务的 Agent。多行输入支持 heredoc。安装、输入和生命周期说明见[异步 Shell](docs/async-shell.md)。
+
 ### 连接另一个 Pi 会话
 
 在同一台机器、同一系统用户下启动另一个加载 Harness 的 Pi 会话，然后执行：
@@ -121,6 +131,7 @@ Pi 用户目录默认为 `~/.pi/agent/`；设置 `PI_CODING_AGENT_DIR` 时使用
 ## 更多资料
 
 - [Harness 参数配置](docs/harness-configuration.md)：调整并发、预算和提示词
+- [异步 Shell](docs/async-shell.md)：tmux 任务、增量输出和终端输入
 - [接口说明](docs/interface-contract.md)：命令、工具及具体行为
 - [已知问题](docs/known-issues.md)：平台限制与尚未验收的场景
 - [文档目录](docs/README.md)：架构、存储和其他开发资料

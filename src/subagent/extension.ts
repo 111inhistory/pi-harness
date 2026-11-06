@@ -1,3 +1,4 @@
+import { installAsyncShellSurface } from '../async-shell/surface.ts';
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { DEFAULT_HARNESS_CONFIG, harnessConfigFor } from '../harness-config.ts';
 import { ServiceLifecycle } from './lifecycle.ts';
@@ -116,6 +117,7 @@ export default function subagentExtension(api: ExtensionAPI): void {
     if (service !== lifecycle.service || transitionPending || lifecycle.retiring) return [];
     return sessions.filter(session => session.sessionId !== service.sessionId);
   });
+  installAsyncShellSurface(api, async (ctx) => (await current(ctx)).shell, 'Main');
   installSessionSurface(api, current, {
     callerId: 'Main',
     depth: 0,

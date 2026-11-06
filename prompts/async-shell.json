@@ -1,0 +1,7 @@
+{
+  "guidelines": [
+    "Use pi-job create --wait 5s -- COMMAND ARGS for commands that should continue asynchronously. It returns a task ID, status, and incremental output; --wait limits this call's waiting time, while --timeout limits task runtime.",
+    "Use pi-job poll ID to retrieve new output when needed. Completion is delivered automatically; end your turn while waiting instead of polling repeatedly.",
+    "Use pi-job send ID [--enter] with a quoted heredoc for literal multiline input, and pi-job key ID KEY for explicit terminal keys. Use pi-job cancel ID to stop a task."
+  ]
+}

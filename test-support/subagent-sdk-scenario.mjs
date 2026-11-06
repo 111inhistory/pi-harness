@@ -25,6 +25,7 @@ import {
   runExternalSocketScenario, runListenerCacheScenario, runPeerSenderScenario,
   runRestoreInvalidScenario, runUpstreamParentSteerScenario,
 } from "../test/typed/support/subagent-sdk-scenarios.ts";
+import { runAsyncShellScenario } from "../test/typed/support/async-shell-sdk-scenario.ts";
 import { runHierarchicalBroadcastScenario } from "../test/typed/support/broadcast-parent-hold-scenario.ts";
 import { runUpstreamParentHoldScenario } from "../test/typed/support/upstream-parent-hold-scenario.ts";
 import {
@@ -256,7 +257,9 @@ const fixture = {
 };
 
 try {
-  if (scenario === "listener-cache") {
+  if (scenario === 'async-shell') {
+    await runAsyncShellScenario(fixture);
+  } else if (scenario === "listener-cache") {
     await runListenerCacheScenario(fixture);
   } else if (scenario === "reviewer-sol") {
     controls.classify = (context) => {
