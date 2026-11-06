@@ -47,11 +47,13 @@ test("Windows directory privacy checks ACLs and refuses a broad Allow without re
   assert.equal(ensurePrivateSocketRoot(directory).created, false);
   const grant = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `
 $ErrorActionPreference = 'Stop'
-$acl = Get-Acl -LiteralPath $env:PI_TEST_ACL_DIRECTORY
+Add-Type -AssemblyName System.Security
+$directory = [System.IO.DirectoryInfo]::new($env:PI_TEST_ACL_DIRECTORY)
+$acl = $directory.GetAccessControl()
 $sid = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
 $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
 $acl.AddAccessRule($rule)
-Set-Acl -LiteralPath $env:PI_TEST_ACL_DIRECTORY -AclObject $acl
+$directory.SetAccessControl($acl)
 `], {
     env: { ...process.env, PI_TEST_ACL_DIRECTORY: directory },
     encoding: "utf8", timeout: 10000, windowsHide: true,
