@@ -48,7 +48,13 @@ if (process.platform === 'win32') {
   const node = process.execPath.replaceAll("'", "''");
   await installFile(path.join(bin, 'pi-job.ps1'), [
     `# ${marker} PowerShell launcher`,
-    `& '${node}' (Join-Path $PSScriptRoot 'pi-job.mjs') @args`,
+    '$OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    '$piJobBundle = Join-Path $PSScriptRoot \'pi-job.mjs\'',
+    'if ($MyInvocation.ExpectingInput) {',
+    `  $input | & '${node}' $piJobBundle @args`,
+    '} else {',
+    `  & '${node}' $piJobBundle @args`,
+    '}',
     'exit $LASTEXITCODE', '',
   ].join('\r\n'));
   await installFile(path.join(bin, 'pi-job.cmd'), [
