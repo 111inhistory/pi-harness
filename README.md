@@ -93,7 +93,7 @@ Pi 用户目录默认为 `~/.pi/agent/`；设置 `PI_CODING_AGENT_DIR` 时使用
 npm run install:async-shell
 ```
 
-随后 Agent 可以通过 Bash 使用 `pi-job create --wait 5s -- COMMAND ARGS`：短任务直接返回结果，长任务返回 ID 并继续运行。`pi-job poll ID` 默认读取新增输出，完成结果自动送回发起任务的 Agent。多行输入支持 heredoc。安装、输入和生命周期说明见[异步 Shell](docs/async-shell.md)。
+随后 Agent 可以通过 Bash／PowerShell 使用 `pi-job create --wait 5s -- COMMAND ARGS`：短任务直接返回结果，长任务返回 ID 并继续运行。`pi-job poll ID` 默认读取新增输出，完成结果自动送回发起任务的 Agent。多行输入支持 Bash heredoc 和 PowerShell here-string。更新代码后重新安装 CLI，并重启 Pi 加载新版。安装、输入和生命周期说明见[异步 Shell](docs/async-shell.md)。
 
 ### 连接另一个 Pi 会话
 
@@ -131,7 +131,7 @@ npm run install:async-shell
 ## 更多资料
 
 - [Harness 参数配置](docs/harness-configuration.md)：调整并发、预算和提示词
-- [异步 Shell](docs/async-shell.md)：tmux 任务、增量输出和终端输入
+- [异步 Shell](docs/async-shell.md)：POSIX tmux／Windows psmux 任务、增量输出和终端输入
 - [接口说明](docs/interface-contract.md)：命令、工具及具体行为
 - [已知问题](docs/known-issues.md)：平台限制与尚未验收的场景
 - [文档目录](docs/README.md)：架构、存储和其他开发资料
