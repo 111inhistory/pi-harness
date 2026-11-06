@@ -21,13 +21,22 @@ async function fixture(t: test.TestContext, onMessage: (value: unknown) => unkno
   return address;
 }
 
+/**
+ * One raw request, answered on the same connection. The client writes without
+ * half-closing (a Windows Named Pipe has no half-close that flushes the request),
+ * collects through the response newline, then drops the connection.
+ */
 function rawResponse(address: string): Promise<string> {
   return new Promise((resolve, reject) => {
     let response = '';
-    const client = net.connect(address, () => client.end('{"from":"Main","content":"hello"}\n'));
+    const client = net.connect(address, () => client.write('{"from":"Main","content":"hello"}\n'));
     client.setEncoding('utf8');
-    client.on('data', (chunk: string) => { response += chunk; });
-    client.on('end', () => resolve(response));
+    client.on('data', (chunk: string) => {
+      response += chunk;
+      if (!response.includes('\n')) return;
+      client.destroy();
+      resolve(response);
+    });
     client.on('error', reject);
   });
 }
@@ -36,8 +45,6 @@ test('socket returns an asynchronous delivery error on the native platform trans
   const address = await fixture(t, async () => { throw Object.assign(new Error('Agent is stopping.'), { code: 'agent_busy' }); });
   await assert.rejects(writeSocket(address, { from: 'Main', content: 'hello' }), { code: 'agent_busy', message: 'Agent is stopping.' });
 });
-
-const skip = process.platform === 'win32';
 
 test('socket success waits for asynchronous delivery and returns no value', async (t) => {
   const started = gate();
@@ -53,7 +60,7 @@ test('socket success waits for asynchronous delivery and returns no value', asyn
   assert.equal(await result, undefined);
 });
 
-test('wire success is empty and wire failure contains only the error', { skip }, async (t) => {
+test('wire success is empty and wire failure contains only the error', async (t) => {
   const success = await fixture(t, () => undefined);
   assert.equal(await rawResponse(success), '\n');
   const failure = await fixture(t, async () => { throw Object.assign(new Error('Agent is stopping.'), { code: 'agent_busy' }); });

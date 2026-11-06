@@ -1,6 +1,6 @@
 import { defaultSocketRoot, effectiveUserId } from '../../src/ipc/address.ts';
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -14,11 +14,13 @@ import {
   createOwnedServer,
   ensurePrivateDirectory,
   ensurePrivateSocketRoot,
-  endpointInsideRoot,
+  endpointInsideDirectory,
   inspectEndpoint,
   prepareEndpoint,
   releaseEndpoint,
 } from "../../src/ipc/endpoint.ts";
+import { ipc } from "../../src/ipc/platform.ts";
+import { createOwnedNdjsonServer, getAgentSocketPath, writeSocket } from "../../src/ipc/socket.ts";
 
 const posix = process.platform !== "win32";
 
@@ -28,15 +30,46 @@ async function fixture(t: { after: (fn: () => Promise<void> | void) => void }) {
   return { root, address: path.join(root, "agent.sock") };
 }
 
+/** A real endpoint address: a Unix socket file or a Windows Named Pipe. */
+const nativeAddress = (root: string, name: string): string => getAgentSocketPath(name, root);
+
 function ownershipError(code: string) {
   return (error: unknown) => error instanceof IpcOwnershipError && error.code === code;
 }
 
-test("active endpoint conflicts are refused without disturbing the live listener", { skip: !posix }, async (t) => {
-  const { root, address } = await fixture(t);
+/** A bound endpoint is a socket file on Unix and a kernel pipe name on Windows. */
+const releasedOnClose = (address: string): boolean => !ipc.isNamespace(address);
+
+test("Windows directory privacy checks ACLs and refuses a broad Allow without repairing it", { skip: posix, timeout: 60000 }, async (t) => {
+  const { root } = await fixture(t);
+  const directory = path.join(root, "private ACL 目录");
+  ensurePrivateDirectory(directory);
+  assert.equal(ensurePrivateSocketRoot(directory).created, false);
+  const grant = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Security
+$directory = [System.IO.DirectoryInfo]::new($env:PI_TEST_ACL_DIRECTORY)
+$acl = $directory.GetAccessControl()
+$sid = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+$acl.AddAccessRule($rule)
+$directory.SetAccessControl($acl)
+`], {
+    env: { ...process.env, PI_TEST_ACL_DIRECTORY: directory },
+    encoding: "utf8", timeout: 10000, windowsHide: true,
+  });
+  assert.equal(grant.status, 0, grant.stderr);
+  assert.throws(() => ensurePrivateDirectory(directory), ownershipError("ipc_directory_insecure"));
+  assert.throws(() => ensurePrivateSocketRoot(directory), ownershipError("ipc_root_insecure"));
+});
+
+test("an active endpoint refuses a competing server without disturbing the live listener", async (t) => {
+  const { root } = await fixture(t);
+  const address = nativeAddress(root, "agent");
   let accepted = 0;
   const first = createOwnedServer({
     address,
+    isNamespace: ipc.isNamespace(address),
     onConnection(socket: net.Socket) {
       accepted += 1;
       socket.resume();
@@ -44,33 +77,87 @@ test("active endpoint conflicts are refused without disturbing the live listener
   });
   await first.ready;
   t.after(() => first.close());
-  assert.deepEqual(await fsp.readdir(root), ["agent.sock"], "the private bind name is not published alongside the endpoint");
-  const before = inspectEndpoint(address);
-  assert.equal(before.kind, "socket");
+  if (posix) assert.deepEqual(await fsp.readdir(root), ["agent.sock"], "the private bind name is not published alongside the endpoint");
 
-  const second = createOwnedServer({ address, onConnection() {} });
+  const second = createOwnedServer({ address, isNamespace: ipc.isNamespace(address), onConnection() {} });
   await assert.rejects(second.ready, ownershipError("ipc_endpoint_in_use"));
-  await second.close();
-  assert.equal(inspectEndpoint(address).identity?.ino, before.identity?.ino, "the live endpoint must remain");
+  const competing = await second.close();
+  assert.equal((competing.startupError as IpcOwnershipError | null)?.code, "ipc_endpoint_in_use");
+  assert.equal(competing.release, null, "a competing startup owns nothing to release");
 
   const acceptedBefore = accepted;
+  const serverAccepted = once(first.server, "connection");
   const client = net.connect(address);
   t.after(() => client.destroy());
-  await once(client, "connect");
+  await Promise.all([once(client, "connect"), serverAccepted]);
   assert.equal(accepted, acceptedBefore + 1, "the live listener accepted the new client");
 
   const closed = await first.close();
   assert.equal(closed.startupError, null);
-  assert.equal(closed.release?.removed, true);
+  assert.equal(closed.release?.removed, releasedOnClose(address));
   await assert.rejects(fsp.stat(address), { code: "ENOENT" });
   assert.deepEqual(await fsp.readdir(root), [], "teardown leaves no temporary bind names or endpoint");
 });
 
-test("teardown force-closes held-open and half-frame clients and is idempotent", { skip: !posix }, async (t) => {
-  const { root, address } = await fixture(t);
+test("a closed endpoint can be rebound immediately and still serves a request", async (t) => {
+  const { root } = await fixture(t);
+  const address = nativeAddress(root, "agent");
+  const replies: unknown[] = [];
+  // Connections are counted from before binding: binding itself must accept no
+  // client. A namespace probe (a stat on an active Named Pipe opens a client
+  // handle) would show up here as a second, frame-less connection.
+  const open = () => {
+    const accepted: net.Socket[] = [];
+    const server = createOwnedNdjsonServer({ address, root, onMessage(message: unknown) { replies.push(message); } });
+    server.server.on("connection", (socket: net.Socket) => accepted.push(socket));
+    return { server, accepted };
+  };
+
+  const first = open();
+  await first.server.ready;
+  await writeSocket(address, { from: "sub_01", content: "before close" });
+  assert.equal(first.accepted.length, 1, "the only accepted connection is the request that carried a frame");
+  await first.server.close();
+  await assert.rejects(fsp.stat(address), { code: "ENOENT" });
+
+  const second = open();
+  t.after(() => second.server.close());
+  await second.server.ready;
+  await writeSocket(address, { from: "sub_01", content: "after rebind" });
+  assert.equal(second.accepted.length, 1, "the rebound endpoint accepts only the request, not a probe of itself");
+  assert.deepEqual(replies, [
+    { from: "sub_01", content: "before close" },
+    { from: "sub_01", content: "after rebind" },
+  ]);
+});
+
+test("an endpoint bound by another process cannot be taken over", { timeout: 10000 }, async (t) => {
+  const { root } = await fixture(t);
+  const address = nativeAddress(root, "agent");
+  const script = `
+    const net = require("node:net");
+    const server = net.createServer((socket) => socket.resume());
+    server.listen(process.argv[1], () => process.stdout.write("listening\\n"));
+  `;
+  const child = spawn(process.execPath, ["-e", script, address], { stdio: ["ignore", "pipe", "inherit"] });
+  t.after(() => { try { child.kill("SIGKILL"); } catch {} });
+  await once(child.stdout!, "data");
+
+  const competing = createOwnedServer({ address, isNamespace: ipc.isNamespace(address), onConnection() {} });
+  await assert.rejects(competing.ready, ownershipError("ipc_endpoint_in_use"));
+  await competing.close();
+
+  child.kill("SIGKILL");
+  await once(child, "exit");
+});
+
+test("teardown force-closes held-open and half-frame clients and is idempotent", async (t) => {
+  const { root } = await fixture(t);
+  const address = nativeAddress(root, "agent");
   const chunks: Buffer[] = [];
   const owned = createOwnedServer({
     address,
+    isNamespace: ipc.isNamespace(address),
     onConnection(socket: net.Socket) {
       socket.on("data", (chunk: Buffer) => chunks.push(chunk));
     },
@@ -96,7 +183,7 @@ test("teardown force-closes held-open and half-frame clients and is idempotent",
   assert.equal(firstClose, secondClose, "repeated close returns the same operation");
   const result = await firstClose;
   assert.equal(result.startupError, null);
-  assert.equal(result.release?.removed, true);
+  assert.equal(result.release?.removed, releasedOnClose(address));
   await clientClosed;
   await assert.rejects(fsp.stat(address), { code: "ENOENT" });
   assert.deepEqual(await fsp.readdir(root), [], "close leaves no temporary bind names");
@@ -211,8 +298,8 @@ test("a missing managed root is created private and nested session directories s
   const root = path.join(parent, "managed-root");
   const sessionDir = path.join(root, "session");
   const address = path.join(sessionDir, "agent.sock");
-  assert.equal(endpointInsideRoot(address, root), true);
-  assert.equal(endpointInsideRoot(address, path.join(parent, "other-root")), false);
+  assert.equal(endpointInsideDirectory(address, root), true);
+  assert.equal(endpointInsideDirectory(address, path.join(parent, "other-root")), false);
 
   const validation = ensurePrivateSocketRoot(root);
   assert.equal(validation.created, true);
@@ -240,7 +327,7 @@ test("arbitrary sockets outside the managed root keep the external leaf-only con
   const externalDir = path.join(parent, "external");
   await fsp.mkdir(externalDir, { mode: 0o700 });
   const external = path.join(externalDir, "agent.sock");
-  assert.equal(endpointInsideRoot(external, managed), false);
+  assert.equal(endpointInsideDirectory(external, managed), false);
   const lease = await prepareEndpoint({ address: external, root: managed });
   assert.equal(lease.staleRemoved, false);
   assert.equal(fs.statSync(externalDir).mode & 0o777, 0o700, "the external leaf is still validated");

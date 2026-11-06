@@ -14,6 +14,7 @@ import { installSubagentCommand, parseCommand } from "../../src/subagent/command
 import type { RootService } from "../../src/subagent/root-service.ts";
 import { SubagentError, type AgentView, type DetailedAgentItem, type JobView } from "../../src/subagent/runtime.ts";
 import { renderSubagentList } from "../../src/subagent/status-view.ts";
+import { sessionMainAddress } from "../../src/subagent/session-directory.ts";
 
 const actor = (agentId: string, kind: AgentView["kind"], status: AgentView["status"], depth: number): AgentView => ({
   agentId, name: null, parentAgentId: null, status, depth, kind,
@@ -54,7 +55,7 @@ function install(service: RootService | (() => Promise<RootService>)): { handler
     },
   } as unknown as ExtensionAPI;
   const resolve = typeof service === "function" ? service : async () => service;
-  installSubagentCommand(api, resolve);
+  installSubagentCommand(api, resolve, async () => []);
   const registered = command;
   assert.ok(registered);
   return { handler: async (raw, ctx) => { await registered.handler(raw, ctx); } };
@@ -68,7 +69,15 @@ test("parses the supported subcommands and rejects the rest", () => {
   assert.deepEqual(parseCommand("stop sub_01"), { verb: "stop", actorId: "sub_01" });
   assert.deepEqual(parseCommand("stop --all"), { verb: "stopAll" });
   assert.deepEqual(parseCommand("sessions"), { verb: "sessions" });
-  for (const raw of ["show", "stop", "stop a b", "list --id", "list --bogus", "list --id --all", "stop --bogus", "sessions all"]) {
+  assert.deepEqual(parseCommand("sessions connect bbbbbb"), { verb: "sessionsConnect", target: "bbbbbb" });
+  assert.deepEqual(
+    parseCommand("sessions  connect  01a1958d-0000-7000-8000-000000000000"),
+    { verb: "sessionsConnect", target: "01a1958d-0000-7000-8000-000000000000" },
+  );
+  for (const raw of [
+    "show", "stop", "stop a b", "list --id", "list --bogus", "list --id --all", "stop --bogus",
+    "sessions all", "sessions connect", "sessions connect a b", "sessions connect --all",
+  ]) {
     assert.throws(
       () => parseCommand(raw),
       (error: unknown) => error instanceof SubagentError && error.code === "invalid_command_args",
@@ -240,6 +249,88 @@ test("a transitioning root is reported with its error code", async () => {
   assert.equal(notifications[0]?.text, "runtime_transitioning: The root is quiescing.");
 });
 
+test("connect reports the peer session and the msg_write grant", async () => {
+  const notifications: Array<{ text: string; type: string }> = [];
+  const targets: string[] = [];
+  const session = {
+    sessionId: "other-session", uid: "bbbbbb", socketDir: "/tmp/sockets/bbbbbb", pid: 22,
+    cwd: "/tmp/project-b", name: "parser work", startedAt: 2,
+  };
+  const service = {
+    connectSession: async (target: string) => {
+      targets.push(target);
+      return {
+        session, address: "/tmp/sockets/bbbbbb/Main.sock",
+        enabled: ["msg_write"], alreadyEnabled: [], recordError: null,
+      };
+    },
+  } as unknown as RootService;
+  await install(service).handler("sessions connect bbbbbb", context(notifications));
+  assert.deepEqual(targets, ["bbbbbb"]);
+  assert.equal(notifications[0]?.type, "info");
+  assert.match(notifications[0]?.text ?? "", /^Connected bbbbbb \(parser work\) at \/tmp\/project-b$/m);
+  assert.match(notifications[0]?.text ?? "", /^main: \/tmp\/sockets\/bbbbbb\/Main\.sock$/m);
+  assert.match(notifications[0]?.text ?? "", /^msg_write: enabled$/m);
+});
+
+test("connect reports a partial failure instead of claiming success", async () => {
+  const notifications: Array<{ text: string; type: string }> = [];
+  const service = {
+    connectSession: async () => ({
+      session: { sessionId: "other", uid: "bbbbbb", socketDir: "/tmp/s", pid: 1, cwd: "/tmp/p", name: null, startedAt: 1 },
+      address: "/tmp/s/Main.sock", enabled: ["msg_write"], alreadyEnabled: [],
+      recordError: "the session branch is read-only",
+    }),
+  } as unknown as RootService;
+  await install(service).handler("sessions connect bbbbbb", context(notifications));
+  assert.equal(notifications[0]?.type, "error");
+  const text = notifications[0]?.text ?? "";
+  assert.doesNotMatch(text, /^Connected/, "a partial failure is not reported as a successful connect");
+  assert.match(text, /^Appended the contact information for bbbbbb at \/tmp\/p$/m);
+  assert.match(text, /^main: \/tmp\/s\/Main\.sock$/m);
+  assert.match(text, /^msg_write: activated, but the user grant was not recorded: the session branch is read-only$/m);
+  assert.match(text, /A manual msg_write is not declared on the next request without that record/);
+  assert.doesNotMatch(text, /msg_write: (already )?enabled/);
+});
+
+test("a connect lookup failure is reported with its code and appends nothing", async () => {
+  const notifications: Array<{ text: string; type: string }> = [];
+  const service = {
+    connectSession: async () => { throw new SubagentError("session_not_found", "No live session matches zzzzzz."); },
+  } as unknown as RootService;
+  await install(service).handler("sessions connect zzzzzz", context(notifications));
+  assert.deepEqual(notifications, [{ text: "session_not_found: No live session matches zzzzzz.", type: "error" }]);
+});
+
+test("connect completes its action and current live targets without activating a service", async () => {
+  type Options = Parameters<ExtensionAPI["registerCommand"]>[1];
+  let options: Options | undefined;
+  const api = {
+    registerCommand: (_name: string, value: Options) => { options = value; },
+  } as unknown as ExtensionAPI;
+  let sessions = [{ sessionId: "peer-native-id", uid: "bbbbbb", socketDir: "/tmp/sockets/bbbbbb", pid: 22, cwd: "/tmp/project", name: "parser work", startedAt: 1 }];
+  installSubagentCommand(api, async () => { throw new Error("completion must not activate a service"); }, async () => sessions);
+  const complete = options?.getArgumentCompletions;
+  assert.ok(complete);
+  const values = async (raw: string): Promise<string[] | null> => {
+    const items = await complete(raw);
+    return items?.map(item => item.value) ?? null;
+  };
+  assert.deepEqual(await values("sessions "), ["sessions connect "]);
+  assert.deepEqual(await values("sessions con"), ["sessions connect "]);
+  assert.deepEqual(await values("sessions connect "), ["sessions connect bbbbbb"]);
+  assert.deepEqual(await values("sessions connect bbb"), ["sessions connect bbbbbb"]);
+  assert.deepEqual(await values("sessions connect peer-native"), ["sessions connect bbbbbb"]);
+  assert.deepEqual(await values("sessions connect parser"), ["sessions connect bbbbbb"]);
+  const items = await complete("sessions connect ");
+  assert.match(items?.[0]?.label ?? "", /parser work/);
+  assert.match(items?.[0]?.description ?? "", /\/tmp\/project/);
+  sessions = [];
+  assert.equal(await values("sessions connect "), null, "exited sessions disappear on the next completion read");
+  assert.equal(await values("sessions unknown "), null);
+  assert.deepEqual(await values("sto"), ["stop"]);
+});
+
 test("the harness extension registers the subagent command", () => {
   const names: string[] = [];
   const api = {
@@ -253,12 +344,11 @@ test("the harness extension registers the subagent command", () => {
 
 test("sessions lists live sessions with their managed Main address and native name", async () => {
   const notifications: Array<{ text: string; type: string }> = [];
+  const current = { sessionId: "current-session", uid: "aaaaaa", socketDir: "/tmp/sockets/aaaaaa", pid: 11, cwd: "/tmp/project-a", name: null, startedAt: 1 };
+  const other = { sessionId: "other-session", uid: "bbbbbb", socketDir: "/tmp/sockets/bbbbbb", pid: 22, cwd: "/tmp/project-b", name: "parser work", startedAt: 2 };
   const service = {
     sessionId: "current-session",
-    listSessions: async () => [
-      { sessionId: "current-session", uid: "aaaaaa", socketDir: "/tmp/sockets/aaaaaa", pid: 11, cwd: "/tmp/project-a", name: null, startedAt: 1 },
-      { sessionId: "other-session", uid: "bbbbbb", socketDir: "/tmp/sockets/bbbbbb", pid: 22, cwd: "/tmp/project-b", name: "parser work", startedAt: 2 },
-    ],
+    listSessions: async () => [current, other],
   } as unknown as RootService;
   const { handler } = install(service);
   await handler("sessions", context(notifications));
@@ -266,7 +356,8 @@ test("sessions lists live sessions with their managed Main address and native na
   assert.match(text, /^Live sessions \(2\):/m);
   assert.match(text, /^\* aaaaaa\s+\(unnamed\)\s+pid 11\s+\/tmp\/project-a$/m);
   assert.match(text, /^ {2}bbbbbb\s+parser work\s+pid 22\s+\/tmp\/project-b$/m);
-  assert.match(text, /main: \/tmp\/sockets\/aaaaaa\/Main\.sock/);
-  assert.match(text, /main: \/tmp\/sockets\/bbbbbb\/Main\.sock/);
+  // The displayed Main address is the native managed endpoint of each session.
+  assert.ok(text.includes(`main: ${sessionMainAddress(current)}`), text);
+  assert.ok(text.includes(`main: ${sessionMainAddress(other)}`), text);
   assert.match(text, /session other-session/);
 });

@@ -4,13 +4,12 @@
  * Adds the no-argument `capability` tool to a session. A call runs an isolated
  * internal retrieval session through the shared Subagent execution entry point
  * (`openSubagentExecution`), the same session lifetime, abort and cleanup used by
- * public delegation. Only `capability_step` may execute; compatible Responses
- * also retain blocked parent declarations, never parent handles; the run has its
- * own fixed budget. The session inherits the caller's native conversation — raw
- * session entries, system prompt, physical model — so provider-returned blocks
- * such as thinking with their signatures survive verbatim. Compatible Responses
- * keep the parent's thinking level and declaration prefix; other models use
- * thinking low. The tool returns full grouped metadata in details and a compact
+ * public delegation. Only `capability_step` may execute; supported Responses
+ * and Anthropic transports retain blocked parent declarations, never parent handles;
+ * the run has its own fixed budget. The session inherits the caller's native
+ * conversation, system prompt, physical model and thinking level, so returned
+ * content such as thinking signatures survives verbatim. The tool returns full
+ * grouped metadata in details and a compact
  * model-facing selection where the next request supplies the interfaces through
  * native declarations or an active Codemode query path. It declares the selected
  * already-registered tools active in this session. It never installs, enables or
@@ -72,6 +71,7 @@ import {
 import { promptString, promptStrings } from "../src/prompt-text.ts";
 
 import { installModelCallBudget } from "../src/subagent/pi-job-budget.ts";
+import { installSessionCacheIdentity } from "../src/session-cache-runtime.ts";
 import { captureInheritedContext, type InheritedSnapshot } from "../src/inherited-context.ts";
 import { discoverSessionSkills } from "../src/capability/skills.ts";
 import { capabilityPublicResult } from "../src/capability/result.ts";
@@ -86,11 +86,15 @@ import { argumentCompletionProvider } from "../src/autocomplete.ts";
 import { installCapabilityCommand } from "../src/capability/command.ts";
 import { manualToolMatcher } from "../src/capability/manual-tools.ts";
 import { createToolAdmission } from "../src/capability/admission.ts";
-import { setCapabilityRootOnlyPolicy } from "../src/capability/scope.ts";
+import { createCapabilityScopeView, setCapabilityRootOnlyPolicy } from "../src/capability/scope.ts";
+import { providerSessionPolicy } from "../src/provider-session.ts";
+import { projectToolGuidance } from "../src/tool-guidance.ts";
+import { SUBAGENT_TOOL_GUIDANCE } from "../src/subagent/tool-guidance.ts";
+import { appendSessionTranscript, additiveToolTranscript, type TranscriptMessageLike } from "../src/session-transcript.ts";
 import {
-  additiveToolTranscript, capabilityModelResult, capabilityToolDelta, retrievalToolLoadout, supportsAdditiveResponses,
-  type CapabilityInterfaceSources,
-} from "../src/responses-tool-prefix.ts";
+  capabilityModelResult, capabilityToolDelta, type CapabilityInterfaceSources,
+} from "../src/capability/model-result.ts";
+import { retrievalToolLoadout } from "../src/capability/retrieval-tools.ts";
 
 const toolsPrompt = readToolsPrompt();
 const policyPrompt = readPolicyPrompt();
@@ -188,8 +192,10 @@ export default function capabilityExtension(
       ctx.sessionManager.getBranch(),
       { allowsTool: (name) => available.has(name) },
     );
+    const policy = providerSessionPolicy(ctx.model);
+    const declarations = policy.toolSupport !== "none" ? additiveToolTranscript(messages) : messages;
     return {
-      messages: (supportsAdditiveResponses(ctx.model) ? additiveToolTranscript(messages) : messages) as unknown as AgentMessage[],
+      messages: projectToolGuidance(declarations, SUBAGENT_TOOL_GUIDANCE) as unknown as AgentMessage[],
     };
   });
   pi.on("tool_call", (event, ctx) => {
@@ -201,7 +207,7 @@ export default function capabilityExtension(
     }
     const admission = createToolAdmission(pi, ctx.sessionManager.getBranch());
     if (!admission.admitsManual(event.toolName)) {
-      return { block: true, reason: `Tool ${event.toolName} is manual and requires /capability enable in this session.` };
+      return { block: true, reason: `Tool ${event.toolName} is manual and requires explicit user authorization in this session.` };
     }
     return undefined;
   });
@@ -375,7 +381,7 @@ function internalSettings(pi: ExtensionAPI, trusted: boolean): SettingsManager {
 /**
  * Declare the selected, already-registered tools active in this session.
  *
- * The per-name activation is shared with the `/capability enable` command
+ * The per-name activation is shared with cross-session reply-tool loading
  * (`activation.ts`); this function only maps the discovery selection onto tool
  * names and turns the skipped names into discovery warnings. A server-level
  * `mcp://<server>` ref names no single registered tool, so only a tool ref that
@@ -480,11 +486,20 @@ async function openInternalSession(
   const settings = internalSettings(pi, ctx.isProjectTrusted());
   const modelRuntime = parentModelRuntime(ctx.modelRegistry, "capability discovery");
   const inheritedPrompt = inheritedSystemPrompt(snapshot);
+  const retrievalNames = new Set(request.customTools.map(tool => tool.name));
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir: service.agentDir,
     settingsManager: settings,
     noExtensions: true,
+    extensionFactories: [{
+      name: "capability-retrieval-admission",
+      factory(api) {
+        api.on("tool_call", event => retrievalNames.has(event.toolName)
+          ? undefined
+          : { block: true, reason: `Tool ${event.toolName} is unavailable in capability discovery. Only retrieval tools may execute.` });
+      },
+    }],
     noSkills: true,
     noPromptTemplates: true,
     noThemes: true,
@@ -495,8 +510,21 @@ async function openInternalSession(
   });
   await resourceLoader.reload();
   const model = snapshot.model;
-  const additive = supportsAdditiveResponses(model);
-  const inheritedMessages: readonly ProjectionMessage[] = snapshot.entries.flatMap((entry) =>
+  const rootOnly = createCapabilityScopeView(pi).rootOnly;
+  // Manual tool interfaces cannot travel to a child, even as blocked placeholders.
+  // Keep other inherited declarations so supported transports can reuse their prefix.
+  const inheritedEntries = snapshot.entries.map(entry => {
+    if (entry.type !== "message" || entry.message.role !== "system" || rootOnly === null) return entry;
+    const message = entry.message;
+    return { ...entry, message: {
+      ...message,
+      ...(message.toolsAdded === undefined ? {} : { toolsAdded: message.toolsAdded.filter(tool => !rootOnly(tool.name)) }),
+      ...(message.toolsRemoved === undefined ? {} : { toolsRemoved: message.toolsRemoved.filter(tool => !rootOnly(tool.name)) }),
+    } };
+  });
+  const policy = providerSessionPolicy(model);
+  const additive = policy.midConversationSystemMessages && policy.toolSupport !== "none";
+  const inheritedMessages: readonly ProjectionMessage[] = inheritedEntries.flatMap((entry) =>
     entry.type === "message" ? [entry.message as unknown as ProjectionMessage] : []);
   // Pi's ToolDefinition render callbacks are invariant in their parameter type;
   // the retrieval helper returns Pi-ai Tool records plus the engine's step tool.
@@ -511,14 +539,19 @@ async function openInternalSession(
     settingsManager: settings,
     modelRuntime,
     ...(model ? { model } : {}),
-    thinkingLevel: additive ? (snapshot.thinkingLevel ?? "low") : "low",
-    sessionManager: SessionManager.inMemory(cwd, {}, [...snapshot.entries]),
+    thinkingLevel: snapshot.thinkingLevel ?? "low",
+    sessionManager: SessionManager.inMemory(cwd, {}, inheritedEntries),
     resourceLoader,
     customTools,
     tools: customTools.map((tool) => tool.name),
   }, request.signal === undefined ? {} : { signal: request.signal });
   try {
     const session = execution.session;
+    execution.addCleanup(installSessionCacheIdentity(session, snapshot.cacheKey));
+    await session.bindExtensions({});
+    execution.addCleanup(async () => {
+      await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    });
     // The blocked placeholders retain interfaces only; they never call parent tools.
     const previousTransform = session.agent.transformContext;
     const available = createEligibleToolCatalog(pi).names;
@@ -529,13 +562,11 @@ async function openInternalSession(
         allowsTool: (name) => available.has(name),
       });
       const withAddendum = additive
-        ? [...additiveToolTranscript(remembered), {
-            role: "system" as const,
-            content: policyPrompt.additiveExecutionBlocked,
-            timestamp: 0,
-          }]
+        ? appendSessionTranscript(additiveToolTranscript(remembered) as AgentMessage[], {
+            instructions: { text: policyPrompt.additiveExecutionBlocked },
+          }).messages
         : remembered;
-      return withAddendum as unknown as AgentMessage[];
+      return projectToolGuidance<TranscriptMessageLike>(withAddendum, SUBAGENT_TOOL_GUIDANCE) as unknown as AgentMessage[];
     };
     const cleanupBudget = installModelCallBudget(session, request.budget, {
       ...(request.beforeRequest === undefined ? {} : { beforeRequest: request.beforeRequest }),

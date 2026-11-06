@@ -90,9 +90,9 @@ MCP 配置中的 `codemode`／`deferred` exposure 不表示工具在 Capability 
 
 只增不减不等于绕过权限：已注册、可声明和可执行仍受宿主及角色边界约束。不同分支不因能力累积而相互泄漏。
 
-用户可通过 `/capability enable` 直接写入 `manual` 分类。该分类与检索结果共用同一规范条目格式和同一 ref 命名空间，请求投影同样按当前工具资格过滤，不因来自用户而获得额外执行权限。
+用户授权保存在 `manual` 分类中。该分类与检索结果共用同一规范条目格式和同一 ref 命名空间，但它是分支授权，不是请求状态：`manual` 记录不进入 `<capabilities>` 投影。被授权的工具由原生工具声明提供接口，再投影一次只会改写头部系统提示词，而不增加模型可用的信息。
 
-`capability.manualTools` 名单内的工具是另一种约束：模型侧发现完全看不到它们，发现路径也不能激活它们（`manual_only`），子会话不继承，只有用户 `/capability enable` 可以启用。名单与分类的来源不同：名单来自配置，`manual` 分类记录来自用户的启用动作。
+`capability.manualTools` 名单内的工具是另一种约束：模型侧发现完全看不到它们，发现路径也不能激活它们（`manual_only`），子会话不继承，必须具备用户明确授予的分支授权才能使用。名单与分类的来源不同：名单来自配置，`manual` 分类记录来自用户的启用动作。
 
 严格工具 allowlist 可能拒绝不匹配的 MCP 成员。当前先写记录、再激活的顺序会让未激活成员残留在规范记忆中，后续投影可能再次展示它们。这是与成功获得能力才应累积的要求不一致的已知缺陷，详见[已知问题](known-issues.md#严格工具-allowlist-下的激活记忆不一致)。
 
@@ -100,28 +100,30 @@ API 协调应同时保证资源指引、工具状态与供应商接口声明一�
 
 ### `/capability` 命令
 
-扩展命令 `/capability` 提供面向用户的能力记忆入口，不经过模型轮次，也不消耗 Capability Budget。
+扩展命令 `/capability` 提供目录浏览与用户启用入口，不经过模型轮次，也不消耗 Capability Budget。
 
 | 子命令 | 行为 |
 | --- | --- |
 | `/capability`、`/capability list [tool\|mcp\|namespace] [filter]` | 列出当前可选的已注册工具，按类别及 MCP 服务器／命名空间分组；可选类别与纯文本过滤，不调用模型、不启动检索 |
-| `/capability enable` | 打开原生可筛选选择列表，选中项经用户确认后启用并写入当前分支的 `manual` 能力记录 |
-| `/capability enable <name...>` | 按名字启用一个或多个已注册工具，并写入当前分支的 `manual` 能力记录；名字也可以是 `namespace://<name>` 或唯一的非 MCP 命名空间名，展开为该命名空间的全部成员 |
+| `/capability enable` | 打开终端原生选择列表，选中项即启用并写入当前分支的 `manual` 记录；Esc 取消无副作用 |
+| `/capability enable <target...>` | 按目标启用一个或多个工具，并写入当前分支的 `manual` 记录 |
 
-- 类别只有 `tool`、`mcp`、`namespace`；不传类别时列出全部。`list` 的第一个词只有恰好是这三个名字时才作为类别，其余文本都是过滤词。Skill 不属于该入口，Pi 原生 skill 机制已经足够。
+- 类别只有 `tool`、`mcp`、`namespace`；不传类别时列出全部。`list` 的第一个词只有恰好是这三个名字时才作为类别，其余文本都是过滤词。Skill 不属于该入口。
 - 每个工具只属于一个类别：MCP 工具归 `mcp`（按服务器分组），非 MCP 命名空间成员归 `namespace`，其余归 `tool`。组内按显示名称自然排序，组与类别顺序固定。列表只显示真实注册且当前有资格的工具，并标出激活状态与 `manual` 标记；`manual` 工具可以浏览，但浏览不构成授权。
-- 文本过滤为空时列出完整目录；没有匹配时给出可恢复提示（清空过滤或换词），不显示 ref 协议或内部诊断作为主内容。
-- `enable` 无参数时使用终端原生选择列表（输入过滤、上下移动、Enter 启用、Esc 取消），不要求先记住工具名；Esc 不激活、不写记录。选择项逐工具呈现，选中即启用该工具，不隐式扩大授权范围。无终端 UI 的环境报告不可用并提示使用 `/capability enable <name>`，不自动选择。
-- `enable <name...>` 优先按工具名匹配；没有同名工具时，`namespace://<name>` 或裸的非 MCP 命名空间名展开为该命名空间的全部注册成员，再逐个激活和记录。MCP 服务器不属于该展开路径，仍按成员工具名启用。
-- 补全覆盖子命令、`list` 的类别（含尾随空格与空过滤）以及 `enable` 的工具名（可连续追加）。
-- 只增不减：命令没有停用、移除或重置子命令。能力记忆按分支累计，请求投影仍按当前工具资格过滤。
-- 该命令是 `capability.manualTools` 名单的唯一启用入口。名单内工具不出现在检索候选里，子会话也不能持有它们。子会话同样注册该命令，但子作用域排除 `manual` 工具：启用名单内工具会被拒绝（`not_permitted`），选择列表也不会列出它们。
-- 授权依据是分支上的 `manual` 记录，不是当前激活状态。工具因 `defaultActive`、历史恢复或其他扩展而处于激活状态，不构成授权：`before_agent_start` 会把它从声明与激活集中移除，`tool_call` 也会以需要 `/capability enable` 拒绝。用户启用后才写记录并保留。
+- 过滤为空时列出完整目录；没有匹配时给出可恢复提示。浏览不激活工具、不写入能力记录、不授予权限。
+- 补全覆盖 `list` 与类别，以及 `enable` 的目标（含 `mcp://<server>` 与 `namespace://<name>` 组引用，可连续追加）。
+- `enable` 的目标在**执行时**对照当前注册表解析：先精确匹配已注册工具名，再展开 `mcp://<server>`、`namespace://<name>`，最后展开裸的非 MCP 命名空间名。工具名优先于同名命名空间。隐藏成员不进入组展开。
+- 目标解析使用实时注册表，因此 Pi 原生 `/mcp` 重连后新注册或重新注册的工具无需重启会话、无需先跑模型发现即可浏览和启用；已被撤回并重新注册为 `hidden` 的工具在执时被拒绝，陈旧选择不会激活已消失的注册。
+- 顺序为先激活、后写记录：只有激活调用后处于激活集（新激活或已激活）的工具进入 `manual` 记录。未注册、隐藏、未获资格和未被激活的目标逐个报告，不使整条命令失败。
+- 重复启用幂等：已记录的目标报告为已启用，不写第二条记录。
+- 分支记录写入失败不回滚已激活工具。命令报告该失败；缺少记录时 manual 工具在下一次请求的声明剪枝中被移除，即失败方向是关闭的，而不是当作成功。
+- 只增不减：没有停用、移除或重置子命令。能力记忆按分支累计。
+- 该命令是 `capability.manualTools` 名单的唯一启用入口。名单内工具不出现在检索候选里，子会话也不能持有它们；子会话同样注册该命令，但子作用域排除 `manual` 工具，启用会被拒绝（`not_permitted`），选择列表也不列出它们。
+- 授权依据是分支上的 `manual` 记录，不是当前激活状态。工具因 `defaultActive`、历史恢复或其他扩展而处于激活状态，不构成授权：`before_agent_start` 会把它从声明与激活集中移除，`tool_call` 也会以需要用户授权拒绝。用户启用后才写记录并保留。
 - 已启用的 manual MCP 工具与发现选中的 MCP 工具同等对待：通过原生 MCP 准入、出现在 Codemode 的可用目录中，并可作为 `read_mcp_resource` 的服务器选择依据。`read_mcp_resource` 自身仍需被选中或手动启用。
-- 请求投影使用执行视图：用户启用后的 `manual` 记录在 Main 的 `<capabilities>` 中可见，子会话仍不可见。
-- 启用顺序为先激活、后写记录：只有激活调用后仍处于激活状态的工具进入 `manual` 记录。未注册、隐藏、未获资格和未被激活的名称逐个报告，不使整条命令失败。
-- 分支记录写入失败不回滚已激活工具。命令报告该失败，并说明本次启用不会在压缩、重载或分支恢复后重建。
+- 用户授权不是请求状态：`manual` 记录不产生 `<capabilities>` 段落。启用会追加工具声明，Subagent 共同及专属指引分别在首个成员及对应工具声明后作为独立系统段落投影，不写进 description，也不使用工具元数据改写头部 rules。第三方工具的 `promptSnippet`／`promptGuidelines` 仍遵循 Pi 原生段落更新；未支持中途 system 消息时可能折叠进头部。Chat Completions 的工具与消息编码继续由 Pi 原生处理；共同指引投影也会提供给该路径，未支持中途 system 消息时沿用 Pi 的折叠行为，详见[已知问题](known-issues.md)。
 - 命令只读写当前根会话：不发送消息、不唤醒 Subagent、不改变路由或 Budget。
+- 收到跨 session 消息时，接收根会话按当前资格激活 `msg_write`，不加载整个命名空间、不写入用户授权记录，重复收信幂等。显式列入 `manualTools` 时仍受该门禁约束。
 
 ### 当前调用形态
 
@@ -207,9 +209,10 @@ Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）�
 | `/subagent stop <actorId>` | 请求取消该 Actor 的当前 Job；返回 `ok` 与 `status`，被拒绝时附带 `reason`（`already_finished`、`stopping`、`finalizing`、`budget_exceeded`）；Actor 没有运行中的 Job 时保持幂等 `ok`，视图提示无运行任务 |
 | `/subagent stop --all` | 对当前根所有 `running` Job 请求取消，立即汇总已请求／拒绝／失败数量，不等待终态 |
 | `/subagent sessions` | 列出同一 Socket 根下所有存活 session 的短标识、进程、工作目录、session id 与 Main 的跨 session 地址；当前 session 以 `*` 标记 |
+| `/subagent sessions connect <uid\|sessionId>` | 把选中存活 session 的联系信息作为一条本地上下文消息追加给当前 agent，并启用 `msg_write`；不向对方发送任何消息 |
 
 - 列表输出为纯文本：树形缩进，`●` 活跃、`◐` 正在停止或收尾、`○` 空闲；列固定为 ID、深度、种类（`fresh`／`inherited`）、角色、状态与调用数。标题给出当前根的全部 Actor 数；活跃数与 Fresh／Inherited 分项只统计运行中的 Actor。窗口隐藏节点时给出提示。
-- 命令只读与停止：不发送消息、不 steer、不唤醒；消息仍由 `msg_write` 与 IPC 提供。
+- 列表与停止只读：不发送消息、不 steer、不唤醒；消息仍由 `msg_write` 与 IPC 提供。`sessions connect` 只向本会话追加一条上下文消息，不唤醒任何 Actor 或 session。
 - 命令与 Root 同代次：退役或切换期间以 `runtime_transitioning` 拒绝。列表在异步读取后重新核对根代次，根已切换时不渲染旧快照。停止请求不等于终态，Job 仍占 Actor 与名额，直到原生执行退出。
 - 交互式详情尚未实现。
 
@@ -238,10 +241,12 @@ Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）�
 
 跨 session 消息用于让一个 Pi session 的 Main 联系同一用户、同一 Socket 根下另一个存活 session 的 Main。它不建立跨主机调度，也不自动广播到其他 session。
 
-**平台范围：当前只实现 POSIX（Linux、macOS）。Windows 明确不支持**：不发布 session 记录，`/subagent sessions` 提示不可用，跨 session 发送以 `unsupported_platform` 拒绝。Windows 命名管道的寻址与端点归属校验尚未实现与验收。
+**平台范围**：Unix Socket 与 Windows Named Pipe 共用同一份目录、记录和 Main 与 Main 之间的准入。地址属于哪个 session 的端点命名空间由 IPC 平台适配层判定：Unix 是 session 目录下的 socket 文件，Windows 是以该目录派生的管道名前缀；业务层不把管道地址当文件系统路径推断。文件系统路径等价（目录记录的 `socketDir` 自洽校验、storage 自有文件与 copy-on-write 的父文件比对）按平台原生语义比较：Windows 视为大小写不敏感，POSIX 保持大小写敏感。
 
 - **地址**：目标 session 的受管 `Main` Socket 路径，与本地 `msg_write` 使用同一地址空间，没有第二套 scheme。`/subagent sessions` 直接显示该路径；外部编排者读取目录记录的 `socketDir` 推导同一路径。指向其他 session 非 `Main` 端点的路径以 `invalid_target` 拒绝，因此拿到任意子 Actor Socket 也不能越界。
-- **发现**：`/subagent sessions` 是用户侧发现入口；模型侧不注册 session 工具，外部编排者直接读取同一份共享目录：`socketRoot/sessions/<uid>.json` 由各 session 在 `initialize` 后发布，`retire` 时按记录归属删除；读取时按 `pid` 存活与记录自洽过滤，畸形或残留记录被忽略且不由他人删除。记录只含稳定 uid、session id、原生 session name、工作目录、`pid` 与起始时间，不含拓扑或对话内容。`subagent_list` 仍只描述当前根。
+- **发现**：`/subagent sessions` 是用户侧发现入口；模型侧不注册 session 工具，外部编排者直接读取同一份共享目录：`socketRoot/sessions/<uid>.json` 由各 session 在 `initialize` 后发布，`retire` 时按记录归属删除；读取时按 `pid` 存活与记录自洽过滤，畸形或残留记录被忽略且不由他人删除。记录只含稳定 uid（8 位十六进制）、session id、原生 session name、工作目录、`pid` 与起始时间，不含拓扑或对话内容。`pid` 只在本机解释，因此 `socketRoot` 必须保持本机私有；跨机共享 durable session 历史不受此限制。`subagent_list` 仍只描述当前根。
+- **补全**：`/subagent sessions con` 补全为 `sessions connect `；随后按实时存活目录补全目标 uid，候选显示会话名称、工作目录与完整 session id。可按 uid／完整 session id 的前缀或名称筛选；排除当前会话，不产生授权、激活或消息写入。选中后执行 connect 时仍重新校验目标是否存活。
+- **连接**：`/subagent sessions connect <uid|sessionId>` 由用户指定一个存活 session，参数是列表中显示的完整 uid 或完整原生 session id，不接受序号或别名。命令把该 session 的 uid、原生 session id、原生名称、工作目录与 Main 地址作为一条原生自定义上下文消息追加到当前会话：不触发新一轮，忙碌时按 SDK 队列语义在当前轮结束时落盘、下一轮可见；不改写提示词头部、不复制对方 transcript、不注入整份目录、不建立持久连接状态。同一次 connect 经用户启用路径（与 `/capability enable` 相同）启用 `msg_write`；`msg_write` 被列入 `manualTools` 时，本次 connect 就是显式授权，不需要额外命令、确认或握手。目标未知或已退出以 `session_not_found` 报告，指向自身以 `invalid_target` 拒绝；重复 connect 允许再次追加当前信息，授权记录保持幂等。connect 只写本会话，不发送消息、不唤醒对方。
 - **发送**：`msg_write` 接受上述路径，且只有 `Main` 可发送。宿主先按本 root 的受管端点解析：属于本 session 的路径走原有本地写入（`Main` 写给自己的 `Main` 由 Runtime 的 self-send 规则拒绝）；不属于本 root 时，只有目标为已发布 session 的 `Main` 才按跨 session 写入。线上帧只有 `from` 与 `content`，`from` 由发送宿主绑定为 `<session-uid>:Main`，模型不提供发送者或独立 session 字段。
 - **接收**：目标根只在其 `Main` 端点接受复合身份的帧。IPC 边界解析 `from` 的 `<uid>:Main`，要求该 uid 是当前存活的已发布 session；发送者自身的 uid 映射为本地 `Main`，交由 Runtime 的 self-send 规则拒绝。通过后把复合身份映射为 Runtime 的外部发送者描述（session id、完整 `from`、回复地址），不把复合身份当作本地 Actor ID。
 - **呈现**：接收方消息沿用统一的 `Message from` 标签，跨 session 的 `from` 显示完整身份 `<uid>:Main`；回复提示使用发送方真实的受管 `Main` Socket 地址，不再出现 `session:` 协议。普通消息不显示发送方的执行状态，只有终态通知带状态与轮次。
@@ -252,15 +257,15 @@ Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）�
 
 session 生命周期（创建、恢复、停止、轮询、定时检查）与 `/session`、`/cron` 命令由独立的编排项目承担。本仓库不注册 `session_*` 工具，也不提供进程托管或管理协议；这里只保证外部编排所需的稳定接口。
 
-- **发现**：`<socketRoot>/sessions/<uid>.json`（版本化记录）。字段为 `version`、`sessionId`、`uid`、`socketDir`、`pid`、`cwd`、`name`、`startedAt`。记录由 session 自己发布、按归属删除；读取方按 `pid` 存活与记录自洽过滤，畸形或残留记录被忽略且不由他人删除。`uid` 用于寻址与判同，`sessionId` 是原生身份，`name` 是原生显示名。
-- **寻址**：`<socketRoot>/<uid>/Main.sock`（POSIX）。没有 `session:` 方案；其他 Actor 端点不是跨 session 目标。
+- **发现**：`<socketRoot>/sessions/<uid>.json`（版本化记录）。字段为 `version`、`sessionId`、`uid`、`socketDir`、`pid`、`cwd`、`name`、`startedAt`。记录由 session 自己发布、按归属删除；读取方按 `pid` 存活与记录自洽过滤，畸形或残留记录被忽略且不由他人删除。`uid` 是 8 位十六进制的派生地址，用于寻址与判同；`sessionId` 是原生身份，`name` 是原生显示名。
+- **寻址**：`<socketRoot>/<uid>/Main.sock`（Unix）或该目录派生的 `\\.\pipe\pi-harness-<8 位命名空间>-Main.sock`（Windows）。没有 `session:` 方案；其他 Actor 端点不是跨 session 目标。
 - **消息**：向目标 Main 端点写单帧 NDJSON `{"from":"<sender-uid>:Main","content":"..."}`；接收端在 IPC 边界校验发送者 uid 是当前存活的已发布 session，并映射为 Runtime 的外部发送者描述。只有 Main 参与跨 session；自发、广播与非 Main 端点拒绝；不确定交接不重发。
 - **编排者身份**：外部编排者必须作为已发布的 Pi session 参与（通过 SDK 或 CLI 运行），复用上述发布、寻址与收发。本仓库不为非 session 的外部进程新增客户端身份、第二套接收端点或管理通道。
 - **名称**：原生 session name；`/name` 通过 `session_info_changed` 同步到目录，其他 session 与人类界面读取同一份名称。
 - **平台与信任**：仅 POSIX；同一用户本机；记录与 `from` 都是声明，不是认证。
 - **非目标**：进程创建/停止/托管、stop/poll 的宿主请求协议、cron、管理范围、`/session`/`/cron`、transcript 读取与 `session_*` 工具。
 
-`/subagent sessions` 只是只读发现视图，不是管理入口。
+`/subagent sessions` 是只读发现视图；`connect` 只把选中 session 的联系信息写入本会话上下文并启用 `msg_write`，不向对方发送消息，也不构成管理入口。
 
 ### 思考强度
 
@@ -336,6 +341,12 @@ Harness 为没有专用结果渲染器的工具提供统一预览，包括 Capab
 当前面向 Agent 的 `subagent_list` 是模型接口，不能替代面向用户的查看与控制入口。
 
 面向用户的查看界面形式、可见信息范围，以及用户是否能停止或发送消息，处于延期设计状态。
+
+## 异步 Shell
+
+主机可安装 `pi-job`，由原有 Bash／PowerShell 工具运行终端任务（POSIX tmux，Windows psmux 3.4.0+）。`create --wait` 在指定窗口内等待，否则返回任务 ID；`poll` 默认返回新增输出；`send` 从 stdin 接收多行文字，`key` 发送显式按键。运行上限由独立的 `--timeout` 控制。完整命令、输出和安装契约见[异步 Shell](async-shell.md)。
+
+注册和完成事件回到发起调用的 Actor 端点。Main 和子会话在每次 Shell 启动时获得各自的 `PI_AGENT_ID`、`PI_AGENT_SOCKET` 和执行代次标识；事件不占用 Agent 消息发送者身份，也不产生消息工具授权。未完成异步 Shell 与直接子节点共同保留 Subagent 当前 Job；完成事件先入队，后释放等待。
 
 ## 提示词与架构
 

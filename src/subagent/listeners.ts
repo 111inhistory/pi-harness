@@ -27,6 +27,7 @@ export interface ListenerRegistryOptions {
   actors(): readonly ListenerActor[];
   isAccepting(): boolean;
   send(command: { from: string; to: string; content: string; external?: ExternalSender }): Promise<MessageReceipt | BroadcastReceipt>;
+  receiveShell?(actorId: string, frame: unknown): Promise<void>;
   onError(error: Error): void;
 }
 
@@ -105,6 +106,14 @@ export class AgentListeners {
           root: this.#options.baseSocketDir,
           onError: (error: Error) => this.#options.onError(error),
           onMessage: async (input: unknown) => {
+            if (this.#closed) throw new SubagentError('runtime_closed', 'This IPC root is closed.');
+            if (input !== null && typeof input === 'object' && 'kind' in input && input.kind === 'async-shell') {
+              if (destination.broadcast || this.#options.receiveShell === undefined) {
+                throw new SubagentError('invalid_target', 'Async shell events require their owning Agent endpoint.');
+              }
+              await this.#options.receiveShell(destination.owner, input);
+              return;
+            }
             if (this.#closed || !this.#options.isAccepting()) throw new SubagentError('runtime_closed', 'This IPC root is quiescing.');
             const message = validateInboundFrame(input);
             // One `from` field carries both identities: a plain local Actor ID,

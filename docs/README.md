@@ -9,6 +9,7 @@
 | [项目范围](00-scope.md) | 核心目标、主线边界和未交付功能 |
 | [接口契约](interface-contract.md) | Capability、Subagent、消息与结果的公开行为 |
 | [Harness 参数配置](harness-configuration.md) | 全局与受信项目配置、Budget、检索参数和提示词定制 |
+| [异步 Shell](async-shell.md) | POSIX tmux／Windows psmux 任务、增量输出、终端输入和结果归属 |
 | [当前架构](architecture.md) | 模块职责、生命周期、资源归属和写入边界 |
 | [存储 v2](subagent-storage.md) | 根分支事件、原生子会话、恢复和视图 |
 | [能力提示词记忆](capability-prompt-memory.md) | 规范记录、请求投影和权限过滤 |

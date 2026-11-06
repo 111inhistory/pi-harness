@@ -13,6 +13,7 @@ import fs from "node:fs";
 import net from "node:net";
 import { defaultSocketRoot, effectiveUserId } from "./address.ts";
 import path from "node:path";
+import { windowsPrivateDirectory } from "./private-directory-windows.ts";
 
 export type EndpointKind = "missing" | "socket" | "symlink" | "file" | "directory" | "other";
 
@@ -116,8 +117,9 @@ export function inspectEndpoint(address: string): EndpointInspection {
   }
 }
 
-function privateDirectory(stats: fs.Stats, userId: number | null): boolean {
+function privateDirectory(directory: string, stats: fs.Stats, userId: number | null): boolean {
   if (!stats.isDirectory() || stats.isSymbolicLink()) return false;
+  if (process.platform === "win32") return windowsPrivateDirectory(directory);
   if (userId !== null && stats.uid !== userId) return false;
   return (stats.mode & 0o077) === 0;
 }
@@ -142,7 +144,7 @@ export function ensurePrivateDirectory(directory: string, userId: number | null 
   if (!stats.isDirectory()) {
     throw new IpcOwnershipError("ipc_directory_not_directory", `IPC parent is not a directory: ${directory}`, { path: directory });
   }
-  if (!privateDirectory(stats, userId)) {
+  if (!privateDirectory(directory, stats, userId)) {
     throw new IpcOwnershipError(
       "ipc_directory_insecure",
       `IPC directory is not private to the effective user: ${directory}`,
@@ -179,7 +181,7 @@ export function ensurePrivateSocketRoot(
   if (!stats.isDirectory()) {
     throw new IpcOwnershipError("ipc_root_not_directory", `IPC root is not a directory: ${resolved}`, { root: resolved });
   }
-  if (!privateDirectory(stats, userId)) {
+  if (!privateDirectory(resolved, stats, userId)) {
     throw new IpcOwnershipError(
       "ipc_root_insecure",
       `IPC root is not private to the effective user: ${resolved}`,
@@ -199,14 +201,24 @@ export function ensurePrivateSocketRoot(
   };
 }
 
+/**
+ * Strict containment inside one Unix endpoint directory.
+ *
+ * Unix endpoints are filesystem entries, so this is a pure POSIX path
+ * calculation: it keeps POSIX case sensitivity even when the caller runs on a
+ * host whose own path rules are case-insensitive. Windows endpoints are kernel
+ * pipe names and never take this route.
+ */
 function insidePath(base: string, value: string): boolean {
-  const relative = path.relative(base, value);
-  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  const resolvedBase = path.posix.resolve(base);
+  const resolvedValue = path.posix.resolve(value);
+  const relative = path.posix.relative(resolvedBase, resolvedValue);
+  return relative !== "" && relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative);
 }
 
-/** True when an endpoint belongs to the configured/default managed namespace. */
-export function endpointInsideRoot(address: string, root: string = defaultSocketRoot()): boolean {
-  return insidePath(path.resolve(root), path.resolve(address));
+/** True when a Unix endpoint is strictly inside one endpoint directory. */
+export function endpointInsideDirectory(address: string, directory: string): boolean {
+  return insidePath(directory, address);
 }
 
 export type EndpointProbe = "active" | "refused" | "missing" | "unknown";
@@ -269,7 +281,7 @@ export async function prepareEndpoint({
   // A managed endpoint nested under the configured/default namespace root
   // validates that root itself first. An arbitrary external socket outside the
   // managed namespace keeps the previous leaf-only ownership rules.
-  if (endpointInsideRoot(address, root)) ensurePrivateSocketRoot(root, userId);
+  if (endpointInsideDirectory(address, root)) ensurePrivateSocketRoot(root, userId);
   ensurePrivateDirectory(path.dirname(address), userId);
   const before = inspectEndpoint(address);
   if (before.kind === "missing") {
@@ -397,7 +409,16 @@ export function createOwnedServer({
     try {
       lease = await prepareEndpoint({ address, namespace: isNamespace, root, userId, probeTimeoutMs });
       if (lease.namespace) {
-        await bind(server, address);
+        try {
+          await bind(server, address);
+        } catch (error) {
+          // The kernel namespace is the owner here: an already bound name is the
+          // same refusal a live Unix endpoint produces, so callers see one code.
+          if (errorCode(error) === "EADDRINUSE") {
+            throw new IpcOwnershipError("ipc_endpoint_in_use", `Endpoint is already in use: ${address}`, { path: address });
+          }
+          throw error;
+        }
       } else {
         // libuv unlinks the exact path passed to listen() when the server
         // closes. Bind a short private path in the same directory, then rename
@@ -443,10 +464,18 @@ export function createOwnedServer({
         // the temporary bind name internally for its own close-time unlink.
         (server as unknown as { _pipeName?: string })._pipeName = address;
       }
-      const identity = inspectEndpoint(address);
-      boundLease = identity.kind === "socket"
-        ? { ...lease, identity: identity.identity }
-        : lease;
+      if (lease.namespace) {
+        // A kernel-namespace endpoint owns no file identity: nothing is recorded
+        // and nothing is probed. `fs.lstat` on an active Windows Named Pipe opens
+        // a client handle to the endpoint this server just bound, which accepts as
+        // a phantom connection that never carries a frame.
+        boundLease = lease;
+      } else {
+        const identity = inspectEndpoint(address);
+        boundLease = identity.kind === "socket"
+          ? { ...lease, identity: identity.identity }
+          : lease;
+      }
       server.on("error", (error) => onError?.(error));
     } catch (error) {
       if (lease !== null && !lease.namespace) {

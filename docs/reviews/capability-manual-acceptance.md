@@ -4,6 +4,8 @@
 
 本页保存检查时的证据与运行方式，不描述当前产品契约。当前行为见[接口契约](../interface-contract.md)与[Harness 参数配置](../harness-configuration.md)。
 
+旧 `enable` 实现、选择器及在线启用脚本已移除；下文的命令、脚本和成功记录仅属当时基线，不能作为当前或重写后实现的验收结论。重写范围与验证要求见[交接计划](capability-enable-rewrite-plan.md)。
+
 ## 1. 完整 SDK 离线验收
 
 测试文件：`test/typed/capability-manual-sdk.test.ts`。它不是 handler 装配测试：用例通过真实 `createAgentSession` 建立会话，经 `DefaultResourceLoader` 加载真实 harness 装配，`capability.manualTools` 从临时 agent 目录的 `harness.json` 读取，MCP 服务是 `test-support/synthetic-mcp-server.mjs` 的**真实 stdio 子进程**（换行分隔 JSON-RPC 2.0），只有模型是离线脚本。

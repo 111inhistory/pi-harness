@@ -4,6 +4,7 @@ import { ModelRuntime, SessionManager, type ExtensionContext } from '@earendil-w
 import { fauxProvider, InMemoryCredentialStore, type AssistantMessage, type Api, type Model } from '@earendil-works/pi-ai';
 import { captureInheritedContext } from '../../src/inherited-context.ts';
 import { physicalModelForCall } from '../../src/subagent/model-runtime.ts';
+import { recordSessionCacheIdentity, CACHE_IDENTITY_CUSTOM_TYPE } from '../../src/session-cache-runtime.ts';
 
 type CaptureContext = Parameters<typeof captureInheritedContext>[1];
 const pi = {getActiveTools:()=>['read','capability']};
@@ -74,4 +75,31 @@ test('virtual capture pins the producing physical model before dropping its spaw
   assert.equal(physicalModelForCall(ctx,'spawn/1')?.id,physical.id,'nested tool calls resolve their producing outer call');
   assert.throws(()=>captureInheritedContext(pi,ctx,'missing'),/physical model.*unavailable/);
   assert.equal(ctx.model?.api,'pi-virtual','parent selection remains untouched');
+});
+
+test('captureInheritedContext captures branch cacheKey and retains harness-cache-identity entries', () => {
+  const manager = SessionManager.inMemory('/tmp/fixture');
+  manager.appendMessage({role:'user',content:'root task',timestamp:1});
+
+  // 1. Default when no entry on branch
+  const defaultSnapshot = captureInheritedContext(pi, context(manager));
+  assert.equal(defaultSnapshot.cacheKey, manager.getSessionId());
+
+  // 2. Explicit cache key recorded on branch
+  recordSessionCacheIdentity(manager, 'explicit-parent-cache-key');
+  const explicitSnapshot = captureInheritedContext(pi, context(manager));
+  assert.equal(explicitSnapshot.cacheKey, 'explicit-parent-cache-key');
+
+  // Verify that the custom entry survived in snapshot.entries for nested branch restoration
+  const customInEntries = explicitSnapshot.entries.find(
+    (entry): entry is Extract<(typeof explicitSnapshot.entries)[number], { type: 'custom' }> =>
+      entry.type === 'custom' && entry.customType === CACHE_IDENTITY_CUSTOM_TYPE,
+  );
+  assert.ok(customInEntries, 'harness-cache-identity entry must be preserved in snapshot.entries');
+  assert.deepEqual(customInEntries.data, { key: 'explicit-parent-cache-key' });
+
+  // 3. Disabled cache (key = null)
+  recordSessionCacheIdentity(manager, null);
+  const disabledSnapshot = captureInheritedContext(pi, context(manager));
+  assert.equal(disabledSnapshot.cacheKey, null);
 });

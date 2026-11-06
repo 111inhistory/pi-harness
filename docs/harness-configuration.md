@@ -110,7 +110,7 @@ Fresh 与 Inherited 直接子节点在同一 Subagent 树内使用独立的父�
 
 `capability.manualTools` 默认为空数组，列出只能由用户启用的工具名。每项是精确工具名，或以 `*` 结尾的名字前缀（如 `mcp__prod__*`）。后一层配置整体替换前一层，不做合并。
 
-名单内的工具对模型侧发现完全不可见：不进入检索候选，发现路径不能激活（拒绝原因 `manual_only`），子会话也不继承，即使 Main 已启用。唯一启用路径是 `/capability enable`（无参数时打开原生选择列表，也可直接列出名字）；该命令写入 `manual` 分类记录，执行权仍按每次请求的当前资格过滤。
+名单内的工具对模型侧发现完全不可见：不进入检索候选，发现路径不能激活（拒绝原因 `manual_only`），子会话也不继承，即使 Main 已授权。用户通过 `/capability enable` 授权（无参数打开终端原生选择列表，也可直接给出目标）；`/subagent sessions connect` 同样通过用户启用路径为 `msg_write` 授权。授权写入 `manual` 分类记录，执行权仍按每次请求的当前资格过滤。
 
 授权看记录，不看激活状态：名单内工具因 `defaultActive`、历史恢复或其他扩展而激活时，`before_agent_start` 仍会把它从声明中移除，`tool_call` 与 Codemode 准入也会拒绝，直到用户启用。已启用的 manual MCP 工具参与原生 MCP 准入与资源读取资格。名单解析只按名字匹配，不读取工具描述、来源或 MCP 服务器名。
 

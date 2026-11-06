@@ -11,8 +11,9 @@ canonical `capability-discovery` custom entry appended to the branch through
 ## Durable branch storage
 
 Every successful or partial discovery writes one `capability-discovery` entry
-to the session branch. User-driven enablement writes the same entry shape with
-the `manual` category and no tool call anchor.
+to the session branch. User authorization records use the same entry shape with
+the `manual` category and no tool call anchor; `/capability enable` writes them
+after the shared activation call reports the tool active.
 
 - Nested calls: When an outer tool calls `ctx.executeTool("capability", ...)`,
   the inner discovery record writes directly to the branch. The record survives
@@ -37,21 +38,23 @@ the `manual` category and no tool call anchor.
   constraints or associations from Skill prose. A Skill ref is its entry path;
   the model uses native file read to understand the guidance. The host installs
   no resource protocol router or file tool override.
-- Manual entries: `/capability enable` records the tools it actually activated
-  under the `manual` category. A manual record carries no tool call anchor, so
-  the projection folds it into the leading checkpoint. Manual and discovered
-  entries share one ref namespace and the same permission check.
+- Manual entries are branch authority, not request state. A `manual` record is
+  never projected: the tool it authorizes is declared by the native tool list,
+  so a `<capabilities>` entry would repeat the interface and change the leading
+  system prompt. Manual and discovered entries share one ref namespace and the
+  same permission check, but only discovery contributes section text.
+  See [the cache boundary](reviews/capability-enable-cache.md).
 - Manual-only tools: `capability.manualTools` names tools that discovery must not
   see. They are excluded from the eligible catalog used by search and by
   discovery activation, and the scope view drops them from every node below the
-  root, so a child cannot inherit one. The user command opts back in with
-  `includeManual`; execution then follows the normal active-tool guard.
+  root, so a child cannot inherit one. Catalog browsing includes manual tools
+  without granting authorization; execution follows the normal active-tool guard.
 - Manual authorization: the `manual` record is the authority, not the active
   set. `before_agent_start` removes a manual tool that is active without a record
   (`defaultActive`, a restored transcript, another extension), `tool_call`
-  refuses it, and Codemode admission applies the same predicate. The request
-  projection resolves the execution view, so an enabled manual entry appears in
-  Main's section and is still filtered out for a child scope.
+  refuses it, and Codemode admission applies the same predicate. A receipt of a
+  cross-session message activates `msg_write` under the same rules but writes no
+  record, so a receipt never manufactures a user grant.
 - Shared guidance: retained across discoveries, even when a selection adds no tools.
 - Remote coverage: discovery searches local resources only.
   Coverage explicitly marks remote search as `not_searched`. Remote candidates
@@ -99,14 +102,23 @@ sessions. An isolated retrieval session applies the same projection to its
 inherited snapshot.
 
 The section is model-facing request state; `ctx.getSystemPrompt()` and the raw
-session checkpoint do not contain this projection.
+session checkpoint do not contain this projection. A user enablement adds no
+Capability memory section: its authorization remains in branch records. Native
+tool declarations communicate the interface. Subagent usage guidance is a
+separate projection: stable namespace guidance follows the first member's
+declaration, and create/message-specific guidance follows the corresponding
+first declaration. Explicit system section markers prevent duplicates without
+placing the guidance in tool descriptions or rewriting owned tools/rules
+metadata. On compaction, Pi's native tool checkpoint supplies the new declaration
+anchor; the guidance projection is rebuilt without a second persistence format.
 
-On compatible Responses models, native system section patches remain at their
-historical positions to preserve the wire prefix. Providers without
-mid-conversation system-message support fold sections through Pi's normal
-conversion path. This feature prevents an additional cache invalidation during
-normal discovery updates, but does not alter cache invalidation caused by
-compaction itself.
+Compatible Responses and Anthropic models retain system updates at their
+historical positions through Pi's native serializers. Chat Completions and other
+providers keep native conversion, including system-message folding where
+required; the shared guidance projection still supplies the rules to them.
+Third-party tools carrying prompt snippets or guidelines can continue to cause
+Pi-owned tools/rules patches. Prefix preservation does not guarantee a cache
+hit, and compaction itself changes the checkpoint prefix.
 
 ## Unresolved SDK allowlist discrepancy
 
@@ -147,3 +159,15 @@ are in [known issues](known-issues.md#严格工具-allowlist-下的激活记忆�
   allowlist case where activation fails after the host writes the selection record.
 - `test/typed/capability-main-default-activation.test.ts`: checks that Main starts
   without `msg_write` and Capability activates the Subagent namespace.
+- `test/typed/capability-enable.test.ts`: checks command parsing, live-registry
+  target resolution, activate-then-record order, per-target refusals, idempotence,
+  record-write failure reporting, the picker and its cancellation, and completion.
+- `test/typed/capability-provider-prefix.test.ts`: checks at the provider
+  boundary that an enable appends instead of rewriting, that the projection
+  contributes nothing, and measures Pi's own prompt-section patch.
+- `test/typed/capability-mcp-reconnect.test.ts`: checks that a tool registered by
+  native `/mcp reconnect` is browsable and enableable, that a withdrawn
+  registration is refused, and that `manualTools` still governs new registrations.
+- `test/typed/cross-session-reply-activation.test.ts`: checks that a receipt
+  activates only `msg_write`, that the reply is delivered, that no grant is
+  written, and that repeated receipts are idempotent.

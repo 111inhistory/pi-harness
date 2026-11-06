@@ -10,6 +10,7 @@ import {
 import { AssistantMessageEventStream, getSystemMessageText, getCurrentTools } from "@earendil-works/pi-ai";
 import subagentExtension from "../src/subagent/extension.ts";
 import { installResultRendering } from "../src/result-rendering.ts";
+import { promptString, promptStrings } from "../src/prompt-text.ts";
 import capabilityExtension from "../extensions/capability.ts";
 import { deriveSessionUid, getAgentSocketPath, getBroadcastSocketPath } from "../src/ipc/socket.ts";
 import { resolveTranscriptTools } from "../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js";
@@ -24,6 +25,7 @@ import {
   runExternalSocketScenario, runListenerCacheScenario, runPeerSenderScenario,
   runRestoreInvalidScenario, runUpstreamParentSteerScenario,
 } from "../test/typed/support/subagent-sdk-scenarios.ts";
+import { runAsyncShellScenario } from "../test/typed/support/async-shell-sdk-scenario.ts";
 import { runHierarchicalBroadcastScenario } from "../test/typed/support/broadcast-parent-hold-scenario.ts";
 import { runUpstreamParentHoldScenario } from "../test/typed/support/upstream-parent-hold-scenario.ts";
 import {
@@ -255,7 +257,9 @@ const fixture = {
 };
 
 try {
-  if (scenario === "listener-cache") {
+  if (scenario === 'async-shell' || scenario === 'async-shell-powershell') {
+    await runAsyncShellScenario(fixture, scenario === 'async-shell-powershell' ? 'powershell' : 'bash');
+  } else if (scenario === "listener-cache") {
     await runListenerCacheScenario(fixture);
   } else if (scenario === "reviewer-sol") {
     controls.classify = (context) => {
@@ -318,8 +322,8 @@ try {
       const tool = session.getToolDefinition(name);
       assert.equal(tool.defaultActive, false);
       assert.equal(tool.namespace.name, "subagent");
-      assert.ok(tool.promptSnippet?.length > 0);
-      assert.ok(tool.promptGuidelines?.length > 0);
+      assert.equal(tool.promptSnippet, undefined);
+      assert.equal(tool.promptGuidelines, undefined);
     }
     assert.doesNotMatch(session.systemPrompt, /subagent_create|one JSON object per line/);
     const nativeWrite = createWriteToolDefinition(cwd);
@@ -327,12 +331,6 @@ try {
       assert.deepEqual(session.getToolDefinition("write")[field], nativeWrite[field]);
     }
     session.setActiveToolsByName([...names, ...subagents]);
-    const modelPrompt = session.systemPrompt;
-    for (const name of subagents) {
-      for (const guideline of session.getToolDefinition(name).promptGuidelines) {
-        assert.ok(modelPrompt.includes(guideline), `${name}'s registered guidance reaches the model after activation`);
-      }
-    }
     for (const name of ["create", "list", "stop", "task", "hub", "wait"]) assert.equal(names.includes(name), false);
     await assert.rejects(call("subagent_create", { tasks: [{ task: "valid" }, { task: "invalid", model: "override" }] }));
     assert.deepEqual(treeNodes((await call("subagent_list", {})).details).map((agent) => agent.id), ["Main"]);
@@ -370,6 +368,11 @@ try {
     const childPrompt = chats[0].context.messages.filter((message) => message.role === "system").map(getSystemMessageText).join("\n");
     assert.ok(childPrompt.includes(first.id), "the child receives its actual actor identity");
     assert.ok(childPrompt.includes(getAgentSocketPath("Main", sessionSocketDir)), "the child receives its real parent endpoint");
+    assert.ok(childPrompt.includes(promptString("subagent-tools.json", "instructions")), "models outside Responses/Anthropic still receive namespace usage rules");
+    assert.ok(childPrompt.includes(promptString("subagent-tools.json", "create", "guideline")), "the child receives the create-specific rule with its declared tool");
+    for (const rule of promptStrings("subagent-tools.json", "msg_write", "guidelines")) {
+      assert.ok(childPrompt.includes(rule), "messaging rules survive the metadata migration on other APIs");
+    }
     assert.equal("budget" in (await stopped(first.id)), false);
   } else if (scenario === "external-socket") {
     await runExternalSocketScenario(fixture);

@@ -28,6 +28,7 @@ import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-age
 import { capabilityAllowsTool, capabilityAvailableTools } from "../capability/scope.ts";
 import { getAgentSocketPath } from "../ipc/socket.ts";
 import { installModelCallBudget } from "./pi-job-budget.ts";
+import { resolveSessionCacheKey } from "../session-cache-runtime.ts";
 import { childContext, childPromptBlocks, composeAssignment, continuationControlPrompt } from './prompt.ts';
 import { readTranscript } from "./view.ts";
 import { deliveryEntryFor, deliveryMessage, peerDeliveryEntry } from "./delivery.ts";
@@ -404,6 +405,11 @@ export class NativeJobRunner {
         deps.actors.retain(request.agentId, descriptor);
       };
       retain();
+      const inheritedCacheKey = snapshot !== null
+        ? (typeof snapshot["cacheKey"] === "string" || snapshot["cacheKey"] === null
+            ? (snapshot["cacheKey"] as string | null)
+            : resolveSessionCacheKey(manager))
+        : undefined;
       // The native manager now owns the isolated in-memory seed. Keep no second
       // seed in the Job registry.
       if (snapshot !== null) delete snapshot["entries"];
@@ -439,6 +445,7 @@ export class NativeJobRunner {
           excludedTools: finalExcludedTools,
         },
         signal: live.abort.signal,
+        cacheKey: inheritedCacheKey,
       });
       // Creation owns the SDK Session immediately: the returned execution handle
       // is registered here, before the next Budget check can throw.
@@ -542,7 +549,7 @@ export class NativeJobRunner {
           throwIfBudgetFailed(request.budget);
           if (!live.cancelled) {
             assertRunCompleted(jobMessages());
-            await drainLiveMessages(live, manager, request, deps.children);
+            await drainLiveMessages(live, manager, request, deps.work);
             throwIfBudgetFailed(request.budget);
           }
         } catch (error) {
@@ -599,14 +606,14 @@ export class NativeJobRunner {
  * parked text to this loop exactly once, so nothing is replayed.
  *
  * The loop first waits for every steer that is still in flight, then checks
- * sources and only closes when both queues and the direct-child set are empty.
- * A parent waiting for children keeps this Job and session, pauses active-time
+ * sources and only closes when both queues and the owned work set are empty.
+ * A parent waiting for children or shell tasks keeps this Job and session, pauses active-time
  * accounting, and wakes on new input, final-child settlement or cancellation.
  * A hand-over therefore lands inside this Job or is refused by the closed flag.
  */
 async function drainLiveMessages(
   live: LiveJob, sessionManager: SessionManager, request: JobRequest,
-  children: NativeJobRunnerDeps['children'],
+  work: NativeJobRunnerDeps['work'],
 ): Promise<void> {
   const session = live.session;
   if (session === null) return;
@@ -617,8 +624,8 @@ async function drainLiveMessages(
     const parked = takeParkedMessages(session);
     const buffered = live.pending.splice(0);
     if (parked.length === 0 && buffered.length === 0) {
-      if (children.hasActiveChildren(live.agentId)) {
-        await waitForChildren(live, request, children);
+      if (work.hasPending(live.agentId)) {
+        await waitForWork(live, request, work);
         continue;
       }
       live.closed = true;
@@ -643,8 +650,8 @@ async function drainLiveMessages(
   }
 }
 
-async function waitForChildren(
-  live: LiveJob, request: JobRequest, children: NativeJobRunnerDeps['children'],
+async function waitForWork(
+  live: LiveJob, request: JobRequest, work: NativeJobRunnerDeps['work'],
 ): Promise<void> {
   // Install the signal before pausing; pause can observe expiry and cancel the run.
   const wake = new Promise<void>(resolve => { live.wake = resolve; });
@@ -652,7 +659,7 @@ async function waitForChildren(
   try {
     request.pauseActive();
     paused = true;
-    if (live.cancelled || live.pending.length > 0 || !children.hasActiveChildren(live.agentId)) live.wake?.();
+    if (live.cancelled || live.pending.length > 0 || !work.hasPending(live.agentId)) live.wake?.();
     await wake;
   } finally {
     live.wake = null;

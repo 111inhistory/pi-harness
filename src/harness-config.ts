@@ -36,7 +36,7 @@ export interface HarnessConfig {
     /**
      * Tool name patterns (exact, or a trailing `*` prefix) that only the user
      * may enable. They are invisible to model discovery and never inherited by
-     * a subagent session; `/capability enable` is the only activation path.
+     * a subagent session; explicit user authorization is required.
      */
     readonly manualTools: readonly string[];
     readonly budget: BudgetProfile;

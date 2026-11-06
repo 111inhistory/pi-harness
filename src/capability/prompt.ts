@@ -1,4 +1,16 @@
-/** Project durable discovery records into permission-filtered system sections. */
+/**
+ * Project durable discovery records into permission-filtered system sections.
+ *
+ * Only *discovery* is request state. A user enablement (`/capability enable`) is
+ * branch authority and never enters the model request: the tool it authorizes is
+ * declared by the native tool list, so projecting the authorization again would
+ * add nothing the model can use while changing the leading system prompt. That
+ * change is what Pi's conversion folds into the prompt head for every transport
+ * without mid-conversation system messages, and it would invalidate the whole
+ * cached prefix for a decision the declaration already communicates. Keeping
+ * authorization out of the request is therefore not an optimization: it is the
+ * only placement that cannot rewrite a prefix.
+ */
 import { discoveryRecords, type CapabilityHit, type DiscoveryMemory } from './discovery-record.ts';
 import { promptString } from '../prompt-text.ts';
 
@@ -19,8 +31,8 @@ export interface ProjectionMessage {
 }
 
 /** Groups that carry tools, so their entries answer to the live tool permissions. */
-const toolCategories: ReadonlySet<string> = new Set(['tools', 'mcp', 'manual']);
-const categories = ['tools', 'mcp', 'skills', 'guidance', 'manual'] as const;
+const toolCategories: ReadonlySet<string> = new Set(['tools', 'mcp']);
+const categories = ['tools', 'mcp', 'skills', 'guidance'] as const;
 interface SelectedHit extends CapabilityHit {
   ref: string;
   category: typeof categories[number];
@@ -30,6 +42,13 @@ type State = Map<string, SelectedHit>;
 function keep(value: CapabilityHit, keys: readonly string[]): CapabilityHit {
   return Object.fromEntries(keys.filter((key) => value[key] !== undefined).map((key) => [key, value[key]]));
 }
+
+/**
+ * Fields kept per hit. Discovery hits carry their prose because they are the only
+ * source the model has for a resource it has not selected; argument schemas stay
+ * in the native declarations and are never duplicated here.
+ */
+const HIT_TEXT_FIELDS = ['name', 'description', 'instructions', 'filePath'] as const;
 
 function selected(result: DiscoveryMemory, allowsTool: (name: string) => boolean): SelectedHit[] {
   const hits: SelectedHit[] = [];
@@ -43,7 +62,7 @@ function selected(result: DiscoveryMemory, allowsTool: (name: string) => boolean
       if (!members && tools && (hit.kind === 'tool' || hit.tool) && !allowed(hit)) continue;
       hits.push({
         category,
-        ...keep(hit, ['name', 'description', 'instructions', 'filePath']),
+        ...keep(hit, HIT_TEXT_FIELDS),
         ref: category === 'skills' && hit.filePath ? hit.filePath : hit.ref,
         ...(members ? { tools: members.filter(allowed).map((tool) => keep(tool, ['ref', 'name', 'description', 'exposure'])) } : {}),
         ...(!members && tools ? keep(hit, ['exposure', 'tool', 'server']) : {}),
@@ -86,6 +105,9 @@ export function capabilityPromptTranscript(
   const anchored = new Map<string, SelectedHit[]>();
   for (const record of discoveryRecords(branch)) {
     const hits = selected(record.result, allowsTool);
+    // A visible result anchors its own update immediately after it. Anything the
+    // model can no longer see (compacted, inherited, or a nested call whose outer
+    // tool dropped the details) folds into the leading checkpoint.
     if (record.toolCallId !== undefined && visible.has(record.toolCallId)) anchored.set(record.toolCallId, hits);
     else merge(baseline, hits);
   }

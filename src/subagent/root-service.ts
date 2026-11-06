@@ -1,4 +1,8 @@
 import path from 'node:path';
+import { AsyncShellHost } from '../async-shell/host.ts';
+import { installAsyncShellSurface } from '../async-shell/surface.ts';
+import { cancelTask } from '../async-shell/tmux.ts';
+import type { ShellResult } from '../async-shell/protocol.ts';
 import { existsSync } from 'node:fs';
 import { temporaryResultDirectory } from './temporary-results.ts';
 import { resultNeedsFile } from './result.ts';
@@ -14,13 +18,15 @@ import { createSubagentStore, EVENTS, SUBAGENT_SESSIONS_DIR, writeFileAtomic } f
 import { hasJobView, jobViewPaths, writeJobView, readTranscript } from './view.ts';
 import { routeSubagent } from './routing.ts';
 import { DEFAULT_SOCKET_DIR, deriveSessionUid, endpointKey, getAgentSocketPath } from '../ipc/socket.ts';
+import { ipc } from '../ipc/platform.ts';
 import {
-  assertCrossSessionSupported, crossSessionSupported, liveSessions, registerSession,
-  sendToSessionEndpoint, unregisterSession, updateSessionName,
+  liveSessions, registerSession,
+  sendToSessionEndpoint, sessionMainAddress, unregisterSession, updateSessionName,
   type LiveSession,
 } from './session-directory.ts';
 import { ensurePrivateSocketRoot } from '../ipc/platform.ts';
 import { activateToolNames } from '../capability/activation.ts';
+import { enableCapabilityTargets } from '../capability/enable.ts';
 import { setCapabilityParent, type CapabilityToolCatalog } from '../capability/scope.ts';
 import { ActorSessionStore } from './actor-sessions.ts';
 import { AgentListeners } from './listeners.ts';
@@ -52,6 +58,40 @@ interface RootServiceOptions {
 }
 
 type RootPhase = 'initializing' | 'open' | 'quiescing' | 'detached' | 'failed';
+
+/** The custom context message a user-issued connect appends to this session. */
+export const SESSION_CONTACT = 'subagent-session-contact';
+
+/** One peer session made reachable from this agent, with its grant outcome. */
+export interface SessionConnect {
+  readonly session: LiveSession;
+  /** The peer's managed `Main` address, as written into the contact message. */
+  readonly address: string;
+  /** Tools this connect made usable through the shared enable path. */
+  readonly enabled: readonly string[];
+  readonly alreadyEnabled: readonly string[];
+  /** Set when the branch record failed: the grant is not durable. */
+  readonly recordError: string | null;
+}
+
+/**
+ * The contact message itself: identity, working directory and reply address.
+ * It states that nothing was sent, so a later turn does not mistake the
+ * information for an already-open conversation.
+ */
+function contactMessage(session: LiveSession, address: string): string {
+  const name = session.name === null ? '(unnamed)' : session.name;
+  return [
+    'The user connected a live Pi session to this conversation.',
+    `- uid: ${session.uid}`,
+    `- session: ${session.sessionId}`,
+    `- name: ${name}`,
+    `- cwd: ${session.cwd}`,
+    `- Main address: ${address}`,
+    '',
+    'Use msg_write with that address to message this session. Nothing has been sent to it yet.',
+  ].join('\n');
+}
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const errorOf = (error: unknown): Error => error instanceof Error ? error : new Error(String(error));
 const resultText = (value: unknown): string | null => {
@@ -93,6 +133,7 @@ export class RootService implements ManagedWriteHost {
   readonly actors: ActorSessionStore;
   readonly runner: NativeJobRunner;
   readonly listeners: AgentListeners;
+  readonly shell: AsyncShellHost;
   readonly #delivery: NativeDeliveryRouter;
   readonly #store: ReturnType<typeof createSubagentStore<SessionManager>>;
   readonly #historyDir: string;
@@ -140,12 +181,20 @@ export class RootService implements ManagedWriteHost {
         appendAnchor: (data) => this.#append(EVENTS.anchor, data),
       },
     });
+    this.shell = new AsyncShellHost({
+      address: (actorId) => getAgentSocketPath(actorId, socketDir),
+      accepting: () => this.active,
+      wake: (actorId) => this.runner.wake(actorId),
+      deliver: (actorId, result) => this.#shellResult(actorId, result),
+      cancel: cancelTask,
+    });
     this.listeners = new AgentListeners({
       socketDir, baseSocketDir: socketRoot, sessionId: this.sessionId,
       maxDepth: this.#options.config.subagent.maxDepth,
       actors: () => this.runtime.list().agents,
       isAccepting: () => this.active,
       send: (command) => this.sendMessage(command),
+      receiveShell: (actorId, frame) => this.shell.receive(actorId, frame),
       onError: (error) => this.#report(error),
     });
     const sessions = createNativeSessionFactory({
@@ -153,17 +202,23 @@ export class RootService implements ManagedWriteHost {
       config: this.#options.config,
       modelRegistry: () => this.#registry,
       parentCapabilityScope: (id) => this.#parentScope(id),
-      installChildSurface: (api, scope) => installSessionSurface(api, async () => {
-        this.assertOperational();
-        return this;
-      }, {
-        callerId: scope.senderId,
-        depth: scope.depth,
-        allowInherited: scope.allowInherited,
-        cwd: scope.cwd,
-        maxDepth: scope.maxDepth,
-        capacityFor: () => this.#options.config.subagent,
-      }),
+      installChildSurface: (api, scope) => {
+        installAsyncShellSurface(api, async () => {
+          this.assertOperational();
+          return this.shell;
+        }, scope.senderId);
+        installSessionSurface(api, async () => {
+          this.assertOperational();
+          return this;
+        }, {
+          callerId: scope.senderId,
+          depth: scope.depth,
+          allowInherited: scope.allowInherited,
+          cwd: scope.cwd,
+          maxDepth: scope.maxDepth,
+          capacityFor: () => this.#options.config.subagent,
+        });
+      },
     });
     const owner = this;
     this.runner = new NativeJobRunner({
@@ -176,7 +231,7 @@ export class RootService implements ManagedWriteHost {
       models: { inherited: (model) => capturedModel(model, this.#registry) },
       routing: { route: (input) => this.#route(input) },
       tools: { catalog: () => options.api.getAllTools() },
-      children: { hasActiveChildren: (agentId) => this.runtime.hasActiveChildren(agentId) },
+      work: { hasPending: (agentId) => this.runtime.hasActiveChildren(agentId) || this.shell.hasPending(agentId) },
       notify: (message) => this.#report(new Error(message)),
     });
     this.runtime = createSubagentRuntime({
@@ -365,20 +420,52 @@ export class RootService implements ManagedWriteHost {
     return this.runtime.sendMessage(command);
   }
 
+  async #shellResult(actorId: string, result: ShellResult): Promise<void> {
+    const gate = this.#compaction;
+    if (gate !== null) await gate.promise;
+    this.assertOperational();
+    const message = {
+      customType: 'async-shell-result',
+      content: JSON.stringify(result),
+      display: true,
+      details: { source: 'host', result },
+    };
+    if (actorId === 'Main') {
+      await this.#options.api.sendMessage(message, { triggerTurn: true, deliverAs: 'steer' });
+      return;
+    }
+    const job = this.runtime.jobs().jobs.find(item => item.agentId === actorId && item.status === 'running');
+    // Cancellation may already have closed input before surface shutdown
+    // revokes the lease. Keep that result in task logs; never revive a cancelled
+    // Actor just to consume its command's terminal event.
+    if (job === undefined) throw new SubagentError('job_closed', 'The async shell owner no longer has a live Job.');
+    try {
+      const outcome = await this.runner.handoffCustom(job.jobId, { from: 'async-shell', ...message });
+      if (!outcome.accepted) throw new SubagentError('job_closed', 'The async shell owner no longer accepts input.');
+    } catch (error) {
+      // A failed handoff may already be queued. Stop this Job and report the
+      // failure; never replay the event or complete from its old waiting text.
+      this.runtime.cancelJob(job.jobId);
+      throw error;
+    }
+  }
+
   /** The socket root every live session of this user publishes itself under. */
   get socketRoot(): string { return this.#socketRoot; }
 
-  /** Live sessions reachable from here, including this one. Empty where unsupported. */
+  /** Live sessions reachable from here, including this one. */
   listSessions(): Promise<LiveSession[]> {
-    return crossSessionSupported() ? liveSessions(this.#socketRoot) : Promise.resolve([]);
+    return liveSessions(this.#socketRoot);
   }
 
   /**
    * Classify a managed address against this root and the shared directory.
    *
-   * This is the one place that decides whether a path is local, this session's
+   * This is the one place that decides whether an address is local, this session's
    * own Main, another live session's Main, or another session's non-Main
-   * endpoint. It uses the same address space as every other `msg_write` call.
+   * endpoint. It uses the same address space as every other `msg_write` call;
+   * whether an address belongs to a session's endpoint namespace is the IPC
+   * platform adapter's answer, not a filesystem assumption made here.
    */
   async sessionEndpoint(address: string): Promise<SessionEndpoint> {
     const ownSocketDir = path.join(this.#socketRoot, deriveSessionUid(this.sessionId));
@@ -392,12 +479,67 @@ export class RootService implements ManagedWriteHost {
         return { kind: 'session', session };
       }
     }
-    const prefix = `${path.sep}`;
     for (const session of live) {
       if (session.sessionId === this.sessionId) continue;
-      if (address.startsWith(session.socketDir + prefix)) return { kind: 'foreign' };
+      if (ipc.belongsToNamespace(address, session.socketDir)) return { kind: 'foreign' };
     }
     return { kind: 'local' };
+  }
+
+  /**
+   * Make one live peer session reachable from this agent.
+   *
+   * The user named the session, so this call is itself the explicit grant for
+   * `msg_write`: it goes through the same enable path as `/capability enable`,
+   * which is the only path allowed to authorize a manual tool. Nothing is sent
+   * to the target, no pairing or connection state is kept, and the contact is an
+   * ordinary custom context message: it starts no turn and rewrites no prompt
+   * head. Receiving a peer message stays a separate, receipt-scoped activation.
+   */
+  async connectSession(target: string): Promise<SessionConnect> {
+    this.assertOperational();
+    const wanted = target.trim();
+    if (wanted === '') {
+      throw new SubagentError('invalid_command_args', 'connect requires one live session uid or session id.');
+    }
+    const session = (await liveSessions(this.#socketRoot))
+      .find((candidate) => candidate.uid === wanted || candidate.sessionId === wanted);
+    if (session === undefined) {
+      throw new SubagentError('session_not_found', `No live session matches ${wanted}.`);
+    }
+    if (session.sessionId === this.sessionId) {
+      throw new SubagentError('invalid_target', 'A session cannot connect to itself.');
+    }
+    // The directory read awaited; a root that lost its branch must not write.
+    this.assertOperational();
+    // A native compaction rewrites the context, so append after it finishes.
+    const gate = this.#compaction;
+    if (gate !== null) await gate.promise;
+    this.assertOperational();
+    // Everything below is synchronous: no await may separate the ownership
+    // check from the branch record and the context append it fences.
+    const activation = enableCapabilityTargets(this.#options.api, ['msg_write'], {
+      branch: this.#options.context.sessionManager.getBranch(),
+    });
+    const usable = [...activation.enabled, ...activation.alreadyEnabled];
+    if (!usable.includes('msg_write')) {
+      const reason = activation.skipped.find((skip) => skip.name === 'msg_write')?.reason
+        ?? (activation.unresolved.includes('msg_write') ? 'not_registered' : 'not_activated');
+      throw new SubagentError('msg_write_unavailable', `msg_write cannot be enabled for this session: ${reason}.`);
+    }
+    const address = sessionMainAddress(session);
+    this.#options.api.sendMessage({
+      customType: SESSION_CONTACT,
+      content: contactMessage(session, address),
+      display: true,
+    }, { triggerTurn: false });
+    return {
+      session,
+      address,
+      enabled: activation.enabled,
+      alreadyEnabled: activation.alreadyEnabled,
+      recordError: activation.recordError,
+    };
   }
 
   /**
@@ -447,7 +589,6 @@ export class RootService implements ManagedWriteHost {
    * auxiliary: a failed update is reported, never fatal.
    */
   async syncSessionName(name: string | null): Promise<void> {
-    if (!crossSessionSupported()) return;
     try {
       await updateSessionName(this.#socketRoot, { sessionId: this.sessionId, name });
     } catch (error) {
@@ -469,7 +610,6 @@ export class RootService implements ManagedWriteHost {
     readonly signal?: AbortSignal | undefined;
   }): Promise<void> {
     this.assertOperational();
-    assertCrossSessionSupported();
     return sendToSessionEndpoint({
       sender: { sessionId: this.sessionId, uid: deriveSessionUid(this.sessionId) },
       ...command,
@@ -481,8 +621,6 @@ export class RootService implements ManagedWriteHost {
    * auxiliary: a failed publish is reported, and this root keeps running.
    */
   async #publishSession(): Promise<void> {
-    // Windows is explicitly out of scope; no record is published there.
-    if (!crossSessionSupported()) return;
     try {
       await registerSession(this.#socketRoot, {
         sessionId: this.sessionId,
@@ -504,6 +642,7 @@ export class RootService implements ManagedWriteHost {
     for (const job of jobs) if (job.status === 'running') this.runtime.cancelJob(job.jobId);
     this.#retirement = (async () => {
       const results = await Promise.allSettled([
+        this.shell.close(),
         this.listeners.close(),
         unregisterSession(this.#socketRoot, this.sessionId),
         ...jobs.map((job) => this.runtime.jobDone(job.jobId)),

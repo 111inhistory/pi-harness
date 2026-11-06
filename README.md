@@ -1,115 +1,139 @@
 # Pi Harness
 
-Pi Harness 是基于 Pi SDK 构建的 Coding Agent 增强插件，提供能力按需发现、树状 Subagent 编排与受管本地 IPC 通信。
+让 Pi 按需找到工具，把任务分给多个 Agent，并在不同会话之间协作。
 
-本项目将单会话工具调用扩展为树状协作系统。主 Agent 可自主发现资源、并发派生子任务并协调执行。
+你可以直接描述目标，例如：
 
-## 核心能力
+> 帮我排查这个问题。让一个 Agent 查调用链，另一个检查相关测试，最后由你汇总并修复。按文件分工，避免同时修改同一个文件。
 
-- **Capability 按需发现**：主 Agent 在遇到能力缺口时检索本地 Skill、Tool 与 MCP 工具。选中资源按会话分支保存，后续请求从规范记录重建能力指引。
-- **Subagent 树状编排**：主 Agent 可并发创建子任务，支持角色与候选模型路由；提供层级 Budget、最大深度与活跃子节点限额；父 Agent 在当前 Job 内等待直接子节点交付（parent-hold），无需忙轮询或外部唤醒。
-- **受管本地 IPC 通信**：提供专用的纯文本 `msg_write` 消息工具；宿主处理传输分帧与发送者身份绑定；Unix 平台使用独立 UID 的 Unix Socket，Windows 平台使用命名管道。同一用户下的多个 Pi session 可通过对方 `Main` 的受管 Socket 路径由 Main 互相发消息；`/subagent sessions` 列出可寻址的 session、原生名称与投递地址。跨 session 协调当前只实现 POSIX 平台，Windows 明确不支持。
-- **Shell Preflight（可选）**：拦截并校验聊天框命令，Windows 下通过 PowerShell AST 语法检查后分发，防止选错 Shell。
+Harness 为 Pi 增加两项能力：缺少工具或领域指引时按需查找；任务可以拆分时创建 Subagent 并行处理。你仍在原来的 Pi 对话里工作，主 Agent 负责分工、沟通和汇总。
 
-## 快速开始
+## 能做什么
 
-### 1. 环境准备
+- **按需使用工具和 Skill**：Agent 搜索当前环境已注册的工具、MCP 工具和本地 Skill，选中后继续完成任务。你也可以用命令直接启用工具。
+- **并行处理任务**：子 Agent 可以独立研究、审查或修改代码，也可以继续拆分任务。执行深度、并发数量和运行预算可配置。
+- **沿用对话或独立开始**：需要已有背景的任务可以继承当前上下文；独立任务可以从新的上下文开始，并按配置选择角色和模型。
+- **跨会话协作**：把另一个正在运行的 Pi 会话介绍给当前 Agent，之后按你的要求互相发消息。连接本身不会向对方发送消息。
+- **查看和停止任务**：在对话中查看子任务状态，必要时停止指定任务或全部子任务。
 
-Pi Harness 要求 Node.js `>= 22.19.0`。当前适配 Pi `1.5.0`：`@earendil-works/pi-coding-agent`、`pi-ai`、`pi-agent-core` 与 `pi-codemode` 均使用 `1.5.0`。升级 Pi SDK 前先复核 `src/subagent/model-runtime.ts` 的私有 `ModelRegistry.runtime` 桥接审计，并运行 `npm run check`。
+子 Agent 共享工作目录。并行改代码时应按文件分工；需要隔离修改或测试状态时，使用不同 worktree。
 
-执行以下命令安装依赖：
+## 开始使用
 
-```bash
+需要 Node.js **22.19.0 或更新版本**。当前适配 Pi **1.5.0**。跨会话协作支持 Linux 和原生 Windows；异步 Shell 在 POSIX 上使用 tmux，在 Windows 上使用 psmux。
+
+### 安装与启动
+
+```sh
+git clone https://github.com/111inhistory/pi-harness.git
+cd pi-harness
 npm ci
+npx pi -e ./extensions/harness.ts
 ```
 
-### 2. 配置模型与 Fresh 路由
+先在 Pi 中配置可用模型与认证。Harness 使用 Pi 已有的模型配置，不单独管理凭据。
 
-先通过 Pi 原生机制配置模型与认证。Harness 不管理或保存模型凭据。
+上面的命令在仓库目录中启动。要在自己的项目中使用，从项目目录启动 Pi，并把 `-e` 后的路径换成 Harness 扩展的绝对路径，例如：
 
-Fresh 子任务需要 Pi 用户目录中的 `subagent-routing.json`。默认用户目录为 `~/.pi/agent/`；设置 `PI_CODING_AGENT_DIR` 时使用指定目录。以 [路由示例](config/subagent-routing.json) 为模板，按实际模型目录填写分类器、角色和候选模型；已有配置时编辑原文件。
-
-仓库示例不会作为缺失配置的运行时回退。示例中的提供方与模型也不保证在你的环境可用。
-
-### 3. 启动本地 Pi
-
-在仓库目录中显式加载 Harness：
-
-```bash
-./node_modules/.bin/pi -e ./extensions/harness.ts
+```sh
+pi -e /path/to/pi-harness/extensions/harness.ts
 ```
 
-需要 Shell Preflight 时，可再添加 `-e ./extensions/shell-preflight.ts`。从其他目录使用时，应把扩展路径改为实际绝对路径。
+### 配置独立子任务的模型
 
-### 4. 按需修改参数
+独立开始的子任务（Fresh）需要 `subagent-routing.json`。将 [路由示例](config/subagent-routing.json) 作为模板，放入 Pi 用户目录，并把分类器、角色和候选模型改成你实际可用的配置。已有文件时直接编辑，不要覆盖自己的设置。
 
-[config/harness.json](config/harness.json) 提供完整默认值示例。全局配置位于 Pi 用户目录的 `harness.json`，受信项目还可使用 `.pi/harness.json` 覆盖指定字段；没有文件时使用内置默认值。字段和生效边界见 [Harness 参数配置](docs/harness-configuration.md)。
+Pi 用户目录默认为 `~/.pi/agent/`；设置 `PI_CODING_AGENT_DIR` 时使用指定目录。仓库示例不会在配置缺失时自动代替用户配置。
 
-## 典型工作流
+继承当前对话的子任务使用父会话的模型和上下文。两种任务的详细区别见[接口说明](docs/interface-contract.md)。
 
-1. **按需发现能力**：主 Agent 分析任务。仅在缺少特定工具、领域规则或指引时调用 `capability` 补足，避免重复检索已就绪资源。
-2. **派生独立子任务**：主 Agent 调用 `subagent_create` 并发创建子 Agent；系统根据任务目标自动路由分配角色与候选模型。
-3. **事件驱动等待**：无需轮询等待工具。父 Subagent 仍有活跃直接子节点时，在同一 Job 内等待通知；Main 由宿主投递的终态通知继续处理结果。
-4. **协作与续跑**：通过 `msg_write` 向受管端点发送消息。运行中的节点在当前轮处理消息；已停止节点在限额允许时启动新轮。
+## 常用操作
 
-子任务共享工作目录，应按文件边界分工。需要隔离同文件修改、对照分支或测试状态时，可另用 worktree。
+### 让 Agent 分工
 
-## 工具速查
+直接告诉主 Agent 要完成什么，以及分工边界：
 
-主 Agent 与子 Agent 通过以下工具交互：
+> 检查这次改动。分别审查接口行为和错误处理，两个任务都只读，最后给我合并后的结论。
 
-| 工具名称 | 适用角色 | 说明 |
-| --- | --- | --- |
-| `capability` | Main／未达最大深度的 Subagent | 按需检索本地 Skill、Tool 与 MCP 工具，筛选后激活并注入分支记忆 |
-| `subagent_create` | Main／未达最大深度的 Subagent | 并发创建子 Agent 任务，等待本地初始化就绪后返回 ID 与通信端点 |
-| `subagent_list` | Main／全部 Subagent | 查询拓扑树状态、通信端点与可用的持久化历史路径 |
-| `subagent_stop` | Main／未达最大深度的 Subagent | 请求取消指定 Subagent 的执行 |
-| `msg_write` | 子 Agent 默认 / 主 Agent 按需 | 向受管 IPC 地址发送纯文本消息；主 Agent 默认不启用该工具，通过 Capability 启用整个 subagent 命名空间后激活 |
+> 实现这个功能。把互不重叠的文件分给子 Agent，等结果回来后完成集成和测试。
 
-任务完成后，宿主会自动向父 Agent 发送终态通知，携带本轮最终执行文本。
+子任务结束后会通知父 Agent，无需你反复询问状态。还想继续同一个子任务时，可以让主 Agent 给它发送后续要求。
 
-用户也可直接管理已启用工具：`/capability` 或 `/capability list [tool|mcp|namespace] [filter]` 按类别与 MCP 服务器／命名空间分组浏览当前可选工具；`/capability enable` 打开原生可筛选选择列表，选中即启用；`/capability enable <name...>` 保留按名字启用的快捷形式，也接受 `namespace://<name>`（或裸的非 MCP 命名空间名）一次启用整个命名空间。该入口只增不减，没有停用、移除或重置子命令。
+### 查看和停止子任务
 
-`capability.manualTools` 名单内的工具只允许通过这条命令启用：模型侧检索看不到它们，发现路径不能激活它们，子会话也不继承。名单与命令只作用于 Main 会话。
+| 命令 | 用途 |
+| --- | --- |
+| `/subagent` 或 `/subagent list` | 查看当前会话的子任务树和状态 |
+| `/subagent list --all` | 查看包含已停止任务的树 |
+| `/subagent stop <id>` | 停止指定子 Agent |
+| `/subagent stop --all` | 停止当前会话的全部子 Agent |
 
-## 开发与验证
+### 查找和启用工具
 
-项目提供以下代码、类型与配置验证脚本：
+通常由 Agent 在需要时调用 `capability`。你也可以直接操作：
 
-```bash
-# 类型检查
-npm run typecheck
+| 命令 | 用途 |
+| --- | --- |
+| `/capability` | 浏览当前可用工具 |
+| `/capability list mcp` | 只看 MCP 工具；也支持 `tool`、`namespace` 和筛选词 |
+| `/capability enable` | 打开选择列表，选中即启用 |
+| `/capability enable <工具名>` | 启用指定工具，可一次填写多个目标 |
+| `/capability enable mcp://<服务器名>` | 启用该 MCP 服务器当前已注册的工具 |
+| `/capability enable namespace://<名称>` | 启用指定工具组 |
 
-# 运行类型化核心测试套件
-npm run test:typed
+命令支持 Tab 补全。通过 Pi 原生 `/mcp` 命令重连后，新注册的工具可以直接浏览和启用，不需要重启 Harness。
 
-# 完整门禁（类型检查 + 全套测试）
-npm run check
+如需把某些工具保留给用户明确授权，可在 `capability.manualTools` 中配置。模型发现不会推荐这些工具，子会话也不会继承。详细配置见[Harness 参数配置](docs/harness-configuration.md)。
 
-# 提示词与配置 JSON 有效性自检
-npm run check:json
+### 异步运行命令
 
-# 文档链接有效性与技术语言规范自检
-npm run check:docs
+在主机安装终端后端：POSIX 使用 tmux；Windows 使用 winget 安装 `marlocarlo.psmux`。然后从 Harness 仓库执行：
+
+```sh
+npm run install:async-shell
 ```
 
-## 现有限制
+随后 Agent 可以通过 Bash／PowerShell 使用 `pi-job create --wait 5s -- COMMAND ARGS`：短任务直接返回结果，长任务返回 ID 并继续运行。`pi-job poll ID` 默认读取新增输出，完成结果自动送回发起任务的 Agent。多行输入支持 Bash heredoc 和 PowerShell here-string。更新代码后重新安装 CLI，并重启 Pi 加载新版。安装、输入和生命周期说明见[异步 Shell](docs/async-shell.md)。
 
-- **仅限本地搜索**：远端 Capability 候选需要用户审批界面；审批流程完成前，当前仅搜索本地已注册资源，不搜索远端。
-- **暂无独立用户界面**：当前通过面向模型的 `subagent_list` 接口查看与控制子 Agent，面向用户的独立 UI 尚未交付。
-- **无 MCP 自动重连系统**：Harness 只检索当前已成功注册的 MCP 工具，不维护外部 MCP 服务的重连守护；连接恢复使用 Pi 原生机制与 `/mcp reconnect`。
-- **SDK 白名单记录差异**：在 SDK `1.4.0` 严格白名单下，部分 MCP 工具可能被拒绝激活，导致先记录的分支选择与实际激活工具存在差异。
-- **离线回归验证边界**：当前自动化回归基于真实 Pi SDK 与本地模拟模型，不代表真实模型提供方的在线多轮长时压测。
-- **Work 处于实验状态**：Work 方案集中在 `experiments/work/` 目录，未进入主线加载与测试。
+### 连接另一个 Pi 会话
 
-## 文档导航
+在同一台机器、同一系统用户下启动另一个加载 Harness 的 Pi 会话，然后执行：
 
-- [项目目标与范围](docs/00-scope.md)：项目定位、设计原则和非目标
-- [接口契约](docs/interface-contract.md)：使用流程、工具参数与运行时行为契约
-- [当前架构](docs/architecture.md)：模块职责、所有权划分与代次资源隔离
-- [存储 v2 与历史说明](docs/subagent-storage.md)：事件结构、文件归属与恢复边界
-- [能力提示词记忆规范](docs/capability-prompt-memory.md)：分支条目持久化与权限过滤
-- [Harness 参数配置](docs/harness-configuration.md)：全局与项目参数、Budget 与提示词段落定制
-- [已知问题与验收边界](docs/known-issues.md)：未实现功能、待验收场景与现有限制
-- [文档目录](docs/README.md)：文档架构与阅读索引
-- [提示词资产说明](prompts/README.md)：提示词文件清单、数据装配与修改方式
+```text
+/subagent sessions
+/subagent sessions connect <uid 或完整 session ID>
+```
+
+`connect` 后按 Tab 可选择存活会话，也可按会话名筛选。命令会把目标名称、目录和通信地址交给当前 Agent，并启用 `msg_write`。连接不会唤醒对方，也不会自动发问候消息。
+
+随后你可以说：
+
+> 让刚连接的会话 echo 一下。
+
+> 请把这个问题发给刚连接的会话，让它只读检查相关实现，收到回复后汇总给我。
+
+对方需要保持运行。跨会话协作支持同一机器、同一系统用户下的 Linux 和原生 Windows 会话。
+
+## 配置和使用边界
+
+大多数参数有默认值。需要调整并发、深度或运行预算时，在 Pi 用户目录创建 `harness.json`；受信项目也可使用 `.pi/harness.json` 覆盖指定字段。参考[配置示例](config/harness.json)和[配置说明](docs/harness-configuration.md)。
+
+使用时还需注意：
+
+- Capability 当前只搜索本地 Skill 和已注册工具，不会替你安装远端资源。
+- MCP 连接由 Pi 管理，Harness 不提供独立的重连服务。
+- 工具启用按当前会话分支记录；没有停用、移除或重置命令。
+- 共享工作目录不等于修改隔离；停止任务也不会撤销已经写入的文件。
+- 缓存复用取决于模型、提供方和请求内容，不能保证命中或固定节省比例。
+
+可选的 Shell Preflight 会在执行前检查聊天框里的 Shell 命令；需要时额外加载 `extensions/shell-preflight.ts`。它与主 Harness 分开启用。
+
+## 更多资料
+
+- [Harness 参数配置](docs/harness-configuration.md)：调整并发、预算和提示词
+- [异步 Shell](docs/async-shell.md)：POSIX tmux／Windows psmux 任务、增量输出和终端输入
+- [接口说明](docs/interface-contract.md)：命令、工具及具体行为
+- [已知问题](docs/known-issues.md)：平台限制与尚未验收的场景
+- [文档目录](docs/README.md)：架构、存储和其他开发资料
+
+参与开发时，运行 `npm run check` 验证类型和测试，运行 `npm run check:json`、`npm run check:docs` 检查配置和文档。代码贡献前请阅读 [AGENTS.md](AGENTS.md)。

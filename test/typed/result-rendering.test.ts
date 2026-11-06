@@ -9,15 +9,17 @@ import { deliveryMessage } from '../../src/subagent/delivery.ts';
 function renderers() {
   let resolver: ToolRendererResolver | undefined;
   let delivery: MessageRenderer | undefined;
+  let shell: MessageRenderer | undefined;
   installResultRendering({
     registerToolRenderer(value) { resolver = value; },
     registerMessageRenderer(type, value) {
-      assert.equal(type, 'agent-delivery');
-      delivery = value as MessageRenderer;
+      if (type === 'agent-delivery') delivery = value as MessageRenderer;
+      else if (type === 'async-shell-result') shell = value as MessageRenderer;
+      else assert.fail(`Unexpected message renderer ${type}`);
     },
   });
-  assert.ok(resolver && delivery);
-  return { resolver, delivery };
+  assert.ok(resolver && delivery && shell);
+  return { resolver, delivery, shell };
 }
 
 function tool(definition: ToolRenderers, result: { content: Array<{ type: 'text'; text: string }>; details: unknown }, isError = false) {
@@ -88,6 +90,21 @@ test('Subagent completion messages fold with sender and round visible, and expan
     assert.ok(plain(component.render(width)).includes('FINAL_HANDOFF'));
     component.setExpanded(false);
   }
+  assert.deepEqual(message, before);
+});
+
+test('async shell completion folds output with its task status and preserves result data', () => {
+  initTheme('dark');
+  const result = { id: 'fake-task', status: 'completed', exitCode: 0, output: `${'build output\n'.repeat(50)}FINAL_SHELL_OUTPUT`, cursor: 1000, logPath: '/tmp/project/output.log', truncated: false };
+  const message = { role: 'custom' as const, customType: 'async-shell-result', content: JSON.stringify(result), display: true, details: { source: 'host', result }, timestamp: 0 };
+  const before = structuredClone(message);
+  const component = new CustomMessageComponent(message, renderers().shell);
+  const collapsed = component.render(80);
+  assert.ok(collapsed.length < 20);
+  assert.match(plain(collapsed), /shell fake-task.*completed/);
+  assert.doesNotMatch(plain(collapsed), /FINAL_SHELL_OUTPUT/);
+  component.setExpanded(true);
+  assert.match(plain(component.render(80)), /FINAL_SHELL_OUTPUT/);
   assert.deepEqual(message, before);
 });
 

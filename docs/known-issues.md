@@ -20,7 +20,6 @@ Capability 按实际激活集筛选公开结果，返回失败或部分成功。
 | --- | --- |
 | 用户查看与控制入口 | `subagent_list` 是模型接口，不能替代用户查看任务、停止和发送消息的界面 |
 | Capability 远端审批 | 内部搜索只使用本地来源；没有远端审批界面，也不搜索、安装或自动加载远端候选 |
-| Windows 跨 session 协调 | 只在 POSIX 平台实现。Windows 不发布 session 记录，发现返回不可用，发送以 `unsupported_platform` 拒绝；命名管道寻址与归属校验尚未实现 |
 | 仅提供资源的 MCP 服务器发现 | 没有工具的 MCP 服务器不作为独立发现项 |
 | Work | 保留在 `experiments/work/`，不由主线扩展加载；交付形态未确定 |
 
@@ -31,9 +30,10 @@ Capability 按实际激活集筛选公开结果，返回失败或部分成功。
 - **Inherited 在线工具调用与压缩**：基础注册、延迟 MCP 和 Responses 声明链已有离线回归；动态激活后多轮调用、原生压缩后的实际工具调用仍需在线验收。
 - **真实提供方的输入与行为**：精简 step 反馈的 JSON 完整性和大小已在模型请求中验证；提供方是否额外截断、角色选择质量和多轮遵循情况仍需实测。
 - **长期资源与竞态**：退役、落盘失败和部分代次竞态已有回归；长时间压力、监听资源耗尽、强制终止点和插件取消导航的组合仍未完整覆盖。
-- **跨 session 消息（POSIX）**：目录发布、原生 session name、存活校验、单帧写入、未知 session 拒绝与远端错误码透传已有离线回归；两个真实 Pi 进程长期互发与 session 切换期间的目录残留仍需验收。Windows 明确未实现，不计入待验收范围。
-- **Manual 能力在线组合**：完整 SDK 会话（真实 `createAgentSession`、真实 stdio MCP 子进程、离线模型）已覆盖未授权声明/执行/Codemode、命令启用、manual MCP 与资源读取资格、Main/子作用域隔离；`scripts/verify-capability-manual-online.mjs` 已在单提供方上通过，并通过 `--call` 实际执行了两次只读 MCP 查询（`doctor`、`export --list`）。其他提供方、真实资源读取、启用后 MCP 断连、写入型工具和长时间运行仍未验收。
-- **平台与用户边界**：Windows 的部分 Shell Preflight 和 Named Pipe 场景已有验证；完整平台套件与多用户切换仍未完成。
+- **跨 session 消息**：目录发布、原生 session name、存活校验、单帧写入、未知 session 拒绝与远端错误码透传已有两平台离线回归。Windows 的双 SDK 进程已验证显式连接、双向消息、忙时交接、原生压缩、树导航、reload 后继续收发和退出清理；真实提供方多轮行为、长期互发与资源压力仍需实测。IPC 目录必须保持本机私有：记录里的 `pid` 只在本机解释，跨机共享 `socketRoot` 不在设计范围内；跨机共享 durable session 历史不受此限制。
+- **Manual 能力在线组合**：完整 SDK 会话（真实 `createAgentSession`、真实 stdio MCP 子进程、离线模型）覆盖未授权声明／执行／Codemode、`/capability enable` 授权后的 manual MCP 与资源读取资格、Main／子作用域隔离。真实提供方的缓存计费、真实资源读取、启用后 MCP 断连和长时间运行仍未验收。
+- **异步 Shell**：Linux tmux 与原生 Windows psmux 已通过真实 SDK 的离线回归，Windows 覆盖 Bash／PowerShell 入口、Main／Subagent 回调和取消清理。真实提供方多轮运行、长时压力与 Windows 进程查询不可用的故障注入仍未验收。Windows PowerShell SDK 用例曾报告一次未保留完整断言日志的偶发失败，尚未归因；最终基线通过不能证明该现象已修复，详见[平台验收记录](reviews/async-shell-platform-acceptance.md)。
+- **平台与用户边界**：Linux 与 Windows 的完整离线套件已运行；macOS 实机、多用户切换与管道权限隔离尚未验收。
 
 现有在线样本只证明记录中的具体场景，不替代当前调用链的完整验收。
 
@@ -50,7 +50,9 @@ ModelRuntime 桥依赖 SDK 的内部结构，升级 SDK 时应复核。子会话
 - **恢复与写入**：Shutdown 不可取消。强制退出或清理失败可能留下原生对话而没有根终态，下次按中断恢复。没有跨文件事务，也不支持多个进程同时写同一根会话。
 - **导航取消**：导航尝试会先停止子 Job。后续插件取消导航时，已停止的 Job 不回滚或自动重跑。
 - **消息交接**：异常、断连或超时不证明消息未入队，不自动重发。普通消息和子节点通知可触发模型请求，本项目不合并不同事件。跨 session 消息的 session 记录与 `from` 都是同用户本机进程的声明，不是认证；进程异常退出可能留下已失效的 session 记录，读取时按 pid 存活过滤，pid 复用时可能短暂误报。
+- **异步 Shell 日志与恢复**：输出是终端转录。Windows ConPTY 可能折行和重绘，过滤文本可能含额外换行或重复字符。monitor 被外部强制杀死后没有自动恢复或通知补发；任务日志不自动按保留期清理，长期运行会持续增长。命令与增量读取说明见[异步 Shell](async-shell.md)。
 - **能力记忆**：发现记录按分支累计，角色排除仍优先；请求投影重新核对当前资格。记录能否恢复依赖规范条目仍在当前分支，激活成功性另受上面的已知缺陷限制。
 - **MCP 发现与连接**：Capability 只搜索当前已注册工具，不等待全部后端，也不主动重连。注册或激活不表示服务持续在线；连接恢复沿用 Pi 原生行为和用户命令。
 - **刷新边界**：根服务使用配置快照，已有 Job 保留原 Budget。提示词正文受 ESM 缓存影响，重启 Pi 是明确生效方式，`/reload` 不保证刷新全部依赖。
-- **工具集变化与提示词缓存**：`/capability enable` 或发现激活会改变当前工具集。Pi 在对话中途追加 `tools`/`rules` 系统补丁；不支持中途 system 消息的 provider/model 会重放完整 prompt，因此下一次请求出现一次 `cacheRead=0`，随后恢复缓存。同一次请求前合并的多项启用只产生一次变化，`/capability enable namespace://<name>` 也把整个命名空间合并为一次。manual 能力记忆当前并入首条 system 消息，会额外改变提示词头部；这是投影语义，不是重复 miss。
+- **工具集变化与提示词缓存**：Responses／Anthropic 的追加路径按模型兼容位选择，工具与 system 更新由 Pi 原生编码。本仓库的 Subagent 工具不再声明 `promptSnippet`／`promptGuidelines`；共同指引在首个成员声明后投影，专属指引随对应工具声明投影。第三方工具仍可能通过这些元数据触发 Pi 的 `<tools>`／`<rules>` 更新；未支持中途 system 消息的模型会把更新折叠到头部。本轮不增加 Chat Completions 协议适配，指引上下文仍交给 Pi 原生折叠与编码；不添加移除事件、缓存断点或 TTL 策略。前缀稳定与缓存标识相同都不保证真实缓存命中。
+- **Root 缓存标识观察**：Inherited 子会话与 Capability 检索会话的公开 `streamFunction` wrapper 观察最终 payload hook 结果，并按分支记录 Responses 的有效 key。主会话未安装相同 wrapper；捕获仅能读取当前分支记录或默认 Session ID，不能保证识别外部插件在 root 最终请求中设置的任意自定义 key。原生禁用缓存与外部 override 的优先级只在已接管的会话中有离线验证；不要将默认根标识视为任意插件组合下的最终 wire key。

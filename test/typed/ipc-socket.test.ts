@@ -17,7 +17,8 @@ import {
 import { unixIpc } from "../../src/ipc/platform-unix.ts";
 import { isWindowsPipe, windowsIpc } from "../../src/ipc/platform-windows.ts";
 
-const posix = process.platform !== "win32";
+/** A real endpoint address: a Unix socket file or a Windows Named Pipe. */
+const nativeAddress = (root: string, name: string): string => getAgentSocketPath(name, root);
 
 async function fixture(t: test.TestContext): Promise<string> {
   const directory = await fsp.mkdtemp(path.join(os.tmpdir(), "pi-ipc-socket-"));
@@ -67,9 +68,9 @@ test("the inbound validator requires explicit sender and string content without 
   }
 });
 
-test("the generic endpoint callback runs once per frame and callback rejection reaches onError", { skip: !posix }, async (t) => {
+test("the generic endpoint callback runs once per frame and callback rejection reaches onError", async (t) => {
   const root = await fixture(t);
-  const address = path.join(root, "generic.sock");
+  const address = nativeAddress(root, "generic");
   const received: unknown[] = [];
   const errors: Error[] = [];
   const server = createOwnedNdjsonServer({
@@ -101,7 +102,7 @@ test("the generic endpoint callback runs once per frame and callback rejection r
   assert.equal(errors[0]?.message, "generic callback failure");
 });
 
-test("a supplied validator skips only the bad frame and the later valid frame still runs", { skip: !posix }, async (t) => {
+test("a supplied validator skips only the bad frame and the later valid frame still runs", async (t) => {
   const socketDir = await fixture(t);
   const received: unknown[] = [];
   const errors: Error[] = [];
@@ -131,7 +132,7 @@ test("a supplied validator skips only the bad frame and the later valid frame st
   assert.equal((errors[0] as InboundFrameError).code, "invalid_message");
 });
 
-test("endpoint callback throws and rejected promises are routed to onError", { skip: !posix }, async (t) => {
+test("endpoint callback throws and rejected promises are routed to onError", async (t) => {
   const socketDir = await fixture(t);
   const errors: Error[] = [];
   let calls = 0;
@@ -171,13 +172,31 @@ test("platform transports classify endpoints without claiming ownership", () => 
   assert.equal(windowsIpc.key(String.raw`\\.\pipe\Case-Sensitive`), String.raw`\\.\pipe\case-sensitive`.toLowerCase());
 });
 
+test("endpoint namespace membership is address classification, not ownership", () => {
+  const socketDir = String.raw`C:\Users\fixture\Temp\pi-subagents\abcdef`;
+  const otherDir = String.raw`C:\Users\fixture\Temp\pi-subagents\123456`;
+  const main = windowsIpc.agentPath("Main", socketDir);
+  assert.equal(windowsIpc.belongsToNamespace(main, socketDir), true);
+  assert.equal(windowsIpc.belongsToNamespace(windowsIpc.broadcastPath("Main", socketDir), socketDir), true);
+  assert.equal(windowsIpc.belongsToNamespace(main, socketDir.toUpperCase()), true, "the pipe prefix folds the root's case");
+  assert.equal(windowsIpc.belongsToNamespace(main, otherDir), false, "another session's directory is another namespace");
+  assert.equal(windowsIpc.belongsToNamespace(String.raw`\\.\pipe\arbitrary-service`, socketDir), false);
+  assert.equal(windowsIpc.belongsToNamespace(String.raw`C:\data\file.sock`, socketDir), false);
+
+  assert.equal(unixIpc.belongsToNamespace("/tmp/root/abcdef/Main.sock", "/tmp/root/abcdef"), true);
+  assert.equal(unixIpc.belongsToNamespace("/tmp/root/abcdef/sub_01/children.sock", "/tmp/root/abcdef"), true);
+  assert.equal(unixIpc.belongsToNamespace("/tmp/root/abcdef/Main.sock", "/tmp/root/ABCDEF"), false, "POSIX paths stay case-sensitive");
+  assert.equal(unixIpc.belongsToNamespace("/tmp/root/abcdefg/Main.sock", "/tmp/root/abcdef"), false);
+  assert.equal(unixIpc.belongsToNamespace("/tmp/root/abcdef/notes.txt", "/tmp/root/abcdef"), false, "a plain file is not an endpoint");
+});
+
 const windowsRoot = String.raw`C:\Users\fixture\Temp\pi-subagents\abcdef`;
 test("Windows endpoints use a flat pipe namespace and distinct actor/broadcast names", () => {
   const main = windowsIpc.agentPath("Main", windowsRoot);
   const child = windowsIpc.agentPath("sub_01", windowsRoot);
   const broadcast = windowsIpc.broadcastPath("main", windowsRoot);
   assert.ok(isWindowsPipe(main));
-  assert.match(main, /pi-harness-[0-9a-f]{12}-Main\.sock$/);
+  assert.match(main, /pi-harness-[0-9a-f]{8}-Main\.sock$/);
   assert.equal(new Set([main, child, broadcast]).size, 3);
   assert.notEqual(main, windowsIpc.agentPath("Main", windowsRoot + "-other"));
   assert.equal(windowsIpc.key(main), windowsIpc.key(main.toUpperCase()));

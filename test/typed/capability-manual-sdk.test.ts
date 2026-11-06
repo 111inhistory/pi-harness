@@ -8,9 +8,11 @@
  *
  * Covered here, because the assembly tests only call extension handlers:
  * - a `defaultActive` manual tool is pruned from the declaration and refused by
- *   direct execution and by Codemode until `/capability enable` runs;
- * - after the user command, the tool and its MCP server are declared, directly
- *   callable, scriptable and usable for `read_mcp_resource`;
+ *   direct execution and by Codemode until the branch carries the user's manual
+ *   record;
+ * - with that record and the tool in the active set, the tool and its MCP server
+ *   are declared, directly callable, scriptable and usable for
+ *   `read_mcp_resource`;
  * - a second real session wired as a child scope drops the same tools even with
  *   the root's manual record on its branch.
  */
@@ -33,6 +35,7 @@ import {
 
 import capabilityExtension from '../../extensions/capability.ts';
 import harnessExtension from '../../extensions/harness.ts';
+import { manualEnabledTools } from '../../src/capability/discovery-record.ts';
 import { installCapabilityMcp } from '../../src/capability/native-discovery.ts';
 import { setCapabilityParent } from '../../src/capability/scope.ts';
 import { waitFor } from '../../test-support/async.ts';
@@ -77,7 +80,7 @@ function systemText(messages: readonly AgentMessage[]): string {
   return JSON.stringify(messages.filter((entry) => entry.role === 'system'));
 }
 
-test('full SDK: manual tools stay unreachable until /capability enable, then work in Main only', { timeout: 90_000 }, async () => {
+test('full SDK: manual tools stay unreachable until the user records them, then work in Main only', { timeout: 90_000 }, async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), 'pi-capability-manual-sdk-'));
   const agentDir = path.join(cwd, 'agent');
   await mkdir(agentDir);
@@ -230,22 +233,24 @@ test('full SDK: manual tools stay unreachable until /capability enable, then wor
     assert.equal(beforeScript.isError, false, textOf(beforeScript));
     assert.match(textOf(beforeScript), /NO_MANUAL_ACCESS/);
 
-    // The user command, through the registered command and a real command context.
-    const command = session.extensionRunner.getRegisteredCommands().find((entry) => entry.name === 'capability');
-    assert.ok(command, 'the harness registers /capability on the real SDK session');
-    const notices: { text: string; type: string }[] = [];
-    const commandContext = session.extensionRunner.createCommandContext();
-    Object.defineProperty(commandContext, 'ui', {
-      value: { notify: (text: string, type: string = 'info') => { notices.push({ text, type }); } },
+    // The real user entry: the command activates the tools and writes the
+    // append-only authorization record the declaration and execution paths read.
+    const enableCommand = session.extensionRunner.getRegisteredCommands()
+      .find((entry) => entry.name === 'capability');
+    assert.ok(enableCommand, 'the harness registers /capability on the real SDK session');
+    const enableNotices: { text: string; type: string }[] = [];
+    const enableContext = session.extensionRunner.createCommandContext();
+    Object.defineProperty(enableContext, 'ui', {
+      value: { notify: (text: string, type: string = 'info') => { enableNotices.push({ text, type }); } },
     });
-    await command.handler('enable manual_fixture mcp__manual_fixture__deploy read_mcp_resource', commandContext);
-    assert.equal(notices.length, 1, JSON.stringify(notices));
-    assert.equal(notices[0]!.type, 'info');
-    assert.match(notices[0]!.text, /^Enabled: .*manual_fixture/);
-    assert.match(notices[0]!.text, new RegExp(MCP_TOOL));
-    for (const name of MANUAL_TOOLS) assert.ok(session.getActiveToolNames().includes(name), `${name} is active`);
+    await enableCommand.handler(`enable ${MANUAL_TOOLS.join(' ')}`, enableContext);
+    assert.match(enableNotices.at(-1)?.text ?? '', /Enabled/);
+    for (const name of MANUAL_TOOLS) {
+      assert.ok(session.getActiveToolNames().includes(name), `${name} is active`);
+      assert.ok(manualEnabledTools(session.sessionManager.getBranch()).has(name), `${name} is authorized`);
+    }
 
-    // Phase 2: enabled by the user.
+    // Phase 2: authorized by the user's record.
     phase = 'after';
     step = 0;
     await session.prompt('Use the manual tools now that they are enabled.');
@@ -271,6 +276,8 @@ test('full SDK: manual tools stay unreachable until /capability enable, then wor
     assert.match(textOf(afterScript), /MANUAL_ACCESS_OK/);
 
     // The real SDK catalog through the user-facing list, grouped by category.
+    const command = session.extensionRunner.getRegisteredCommands().find((entry) => entry.name === 'capability');
+    assert.ok(command, 'the harness registers /capability on the real SDK session');
     const listNotices: { text: string; type: string }[] = [];
     const listContext = session.extensionRunner.createCommandContext();
     Object.defineProperty(listContext, 'ui', {
@@ -293,7 +300,7 @@ test('full SDK: manual tools stay unreachable until /capability enable, then wor
     // Phase 3: the same branch memory, the same registered tools, a real child scope.
     const rootBranch = session.sessionManager.getEntries();
     assert.ok(rootBranch.some((entry) => entry.type === 'custom' && entry.customType === 'capability-discovery'),
-      'the enable command recorded the manual authorization on the branch');
+      "the fixture's manual authorization is on the branch");
     // The child gets its own agent directory only so its MCP child process records
     // a separate pid; the manual policy is identical.
     const childAgentDir = path.join(cwd, 'agent-child');
@@ -360,7 +367,7 @@ test('full SDK: manual tools stay unreachable until /capability enable, then wor
     const childCall = results(child.messages.slice(childBaseline), 'manual_fixture');
     assert.equal(childCall.length, 1);
     assert.equal(childCall[0]!.isError, true);
-    assert.match(textOf(childCall[0]!), /not found|unavailable in this session|requires \/capability enable/);
+    assert.match(textOf(childCall[0]!), /not found|unavailable in this session|requires explicit user authorization/);
     assert.deepEqual(errors, []);
   } finally {
     for (const session of sessions) {

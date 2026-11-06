@@ -28,6 +28,7 @@ import {
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
 
 import capabilityExtension from "../../extensions/capability.ts";
+import { installSessionCacheIdentity } from "../session-cache-runtime.ts";
 import type { HarnessConfig } from "../harness-config.ts";
 import { setCapabilityParent } from "../capability/scope.ts";
 import { installCapabilityMcp } from "../capability/native-discovery.ts";
@@ -210,6 +211,7 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
       await execution.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
     });
     try {
+      execution.addCleanup(installSessionCacheIdentity(execution.session, request.cacheKey));
       await execution.session.bindExtensions({});
       if (inheritedTools !== undefined) {
         const registered = new Map(childPi.getAllTools().map(tool => [tool.name, tool]));

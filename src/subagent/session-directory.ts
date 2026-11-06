@@ -16,10 +16,11 @@
  * descriptor. Only Main talks across sessions, so a subagent endpoint of another
  * session is never a valid cross-session target.
  *
- * Platform scope: cross-session coordination is implemented for POSIX only. The
- * directory format is portable, but Windows named-pipe addressing and the
- * Windows endpoint ownership checks are not verified, so the feature refuses to
- * run there instead of advertising a path it cannot serve.
+ * Platform scope: the address space is the platform's managed endpoint space —
+ * Unix socket files below the session's socket directory, or Windows Named
+ * Pipes carrying that directory in their shared prefix. The directory format is
+ * portable, and address classification lives in the IPC platform adapter, so the
+ * same record serves both transports.
  *
  * The directory is a discovery aid, not an authority: a record only names a
  * session id, its socket directory and its pid. Liveness is re-checked on every
@@ -32,28 +33,12 @@
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { samePath } from '../fs-path.ts';
 import { managedFrame } from '../ipc/message.ts';
 import { deriveSessionUid, endpointKey, getAgentSocketPath, writeSocket } from '../ipc/socket.ts';
 import { SubagentError } from './runtime.ts';
 
 export const SESSION_DIRECTORY = 'sessions';
-
-/**
- * Whether this build may publish and reach cross-session endpoints.
- *
- * Linux and other POSIX platforms are supported. Windows is explicitly not:
- * `/subagent sessions` reports the feature as unavailable, and cross-session sends
- * refuse with `unsupported_platform`.
- */
-export function crossSessionSupported(platform: NodeJS.Platform = process.platform): boolean {
-  return platform !== 'win32';
-}
-
-/** Fail closed where the feature is unavailable instead of degrading silently. */
-export function assertCrossSessionSupported(platform: NodeJS.Platform = process.platform): void {
-  if (crossSessionSupported(platform)) return;
-  throw new SubagentError('unsupported_platform', 'Cross-session coordination is not available on Windows yet.');
-}
 
 const RECORD_VERSION = 1;
 const UID_PATTERN = /^[0-9a-z]{1,32}$/i;
@@ -106,7 +91,7 @@ function readRecord(value: unknown, root: string, uid: string): LiveSession | nu
   const { sessionId, socketDir, pid, cwd, name, startedAt } = data;
   if (typeof sessionId !== 'string' || sessionId === '') return null;
   if (data['uid'] !== uid) return null;
-  if (typeof socketDir !== 'string' || socketDir !== path.join(root, uid)) return null;
+  if (typeof socketDir !== 'string' || !samePath(socketDir, path.join(root, uid))) return null;
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return null;
   if (typeof cwd !== 'string') return null;
   if (name !== undefined && name !== null && typeof name !== 'string') return null;

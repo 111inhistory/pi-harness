@@ -6,10 +6,11 @@
  * the unit tests around `createToolAdmission` cannot prove the assembly honours
  * the configuration. They cover the three defects a review found:
  *
- * - a manual MCP tool enabled by the command must pass native MCP admission;
- * - an enabled manual tool must reach Main's request projection but not a
- *   child's;
- * - a `defaultActive` manual tool must not be usable before `/capability enable`.
+ * - a manual MCP tool with the user's branch record must pass native MCP
+ *   admission;
+ * - an authorized manual tool is branch authority, not request memory: it is
+ *   declared and executable in Main and never reaches a child;
+ * - a `defaultActive` manual tool must not be usable before that record exists.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -122,7 +123,7 @@ const tools: FakeTool[] = [
   { name: "read_mcp_resource", description: "Read a resource", exposure: "deferred", sourceInfo: { source: "mcp", path: "mcp" } },
 ];
 
-test("a default-active manual tool is not declared or callable before /capability enable", async () => {
+test("a default-active manual tool is not declared or callable before the user's record", async () => {
   const assembly = assemble(tools, ["read", "deploy"]);
   const ctx = context([]);
 
@@ -146,7 +147,7 @@ test("the user's enablement record authorizes the manual tool", async () => {
   assert.equal(blocked(await assembly.run("tool_call", { toolName: "deploy" }, toolContext(branch))), false);
 });
 
-test("a manual MCP tool enabled by the command passes native MCP admission", async () => {
+test("a manual MCP tool with the user's record passes native MCP admission", async () => {
   const name = "mcp__demo__deploy";
   const withoutRecord = assemble(tools, ["read", name]);
   assert.equal(blocked(await withoutRecord.run("tool_call", { toolName: name }, toolContext([]))), true,
@@ -154,7 +155,7 @@ test("a manual MCP tool enabled by the command passes native MCP admission", asy
   assert.deepEqual((await withoutRecord.startTurn(context([]))).systemPromptOptions.selectedTools, ["read"],
     "the native boundary removes the unselected MCP declaration");
 
-  // The generic reader is a tool of its own; the user enables it explicitly.
+  // The generic reader is a tool of its own; the user authorizes it explicitly.
   const branch = manualBranch([name, "read_mcp_resource"]);
   const withRecord = assemble(tools, ["read", name, "read_mcp_resource"]);
   assert.equal(blocked(await withRecord.run("tool_call", { toolName: name }, toolContext(branch))), false,
@@ -167,16 +168,22 @@ test("a manual MCP tool enabled by the command passes native MCP admission", asy
     toolContext(branch))), true);
 });
 
-test("an enabled manual tool reaches Main's request memory and never a child's", async () => {
+test("an enabled manual tool is branch authority, not request memory, and never a child's", async () => {
   const branch = manualBranch(["deploy"]);
   const root = assemble(tools, ["read", "deploy"]);
   const head = { role: "system", content: "base", sections: { preamble: "Base" }, timestamp: 0 };
   const projected = await root.run("context_with_system", { messages: [head] }, context(branch)) as {
-    messages: { sections?: Record<string, string> }[];
+    messages: unknown[];
   };
-  const section = projected.messages.map((message) => message.sections?.[CAPABILITY_SECTION]).find(Boolean) ?? "";
-  assert.match(section, /"category":"manual"/, "the user's decision is visible to Main");
-  assert.match(section, /tool:\/\/deploy/);
+  // The declaration carries the interface, so the request gains nothing: a
+  // request-memory patch would change the leading system prompt, and Pi's
+  // conversion folds that into the head for transports without mid-conversation
+  // system messages.
+  assert.deepEqual(projected.messages, [head], "a user enablement adds no request memory");
+
+  // The record is the authority the declaration and execution checks read.
+  assert.deepEqual((await root.startTurn(context(branch))).systemPromptOptions.selectedTools, ["read", "deploy"]);
+  assert.equal(blocked(await root.run("tool_call", { toolName: "deploy" }, toolContext(branch))), false);
 
   const child = assemble(tools, ["read"]);
   setCapabilityParent(child.pi, root.pi);
@@ -185,6 +192,8 @@ test("an enabled manual tool reaches Main's request memory and never a child's",
   };
   assert.equal(childProjection.messages.some((message) => message.sections?.[CAPABILITY_SECTION]), false,
     "a subagent never sees the manual capability");
+  assert.equal(blocked(await child.run("tool_call", { toolName: "deploy" }, toolContext(branch))), true,
+    "a subagent never holds a manual tool, even with the root's record");
 });
 
 test("Codemode's callable catalog follows the same manual gate", async () => {

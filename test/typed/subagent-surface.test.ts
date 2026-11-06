@@ -20,13 +20,20 @@ import type {
 
 import { promptText } from "../../src/prompt-text.ts";
 import { SessionManager } from '@earendil-works/pi-coding-agent';
-import { fauxProvider } from '@earendil-works/pi-ai';
-import type { EndpointResolverResult } from "../../src/ipc/socket.ts";
+import { fauxProvider, normalizeContext } from '@earendil-works/pi-ai';
+import type { Api, Message, Model, SystemMessage, Tool } from '@earendil-works/pi-ai';
+import { stream as streamAnthropic } from '@earendil-works/pi-ai/api/anthropic-messages';
+import { stream as streamChatCompletions } from '@earendil-works/pi-ai/api/openai-completions';
+import { convertResponsesMessages } from '../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js';
+import { getAgentSocketPath, type EndpointResolverResult } from "../../src/ipc/socket.ts";
 import {
   captureContextForChild,
   createSurfaceTools,
   installSessionSurface,
+  SUBAGENT_NAMESPACE,
 } from "../../src/subagent/surface.ts";
+import { SUBAGENT_TOOL_GUIDANCE } from "../../src/subagent/tool-guidance.ts";
+import { projectToolGuidance, toolGuidanceSection } from "../../src/tool-guidance.ts";
 import {
   droppedInheritedTools,
   harnessToolsForDepth,
@@ -126,6 +133,9 @@ interface RecordedCreate {
   readonly ctx: ExtensionContext;
 }
 
+/** A real managed endpoint address for this platform: a socket file or a pipe. */
+const agentAddress = (id: string): string => getAgentSocketPath(id, path.join("/tmp/project", ".pi"));
+
 class RecordingHost implements SubagentSurfaceHost {
   maxDepth = MAX_DEPTH;
   readonly creates: RecordedCreate[] = [];
@@ -143,8 +153,8 @@ class RecordingHost implements SubagentSurfaceHost {
     this.crossSessions.push(command);
   }
 
-  async sessionEndpoint(address: string): Promise<SessionEndpoint> {
-    return address.startsWith("/tmp/sockets/aaaaaa") ? { kind: "local" } : { kind: "local" };
+  async sessionEndpoint(): Promise<SessionEndpoint> {
+    return { kind: "local" };
   }
 
   readonly crossSessions: unknown[] = [];
@@ -195,6 +205,70 @@ function resolveWith(host: SubagentSurfaceHost, seen: ExtensionContext[]): (ctx:
     seen.push(ctx);
     return host;
   };
+}
+
+function declaration(name: string): Tool {
+  return { name, description: `${name} fixture`, parameters: { type: "object", properties: {} } };
+}
+
+function anchor(...names: string[]): SystemMessage {
+  return {
+    role: "system",
+    content: `anchor ${names.join(",")}`,
+    toolsAdded: names.map(declaration),
+    timestamp: 0,
+  };
+}
+
+function guidanceMessages(messages: readonly unknown[], id: string): SystemMessage[] {
+  return messages.flatMap((message) => {
+    if (!isRecord(message) || message.role !== "system") return [];
+    const sections = message.sections;
+    if (!isRecord(sections) || typeof sections[toolGuidanceSection(id)] !== "string") return [];
+    return [message as unknown as SystemMessage];
+  });
+}
+
+function occurrences(text: string, part: string): number {
+  return text.split(part).length - 1;
+}
+
+function responsesWire(messages: readonly unknown[]): readonly unknown[] {
+  const model = {
+    ...fauxProvider().getModel(),
+    api: "openai-responses",
+    provider: "offline-responses",
+    id: "offline",
+  } as Model<Api>;
+  return convertResponsesMessages(
+    model,
+    normalizeContext({ messages: messages as Message[] }),
+    new Set([model.provider]),
+    { includeSystemPrompt: true, supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+  ) as unknown as readonly unknown[];
+}
+
+async function anthropicWire(messages: readonly unknown[]): Promise<unknown> {
+  const model = {
+    ...fauxProvider().getModel(),
+    api: "anthropic-messages",
+    provider: "offline-anthropic",
+    id: "offline",
+    compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true },
+  } as Model<"anthropic-messages">;
+  let captured: unknown;
+  const stream = streamAnthropic(model, normalizeContext({ messages: messages as Message[] }), {
+    apiKey: "offline-fixture",
+    cacheRetention: "none",
+    fetch: async () => { throw new Error("network access is forbidden in subagent-surface.test.ts"); },
+    onPayload: (payload) => {
+      captured = payload;
+      throw new Error("payload captured");
+    },
+  });
+  const result = await stream.result();
+  assert.equal(result.stopReason, "error");
+  return captured;
 }
 
 test("the capacity section follows the resolved caps without rewriting tool text", async () => {
@@ -270,8 +344,9 @@ test("the root surface registers controls and messaging without overriding write
     assert.ok((tool.namespace?.description ?? "") !== "");
     assert.ok((tool.namespace?.instructions ?? "") !== "");
     assert.equal(tool.defaultActive, false, "Main activates messaging through the Capability/Subagent namespace");
-    assert.ok((tool.promptSnippet ?? "") !== "");
-    assert.ok((tool.promptGuidelines?.length ?? 0) > 0);
+    assert.equal(tool.promptSnippet, undefined);
+    assert.equal(tool.promptGuidelines, undefined);
+    assert.ok(tool.description.length > 0, "usage guidance travels in the tool declaration");
   }
   assert.ok(!registered.some(tool => tool.name === "write"));
 
@@ -326,14 +401,41 @@ test("the configured maximum depth moves the surface leaf", () => {
   assert.equal(shallow.stop, null);
 });
 
-test("tool-owned parameter labels and create-only guidance follow the assets", () => {
+test("tool-owned parameter labels and descriptions stay on the prompt assets", () => {
   const asset = JSON.parse(promptText("subagent-tools.json"));
   const tools = createSurfaceTools({ api: new FakeSurfaceApi(), resolveHost: async () => new RecordingHost(), scope: ROOT_SCOPE });
   assert.ok(tools.create && tools.stop);
-  const common = asset.instructions.split("\n");
-  assert.deepEqual(tools.create.promptGuidelines, [...common, asset.create.guideline]);
-  assert.deepEqual(tools.list.promptGuidelines, common);
-  assert.deepEqual(tools.stop.promptGuidelines, common);
+  assert.equal(tools.create.description, asset.create.description);
+  assert.equal(tools.list.description, asset.list.description);
+  assert.equal(tools.stop.description, asset.stop.description);
+  assert.equal(tools.msg_write.description, asset.msg_write.description);
+  assert.equal(SUBAGENT_NAMESPACE.instructions, asset.instructions, "namespace carries only common instructions");
+  for (const tool of [tools.create, tools.list, tools.stop, tools.msg_write]) {
+    assert.equal(tool.namespace?.instructions, asset.instructions);
+    assert.equal(tool.promptSnippet, undefined);
+    assert.equal(tool.promptGuidelines, undefined);
+  }
+  for (const text of [asset.instructions, asset.create.snippet, asset.create.guideline,
+    asset.list.snippet, asset.stop.snippet, asset.msg_write.snippet, ...asset.msg_write.guidelines]) {
+    assert.ok(![tools.create.description, tools.list.description, tools.stop.description, tools.msg_write.description]
+      .some((description) => description.includes(text)), "guidance is projected as context, not folded into a tool description");
+  }
+
+  assert.deepEqual(SUBAGENT_TOOL_GUIDANCE.map((entry) => entry.id), ["subagent", "subagent_create", "msg_write"]);
+  const common = SUBAGENT_TOOL_GUIDANCE.find((entry) => entry.id === "subagent");
+  assert.ok(common);
+  assert.deepEqual(common.tools, ["subagent_create", "subagent_list", "subagent_stop", "msg_write"]);
+  assert.equal(common.text, asset.instructions);
+  const createGuidance = SUBAGENT_TOOL_GUIDANCE.find((entry) => entry.id === "subagent_create");
+  assert.ok(createGuidance);
+  assert.deepEqual(createGuidance.tools, ["subagent_create"]);
+  assert.equal(createGuidance.text, asset.create.guideline);
+  const messageGuidance = SUBAGENT_TOOL_GUIDANCE.find((entry) => entry.id === "msg_write");
+  assert.ok(messageGuidance);
+  assert.deepEqual(messageGuidance.tools, ["msg_write"]);
+  assert.equal(messageGuidance.text, asset.msg_write.guidelines.join("\n\n"));
+  for (const guideline of asset.msg_write.guidelines) assert.ok(messageGuidance.text.includes(guideline));
+
   assert.equal("parameters" in asset, false, "parameter labels belong to their tools, not a flat shared map");
   const create = schemaOf(tools.create);
   assert.equal(propertyOf(create, "context")["description"], asset.create.parameters.context);
@@ -353,7 +455,131 @@ test("tool-owned parameter labels and create-only guidance follow the assets", (
   const leaf = createSurfaceTools({ api: new FakeSurfaceApi(), resolveHost: async () => new RecordingHost(),
     scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: MAX_DEPTH } });
   assert.equal(leaf.create, null);
-  assert.deepEqual(leaf.list.promptGuidelines, common);
+  assert.equal(leaf.list.description, asset.list.description);
+  assert.equal(leaf.list.promptSnippet, undefined);
+  assert.equal(leaf.list.promptGuidelines, undefined);
+});
+
+test("tool guidance projects once at first anchors, common before specific", () => {
+  const list = anchor("subagent_list");
+  const create = anchor("subagent_create");
+  const repeat = anchor("subagent_list");
+  const projected = projectToolGuidance([list, create, repeat], SUBAGENT_TOOL_GUIDANCE);
+
+  assert.equal(projected.length, 5);
+  assert.equal(projected[0], list);
+  assert.equal(projected[2], create);
+  assert.equal(projected[4], repeat);
+  const common = guidanceMessages(projected, "subagent");
+  assert.equal(common.length, 1);
+  assert.deepEqual(common[0]?.sections, {
+    [toolGuidanceSection("subagent")]: SUBAGENT_TOOL_GUIDANCE[0]?.text,
+  });
+  assert.equal(guidanceMessages(projected, "subagent_create").length, 1);
+  assert.equal(guidanceMessages(projected, "msg_write").length, 0);
+
+  const again = projectToolGuidance(projected, SUBAGENT_TOOL_GUIDANCE);
+  assert.deepEqual(again, projected, "re-projection is idempotent");
+});
+
+test("one anchor keeps table order and only section markers suppress guidance", () => {
+  const all = anchor("subagent_create", "msg_write", "subagent_list");
+  const projected = projectToolGuidance([all], SUBAGENT_TOOL_GUIDANCE);
+  assert.equal(projected.length, 4);
+  assert.deepEqual(projected.slice(1).map((message) => {
+    const sections = (message as SystemMessage).sections ?? {};
+    return Object.keys(sections)[0];
+  }), [
+    toolGuidanceSection("subagent"),
+    toolGuidanceSection("subagent_create"),
+    toolGuidanceSection("msg_write"),
+  ]);
+
+  const userLookalike = { role: "user", content: SUBAGENT_TOOL_GUIDANCE[0]?.text ?? "", timestamp: 1 };
+  const fromUser = projectToolGuidance([userLookalike, anchor("subagent_list")], SUBAGENT_TOOL_GUIDANCE);
+  assert.equal(guidanceMessages(fromUser, "subagent").length, 1, "user content cannot suppress projection");
+
+  const inherited = {
+    role: "system",
+    content: "",
+    sections: { [toolGuidanceSection("subagent")]: SUBAGENT_TOOL_GUIDANCE[0]?.text ?? "" },
+    timestamp: 2,
+  } as SystemMessage;
+  const withInherited = projectToolGuidance([anchor("subagent_list"), inherited], SUBAGENT_TOOL_GUIDANCE);
+  assert.equal(guidanceMessages(withInherited, "subagent").length, 1);
+  assert.equal(withInherited[1], inherited, "inherited guidance keeps its position");
+});
+
+test("real serializers carry projected section text at the tail without duplication", async () => {
+  const asset = JSON.parse(promptText("subagent-tools.json"));
+  const list = anchor("subagent_list");
+  const user = { role: "user", content: "GO", timestamp: 1 };
+  const create = anchor("subagent_create");
+  const first = projectToolGuidance([list, user], SUBAGENT_TOOL_GUIDANCE);
+  const later = projectToolGuidance([list, user, create], SUBAGENT_TOOL_GUIDANCE);
+
+  assert.equal(guidanceMessages(first, "subagent").length, 1);
+  assert.equal(guidanceMessages(later, "subagent").length, 1);
+  assert.equal(guidanceMessages(later, "subagent_create").length, 1);
+
+  const firstWire = responsesWire(first);
+  const laterWire = responsesWire(later);
+  assert.deepEqual(laterWire.slice(0, firstWire.length), firstWire, "adding create leaves the list/common prefix unchanged");
+  const laterJson = JSON.stringify(laterWire);
+  assert.equal(occurrences(laterJson, asset.instructions), 1);
+  assert.equal(occurrences(laterJson, asset.create.guideline), 1);
+  assert.match(laterJson, new RegExp(toolGuidanceSection("subagent")));
+  const commonIndex = laterWire.findIndex((item) => JSON.stringify(item).includes(asset.instructions));
+  const createIndex = laterWire.findIndex((item) => JSON.stringify(item).includes(asset.create.guideline));
+  assert.ok(commonIndex > 0 && createIndex > commonIndex, "guidance renders as later provider context");
+
+  const anthropicJson = JSON.stringify(await anthropicWire(later));
+  assert.equal(occurrences(anthropicJson, asset.instructions), 1);
+  assert.equal(occurrences(anthropicJson, asset.create.guideline), 1);
+  assert.match(anthropicJson, new RegExp(toolGuidanceSection("subagent")));
+});
+
+test("real Chat Completions serialization keeps guidance through native collapse", async () => {
+  const asset = JSON.parse(promptText("subagent-tools.json"));
+  const projected = projectToolGuidance([
+    anchor("subagent_create", "msg_write"),
+  ], SUBAGENT_TOOL_GUIDANCE);
+  const model = {
+    ...fauxProvider().getModel(),
+    api: "openai-completions",
+    provider: "offline-chat",
+    id: "offline",
+    compat: { supportsMidConvoSystemMessages: false },
+  } as Model<"openai-completions">;
+  const compatBefore = structuredClone(model.compat);
+  let captured: unknown;
+  const stream = streamChatCompletions(model, normalizeContext({
+    messages: projected as Message[],
+  }), {
+    apiKey: "offline-fixture",
+    fetch: async () => { throw new Error("network access is forbidden in subagent-surface.test.ts"); },
+    onPayload: (payload) => {
+      captured = payload;
+      throw new Error("payload captured");
+    },
+  });
+  const result = await stream.result();
+  assert.equal(result.stopReason, "error");
+  const payload = captured as { readonly messages?: readonly unknown[]; readonly tools?: readonly unknown[] };
+  const messages = payload.messages ?? [];
+  assert.equal(messages.filter((message) => {
+    return isRecord(message) && message.role === "system";
+  }).length, 1, "Chat Completions natively folds the later guidance into the leading system message");
+  const leading = JSON.stringify(messages[0]);
+  for (const text of [asset.instructions, asset.create.guideline, ...asset.msg_write.guidelines]) {
+    assert.ok(leading.includes(text), "the collapsed Chat request retains every projected rule");
+  }
+  const tools = JSON.stringify(payload.tools);
+  assert.ok(tools.includes("subagent_create") && tools.includes("msg_write"));
+  for (const text of [asset.instructions, asset.create.guideline, ...asset.msg_write.guidelines]) {
+    assert.equal(tools.includes(text), false, "guidance stays in context, not Chat-specific tool wire");
+  }
+  assert.deepEqual(model.compat, compatBefore, "the native Chat adapter receives no compat mutation");
 });
 
 test("the surface registers no session management tool", () => {
@@ -470,7 +696,7 @@ test("msg_write sends messages and keeps routing metadata internal", async () =>
 
   const result = await tools.msg_write.execute(
     "m1",
-    { path: "/tmp/project/.pi/sub_02.sock", content: "hello agent" },
+    { path: agentAddress("sub_02"), content: "hello agent" },
     undefined,
     undefined,
     ctx,
@@ -521,7 +747,7 @@ test("endpoint ownership and send share one cached resolution per execute", asyn
 
   const result = await tools.msg_write.execute(
     "m3",
-    { path: "/tmp/project/.pi/sub_02.sock", content: "once" },
+    { path: agentAddress("sub_02"), content: "once" },
     undefined,
     undefined,
     ctx,
@@ -548,8 +774,8 @@ test("concurrent managed sends keep per-execution hosts isolated", async () => {
   });
 
   const [a, b] = await Promise.all([
-    tools.msg_write.execute("c1", { path: "/tmp/project/.pi/sub_02.sock", content: "first" }, undefined, undefined, ctxA),
-    tools.msg_write.execute("c2", { path: "/tmp/project/.pi/sub_03.sock", content: "second" }, undefined, undefined, ctxB),
+    tools.msg_write.execute("c1", { path: agentAddress("sub_02"), content: "first" }, undefined, undefined, ctxA),
+    tools.msg_write.execute("c2", { path: agentAddress("sub_03"), content: "second" }, undefined, undefined, ctxB),
   ]);
 
   assert.deepEqual(first.sends, [{ from: "Main", to: "sub_02", content: "first" }]);
