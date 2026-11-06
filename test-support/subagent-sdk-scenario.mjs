@@ -257,8 +257,8 @@ const fixture = {
 };
 
 try {
-  if (scenario === 'async-shell') {
-    await runAsyncShellScenario(fixture);
+  if (scenario === 'async-shell' || scenario === 'async-shell-powershell') {
+    await runAsyncShellScenario(fixture, scenario === 'async-shell-powershell' ? 'powershell' : 'bash');
   } else if (scenario === "listener-cache") {
     await runListenerCacheScenario(fixture);
   } else if (scenario === "reviewer-sol") {

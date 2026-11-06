@@ -3,17 +3,27 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { lastToolResult, waitForCondition, type ScenarioFixture } from './subagent-sdk-fixture.ts';
 
-const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+const posixQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+const powerShellQuote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
-/** Real SDK + Harness + tmux: owned completion resumes the same Subagent Job. */
-export async function runAsyncShellScenario(fixture: ScenarioFixture): Promise<void> {
+/** Real SDK + Harness + native terminal: completion resumes the same Subagent Job. */
+export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName: 'bash' | 'powershell' = 'bash'): Promise<void> {
   const executable = process.env.PI_ASYNC_SHELL_CLI;
   assert.ok(executable);
-  const command = (args: string[]) => [process.execPath.replaceAll('\\', '/'), executable.replaceAll('\\', '/'), ...args].map(quote).join(' ');
+  const quote = shellName === 'powershell' ? powerShellQuote : posixQuote;
+  const command = (args: string[]) => `${shellName === 'powershell' ? '& ' : ''}${[process.execPath.replaceAll('\\', '/'), executable.replaceAll('\\', '/'), ...args].map(quote).join(' ')}`;
   const started = path.join(fixture.cwd, 'async-started.json');
   const release = path.join(fixture.cwd, 'async-release');
   const marker = 'ASYNC_PTY_RESULT';
-  const script = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(`${started}.tmp`)},JSON.stringify({agentId:process.env.PI_AGENT_ID,socket:process.env.PI_AGENT_SOCKET,tty:process.stdout.isTTY,pid:process.pid}));fs.renameSync(${JSON.stringify(`${started}.tmp`)},${JSON.stringify(started)});const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)})){console.log(${JSON.stringify(marker)});clearInterval(timer)}},10)`;
+  const probe = path.join(fixture.cwd, 'async-command.mjs');
+  await fsp.writeFile(probe, [
+    "import fs from 'node:fs';",
+    'const [started, release, marker] = process.argv.slice(2);',
+    'fs.writeFileSync(started + ".tmp", JSON.stringify({agentId:process.env.PI_AGENT_ID,socket:process.env.PI_AGENT_SOCKET,tty:process.stdout.isTTY,pid:process.pid}));',
+    'fs.renameSync(started + ".tmp", started);',
+    'const timer = setInterval(() => { if (fs.existsSync(release)) { console.log(marker); clearInterval(timer); } }, 10);',
+  ].join('\n'));
+  const childCommand = [process.execPath, probe, started, release].map(value => value.replaceAll('\\', '/'));
   let waiting = false;
   let shellFailure: string | null = null;
   let childTurns = 0;
@@ -24,9 +34,9 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture): Promise<v
       return fixture.textAnswer('Root received shell result.');
     }
     childTurns++;
-    const shell = lastToolResult(request.context.messages, 'bash');
-    if (shell === undefined) return fixture.toolAnswer('bash', {
-      command: command(['create', '--wait', '0s', '--', process.execPath, '-e', script]),
+    const shell = lastToolResult(request.context.messages, shellName);
+    if (shell === undefined) return fixture.toolAnswer(shellName, {
+      command: command(['create', '--wait', '0s', '--timeout', '20s', '--', ...childCommand, marker]),
     });
     if (shell.isError) {
       shellFailure = JSON.stringify(shell.content);
@@ -58,7 +68,7 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture): Promise<v
   assert.equal(shellCallbackRequests.length, 1, 'the callback is delivered once to its owning child');
 
   // Main receives its own completion, using the same environment-based route.
-  await fixture.call('bash', { command: command(['create', '--wait', '0s', '--', process.execPath, '-e', "setTimeout(()=>console.log('MAIN_SHELL_RESULT'),100)"]) });
+  await fixture.call(shellName, { command: command(['create', '--wait', '0s', '--', process.execPath, '-e', "setTimeout(()=>console.log('MAIN_SHELL_RESULT'),100)"]) });
   await waitForCondition(() => mainCompleted, 'Main shell completion turn');
 
   // Cancellation of a held Subagent also stops its outstanding shell resources.

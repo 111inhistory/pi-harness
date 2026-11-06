@@ -46,7 +46,11 @@ export interface ShellBackend {
   sendKey(dir: string, key: string): void;
   /** Whether the pane's process is gone (or its server is). */
   paneGone(dir: string): boolean;
-  /** Whether `pid` is provably this task's own process, not a recycled one. */
+  /**
+   * Whether `pid` is provably this task's own process, not a recycled one.
+   * Returns `false` only when the query succeeded and showed no such process or a
+   * foreign one; throws `process_inspection_failed` when it could not look.
+   */
   ownsProcess(pid: number, marker: string, dir: string): boolean;
 }
 

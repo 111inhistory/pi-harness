@@ -90,10 +90,35 @@ function paneGone(dir: string): boolean {
   return result.code !== 0 || result.stdout.trim() !== "0";
 }
 
+/**
+ * Whether `pid` is provably this task's own process.
+ *
+ * A bare boolean cannot carry "I could not look": a cancelled task must keep its
+ * resource fence when the control query itself failed, instead of recording a
+ * cleanup that was never proved. So an unavailable `ps`, a timeout, or an
+ * unexpected status throws; `false` means the query succeeded and showed either
+ * no such process or a foreign command line.
+ */
 function ownsProcess(pid: number, marker: string, dir: string): boolean {
-  const probe = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: CONTROL_TIMEOUT_MS });
-  if (probe.error !== undefined || probe.status !== 0) return false;
-  const command = probe.stdout ?? "";
+  const probe = spawnSync("ps", ["-o", "command=", "-p", String(pid)], {
+    encoding: "utf8",
+    timeout: CONTROL_TIMEOUT_MS,
+  });
+  if (probe.error !== undefined) {
+    throw new AsyncShellError("process_inspection_failed", `Could not inspect pid ${String(pid)}: ${describe(probe.error)}`);
+  }
+  const command = (probe.stdout ?? "").trim();
+  if (probe.status !== 0) {
+    // POSIX ps exits 1 with no output for a pid that does not exist.
+    if (probe.status === 1 && command === "" && probe.stderr.trim() === "") return false;
+    throw new AsyncShellError(
+      "process_inspection_failed",
+      `Could not inspect pid ${String(pid)}: ps exited ${String(probe.status)} ${probe.stderr.trim()}`,
+    );
+  }
+  if (command === "") {
+    throw new AsyncShellError("process_inspection_failed", `Could not read the command line of pid ${String(pid)}.`);
+  }
   return command.includes(marker) && command.includes(dir);
 }
 

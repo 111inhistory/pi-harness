@@ -143,31 +143,52 @@ function shellForQuery(): readonly string[] {
     });
     if (probe.error === undefined && probe.status === 0) return [candidate, "-NoProfile", "-NonInteractive", "-Command"];
   }
-  return [];
+  throw new AsyncShellError(
+    "process_inspection_failed",
+    "Neither pwsh nor Windows PowerShell could be started to inspect process ownership; the task fence is kept.",
+  );
 }
 
 /**
  * A pid alone proves nothing: Windows recycles pids. The command line is read
  * back and must show this task's own marker and directory before a signal.
+ *
+ * The query answers three distinct things and they must not collapse into one
+ * boolean: the process is gone, the process is someone else's, or the query
+ * itself failed. Only the first two may release a cancellation fence.
  */
 function ownsProcess(pid: number, marker: string, dir: string): boolean {
   const shell = shellForQuery();
-  if (shell.length === 0) return false;
   // The command line must be read as UTF-8: a task directory may be non-ASCII,
   // and Windows PowerShell defaults to the console code page. A command line that
   // cannot be read back proves nothing, so the caller keeps its fence.
   const script = [
     "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
-    `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue`,
-    "if ($p) { [Console]::Out.Write($p.CommandLine) }",
+    `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction Stop`,
+    "if (-not $p) { [Console]::Out.Write('absent') }",
+    "elseif ([string]::IsNullOrEmpty($p.CommandLine)) { [Console]::Out.Write('unreadable') }",
+    "else { [Console]::Out.Write('cmd:' + $p.CommandLine) }",
   ].join("; ");
   const probe = spawnSync(shell[0]!, [...shell.slice(1), script], {
     encoding: "utf8",
     timeout: OWNERSHIP_TIMEOUT_MS,
     windowsHide: true,
   });
-  if (probe.error !== undefined || probe.status !== 0) return false;
-  const command = probe.stdout ?? "";
+  if (probe.error !== undefined) {
+    throw new AsyncShellError("process_inspection_failed", `Could not inspect pid ${String(pid)}: ${describe(probe.error)}`);
+  }
+  if (probe.status !== 0) {
+    throw new AsyncShellError(
+      "process_inspection_failed",
+      `Could not inspect pid ${String(pid)}: the process query exited ${String(probe.status)} ${(probe.stderr ?? "").trim()}`,
+    );
+  }
+  const answer = (probe.stdout ?? "").trim();
+  if (answer === "absent") return false;
+  if (!answer.startsWith("cmd:")) {
+    throw new AsyncShellError("process_inspection_failed", `Could not read the command line of pid ${String(pid)}.`);
+  }
+  const command = answer.slice("cmd:".length);
   return command.includes(marker) && command.includes(dir);
 }
 
