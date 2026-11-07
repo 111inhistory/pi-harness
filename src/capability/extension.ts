@@ -5,7 +5,8 @@
  * internal retrieval session through the shared Subagent execution entry point
  * (`openSubagentExecution`), the same session lifetime, abort and cleanup used by
  * public delegation. Only `capability_step` may execute; supported Responses
- * and Anthropic transports retain blocked parent declarations, never parent handles;
+ * and Anthropic transports, and explicitly enabled Completions endpoints, retain
+ * blocked parent declarations, never parent handles;
  * the run has its own fixed budget. The session inherits the caller's native
  * conversation, system prompt, physical model and thinking level, so returned
  * content such as thinking signatures survives verbatim. The tool returns full
@@ -78,6 +79,8 @@ import { capabilityPublicResult } from "./result.ts";
 import { CAPABILITY_PROMPT_RECORD, projectRecordedCapabilityPrompt, type ProjectionMessage } from "./prompt.ts";
 import { projectedNamespaceRefs, registeredToolGuidance, toolNamespaceInstructions } from "./tool-instructions.ts";
 import { projectDiscoveryDeclarations } from "./declarations.ts";
+import { projectCompactionCapabilityNotice, projectPrunedToolHistory } from './compaction-context.ts';
+import { recordCompactionPruning } from './pruning.ts';
 import { appendDiscoveryRecord } from "./discovery-record.ts";
 import { openSubagentExecution } from "../subagent/execution.ts";
 import { parentModelRuntime } from "../subagent/model-runtime.ts";
@@ -91,6 +94,7 @@ import { createToolAdmission } from "./admission.ts";
 import { createCapabilityScopeView, setCapabilityRootOnlyPolicy } from "./scope.ts";
 import { providerSessionPolicy } from "../provider-session.ts";
 import { projectRecordedToolGuidance } from "../tool-guidance.ts";
+import { projectToolPromptUpdates } from '../tool-prompt-updates.ts';
 import { SUBAGENT_TOOL_GUIDANCE } from "../subagent/tool-guidance.ts";
 import { appendSessionTranscript, additiveToolTranscript } from "../session-transcript.ts";
 import {
@@ -192,10 +196,15 @@ export default function capabilityExtension(
     const available = catalog.names;
     const branch = ctx.sessionManager.getBranch();
     const admission = createToolAdmission(pi, branch, catalog);
-    const guidance = registeredToolGuidance(catalog.tools, SUBAGENT_TOOL_GUIDANCE,
+    const callable = new Set(pi.getActiveTools().filter(admission.admits));
+    const updates = projectToolPromptUpdates({
+      messages: event.messages, tools: catalog.tools, active: callable, branch,
+      appendEntry: (kind, data) => pi.appendEntry(kind, data),
+    });
+    const guidance = [...registeredToolGuidance(catalog.tools, SUBAGENT_TOOL_GUIDANCE,
       branch.some(entry => entry.type === "custom" && entry.customType === CAPABILITY_PROMPT_RECORD),
-      new Set(pi.getActiveTools().filter(admission.admits)));
-    const guided = projectRecordedToolGuidance(event.messages, guidance, {
+      callable), ...updates.guidance];
+    const guided = projectRecordedToolGuidance(updates.messages, guidance, {
       branch,
       checkpointId: branch.findLast((entry) => entry.type === "compaction" || entry.type === "context_edit")?.id ?? null,
       appendEntry: (customType, data) => pi.appendEntry(customType, data),
@@ -214,7 +223,7 @@ export default function capabilityExtension(
     const policy = providerSessionPolicy(ctx.model);
     const declarations = policy.toolSupport !== "none" ? additiveToolTranscript(messages) : messages;
     return {
-      messages: declarations as unknown as AgentMessage[],
+      messages: projectCompactionCapabilityNotice(declarations as AgentMessage[], branch),
     };
   });
   pi.on("tool_call", (event, ctx) => {
@@ -229,6 +238,25 @@ export default function capabilityExtension(
       return { block: true, reason: `Tool ${event.toolName} is manual and requires explicit user authorization in this session.` };
     }
     return undefined;
+  });
+
+  pi.on('session_compact', (_event, ctx) => {
+    const branch = ctx.sessionManager.getBranch();
+    // The active branch identifies the boundary even when summaries repeat.
+    const checkpointId = branch.findLast(entry => entry.type === 'compaction')!.id;
+    // Let the SDK resolve configured +/- tool selectors, including custom defaults.
+    const protectedTools = new Set(SettingsManager.inMemory(pi.getSettings()).getDefaultTools()
+      ?? ['read', 'bash', 'edit', 'write']);
+    // Keep discovery and its indirect execution path available for recovery.
+    protectedTools.add('capability');
+    protectedTools.add('codemode');
+    const pruning = recordCompactionPruning(pi, {
+      branch, checkpointId, protectedTools,
+    });
+    if (pruning?.removedTools.length) {
+      const removed = new Set(pruning.removedTools);
+      pi.setActiveTools(pi.getActiveTools().filter(name => !removed.has(name)));
+    }
   });
 
   if (!discovery) return;
@@ -578,13 +606,19 @@ async function openInternalSession(
       const catalog = createEligibleToolCatalog(pi);
       const branch = session.sessionManager.getBranch();
       const admission = createToolAdmission(pi, branch, catalog);
-      const declarations = projectDiscoveryDeclarations(transformed,
+      const historical = projectPrunedToolHistory(transformed, branch);
+      const declarations = projectDiscoveryDeclarations(historical,
         name => retrievalNames.has(name) || admission.declares(name),
         () => pi.getAllTools().find(tool => tool.name === "codemode")?.description);
-      const guidance = registeredToolGuidance(catalog.tools, SUBAGENT_TOOL_GUIDANCE,
+      const callable = new Set(pi.getActiveTools().filter(admission.admits));
+      const updates = projectToolPromptUpdates({
+        messages: declarations, tools: catalog.tools, active: callable, branch,
+        appendEntry: (kind, data) => { session.sessionManager.appendCustomEntry(kind, data); },
+      });
+      const guidance = [...registeredToolGuidance(catalog.tools, SUBAGENT_TOOL_GUIDANCE,
         branch.some(entry => entry.type === "custom" && entry.customType === CAPABILITY_PROMPT_RECORD),
-        new Set(pi.getActiveTools().filter(admission.admits)));
-      const guided = projectRecordedToolGuidance(declarations, guidance, {
+        callable), ...updates.guidance];
+      const guided = projectRecordedToolGuidance(updates.messages, guidance, {
         branch,
         checkpointId: branch.findLast((entry) => entry.type === "compaction" || entry.type === "context_edit")?.id ?? null,
         appendEntry: (customType, data) => { session.sessionManager.appendCustomEntry(customType, data); },
@@ -602,7 +636,7 @@ async function openInternalSession(
             instructions: { text: policyPrompt.additiveExecutionBlocked },
           }).messages
         : remembered;
-      return withAddendum as unknown as AgentMessage[];
+      return projectCompactionCapabilityNotice(withAddendum as AgentMessage[], branch);
     };
     const cleanupBudget = installModelCallBudget(session, request.budget, {
       ...(request.beforeRequest === undefined ? {} : { beforeRequest: request.beforeRequest }),

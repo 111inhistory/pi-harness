@@ -16,7 +16,8 @@ test('classifies only the exact native transport APIs', () => {
     assert.equal(classifyProviderTransport({ api }), 'responses');
   }
   assert.equal(classifyProviderTransport({ api: 'anthropic-messages' }), 'anthropic');
-  for (const api of ['openai-completions', 'mistral-conversations', 'pi-virtual', 'bedrock-converse-stream']) {
+  assert.equal(classifyProviderTransport({ api: 'openai-completions' }), 'completions');
+  for (const api of ['mistral-conversations', 'pi-virtual', 'bedrock-converse-stream']) {
     assert.equal(classifyProviderTransport({ api }), 'other');
   }
   assert.equal(classifyProviderTransport({ api: 'openai-responses', provider: 'custom-gateway' }), 'responses');
@@ -75,18 +76,66 @@ test('Anthropic requires both its mid-conversation bits', () => {
   });
 });
 
-test('Chat Completions ignores additive compat', () => {
+test('Chat Completions derives additions tool placement strictly from its own bits', () => {
+  // additions iff both mid-conversation system messages and tool additions are true
   assert.deepEqual(providerSessionPolicy({
     api: 'openai-completions',
     compat: {
       supportsMidConvoSystemMessages: true,
       supportsMidConvoToolAdditions: true,
-      supportsAdditionalTools: true,
-      supportsToolSearch: true,
     },
   }), {
-    transport: 'other',
+    transport: 'completions',
+    midConversationSystemMessages: true,
+    toolSupport: 'additions',
+  });
+
+  // mid-convo system messages without tool additions allows prompt updates but toolSupport is none
+  assert.deepEqual(providerSessionPolicy({
+    api: 'openai-completions',
+    compat: {
+      supportsMidConvoSystemMessages: true,
+    },
+  }), {
+    transport: 'completions',
+    midConversationSystemMessages: true,
+    toolSupport: 'none',
+  });
+
+  // tool additions without mid-convo system messages cannot anchor tools, so toolSupport is none
+  assert.deepEqual(providerSessionPolicy({
+    api: 'openai-completions',
+    compat: {
+      supportsMidConvoToolAdditions: true,
+    },
+  }), {
+    transport: 'completions',
     midConversationSystemMessages: false,
+    toolSupport: 'none',
+  });
+
+  // empty compat defaults to false / none
+  assert.deepEqual(providerSessionPolicy({
+    api: 'openai-completions',
+    compat: {},
+  }), {
+    transport: 'completions',
+    midConversationSystemMessages: false,
+    toolSupport: 'none',
+  });
+
+  // other transports' flags have no effect on completions
+  assert.deepEqual(providerSessionPolicy({
+    api: 'openai-completions',
+    compat: {
+      supportsMidConvoSystemMessages: true,
+      supportsAdditionalTools: true,
+      supportsToolSearch: true,
+      supportsMidConvoToolChanges: true,
+    },
+  }), {
+    transport: 'completions',
+    midConversationSystemMessages: true,
     toolSupport: 'none',
   });
 });

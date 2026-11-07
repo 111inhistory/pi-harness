@@ -48,14 +48,14 @@ export function registeredToolGuidance(
   const groups = new Map<string, string[]>();
   for (const tool of tools) {
     const name = tool.namespace?.name;
-    if (!name || covered.has(name)) continue;
+    if (!name || covered.has(name) || (callable && !callable.has(tool.name))) continue;
     const members = groups.get(name) ?? [];
     members.push(tool.name);
     groups.set(name, members);
   }
   const instructions = toolNamespaceInstructions(tools);
   // Once downstream placements exist, even asset bootstrap must only append.
-  const initialAssets = assets.map(entry => ({
+  const initialAssets = assets.filter(entry => !callable || entry.tools.some(name => callable.has(name))).map(entry => ({
     ...entry,
     ...(appendOnly ? { initialPlacement: 'tail' as const } : {}),
     ...(callable ? { eligible: entry.tools.some(name => callable.has(name)) } : {}),

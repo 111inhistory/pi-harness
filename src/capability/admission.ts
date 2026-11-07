@@ -18,7 +18,7 @@
  * resource read needs a selected server; only the shared rule lives here.
  */
 
-import { discoveryRecords } from './discovery-record.ts';
+import { discoveryRecords, prunedToolNames } from './discovery-record.ts';
 import {
   createCapabilityScopeView,
   type CapabilityRootOnlyPolicy,
@@ -114,6 +114,7 @@ export function createToolAdmission(
 ): ToolAdmission {
   const scope = catalog?.scope ?? createCapabilityScopeView(host);
   const { selected, manual } = branchToolSelection(branch);
+  const pruned = prunedToolNames(branch);
   const active = new Set(host.getActiveTools());
   const tools = catalog?.tools ?? host.getAllTools();
   const rootOnly: CapabilityRootOnlyPolicy | null = scope.rootOnly;
@@ -125,6 +126,7 @@ export function createToolAdmission(
   const declares = (name: string): boolean =>
     !isNativeDiscoveryTool(name) &&
     (!isMcpExecutionTool(name) || selected.has(name)) &&
+    !pruned.has(name) &&
     admitsManual(name);
   const admits = (name: string): boolean => declares(name) && scope.allows(name);
   const admitsServer = (server: unknown): boolean => {

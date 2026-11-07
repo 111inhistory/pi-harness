@@ -54,5 +54,5 @@ ModelRuntime 桥依赖 SDK 的内部结构，升级 SDK 时应复核。子会话
 - **能力记忆**：发现记录按分支累计，角色排除仍优先；请求投影重新核对当前资格。记录能否恢复依赖规范条目仍在当前分支，激活成功性另受上面的已知缺陷限制。
 - **MCP 发现与连接**：Capability 只搜索当前已注册工具，不等待全部后端，也不主动重连。注册或激活不表示服务持续在线；连接恢复沿用 Pi 原生行为和用户命令。
 - **刷新边界**：根服务使用配置快照，已有 Job 保留原 Budget。提示词正文受 ESM 缓存影响，重启 Pi 是明确生效方式，`/reload` 不保证刷新全部依赖。
-- **工具集变化与提示词缓存**：Responses／Anthropic 的追加路径按模型兼容位选择，工具与 system 更新由 Pi 原生编码。本仓库的 Subagent 工具不再声明 `promptSnippet`／`promptGuidelines`；共同指引在首个成员声明后投影，专属指引随对应工具声明投影。第三方工具仍可能通过这些元数据触发 Pi 的 `<tools>`／`<rules>` 更新；未支持中途 system 消息的模型会把更新折叠到头部。本轮不增加 Chat Completions 协议适配，指引上下文仍交给 Pi 原生折叠与编码；不添加移除事件、缓存断点或 TTL 策略。前缀稳定与缓存标识相同都不保证真实缓存命中。
-- **Root 缓存标识观察**：Inherited 子会话与 Capability 检索会话的公开 `streamFunction` wrapper 观察最终 payload hook 结果，并按分支记录 Responses 的有效 key。主会话未安装相同 wrapper；捕获仅能读取当前分支记录或默认 Session ID，不能保证识别外部插件在 root 最终请求中设置的任意自定义 key。原生禁用缓存与外部 override 的优先级只在已接管的会话中有离线验证；不要将默认根标识视为任意插件组合下的最终 wire key。
+- **工具集变化与提示词缓存**：工具与 system 更新由 Pi 原生编码，并按模型 compat 选择追加路径。Chat Completions 的工具追加需要明确开启中途 system 消息与工具新增两个兼容位；标准端点仍重发顶层工具列表。同名 schema 更新在仅支持新增的路径可能重建前缀，未支持中途 system 消息的模型会折叠指引到头部。描述与共同指引变化使用增量段落，压缩则允许重建并收缩工具 checkpoint。详情见[Provider 传输行为](provider-transports.md)。前缀稳定和缓存标识相同不保证实际命中；不添加缓存断点或 TTL 策略。
+- **缓存标识验收边界**：Main 在共享 ModelRuntime 边界观察最终 payload hook 结果，Inherited 与 Capability 检索会话通过自身 `streamFunction` wrapper 观察；有效 Responses key 按分支保存。离线回归覆盖钩子顺序、继承、落盘恢复、共享运行时和退役回调。任意第三方插件组合及真实服务商的长期缓存复用未全面验收；相同 key 不保证命中，详见[Provider 传输行为](provider-transports.md)。

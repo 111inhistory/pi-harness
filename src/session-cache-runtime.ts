@@ -23,7 +23,9 @@
  */
 
 import type { StreamFn } from '@earendil-works/pi-agent-core';
-import type { Api, Model } from '@earendil-works/pi-ai';
+import { lazyStream, normalizeContext, type Api, type Model } from '@earendil-works/pi-ai';
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { parentModelRuntime } from './subagent/model-runtime.ts';
 import { classifyProviderTransport } from './provider-session.ts';
 import {
   applySessionCacheToPayload, limitSessionCacheKey,
@@ -32,6 +34,56 @@ import {
 
 export const CACHE_IDENTITY_CUSTOM_TYPE = 'harness-cache-identity';
 
+/**
+ * Observe Main after the SDK has run every provider payload hook. The public
+ * extension context has no Agent handle; the existing ModelRuntime bridge is
+ * the shared request boundary. Only this session's ordinary requests are wrapped.
+ */
+export function installMainSessionCacheIdentity(pi: ExtensionAPI): void {
+  let detach: (() => void) | undefined;
+  const close = (): void => { detach?.(); detach = undefined; };
+  const attach = (ctx: ExtensionContext): void => {
+    close();
+    const runtime = parentModelRuntime(ctx.modelRegistry, 'Main cache identity');
+    const manager = ctx.sessionManager;
+    const sessionId = manager.getSessionId();
+    let current = true;
+    const previous = runtime.streamSimple;
+    const target: SessionCacheTarget = {
+      agent: { streamFunction: (model, context, options) => previous.call(runtime, model, context, options) },
+      sessionManager: {
+        getSessionId: () => sessionId,
+        getBranch: () => manager.getBranch(),
+        appendCustomEntry(kind, data) {
+          if (current && manager.getSessionId() === sessionId) pi.appendEntry(kind, data);
+        },
+      },
+    };
+    const restore = installSessionCacheIdentity(target);
+    const wrapped: typeof runtime.streamSimple = (model, context, options) => {
+      if (!current || options?.sessionId !== sessionId || model.api === 'pi-virtual') {
+        return previous.call(runtime, model, context, options);
+      }
+      return lazyStream(model, async () => target.agent.streamFunction(model, normalizeContext(context), options));
+    };
+    runtime.streamSimple = wrapped;
+    detach = () => {
+      current = false;
+      if (runtime.streamSimple === wrapped) runtime.streamSimple = previous;
+      restore();
+    };
+  };
+  pi.on('session_start', (_event, ctx) => attach(ctx));
+  pi.on('session_tree', (_event, ctx) => attach(ctx));
+  pi.on('session_before_tree', close);
+  pi.on('session_before_switch', close);
+  pi.on('session_before_fork', close);
+  pi.on('session_shutdown', close);
+  // Another extension can cancel a navigation after our before hook detached.
+  pi.on('agent_start', (_event, ctx) => { if (!detach) attach(ctx); });
+}
+
+
 export interface CacheIdentityCustomEntryData {
   readonly key: string | null;
 }
@@ -39,7 +91,7 @@ export interface CacheIdentityCustomEntryData {
 export interface SessionBranchManager {
   getBranch(): readonly unknown[];
   getSessionId(): string;
-  appendCustomEntry(customType: string, data?: unknown): string;
+  appendCustomEntry(customType: string, data?: unknown): void;
 }
 
 export interface SessionCacheTarget {
@@ -105,15 +157,15 @@ export function resolveSessionCacheKey(manager: {
  * Persist an outbound cache key (or null for disabled) onto a session's native branch.
  */
 export function recordSessionCacheIdentity(
-  manager: { appendCustomEntry(customType: string, data?: unknown): string },
+  manager: { appendCustomEntry(customType: string, data?: unknown): void },
   key: string | null,
-): string {
+): void {
   const normalizedKey = key === null
     ? null
     : (typeof key === 'string' && key.length > 0
         ? limitSessionCacheKey(key) ?? null
         : null);
-  return manager.appendCustomEntry(CACHE_IDENTITY_CUSTOM_TYPE, { key: normalizedKey });
+  manager.appendCustomEntry(CACHE_IDENTITY_CUSTOM_TYPE, { key: normalizedKey });
 }
 
 /**
@@ -180,7 +232,7 @@ export function installSessionCacheIdentity(
       // capture can observe it. A missing/empty key is not evidence that caching was
       // disabled (e.g. temporary cacheRetention: 'none' or a transport-side omission),
       // so it must not overwrite lineage with a durable null.
-      if (classifyProviderTransport(requestModel) === 'responses' && isRecord(finalPayload)) {
+      if (!options?.signal?.aborted && classifyProviderTransport(requestModel) === 'responses' && isRecord(finalPayload)) {
         const finalKey = finalPayload['prompt_cache_key'];
         if (typeof finalKey === 'string' && finalKey.length > 0) {
           const observedKey = limitSessionCacheKey(finalKey) ?? null;

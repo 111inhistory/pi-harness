@@ -11,7 +11,7 @@
  * authorization out of the request is therefore not an optimization: it is the
  * only placement that cannot rewrite a prefix.
  */
-import { discoveryRecords, type CapabilityHit, type DiscoveryMemory } from './discovery-record.ts';
+import { discoveryRecords, latestPruneRecord, type CapabilityHit, type DiscoveryMemory } from './discovery-record.ts';
 import { promptString } from '../prompt-text.ts';
 import type { TranscriptMessageLike } from '../session-transcript.ts';
 import {
@@ -199,6 +199,15 @@ export function projectRecordedCapabilityPrompt(
     history,
     journal,
   ) as ProjectionMessage[];
+  if (latestPruneRecord(branch)?.checkpointId === options.checkpointId &&
+    !records.some(record => record.checkpointId === options.checkpointId)) {
+    const rebased: PromptSectionRecord = {
+      version: PROMPT_SECTION_RECORD_VERSION, checkpointId: options.checkpointId,
+      id: CAPABILITY_SECTION, text, position: 'head',
+    };
+    options.appendEntry(CAPABILITY_PROMPT_RECORD, rebased);
+    return replay([...records, rebased]);
+  }
   if (records.length > 0) return replay(records);
 
   const initial: PromptSectionRecord[] = [];
