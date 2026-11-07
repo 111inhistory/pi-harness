@@ -4,7 +4,7 @@
   "create": {
     "description": "Create background subagents for concurrent execution, non-blocking. Returns agent IDs and socket addresses.",
     "snippet": "Delegate parallel workloads to direct subagents",
-    "guideline": "Write requirements primarily in English. Use subagents to offload background tasks, or dispatch split work. Conclude your turn when waiting for subagent completion (do not poll). Use inheritContext: true for branching work or parallel exploration off this session. Keep coupled workflows local, or isolate potential conflicts in git worktrees for you to merge; subagents must not depend on each other.",
+    "guideline": "Write requirements in English. Use subagents to offload background tasks, or dispatch split work. Conclude your turn when waiting for subagent completion (do not poll). Use inheritContext: true to create an agent that inherits your current context and collaborates with you on a workstream. Use false to delegate a self-contained assignment to an agent selected for the task. Keep coupled workflows local, or isolate potential conflicts in git worktrees for you to merge. Sequence dependent stages explicitly.",
     "parameters": {
       "context": "Background, constraints, and source material shared by every task in this batch.",
       "tasks": {

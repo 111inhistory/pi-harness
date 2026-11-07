@@ -1,6 +1,6 @@
 {
   "capability": {
-    "description": "Find local Skills, Tools, and MCP capabilities for the current conversation and return selected refs; no arguments.",
+    "description": "Find local Skills, Tools, and MCP capabilities for the current conversation and return selected refs; no arguments. You must use capability to discover Skills. Do not search the filesystem or web for Skills. Use read to inspect the Skill entry paths.",
     "snippet": "Find task guidance and capabilities",
     "guidelines": [
       "Understand the task and project context first, then check whether you lack guidance, background info, or specialized tools (e.g. for tasks like PPT creation or complex workflows). If true, call capability; otherwise proceed directly.",
@@ -12,7 +12,7 @@
     "label": "Capability Step",
     "description": "Advance discovery by searching with queries, accumulating selected refs, or finishing. All parameters optional.",
     "parameters": {
-      "queries": "Parallel local searches using keywords. Defaults to []; omit when not searching.",
+      "queries": "Parallel local keyword searches in English. Focus each query on one capability need, using concise action, object, and distinguishing terms. Preserve product/API names. Defaults to []; omit when not searching.",
       "refs": "Exact refs from earlier results. Select namespace refs, not member refs. Selections accumulate; defaults to [].",
       "finish": "Set true to finish discovery. Defaults to false."
     }
