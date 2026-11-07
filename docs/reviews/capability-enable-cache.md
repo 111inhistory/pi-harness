@@ -1,4 +1,4 @@
-# Capability enable: request cache boundary
+# Capability 启用：请求缓存边界
 
 审查材料，描述 `/capability enable` 重写后请求前缀的实际行为、代码级证据、按兼容位划分的分支，以及尚未决定与尚未实测的部分。这里没有真实 provider 的缓存计费数据。当前有效契约以 [interface-contract](../interface-contract.md) 与 [capability-prompt-memory](../capability-prompt-memory.md) 为准。
 
