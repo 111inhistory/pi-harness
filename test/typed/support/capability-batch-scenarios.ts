@@ -204,11 +204,17 @@ export async function runResponsesOnlyScenario(fixture: CapabilityScenarioFixtur
   assert.ok(lastChat);
   const declared = getCurrentTools(lastChat.context.messages);
   assert.deepEqual(declared.map((tool) => tool.name), ["codemode"]);
+  const descriptionUpdate = lastChat.context.messages.filter(message => message.role === 'system')
+    .map(message => message.sections?.['harness-guidance:tool-description:codemode'])
+    .findLast(value => typeof value === 'string');
   assert.match(
-    declared[0]?.description ?? "",
+    descriptionUpdate ?? '',
     /subagent_create/,
-    "the active Codemode catalog remains the query path for hidden direct declarations",
+    'the updated Codemode catalog reaches the model as tail guidance for hidden direct declarations',
   );
+  const initialCodemode = getCurrentTools(chats[0]!.context.messages).find(tool => tool.name === 'codemode');
+  assert.equal(declared[0]?.description, initialCodemode?.description,
+    'catalog prose changes preserve the historical Codemode declaration');
 }
 
 export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixture): Promise<void> {

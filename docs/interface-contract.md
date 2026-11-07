@@ -121,7 +121,7 @@ API 协调应同时保证资源指引、工具状态与供应商接口声明一�
 - 该命令是 `capability.manualTools` 名单的唯一启用入口。名单内工具不出现在检索候选里，子会话也不能持有它们；子会话同样注册该命令，但子作用域排除 `manual` 工具，启用会被拒绝（`not_permitted`），选择列表也不列出它们。
 - 授权依据是分支上的 `manual` 记录，不是当前激活状态。工具因 `defaultActive`、历史恢复或其他扩展而处于激活状态，不构成授权：`before_agent_start` 会把它从声明与激活集中移除，`tool_call` 也会以需要用户授权拒绝。用户启用后才写记录并保留。
 - 已启用的 manual MCP 工具与发现选中的 MCP 工具同等对待：通过原生 MCP 准入、出现在 Codemode 的可用目录中，并可作为 `read_mcp_resource` 的服务器选择依据。`read_mcp_resource` 自身仍需被选中或手动启用。
-- 用户授权不是请求状态：`manual` 记录不产生 `<capabilities>` 段落。启用会追加工具声明，Subagent 共同及专属指引分别在首个成员及对应工具声明后作为独立系统段落投影，不写进 description，也不使用工具元数据改写头部 rules。第三方工具的 `promptSnippet`／`promptGuidelines` 仍遵循 Pi 原生段落更新；未支持中途 system 消息时可能折叠进头部。Chat Completions 的工具与消息编码继续由 Pi 原生处理；共同指引投影也会提供给该路径，未支持中途 system 消息时沿用 Pi 的折叠行为，详见[已知问题](known-issues.md)。
+- 用户授权不是请求状态：`manual` 记录不产生 `<capabilities>` 段落。启用会追加工具声明，Subagent 共同及专属指引分别在首个成员及对应工具声明后作为独立系统段落投影，不写进 description，也不使用工具元数据改写头部 rules。第三方工具的 `promptSnippet`／`promptGuidelines` 仍遵循 Pi 原生段落更新；未支持中途 system 消息时可能折叠进头部。Chat Completions 的工具新增需要同时明确开启 `supportsMidConvoSystemMessages` 与 `supportsMidConvoToolAdditions`；仅有一个标志时不启用。标准路径仍使用顶层工具列表，同名 schema 更新可能重建前缀。共同指引与工具描述更新使用增量段落，详见[传输行为](provider-transports.md)。
 - 命令只读写当前根会话：不发送消息、不唤醒 Subagent、不改变路由或 Budget。
 - 收到跨 session 消息时，接收根会话按当前资格激活 `msg_write`，不加载整个命名空间、不写入用户授权记录，重复收信幂等。显式列入 `manualTools` 时仍受该门禁约束。
 
@@ -137,6 +137,12 @@ API 协调应同时保证资源指引、工具状态与供应商接口声明一�
 - 内部本地检索使用 MiniSearch 的 BM25 排序和默认切词，精确引用独立查找；不提供手写模糊兜底或语言语义推断。检索限制与算法参数由 `harness.json` 配置，详见[Harness 参数配置](harness-configuration.md#capability)。
 - 当前不搜索远端，也不返回远端候选。
 - Capability 与 Subagent 配套装配，内部检索不检查公开 Subagent 工具是否已注册或激活。
+
+### 压缩时收缩发现能力
+
+Main 与普通 Subagent 在成功 compaction 后移除上次压缩以来未使用的 Capability 工具成员；使用证据包括直接执行结果和 Codemode 的持久化嵌套调用记录。手动启用的工具、基础工具与发现恢复入口保留。MCP／namespace 按成员收缩，空组移除共同指引与记忆；Skill 不参与淘汰，不断开 MCP 连接。
+
+淘汰先写分支记录，再更新激活集。新 checkpoint 不再声明已撤下的成员；其首条 system message 包含固定的能力变更段，提示摘要中的相关描述属于历史信息，需要重新发现。该段不触发额外轮次，也不因后续重新启用而改写。重新发现通过尾部新声明恢复工具；恢复与分支切换遵守各自记录。压缩失败不淘汰；内部检索和 `/btw` 不独立运行这套机制。
 
 ### 内部批量检索与增量提交
 

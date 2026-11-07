@@ -11,6 +11,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { createCapabilityScopeView } from '../capability/scope.ts';
 import { createToolAdmission } from '../capability/admission.ts';
 import { projectDiscoveryDeclarations } from '../capability/declarations.ts';
+import { projectCompactionCapabilityNotice, projectPrunedToolHistory } from '../capability/compaction-context.ts';
 import { replayInheritedPromptGuidance, type InheritedSnapshot } from '../inherited-context.ts';
 import { promptString } from '../prompt-text.ts';
 import { providerSessionPolicy } from '../provider-session.ts';
@@ -96,12 +97,15 @@ export async function openBtwConversation(
     session.agent.transformContext = async (input, requestSignal) => {
       const transformed = previous ? await previous(input, requestSignal) : input;
       const admission = createToolAdmission(pi, snapshot.entries);
-      const declarations = projectDiscoveryDeclarations(transformed, admission.declares,
+      const branch = session.sessionManager.getBranch();
+      const historical = projectPrunedToolHistory(transformed, branch);
+      const declarations = projectDiscoveryDeclarations(historical, admission.declares,
         () => pi.getAllTools().find(tool => tool.name === 'codemode')?.description);
       const guided = replayInheritedPromptGuidance(declarations, session.sessionManager);
-      return (additive ? appendSessionTranscript(additiveToolTranscript(guided), {
+      const projected = additive ? appendSessionTranscript(additiveToolTranscript(guided), {
         blockedTools: tools.map(tool => tool.name),
-      }).messages : guided) as AgentMessage[];
+      }).messages : guided;
+      return projectCompactionCapabilityNotice(projected as AgentMessage[], branch);
     };
     return conversation(execution, () => { toolBlocked = false; }, () => toolBlocked, blockedReason);
   } catch (error) {

@@ -12,7 +12,8 @@
 | [异步 Shell](async-shell.md) | POSIX tmux／Windows psmux 任务、增量输出、终端输入和结果归属 |
 | [当前架构](architecture.md) | 模块职责、生命周期、资源归属和写入边界 |
 | [存储 v2](subagent-storage.md) | 根分支事件、原生子会话、恢复和视图 |
-| [能力提示词记忆](capability-prompt-memory.md) | 规范记录、请求投影和权限过滤 |
+| [能力提示词记忆](capability-prompt-memory.md) | 规范记录、请求投影、压缩淘汰和权限过滤 |
+| [Provider 传输行为](provider-transports.md) | 增量工具 compat、描述与 schema 更新、缓存标识边界 |
 | [提示词资产](../prompts/README.md) | 资产字段、段落装配和修改生效规则 |
 | [已知问题与验收边界](known-issues.md) | 已知缺陷、未交付功能、待验收场景和设计限制 |
 | [文档写作约定](writing-guide.md) | 术语、事实分类和写作规则 |

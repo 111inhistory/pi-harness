@@ -298,7 +298,9 @@ export function replayPromptSections<M extends TranscriptMessageLike>(
     }
 
     if (current.length === 0) {
-      const text = history[history.length - 1]!.text;
+      // A rebuilt boundary need not carry a section that is now absent. Within
+      // one boundary removals still append and preserve every earlier emission.
+      const text = source.text === null ? null : history[history.length - 1]!.text;
       head[section] = text;
       appendPromptSectionRecord(journal, journal.recordType, {
         version: PROMPT_SECTION_RECORD_VERSION,

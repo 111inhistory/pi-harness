@@ -1,5 +1,6 @@
 {
   "additiveExecutionBlocked": "Only capability_step may execute.",
+  "compactionPruned": "At this compaction boundary, these unused capabilities were removed from the active tool set:\n{capabilities}\nReferences to them in the summary are historical. Rediscover them through capability before calling them; later discovery results may reactivate them. If discovery is unavailable, ask your parent or user to enable the needed capability.",
   "budgetWrapUp": "Finish now via capability_step with finish: true and queries: []; include final selected refs.",
   "memoryHeader": "Loaded tools and lazy-loaded skills. Use tool declarations or returned interfaces for calls. Read Skill files at the listed paths before use; re-read if no longer in context."
 }

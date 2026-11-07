@@ -16,6 +16,23 @@
  */
 
 /** `customType` of the branch entry holding one successful discovery. */
+/** `customType` of the branch entry holding a compaction pruning boundary. */
+export const CAPABILITY_PRUNE_RECORD = "capability-prune";
+
+/** Only this prune record version is read. */
+export const CAPABILITY_PRUNE_RECORD_VERSION = 1;
+
+/** The stored payload of one `capability-prune` custom entry. */
+export interface CapabilityPruneRecord {
+  readonly version: typeof CAPABILITY_PRUNE_RECORD_VERSION;
+  /** Compaction entry ID anchoring this pruning boundary. */
+  readonly checkpointId: string;
+  /** Tool names removed because they were unused in the compaction window. */
+  readonly removedTools: readonly string[];
+  /** Group refs (e.g. "mcp://github", "namespace://docker") whose members were all removed. */
+  readonly removedGroups?: readonly string[];
+}
+
 export const CAPABILITY_DISCOVERY_RECORD = "capability-discovery";
 
 /** Only this record version is read. */
@@ -187,15 +204,200 @@ function parseRecord(data: unknown): StoredDiscovery | null {
  * Entry timestamps are deliberately not read: a record's position in the branch
  * is its order, and no consumer anchors on wall-clock time.
  */
+
+function parsePruneRecord(data: unknown): CapabilityPruneRecord | null {
+  if (!isRecord(data) || data["version"] !== CAPABILITY_PRUNE_RECORD_VERSION) return null;
+  const checkpointId = data["checkpointId"];
+  if (typeof checkpointId !== "string" || checkpointId === "") return null;
+  const rawTools = data["removedTools"];
+  if (!Array.isArray(rawTools)) return null;
+  const removedTools = rawTools.filter((t): t is string => typeof t === "string" && t !== "");
+  const rawGroups = data["removedGroups"];
+  const removedGroups = Array.isArray(rawGroups)
+    ? rawGroups.filter((g): g is string => typeof g === "string" && g !== "")
+    : undefined;
+  return {
+    version: CAPABILITY_PRUNE_RECORD_VERSION,
+    checkpointId,
+    removedTools,
+    ...(removedGroups !== undefined && removedGroups.length > 0 ? { removedGroups } : {}),
+  };
+}
+
+function filterHits(
+  hits: readonly CapabilityHit[],
+  removedTools: ReadonlySet<string>,
+  removedGroups: ReadonlySet<string>,
+): CapabilityHit[] {
+  const kept: CapabilityHit[] = [];
+  for (const hit of hits) {
+    if (hit.ref && removedGroups.has(hit.ref)) continue;
+    if (Array.isArray(hit.tools)) {
+      const remainingTools = hit.tools.filter(
+        (member) => typeof member.name !== "string" || !removedTools.has(member.name),
+      );
+      if (remainingTools.length === 0) continue;
+      kept.push({
+        ...hit,
+        tools: remainingTools,
+        ...(hit.toolCount !== undefined ? { toolCount: remainingTools.length } : {}),
+      });
+    } else {
+      if (typeof hit.name === "string" && removedTools.has(hit.name)) continue;
+      kept.push(hit);
+    }
+  }
+  return kept;
+}
+
+function filterGuidance(
+  hits: readonly CapabilityHit[] | undefined,
+  removedTools: ReadonlySet<string>,
+  removedGroups: ReadonlySet<string>,
+): readonly CapabilityHit[] | undefined {
+  if (!hits || hits.length === 0) return hits;
+  const filtered = hits.filter((hit) => {
+    if (hit.ref && removedGroups.has(hit.ref)) return false;
+    if (hit.namespace && (removedGroups.has(hit.namespace) || removedGroups.has("namespace://" + hit.namespace))) return false;
+    if (Array.isArray(hit.tools)) {
+      return hit.tools.some((member) => typeof member.name !== "string" || !removedTools.has(member.name));
+    }
+    return true;
+  });
+  return filtered.length > 0 ? filtered : undefined;
+}
+
+function filterDiscoveryByPrune(
+  record: StoredDiscovery,
+  removedTools: ReadonlySet<string>,
+  removedGroups: ReadonlySet<string>,
+): StoredDiscovery {
+  const { guidance: _oldGuidance, ...restResult } = record.result;
+  const tools = filterHits(record.result.tools, removedTools, removedGroups);
+  const mcp = filterHits(record.result.mcp, removedTools, removedGroups);
+  const guidance = filterGuidance(record.result.guidance, removedTools, removedGroups);
+  return {
+    ...record,
+    result: {
+      ...restResult,
+      tools,
+      mcp,
+      ...(guidance !== undefined ? { guidance } : {}),
+      skills: record.result.skills,
+      ...(record.result.manual !== undefined ? { manual: record.result.manual } : {}),
+    },
+  };
+}
+
 export function discoveryRecords(branch: readonly unknown[] | null | undefined): StoredDiscovery[] {
-  const records: StoredDiscovery[] = [];
+  let records: StoredDiscovery[] = [];
   for (const entry of branch ?? []) {
     if (!isRecord(entry)) continue;
-    if (entry["type"] !== "custom" || entry["customType"] !== CAPABILITY_DISCOVERY_RECORD) continue;
-    const record = parseRecord(entry["data"]);
-    if (record !== null) records.push(record);
+    if (entry["type"] !== "custom") continue;
+    if (entry["customType"] === CAPABILITY_DISCOVERY_RECORD) {
+      const record = parseRecord(entry["data"]);
+      if (record !== null) records.push(record);
+    } else if (entry["customType"] === CAPABILITY_PRUNE_RECORD) {
+      const prune = parsePruneRecord(entry["data"]);
+      if (prune !== null && (prune.removedTools.length > 0 || (prune.removedGroups?.length ?? 0) > 0)) {
+        const removedTools = new Set(prune.removedTools);
+        const removedGroups = new Set(prune.removedGroups ?? []);
+        records = records.map((record) => filterDiscoveryByPrune(record, removedTools, removedGroups));
+      }
+    }
   }
   return records;
+}
+
+/**
+ * Append a `capability-prune` record for a compaction boundary.
+ */
+export function appendPruneRecord(
+  pi: DiscoveryRecordWriter,
+  checkpointId: string,
+  removedTools: readonly string[],
+  removedGroups: readonly string[] = [],
+): CapabilityPruneRecord | null {
+  if (typeof checkpointId !== "string" || checkpointId === "") return null;
+  const tools = [...new Set(removedTools.filter((t) => typeof t === "string" && t !== ""))];
+  const groups = [...new Set(removedGroups.filter((g) => typeof g === "string" && g !== ""))];
+  const record: CapabilityPruneRecord = {
+    version: CAPABILITY_PRUNE_RECORD_VERSION,
+    checkpointId,
+    removedTools: tools,
+    ...(groups.length > 0 ? { removedGroups: groups } : {}),
+  };
+  pi.appendEntry(CAPABILITY_PRUNE_RECORD, record);
+  return record;
+}
+
+/**
+ * Return the latest `capability-prune` record on the branch, if any.
+ */
+export function latestPruneRecord(branch: readonly unknown[] | null | undefined): CapabilityPruneRecord | null {
+  for (let i = (branch?.length ?? 0) - 1; i >= 0; i--) {
+    const entry = branch![i];
+    if (!isRecord(entry)) continue;
+    if (entry["type"] === "custom" && entry["customType"] === CAPABILITY_PRUNE_RECORD) {
+      const record = parsePruneRecord(entry["data"]);
+      if (record !== null) return record;
+    }
+  }
+  return null;
+}
+
+
+/**
+ * Return the set of currently pruned tool names derived from branch history.
+ *
+ * Removed tools accumulate chronologically across prune records, but later
+ * discoveries or explicit manual authorizations clear them from the pruned set.
+ * Manual grants are never included.
+ */
+export function prunedToolNames(branch: readonly unknown[] | null | undefined): ReadonlySet<string> {
+  const pruned = new Set<string>();
+  const manual = new Set<string>();
+
+  for (const entry of branch ?? []) {
+    if (!isRecord(entry)) continue;
+    if (entry["type"] !== "custom") continue;
+
+    if (entry["customType"] === CAPABILITY_PRUNE_RECORD) {
+      const record = parsePruneRecord(entry["data"]);
+      if (record !== null) {
+        for (const name of record.removedTools) {
+          if (!manual.has(name)) pruned.add(name);
+        }
+      }
+    } else if (entry["customType"] === CAPABILITY_DISCOVERY_RECORD) {
+      const discovery = parseRecord(entry["data"]);
+      if (discovery !== null) {
+        for (const hit of discovery.result.manual ?? []) {
+          if (hit.status && hit.status !== "available") continue;
+          for (const member of hit.tools ?? [hit]) {
+            if (member.status && member.status !== "available") continue;
+            if (typeof member.name === "string" && member.name !== "") {
+              manual.add(member.name);
+              pruned.delete(member.name);
+            }
+          }
+        }
+        for (const category of ["tools", "mcp"] as const) {
+          for (const hit of discovery.result[category] ?? []) {
+            if (hit.status && hit.status !== "available") continue;
+            for (const member of hit.tools ?? [hit]) {
+              if (member.status && member.status !== "available") continue;
+              if (typeof member.name === "string" && member.name !== "") {
+                pruned.delete(member.name);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return pruned;
 }
 
 /**

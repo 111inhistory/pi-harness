@@ -1,185 +1,84 @@
-# Capability discovery memory in the Prompt
+# 提示词中的能力发现记忆
 
-Capability discovery is lazy, but selected capabilities must survive session
-compaction and nested tool calls.
+Capability 发现采用惰性机制，但选中的能力必须在会话压缩与嵌套工具调用中保留。
 
-`src/capability/prompt.ts` projects a native `<capabilities>` system
-section on the current session branch. Canonical `capability-discovery` entries
-own discovery facts; `harness-capability-memory` records preserve the section
-versions and placements already emitted to the model. Both follow the native
-branch. `src/prompt-section-journal.ts` owns shared placement replay.
+`src/capability/prompt.ts` 在当前会话分支上投影原生的 `<capabilities>` 系统段落。规范的 `capability-discovery` 条目持有发现事实；`harness-capability-memory` 记录保存已向模型发出的段落版本与放置位置。两者均跟随原生分支。`src/prompt-section-journal.ts` 持有共享的放置回放逻辑。
 
-## Durable branch storage
+## 持久化分支存储
 
-Every successful or partial discovery writes one `capability-discovery` entry
-to the session branch. User authorization records use the same entry shape with
-the `manual` category and no tool call anchor; `/capability enable` writes them
-after the shared activation call reports the tool active.
+每次成功或部分成功的发现均会向会话分支写入一条 `capability-discovery` 条目。用户授权记录使用相同的条目形态，其类别为 `manual` 且无工具调用锚点；`/capability enable` 在共享激活调用报告工具激活后写入这些记录。
 
-- Nested calls: When an outer tool calls `ctx.executeTool("capability", ...)`,
-  the inner discovery record writes directly to the branch. The record survives
-  even when the calling outer tool drops or summarizes the inner `details`.
-- Canonical entries are the only memory source. The projection does not read
-  `toolResult.details` or reconstruct memory from older result messages.
-- The initial projection can anchor visible results by `toolCallId` and fold
-  older discoveries into its checkpoint. Once recorded, every later discovery
-  appends a section update, including a nested result absent from model history.
-- Persist-before-activate: Capability appends the discovery record to the
-  branch before calling synchronous tool activation.
+- 嵌套调用：当外层工具调用 `ctx.executeTool("capability", ...)` 时，内层发现记录直接写入分支。即使调用的外层工具丢弃或汇总了内层 `details`，该记录依然保留。
+- 规范条目是唯一的记忆来源。投影不读取 `toolResult.details`，也不从较早的结果消息中重建记忆。
+- 初始投影可通过 `toolCallId` 锚定可见结果，并将较早的发现折叠到其检查点中。一旦完成记录，后续每次发现均会追加段落更新，包含未在模型历史中出现的嵌套结果。
+- 先持久化后激活：Capability 在调用同步工具激活前，先将发现记录追加到分支中。
 
-## Contents
+## 包含内容
 
-- Tools and MCP groups: refs, names, descriptions, exposure, shared instructions,
-  and selected group members. Native declarations, Codemode interface queries,
-  or fallback result metadata provide argument schemas; branch records do not
-  duplicate schemas.
-- Shared instructions: every declared namespace can emit its current instructions
-  through a native guidance section, including MCP and namespaces enabled directly
-  by the user. Capability memory omits this prose only when that producer actually
-  emitted it. Otherwise memory retains the instructions, including when direct
-  declarations are hidden. Tool-result text omits the shared prose in both cases.
-- Skills: absolute entry paths, names, and descriptions. The host does not infer
-  constraints or associations from Skill prose. A Skill ref is its entry path;
-  the model uses native file read to understand the guidance. The host installs
-  no resource protocol router or file tool override.
-- Manual entries are branch authority, not request state. A `manual` record is
-  never projected: the tool it authorizes is declared by the native tool list,
-  so a `<capabilities>` entry would repeat the interface and change the leading
-  system prompt. Manual and discovered entries share one ref namespace and the
-  same permission check, but only discovery contributes section text.
-  See [the cache boundary](reviews/capability-enable-cache.md).
-- Manual-only tools: `capability.manualTools` names tools that discovery must not
-  see. They are excluded from the eligible catalog used by search and by
-  discovery activation, and the scope view drops them from every node below the
-  root, so a child cannot inherit one. Catalog browsing includes manual tools
-  without granting authorization; execution follows the normal active-tool guard.
-- Manual authorization: the `manual` record is the authority, not the active
-  set. `before_agent_start` removes a manual tool that is active without a record
-  (`defaultActive`, a restored transcript, another extension), `tool_call`
-  refuses it, and Codemode admission applies the same predicate. A receipt of a
-  cross-session message activates `msg_write` under the same rules but writes no
-  record, so a receipt never manufactures a user grant.
-- Shared guidance: retained across discoveries, even when a selection adds no tools.
-- Remote coverage: discovery searches local resources only.
-  Coverage explicitly marks remote search as `not_searched`. Remote candidates
-  never enter branch records, system sections, or summaries.
+- 工具与 MCP 组：ref、名称、描述、暴露方式、共享指示及选中的组成员。原生声明、Codemode 接口查询或降级结果元数据提供参数 schema；分支记录不重复保存 schema。
+- 共享指示：每个已声明的命名空间均可通过原生指导段落输出其当前指示，包含 MCP 以及由用户直接启用的命名空间。仅当该生产者实际输出了该段落时，Capability 记忆才会省略此文本。否则记忆将保留这些指示，包括直接声明被隐藏的情况。两种情况下，工具结果文本均省略共享文本。
+- Skill：绝对入口路径、名称和描述。宿主不从 Skill 文本中推断约束或关联。Skill 的 ref 即为其入口路径；模型通过原生文件读取理解指导。宿主不安装资源协议路由器，也不覆盖文件工具。
+- Manual 条目属于分支权限，而非请求状态。系统从不投影 `manual` 记录：其授权的工具已由原生工具列表声明，因此 `<capabilities>` 条目会重复声明接口并改变头部系统提示词。Manual 条目与发现条目共享同一个 ref 命名空间和相同的权限检查，但只有发现条目会提供段落文本。参见[缓存边界](reviews/capability-enable-cache.md)。
+- 仅手动工具：`capability.manualTools` 指定发现逻辑不可见的工具。这些工具会从搜索和发现激活使用的可选目录中排除，且作用域视图会在根节点之下的所有节点中丢弃它们，因此子节点无法继承。目录浏览包含仅手动工具但不会授予授权；执行遵循常规激活工具守卫。
+- 手动授权：`manual` 记录是权限来源，而非当前激活集合。`before_agent_start` 会移除在没有记录的情况下处于激活状态的手动工具（如 `defaultActive`、恢复的 transcript、其他扩展引入），`tool_call` 拒绝调用，Codemode 准入应用相同的断言。接收跨会话消息会按相同规则激活 `msg_write` 但不写记录，因此接收消息绝不会凭空产生用户授权。
+- 共享指导：在多次发现之间保留，即使某次选择未增加新工具。
+- 远程覆盖范围：发现仅搜索本地资源。覆盖范围显式将远程搜索标记为 `not_searched`。远程候选资源绝不进入分支记录、系统段落或总结。
 
-Discovery memory never grants tool authority. The latest section state checks
-group members against the current live registry and scope on every request.
-Earlier emitted versions keep their original text and placement; an unavailable
-member is removed by a later state update. Native declaration and execution
-checks remain authoritative.
+发现记忆绝不授予工具执行权限。最新段落状态在每次请求时对照当前活跃注册表与作用域校验组成员。早期已发出的版本保持其原始文本和放置位置；不可用的成员会通过后续状态更新移除。原生声明与执行检查依然是最终依据。
 
-## Native discovery boundary
+## 压缩与未使用能力淘汰
 
-The `extensions/capability.ts` entry installs the native discovery
-boundary and MCP execution backend. It replaces the native MCP discovery surface, not its transport or
-authentication. The paired entry disables native `tool_search`, global resource
-listing, and default `<mcp_servers>` injection.
+Main 和普通 Fresh／Inherited Subagent 在原生压缩成功后，会淘汰 Capability 发现的未使用工具成员。使用窗口从上一次压缩之后开始，到新检查点之前结束。已完成的直接工具调用结果与持久化的嵌套 Codemode 调用记录提供使用证据；仅提及工具或调用被拒绝不计入使用。系统不维护独立的运行时使用记录。
 
-Codemode remains available for execution and composition. Its sandbox does not
-register `searchTools`. `ALL_TOOLS`, `describeTool`, and `describeNamespace` see
-only currently enabled, permitted tools. `ALL_TOOLS` carries short descriptions;
-`describeTool` returns the full interface when requested. A sandbox keeps the tool
-snapshot captured at its start, so newly activated tools require a new Codemode
-call. Catalog queries do not wait for MCP backends; the host adds no active MCP
-reconnection. Actual nested calls still pass through Pi's tool pipeline. Generic
-MCP resource reads require a currently enabled, permitted member of the selected
-server namespace.
+手动授权、原生基线工具以及发现／Codemode 恢复路径予以保留。在窗口期内未使用的其他已发现成员会从激活集合中移除。组收缩至其保留的成员；空的 MCP 或命名空间组将失去其记忆和共享指示。Skill 留在记忆中。该策略不会断开 MCP 传输连接。
 
-Old native Codemode declarations can embed a catalog in their description. The
-request projection replaces those descriptions with the safe registered
-Codemode description. This migration removes native metadata from the request;
-it does not rewrite user text or stored history. It can invalidate an old cache
-prefix. Normal discovery updates retain the prefix behavior described below.
+在变更激活状态前，先向分支写入一条 `capability-prune` 记录。发现回放按分支顺序折叠这些记录：旧的选择保持移除状态，后续发现可引入新的选择。重新打开或切换分支遵循该分支上的记录。压缩失败或取消不产生淘汰记录。
 
-## Timing and cache behavior
+重建的头部系统消息包含一个固定的 `capability-availability` 段落，列出该次压缩中移除的工具和组。该段落声明摘要中的引用仅为历史记录，重新使用前需重新发现。该段落存在于压缩后的首次生成（包括重试）之前，且不发起额外的模型轮次。后续重新发现仅追加新状态，而不改写此头部。
 
-The `context_with_system` hook runs before every model request. On first use,
-existing discovery facts initialize the journal at their visible anchors or the
-leading checkpoint. Even an empty initial state is recorded without changing the
-prompt. Every later discovery, live namespace instruction change, or withdrawal
-appends a system update after the current last message. It never rewrites the
-older checkpoint when a nested result is invisible. Identical state appends no
-update.
+宿主按原生会话条目来源，持续屏蔽淘汰前的旧声明。重新发现会追加新声明，不会把工具恢复到旧检查点并改变已发送的前缀。当前记忆初始化新的压缩边界时，不包含已淘汰资源。
 
-The shared journal records the exact emitted text and fixed placement. Later
-turns and reloads replay those versions between their original neighbors. The
-current registry cannot supply historical versions of namespace instructions, so
-new live namespace guidance is first delivered at the tail; static asset guidance
-can initialize at its first declaration. Later asset changes are tail updates.
-Clearing guidance appends a native section removal and retains its history.
-Native compaction or explicit context editing creates a new context boundary;
-the latest recorded state initializes that boundary once.
+内部 Capability 检索与 `/btw` 不独立执行淘汰。它们的继承视图保留父会话的当前状态与边界通知。
 
-The section is request state; `ctx.getSystemPrompt()` and the raw native
-checkpoint do not contain these projected updates. Journal entries belong to the
-branch and survive rewind and inheritance. Main and the isolated retrieval
-session use the same projection. `/btw` replays the inherited emitted sections
-inside its own memory session. User enablement records remain authority only;
-the namespace's guidance is separate from that authorization.
+## 原生发现边界
 
-Compatible Responses and Anthropic models preserve incremental system updates
-through native serialization. Other transports retain their native conversion,
-including system folding when required. Native `ToolDefinition.promptGuidelines`
-remain SDK-owned: the SDK diffs the replayed sections against current definitions
-and appends changed sections, including after resume. This journal adds no copy
-of those native rules. Prefix preservation does not itself guarantee a cache hit.
+`extensions/capability.ts` 入口安装原生发现边界与 MCP 执行后端。它替换原生 MCP 发现入口，但不替换传输或认证。配套入口禁用原生 `tool_search`、全局资源列表以及默认的 `<mcp_servers>` 注入。
 
-## Unresolved SDK allowlist discrepancy
+Codemode 依然可用于执行与组合。其沙箱不注册 `searchTools`。`ALL_TOOLS`、`describeTool` 与 `describeNamespace` 仅能看到当前已启用且受允许的工具。`ALL_TOOLS` 包含简要描述；`describeTool` 在被请求时返回完整接口。沙箱保持其启动时捕获的工具快照，因此新激活的工具需要一次新的 Codemode 调用。目录查询不等待 MCP 后端；宿主不添加主动 MCP 重连。实际的嵌套调用依然走 Pi 的工具流水线。通用的 MCP 资源读取需要所选服务器命名空间中当前已启用且受允许的成员。
 
-Under SDK `1.5.0`, a strict tool allowlist can retain MCP registration while
-rejecting activation of members that do not match it. The absence of hidden
-`tool_search` alone does not predict failure: an allowlist that matches the MCP
-member names can still permit activation.
+旧版原生 Codemode 声明可能在其描述中嵌入目录。请求投影会将这些描述替换为已注册的安全 Codemode 描述。这种迁移从请求中移除了原生元数据，但不会改写用户文本或已存储的历史记录。这可能会使旧的缓存前缀失效。正常的发现更新保留下文所述的前缀行为。
 
-Capability writes the canonical branch record before it activates tools. The host
-filters public results by the actual active set, but the earlier record can retain
-unactivated members. Later request projections can advertise those members again.
-An activation exception can leave the same discrepancy.
+## 时序与缓存行为
 
-This is an unresolved defect in the requirement to accumulate successfully obtained
-capabilities, not a policy that permits failed activation to count as success.
-The record does not grant execution permission. Conditions and recovery options
-are in [known issues](known-issues.md#严格工具-allowlist-下的激活记忆不一致).
+`context_with_system` 钩子在每次模型请求前运行。首次使用时，现有的发现事实在可见锚点或头部检查点处初始化日志。即使初始状态为空，也会在不改变提示词的情况下记录。后续每次发现、活跃命名空间指示变更或撤销，都会在当前最后一条消息之后追加一条系统更新。当嵌套结果不可见时，绝不改写较早的检查点。相同状态不追加更新。
 
-## Regression coverage
+共享日志记录实际发出的确切文本与固定放置位置。后续轮次与重新加载会在其原始相邻消息之间回放这些版本。当前注册表无法提供历史版本的命名空间指示，因此新的活跃命名空间指导首先在末尾传递；静态资产指导可在其首次声明时初始化。后续资产变更属于末尾追加更新。清除指导会追加原生段落移除并保留其历史。原生压缩或显式上下文编辑会创建新的上下文边界；最新记录的状态会初始化该边界一次。
 
-- `test/typed/capability-prompt.test.ts`: checks immediate availability, request
-  immutability, idempotence, deduplication, shared guidance updates, native and
-  repeated compaction, raw-entry restoration, branch isolation, and Responses
-  prefix preservation.
-- `test/typed/capability-guidance-journal.test.ts`: checks ordinary namespace,
-  MCP, live instruction revisions, hidden discoveries, direct enablement,
-  withdrawal, scope updates and resume against Responses and Anthropic wire.
-- `test/typed/prompt-section-journal.test.ts` and
-  `test/typed/tool-guidance-record.test.ts`: check shared ordering, fixed
-  placement, domain isolation, boundary rebasing and malformed-record errors.
-- `test/typed/capability-record.test.ts`: checks record normalization, exclusion
-  of argument schemas, branch serialization, and coverage reporting.
-- `test/typed/capability-nested.test.ts`: checks that nested tool calls retain
-  discovered capabilities on the branch when outer tools omit inner results.
-- `test/typed/capability-native-discovery.test.ts`: checks native entry replacement,
-  selected MCP execution, scoped Codemode helpers, resource-read permissions,
-  and late server registration in both extension load orders.
-- `test/typed/capability-codemode-boundary.test.ts`: checks historical catalog
-  removal without user-text mutation, slim catalogs, full explicit interface
-  queries, sandbox snapshots, and worker admission after cancellation.
-- `test/typed/capability-feedback-sdk.test.ts`: checks complete, compact feedback
-  in real SDK model requests and full namespace selection after ref-only repeats.
-- `test/typed/capability-allowlist-mask.test.ts`: reproduces the unresolved SDK
-  allowlist case where activation fails after the host writes the selection record.
-- `test/typed/capability-main-default-activation.test.ts`: checks that Main starts
-  without `msg_write` and Capability activates the Subagent namespace.
-- `test/typed/capability-enable.test.ts`: checks command parsing, live-registry
-  target resolution, activate-then-record order, per-target refusals, idempotence,
-  record-write failure reporting, the picker and its cancellation, and completion.
-- `test/typed/capability-provider-prefix.test.ts`: checks at the provider
-  boundary that an enable appends instead of rewriting, that the projection
-  contributes nothing, and measures Pi's own prompt-section patch.
-- `test/typed/capability-mcp-reconnect.test.ts`: checks that a tool registered by
-  native `/mcp reconnect` is browsable and enableable, that a withdrawn
-  registration is refused, and that `manualTools` still governs new registrations.
-- `test/typed/cross-session-reply-activation.test.ts`: checks that a receipt
-  activates only `msg_write`, that the reply is delivered, that no grant is
-  written, and that repeated receipts are idempotent.
+该段落属于请求状态；`ctx.getSystemPrompt()` 与原始原生检查点不包含这些投影更新。日志条目属于分支，在回退与继承中依然留存。Main 与隔离的检索会话使用相同的投影。`/btw` 在其自身记忆会话内部回放继承的已发送段落。用户启用记录仅作为权限存在；命名空间的指导与该授权相互分离。
+
+兼容的 Responses 与 Anthropic 模型通过原生序列化保留增量系统更新。其他传输协议保留其原生转换，包括必要时的系统消息折叠。原生的 `ToolDefinition.promptGuidelines` 依然归 SDK 所有：SDK 对比回放段落与当前定义并追加发生变化的段落（包含恢复运行之后）。仅更改描述的工具变更使用 Harness 特定的工具指导；实际 schema 变更保持原生。显式受控的 Chat Completions 扩展及其限制详见 [Provider 传输行为](provider-transports.md)。保留前缀本身并不保证缓存命中。
+
+## 待解决的 SDK allowlist 差异
+
+在 SDK `1.5.0` 下，严格的工具 allowlist 可以在保留 MCP 注册的同时，拒绝激活与其不匹配的成员。仅缺少隐藏的 `tool_search` 并不能预判失败：匹配 MCP 成员名称的 allowlist 仍可允许激活。
+
+Capability 在激活工具之前先写入规范的分支记录。宿主按实际激活集合过滤公开结果，但早期的记录可能保留未激活的成员。后续请求投影可能再次向模型提供这些成员。激活异常也会导致相同的差异。
+
+这是“累积成功获取的能力”这一需求中尚未解决的缺陷，而非允许激活失败计为成功的策略。该记录不授予执行权限。触发条件与恢复方案见[已知问题](known-issues.md#严格工具-allowlist-下的激活记忆不一致)。
+
+## 回归测试覆盖
+
+- `test/typed/capability-prompt.test.ts`：验证即时可用性、请求不可变性、幂等性、去重、共享指导更新、原生与重复压缩、原始条目恢复、分支隔离以及 Responses 前缀保留。
+- `test/typed/capability-guidance-journal.test.ts`：对照 Responses 和 Anthropic 线路格式验证常规命名空间、MCP、活跃指示修订、隐藏发现、直接启用、撤销、作用域更新及恢复运行。
+- `test/typed/prompt-section-journal.test.ts` 与 `test/typed/tool-guidance-record.test.ts`：验证共享顺序、固定放置位置、领域隔离、边界变基以及畸形记录错误。
+- `test/typed/capability-record.test.ts`：验证记录规范化、参数 schema 排除、分支序列化及覆盖范围报告。
+- `test/typed/capability-nested.test.ts`：验证在外层工具省略内层结果时，嵌套工具调用仍可在分支上保留已发现的能力。
+- `test/typed/capability-native-discovery.test.ts`：在两种扩展加载顺序下验证原生入口替换、选定 MCP 执行、带作用域的 Codemode 辅助函数、资源读取权限及后期服务器注册。
+- `test/typed/capability-codemode-boundary.test.ts`：验证在不修改用户文本的前提下移除历史目录、精简目录、完整显式接口查询、沙箱快照以及取消后的 Worker 准入。
+- `test/typed/capability-feedback-sdk.test.ts`：在真实 SDK 模型请求中验证完整且紧凑的反馈，并在仅传 ref 重复调用后验证完整命名空间选择。
+- `test/typed/capability-allowlist-mask.test.ts`：复现宿主写入选择记录后激活失败的未决 SDK allowlist 场景。
+- `test/typed/capability-main-default-activation.test.ts`：验证 Main 在没有 `msg_write` 的情况下启动，且 Capability 激活 Subagent 命名空间。
+- `test/typed/capability-enable.test.ts`：验证命令解析、活跃注册表目标解析、先激活后记录顺序、按目标拒绝、幂等性、记录写入失败报告、选择器及其取消操作和完成态。
+- `test/typed/capability-provider-prefix.test.ts`：在 Provider 边界验证启用操作是追加而非改写，验证投影无多余内容，并测量 Pi 自身的提示词段落补丁。
+- `test/typed/capability-mcp-reconnect.test.ts`：验证原生 `/mcp reconnect` 注册的工具可浏览且可启用、被撤销的注册被拒绝，以及 `manualTools` 依然约束新注册。
+- `test/typed/cross-session-reply-activation.test.ts`：验证接收消息仅激活 `msg_write`、回复能够送达、不写入授权记录，且重复接收保持幂等。

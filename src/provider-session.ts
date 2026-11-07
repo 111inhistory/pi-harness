@@ -7,14 +7,13 @@
  * or whether the transport will rewrite its leading prompt/tool inventory.
  *
  * Support is read from the model's exact `api` and explicit `compat` booleans.
- * It is never inferred from a model or provider name. Chat Completions and
- * every other transport are reported as not adapted by the Harness: the
- * policy does not modify their compat or Pi's native request behavior, and
- * this iteration does not implement their tool extensions.
+ * It is never inferred from a model or provider name. Every other transport
+ * is reported as not adapted by the Harness: the policy does not modify their
+ * compat or Pi's native request behavior.
  */
 import type { TranscriptToolSupport } from '@earendil-works/pi-ai';
 
-export type ProviderTransport = 'responses' | 'anthropic' | 'other';
+export type ProviderTransport = 'responses' | 'anthropic' | 'completions' | 'other';
 
 export interface ProviderSessionPolicy {
   readonly transport: ProviderTransport;
@@ -42,6 +41,8 @@ const RESPONSES_APIS: ReadonlySet<string> = new Set([
 
 const ANTHROPIC_APIS: ReadonlySet<string> = new Set(['anthropic-messages']);
 
+const COMPLETIONS_APIS: ReadonlySet<string> = new Set(['openai-completions']);
+
 type UnknownRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -61,6 +62,7 @@ export function classifyProviderTransport(model: unknown): ProviderTransport {
   if (typeof api !== 'string') return 'other';
   if (RESPONSES_APIS.has(api)) return 'responses';
   if (ANTHROPIC_APIS.has(api)) return 'anthropic';
+  if (COMPLETIONS_APIS.has(api)) return 'completions';
   return 'other';
 }
 
@@ -76,6 +78,20 @@ export function providerSessionPolicy(model: unknown): ProviderSessionPolicy {
 
   const compat = compatOf(model);
   const midConversationSystemMessages = compat['supportsMidConvoSystemMessages'] === true;
+
+  if (transport === 'completions') {
+    // Chat Completions only supports incremental tool additions if both
+    // mid-conversation system messages and mid-conversation tool additions
+    // are explicitly declared. It does not support in-place changes.
+    const midConversationToolAdditions = compat['supportsMidConvoToolAdditions'] === true;
+    return {
+      transport,
+      midConversationSystemMessages,
+      toolSupport: midConversationSystemMessages && midConversationToolAdditions
+        ? 'additions'
+        : 'none',
+    };
+  }
 
   if (transport === 'anthropic') {
     return {
