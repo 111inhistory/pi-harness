@@ -13,7 +13,7 @@ import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-s
 import type { McpTransportFactory } from '@earendil-works/pi-coding-agent';
 type McpTransport = ReturnType<McpTransportFactory>;
 type JsonRpcMessage = Parameters<Parameters<McpTransport['onMessage']>[0]>[0];
-import capabilityExtension from '../../extensions/capability.ts';
+import capabilityExtension from '../../src/capability/extension.ts';
 import { CAPABILITY_STEP_TOOL_NAME } from '../../src/capability/contracts.ts';
 import type { CapabilityStepFeedback } from '../../src/capability/agent.ts';
 import { installCapabilityMcp } from '../../src/capability/native-discovery.ts';

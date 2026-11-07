@@ -2,6 +2,12 @@
 
 公开行为以[接口契约](interface-contract.md)为准。本文描述代码中的职责和边界。存储字段见[存储说明](subagent-storage.md)，配置参数见[Harness 参数配置](harness-configuration.md)，验收缺口见[已知问题](known-issues.md)。
 
+## 插件注册
+
+`extensions/` 只保留公开注册入口：`subagent.ts`、`capability.ts`、`btw.ts`、`result-rendering.ts` 和可选的 `shell-preflight.ts`。包清单按结果渲染、Subagent、Capability、独立问答的顺序加载默认入口。Capability 的完整装配位于 `src/capability/extension.ts`；子会话直接复用它，不从公开入口重复装配根工具。
+
+入口分开，底层仍共享。Pi 给每个扩展不同的 API 对象；`harness-config.ts` 与 `capability/scope.ts` 通过同一 ResourceLoader 的原生事件总线取得共享配置提供者和资格状态，保留各自 API 的局部引用，不建立进程全局会话注册表。不同 ResourceLoader 的总线隔离；子会话继续通过显式父资格链和配置快照继承。异步 Shell 仍依附 Subagent 的资源生命周期。
+
 ## 所有权
 
 | 所有者 | 负责 | 不负责 |
@@ -37,7 +43,7 @@ Runtime 的 `job.status` 是领域事实。Runner 的输入准入栅栏表示原
 
 ## 创建、执行与恢复
 
-Fresh 在自己的 Job Budget 内路由。初始工具使用 Pi 默认工具与已配置扩展，并合并路由角色的 `enableTools`；`excludeTools` 始终排除，不另设内置工具白名单。Fresh 与 Inherited 均独立加载已配置的扩展与 MCP 后端（`noExtensions: false`），并运行扩展的启动与关闭钩子，仅排除 Root 装配入口，由子会话自己的 surface 替代。子会话的资源过滤保留用户与项目设置各自的路径作用域，不写回配置文件。
+Fresh 在自己的 Job Budget 内路由。初始工具使用 Pi 默认工具与已配置扩展，并合并路由角色的 `enableTools`；`excludeTools` 始终排除，不另设内置工具白名单。Fresh 与 Inherited 均独立加载已配置的扩展与 MCP 后端（`noExtensions: false`），并运行扩展的启动与关闭钩子，仅排除 `subagent.ts`、`capability.ts`、`btw.ts` 根注册入口，由子会话自己的 surface 与 Capability 装配替代；结果渲染入口可继续加载。子会话的资源过滤保留用户与项目设置各自的路径作用域，不写回配置文件。
 
 Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定底层物理模型（`physicalModelForCall`），避免虚拟模型在子会话中重路由。Inherited 独立加载配置的扩展与 MCP 后端。它恢复捕获的工具白名单、系统提示词与思考强度。白名单仅限可重新创建的文件型扩展工具与 MCP 工具，父会话专属诊断工具不传递。若继承的 MCP 工具尚未完成异步注册，按 `subagent.inheritedToolWaitMs` 有界等待，默认最多 10 秒，超时则抛出 `inherited_tool_unavailable`。路由完成的 Actor 在续跑时沿用已记录身份，不重新选择角色。
 
@@ -135,7 +141,7 @@ Inherited 与检索会话保留独立本地 Session ID，Responses 请求仅替�
 
 工具指引统一使用增量系统更新。原生工具的 `promptGuidelines` 由 SDK 比较已有状态并追加更新；所有已声明 namespace 的共同 instructions，包括 MCP 与用户直接启用的 namespace，由当前目录提供，首次投递与后续变更追加到当前尾部。静态资产可随首次工具声明初始化，之后不再覆盖历史正文。`prompt-section-journal.ts` 保存已投递的正文、落点与上下文边界：工具指引使用 `harness-tool-guidance`，Capability 记忆使用 `harness-capability-memory`，共用重放逻辑。新发现、嵌套发现与正文变更只追加新版本；清空指引追加原生段落撤销更新。压缩或显式上下文编辑形成新边界时恢复最新状态。Capability 仅在对应 namespace 指引确已投递时省略重复 prose，未投递时保留；判断使用来源身份。Main、内部检索与 `/btw` 继承会话沿分支重放，更新不授予执行权限。
 
-内部引擎为 `src/capability/agent.ts`，外层装配为 `extensions/capability.ts`。唯一内部工具 `capability_step` 先增量接受已见 refs，再并行调用现有 Broker 搜索。内部选择先留在本次 Run，外层结束后统一保存、激活和投影。没有新增选择的 step 累计计数，上限默认为 3 加一次首轮额度，可配置 `capability.noSelectionLimit`；显式 finish 或达到上限后不再发模型请求。异常结束仍可交付此前已选成果，状态为 `partial`。具体语义和 Budget 见[内部批量检索](interface-contract.md#内部批量检索与增量提交)。
+内部引擎为 `src/capability/agent.ts`，外层装配为 `src/capability/extension.ts`，公开注册入口为 `extensions/capability.ts`。唯一内部工具 `capability_step` 先增量接受已见 refs，再并行调用现有 Broker 搜索。内部选择先留在本次 Run，外层结束后统一保存、激活和投影。没有新增选择的 step 累计计数，上限默认为 3 加一次首轮额度，可配置 `capability.noSelectionLimit`；显式 finish 或达到上限后不再发模型请求。异常结束仍可交付此前已选成果，状态为 `partial`。具体语义和 Budget 见[内部批量检索](interface-contract.md#内部批量检索与增量提交)。
 
 本地来源由宿主固定，不再提供内部 `src` 参数。远端审批未实现前不搜索远端、不安装候选、不把远端未搜索解释成不存在资源。
 
@@ -159,7 +165,7 @@ Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返�
 
 授权判定集中在 `admission.ts` 的单次操作视图：它一次解析作用域链、分支记录（一次扫描同时得到「已选择」与「用户已启用」两个集合）与当前激活集，再提供逐名字谓词。`declares` 用于声明准入（禁用原生工具、MCP 选择、manual 授权，不含作用域），`admits` 在声明规则上叠加作用域，供 Codemode 准入使用，`admitsServer` 判定资源读取。manual 工具必须处于根作用域且当前分支存在 `manual` 记录。
 
-声明裁剪只有一处：`native-discovery.ts` 的 `before_agent_start` 用 `declares` 过滤激活集与 `selectedTools`，同时覆盖 `defaultActive`、历史恢复和其他扩展的激活；`extensions/capability.ts` 的同一钩子只处理 Skill 段。执行仍分别检查：原生 MCP 的 `tool_call` 用 `declares` 加激活状态，能力侧 `tool_call` 用目录/激活状态加 `admitsManual`。作用域拒绝只关闭执行，不改写分支选择或历史声明。请求投影用 `includeManual` 的目录解析执行视图，Main 可见、子会话仍被作用域排除。
+声明裁剪只有一处：`native-discovery.ts` 的 `before_agent_start` 用 `declares` 过滤激活集与 `selectedTools`，同时覆盖 `defaultActive`、历史恢复和其他扩展的激活；`src/capability/extension.ts` 的同一钩子只处理 Skill 段。执行仍分别检查：原生 MCP 的 `tool_call` 用 `declares` 加激活状态，能力侧 `tool_call` 用目录/激活状态加 `admitsManual`。作用域拒绝只关闭执行，不改写分支选择或历史声明。请求投影用 `includeManual` 的目录解析执行视图，Main 可见、子会话仍被作用域排除。
 
 工具资格按设计只增不减，角色排除仍优先。每次同步目录投影只解析一次资格视图；不把快照跨请求或工具调用缓存。资格、注册和激活是三件不同的事。
 

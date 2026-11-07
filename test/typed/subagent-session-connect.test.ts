@@ -263,7 +263,7 @@ async function sdkFixture(t: TestContext, options: { manual?: boolean } = {}) {
     }));
   }
   const [{ default: harnessExtension }, directory, root] = await Promise.all([
-    import('../../extensions/harness.ts'),
+    import('../../test-support/harness-extension.ts'),
     import('../../src/subagent/session-directory.ts'),
     import('../../src/subagent/session-peers.ts'),
   ]);

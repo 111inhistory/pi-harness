@@ -243,12 +243,22 @@ export function loadHarnessConfig({ cwd, agentDir, projectTrusted }: LoadHarness
 }
 
 export type HarnessConfigProvider = (ctx: ExtensionContext) => HarnessConfig;
-const providers = new WeakMap<ExtensionAPI, HarnessConfigProvider>();
+type ConfigHost = Pick<ExtensionAPI, 'on'> & { readonly events?: ExtensionAPI['events'] };
+const providers = new WeakMap<ConfigHost, HarnessConfigProvider>();
+const CONFIG_CHANNEL = 'pi-harness:config-provider';
+interface ConfigExchange { provider?: HarnessConfigProvider }
 
 /** One provider per SDK surface; child surfaces receive their root's snapshot. */
-export function harnessConfigFor(pi: ExtensionAPI, fixed?: HarnessConfig): HarnessConfigProvider {
+export function harnessConfigFor(pi: ConfigHost, fixed?: HarnessConfig): HarnessConfigProvider {
   const existing = providers.get(pi);
   if (existing) return existing;
+  // Entry points have distinct APIs; their resource loader's native bus is shared.
+  const exchange: ConfigExchange = {};
+  pi.events?.emit(CONFIG_CHANNEL, exchange);
+  if (exchange.provider) {
+    providers.set(pi, exchange.provider);
+    return exchange.provider;
+  }
   let cached: HarnessConfig | undefined = fixed;
   const provider: HarnessConfigProvider = fixed
     ? () => fixed
@@ -260,5 +270,6 @@ export function harnessConfigFor(pi: ExtensionAPI, fixed?: HarnessConfig): Harne
     pi.on('session_shutdown', reset);
   }
   providers.set(pi, provider);
+  pi.events?.on(CONFIG_CHANNEL, data => { (data as ConfigExchange).provider = provider; });
   return provider;
 }

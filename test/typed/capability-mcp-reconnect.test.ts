@@ -28,7 +28,7 @@ import {
   type AgentSession, type ExtensionAPI,
 } from '@earendil-works/pi-coding-agent';
 
-import harnessExtension from '../../extensions/harness.ts';
+import harnessExtension from '../../test-support/harness-extension.ts';
 import { discoveryRecords, manualEnabledTools } from '../../src/capability/discovery-record.ts';
 import { waitFor } from '../../test-support/async.ts';
 

@@ -14,7 +14,7 @@ import {
 } from '../../src/capability/agent.ts';
 import { CAPABILITY_DISCOVERY_RECORD } from '../../src/capability/discovery-record.ts';
 import { CAPABILITY_SECTION, capabilityPromptTranscript } from '../../src/capability/prompt.ts';
-import capabilityExtension from '../../extensions/capability.ts';
+import capabilityExtension from '../../src/capability/extension.ts';
 
 function object(value: unknown): Record<string, unknown> {
   assert.ok(typeof value === 'object' && value !== null && !Array.isArray(value));

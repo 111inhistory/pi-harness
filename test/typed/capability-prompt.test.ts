@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
-import capabilityExtension from "../../extensions/capability.ts";
+import capabilityExtension from "../../src/capability/extension.ts";
 import { getCurrentSystemMessage } from "../../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js";
 import { convertResponsesMessages } from "../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 import {

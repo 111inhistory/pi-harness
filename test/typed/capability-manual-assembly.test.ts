@@ -22,7 +22,7 @@ import type {
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
-import capabilityExtension from "../../extensions/capability.ts";
+import capabilityExtension from "../../src/capability/extension.ts";
 import { appendManualRecord, CAPABILITY_DISCOVERY_RECORD } from "../../src/capability/discovery-record.ts";
 import { CAPABILITY_SECTION } from "../../src/capability/prompt.ts";
 import { resolveHarnessConfig } from "../../src/harness-config.ts";

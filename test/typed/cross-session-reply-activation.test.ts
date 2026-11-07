@@ -59,7 +59,7 @@ test("an external Main message activates msg_write for that turn only", { timeou
     // The socket root is resolved when the IPC platform module first loads, so
     // import the harness only after the test override is in place.
     const [{ default: harnessExtension }, directory] = await Promise.all([
-      import("../../extensions/harness.ts"),
+      import("../../test-support/harness-extension.ts"),
       import("../../src/subagent/session-directory.ts"),
     ]);
     const runtime = await ModelRuntime.create({

@@ -33,11 +33,15 @@ import {
   type AgentSession, type ExtensionAPI,
 } from '@earendil-works/pi-coding-agent';
 
-import capabilityExtension from '../../extensions/capability.ts';
-import harnessExtension from '../../extensions/harness.ts';
+import capabilityExtension from '../../src/capability/extension.ts';
+import subagentEntry from '../../extensions/subagent.ts';
+import capabilityEntry from '../../extensions/capability.ts';
+import resultRenderingEntry from '../../extensions/result-rendering.ts';
+import btwEntry from '../../extensions/btw.ts';
 import { manualEnabledTools } from '../../src/capability/discovery-record.ts';
 import { installCapabilityMcp } from '../../src/capability/native-discovery.ts';
 import { setCapabilityParent } from '../../src/capability/scope.ts';
+import { harnessConfigFor } from '../../src/harness-config.ts';
 import { waitFor } from '../../test-support/async.ts';
 
 type ToolResult = Extract<Message, { role: 'toolResult' }>;
@@ -186,18 +190,25 @@ test('full SDK: manual tools stay unreachable until the user records them, then 
       compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: 'off',
     });
     let rootApi: ExtensionAPI | undefined;
+    let capabilityApi: ExtensionAPI | undefined;
     const loader = new DefaultResourceLoader({
       cwd, agentDir, settingsManager,
       noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
       extensionFactories: [
         manualFixtureTool,
+        { name: 'result-rendering', factory: resultRenderingEntry },
         {
-          name: 'harness-manual-sdk-fixture',
+          name: 'subagent',
           factory: (api: ExtensionAPI) => {
             rootApi = api;
-            harnessExtension(api);
+            subagentEntry(api);
           },
         },
+        { name: 'capability', factory: (api: ExtensionAPI) => {
+          capabilityApi = api;
+          capabilityEntry(api);
+        } },
+        { name: 'btw', factory: btwEntry },
       ],
     });
     await loader.reload();
@@ -209,7 +220,11 @@ test('full SDK: manual tools stay unreachable until the user records them, then 
     })).session;
     sessions.push(session);
     await session.bindExtensions({ onError: (error) => errors.push(error) });
-    assert.ok(rootApi, 'the harness extension factory ran');
+    assert.ok(rootApi, 'the Subagent entrypoint ran');
+    assert.ok(capabilityApi, 'the Capability entrypoint ran');
+    assert.notEqual(rootApi, capabilityApi, 'Pi supplies a separate API to each plugin');
+    assert.equal(harnessConfigFor(rootApi), harnessConfigFor(capabilityApi),
+      'separate registrations retain one session configuration snapshot');
 
     // The MCP server is a real child process; wait for its pid file and tools.
     await waitFor(async () => (await readFile(pidFile, 'utf8').catch(() => '')) !== '', { label: 'the MCP pid file', timeoutMs: 10_000 });

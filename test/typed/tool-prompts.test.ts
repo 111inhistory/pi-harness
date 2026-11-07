@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-agent';
-import capabilityExtension from '../../extensions/capability.ts';
+import capabilityExtension from '../../src/capability/extension.ts';
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 

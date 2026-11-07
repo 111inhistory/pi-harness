@@ -28,7 +28,10 @@ Harness 为 Pi 增加按需工具发现、并行委派和独立问答能力。�
 git clone https://github.com/111inhistory/pi-harness.git
 cd pi-harness
 npm ci
-npx pi -e ./extensions/harness.ts
+npx pi -e ./extensions/result-rendering.ts \
+  -e ./extensions/subagent.ts \
+  -e ./extensions/capability.ts \
+  -e ./extensions/btw.ts
 ```
 
 先在 Pi 中配置可用模型与认证。Harness 使用 Pi 已有的模型配置，不单独管理凭据。
@@ -36,8 +39,37 @@ npx pi -e ./extensions/harness.ts
 上面的命令在仓库目录中启动。要在自己的项目中使用，从项目目录启动 Pi，并把 `-e` 后的路径换成 Harness 扩展的绝对路径，例如：
 
 ```sh
-pi -e /path/to/pi-harness/extensions/harness.ts
+pi -e /path/to/pi-harness/extensions/result-rendering.ts \
+  -e /path/to/pi-harness/extensions/subagent.ts \
+  -e /path/to/pi-harness/extensions/capability.ts \
+  -e /path/to/pi-harness/extensions/btw.ts
 ```
+
+### 持久注册
+
+推荐把仓库作为 Pi 本地包安装，由 `package.json` 维护默认入口与 Skill：
+
+```sh
+pi install /path/to/pi-harness
+```
+
+Pi 会在用户设置的 `packages` 中登记该目录。更新仓库后，重新启动 Pi 或执行 `/reload` 即可加载当前入口。请同时删除 `extensions` 中指向此包的重复入口；从旧版本迁移时移除 `extensions/harness.ts`。可选的 Shell Preflight 仍通过独立的 `-e` 或 `extensions` 条目加载。
+
+只希望试用或选择部分插件时，可使用上面的 `-e` 命令；`pi config` 可配置包内各资源的启用状态。
+
+### 插件入口
+
+| 入口 | 职责 |
+| --- | --- |
+| [subagent.ts](extensions/subagent.ts) | 子任务、会话通信与依附其生命周期的异步 Shell |
+| [capability.ts](extensions/capability.ts) | Capability 发现、启用、权限投影与 MCP 装配 |
+| [btw.ts](extensions/btw.ts) | `/btw` 独立问答 |
+| [result-rendering.ts](extensions/result-rendering.ts) | 工具结果与消息的折叠显示 |
+| [shell-preflight.ts](extensions/shell-preflight.ts) | 可选的 Shell 执行前检查 |
+
+包配置默认加载前四项；Shell Preflight 单独启用。Subagent 与 Capability 通常一起加载，注册入口分开，底层继续共享执行能力、配置与权限状态。独立问答和结果渲染可按需选择。
+
+已有配置若显式引用 `extensions/harness.ts`，请替换为所需的上述入口；该聚合入口已移除。
 
 ### 配置独立子任务的模型
 

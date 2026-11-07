@@ -8,7 +8,12 @@
     "node": ">=22.19.0"
   },
   "pi": {
-    "extensions": ["./extensions/harness.ts"],
+    "extensions": [
+      "./extensions/result-rendering.ts",
+      "./extensions/subagent.ts",
+      "./extensions/capability.ts",
+      "./extensions/btw.ts"
+    ],
     "skills": ["./skills"]
   },
   "scripts": {

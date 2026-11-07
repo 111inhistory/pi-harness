@@ -16,7 +16,7 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 
-import capabilityExtension from "../../extensions/capability.ts";
+import capabilityExtension from "../../src/capability/extension.ts";
 import { CAPABILITY_STEP_TOOL_NAME } from "../../src/capability/contracts.ts";
 import type { CapabilityStepFeedback } from "../../src/capability/agent.ts";
 import { discoveryRecords, type StoredDiscovery } from "../../src/capability/discovery-record.ts";

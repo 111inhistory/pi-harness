@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import capabilityExtension from "../../extensions/capability.ts";
+import capabilityExtension from "../../src/capability/extension.ts";
 import { installNativeDiscoveryBoundary } from "../../src/capability/native-discovery.ts";
 import { CAPABILITY_DISCOVERY_RECORD } from "../../src/capability/discovery-record.ts";
 import { capabilityAllowsTool, setCapabilityParent } from "../../src/capability/scope.ts";

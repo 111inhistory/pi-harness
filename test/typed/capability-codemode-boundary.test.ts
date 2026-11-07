@@ -6,7 +6,7 @@ import type { Message } from '@earendil-works/pi-ai';
 import { installCapabilityCodemode } from '../../src/capability/codemode.ts';
 import { installNativeDiscoveryBoundary } from '../../src/capability/native-discovery.ts';
 import { DEFAULT_HARNESS_CONFIG } from '../../src/harness-config.ts';
-import capabilityExtension from '../../extensions/capability.ts';
+import capabilityExtension from '../../src/capability/extension.ts';
 import { waitFor } from '../../test-support/async.ts';
 
 function registrationFixture(mode: 'on' | 'only' = 'on') {

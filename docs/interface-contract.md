@@ -48,7 +48,7 @@ Capability 应避免让 Main 接触与当前工作无关的资源目录和检索
 
 **Capability 是 Tool／MCP／Skill 的发现入口。Codemode 仍可启用，但只负责执行和组合调用。**
 
-配套入口 `extensions/harness.ts` 应执行以下边界：
+`extensions/capability.ts` 注册 Capability 与 MCP 装配，并执行以下边界：
 
 - 禁用原生 `tool_search`，不向模型默认注入 `<mcp_servers>`。
 - 不在 Codemode 沙箱中注册 `searchTools`。仅隐藏说明文字不算禁用。
@@ -174,7 +174,7 @@ Capability 的初始投影可按可见结果建立历史落点；之后即使嵌
 
 **Capability 的检索 Agent 复用 Subagent 的底层执行能力。** 系统通过 `src/subagent/execution.ts` 中的 `openSubagentExecution` 统一管理会话生命周期、超时与清理，不为 Capability 另建一套会话创建、预算、取消和清理流程。
 
-Capability 与 Subagent 配套装配和配置（`extensions/harness.ts`），不要求用户分别配置两套执行环境。Capability 直接调用内部执行入口，不要求公开的 `subagent_create`、`subagent_list` 或 `subagent_stop` 工具已注册或已激活。
+Capability 与 Subagent 分别通过 `extensions/capability.ts`、`extensions/subagent.ts` 注册，共用底层执行能力和同一会话的配置、资格状态，不创建两套执行环境。Capability 直接调用内部执行入口，不要求公开的 `subagent_create`、`subagent_list` 或 `subagent_stop` 工具已注册或已激活。
 
 Capability 调用仍等待检索完成，再返回筛选后的资源。复用执行代码不改变检索权限，不向内部检索 Agent 开放父 Agent 的执行权限。
 

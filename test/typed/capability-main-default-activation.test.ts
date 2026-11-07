@@ -14,7 +14,7 @@ import {
   type AgentSession,
 } from '@earendil-works/pi-coding-agent';
 
-import harnessExtension from '../../extensions/harness.ts';
+import harnessExtension from '../../test-support/harness-extension.ts';
 import type { CapabilityDiscoveryResult } from '../../src/capability/agent.ts';
 import { CAPABILITY_STEP_TOOL_NAME } from '../../src/capability/contracts.ts';
 

@@ -12,7 +12,7 @@ import {
   type AgentSession,
 } from '@earendil-works/pi-coding-agent';
 
-import capabilityExtension from '../../extensions/capability.ts';
+import capabilityExtension from '../../src/capability/extension.ts';
 import type { CapabilityDiscoveryResult } from '../../src/capability/agent.ts';
 import { CAPABILITY_STEP_TOOL_NAME } from '../../src/capability/contracts.ts';
 

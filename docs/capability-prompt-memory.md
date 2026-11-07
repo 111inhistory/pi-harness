@@ -72,8 +72,8 @@ checks remain authoritative.
 
 ## Native discovery boundary
 
-The paired `extensions/harness.ts` entry installs the native discovery
-boundary. It replaces the native MCP discovery surface, not its transport or
+The `extensions/capability.ts` entry installs the native discovery
+boundary and MCP execution backend. It replaces the native MCP discovery surface, not its transport or
 authentication. The paired entry disables native `tool_search`, global resource
 listing, and default `<mcp_servers>` injection.
 

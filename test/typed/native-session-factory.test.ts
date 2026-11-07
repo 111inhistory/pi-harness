@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from 'node:url';
 import test from "node:test";
 
 import {
@@ -489,8 +490,12 @@ test("Fresh uses default extensions minus exclusions without installing the root
     });
     pi.on("session_shutdown", () => pi.events.emit("fresh_defaults_lifecycle", "stopped"));
   }`, "utf8");
+  const rootEntries = ['subagent', 'capability', 'btw'].map(name =>
+    new URL(`../../extensions/${name}.ts`, import.meta.url).pathname);
+  const packageRoot = fileURLToPath(new URL('../../', import.meta.url));
   await writeFile(path.join(h.root, "agent", "settings.json"), JSON.stringify({
-    extensions: [new URL("../../extensions/harness.ts", import.meta.url).pathname],
+    packages: [packageRoot],
+    extensions: rootEntries,
     defaultTools: ["+codemode"],
   }), "utf8");
   h.parentTools.push({ name: "default_extension" }, { name: "denied_extension" }, { name: "optional_extension" });
@@ -512,14 +517,17 @@ test("Fresh uses default extensions minus exclusions without installing the root
     const loaded = inspection.resourceLoader.getExtensions();
     assert.deepEqual(loaded.errors, []);
     assert.ok(loaded.extensions.some((extension) => extension.resolvedPath === extensionPath));
-    assert.ok(!loaded.extensions.some((extension) => extension.resolvedPath.endsWith("/extensions/harness.ts")));
+    assert.ok(!loaded.extensions.some(extension => rootEntries.includes(extension.resolvedPath)));
+    assert.equal(loaded.extensions.filter(extension => path.basename(extension.resolvedPath) === 'result-rendering.ts').length, 1,
+      'package registration keeps rendering but does not reinstall root services');
     assert.equal(h.surfaces.length, 1);
     assert.ok(loaded.extensions.some((extension) => extension.commands.has("mcp")), "Fresh retains the MCP execution backend");
     assert.equal(capabilityAllowsTool(opened.capabilityScope, "default_extension"), true);
     assert.equal(capabilityAllowsTool(opened.capabilityScope, "denied_extension"), false);
     assert.deepEqual(lifecycle, ["started"], "default extension session_start actually runs");
     const stored = JSON.parse(await readFile(path.join(h.root, "agent", "settings.json"), "utf8"));
-    assert.deepEqual(stored.extensions, [new URL("../../extensions/harness.ts", import.meta.url).pathname], "child-only resource exclusions do not change user settings");
+    assert.deepEqual(stored.packages, [packageRoot], 'child filtering does not change package registration');
+    assert.deepEqual(stored.extensions, rootEntries, "child-only resource exclusions do not change user settings");
   } finally {
     await opened.execution.dispose();
     assert.deepEqual(lifecycle, ["started", "stopped"], "extension sessions close with the child");

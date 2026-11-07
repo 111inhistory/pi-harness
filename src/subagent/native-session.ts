@@ -27,7 +27,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent";
 
-import capabilityExtension from "../../extensions/capability.ts";
+import capabilityExtension from "../capability/extension.ts";
 import { installSessionCacheIdentity } from "../session-cache-runtime.ts";
 import type { HarnessConfig } from "../harness-config.ts";
 import { setCapabilityParent } from "../capability/scope.ts";
@@ -43,7 +43,8 @@ import type {
   NativeSessionRequest,
 } from "./native-types.ts";
 
-const ROOT_EXTENSION = fileURLToPath(new URL("../../extensions/harness.ts", import.meta.url));
+const ROOT_EXTENSIONS = ['subagent', 'capability', 'btw'].map(name =>
+  fileURLToPath(new URL(`../../extensions/${name}.ts`, import.meta.url)));
 
 /**
  * Everything the concrete factory needs. All four dependencies have one owner
@@ -264,11 +265,17 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
     if (cached !== undefined) return cached;
     let settings = SettingsManager.create(cwd, this.#deps.agentDir, { projectTrusted: trusted });
     {
-      // Resource discovery reads the individual settings layers, not applyOverrides.
-      // Keep their relative paths and package filters; replace only our root entry.
+      // Keep each layer's relative paths and package filters. Root entrypoints
+      // must be excluded from both explicit extensions and package resources.
       const layers = { global: settings.getGlobalSettings(), project: settings.getProjectSettings() };
+      const exclusions = ROOT_EXTENSIONS.map(file => `-${file}`);
       for (const layer of Object.values(layers)) {
-        layer.extensions = [...(layer.extensions ?? []), `-${ROOT_EXTENSION}`];
+        layer.extensions = [...(layer.extensions ?? []), ...exclusions];
+        if (layer.packages) layer.packages = layer.packages.map(entry => {
+          const source = typeof entry === 'string' ? { source: entry } : entry;
+          if (source.extensions?.length === 0) return source;
+          return { ...source, extensions: [...(source.extensions ?? []), ...exclusions] };
+        });
       }
       const contents = { global: JSON.stringify(layers.global), project: JSON.stringify(layers.project) };
       settings = SettingsManager.fromStorage({

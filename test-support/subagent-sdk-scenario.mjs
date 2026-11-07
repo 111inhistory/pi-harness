@@ -11,7 +11,7 @@ import { AssistantMessageEventStream, getSystemMessageText, getCurrentTools } fr
 import subagentExtension from "../src/subagent/extension.ts";
 import { installResultRendering } from "../src/result-rendering.ts";
 import { promptString, promptStrings } from "../src/prompt-text.ts";
-import capabilityExtension from "../extensions/capability.ts";
+import capabilityExtension from "../src/capability/extension.ts";
 import { deriveSessionUid, getAgentSocketPath, getBroadcastSocketPath } from "../src/ipc/socket.ts";
 import { resolveTranscriptTools } from "../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js";
 import { convertResponsesMessages } from "../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";

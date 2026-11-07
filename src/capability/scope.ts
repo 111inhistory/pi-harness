@@ -34,6 +34,8 @@
  * closed instead of recursing forever.
  */
 
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+
 /** The only shape this module needs from a registered tool. */
 export interface CapabilityScopedTool {
   readonly name: string;
@@ -43,6 +45,8 @@ export interface CapabilityScopedTool {
 /** Minimal structural tool catalog; an ExtensionAPI satisfies it. */
 export interface CapabilityToolCatalog {
   getAllTools(): readonly CapabilityScopedTool[];
+  /** Native extensions in one resource loader share a bus, not an API object. */
+  readonly events?: ExtensionAPI['events'];
 }
 
 /** Resolves the current parent API; revival replaces the value, not the link. */
@@ -88,13 +92,21 @@ interface ScopeNode {
 }
 
 const scopes = new WeakMap<CapabilityToolCatalog, ScopeState>();
+const SCOPE_CHANNEL = 'pi-harness:capability-scope';
+interface ScopeExchange { state?: ScopeState }
 const NO_DENIALS: ReadonlySet<string> = new Set<string>();
 
 function stateFor(pi: CapabilityToolCatalog): ScopeState {
   let state = scopes.get(pi);
   if (state === undefined) {
-    state = { parent: null, denied: NO_DENIALS, learned: new Set<string>(), rootOnly: null };
+    const exchange: ScopeExchange = {};
+    pi.events?.emit(SCOPE_CHANNEL, exchange);
+    state = exchange.state ?? { parent: null, denied: NO_DENIALS, learned: new Set<string>(), rootOnly: null };
     scopes.set(pi, state);
+    if (exchange.state === undefined) {
+      const shared = state;
+      pi.events?.on(SCOPE_CHANNEL, data => { (data as ScopeExchange).state = shared; });
+    }
   }
   return state;
 }

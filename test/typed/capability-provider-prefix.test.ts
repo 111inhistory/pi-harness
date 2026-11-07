@@ -36,7 +36,7 @@ import {
   type AgentSession, type ExtensionAPI,
 } from '@earendil-works/pi-coding-agent';
 
-import harnessExtension from '../../extensions/harness.ts';
+import harnessExtension from '../../test-support/harness-extension.ts';
 import { capabilityPromptTranscript, type ProjectionMessage } from '../../src/capability/prompt.ts';
 import { discoveryRecords } from '../../src/capability/discovery-record.ts';
 

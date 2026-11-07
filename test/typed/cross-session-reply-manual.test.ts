@@ -44,7 +44,7 @@ after(async () => {
 // harness import must follow the test override.
 const [{ default: harnessExtension }, { liveSessions, registerSession, sendToSessionEndpoint, unregisterSession }] =
   await Promise.all([
-    import("../../extensions/harness.ts"),
+    import("../../test-support/harness-extension.ts"),
     import("../../src/subagent/session-directory.ts"),
   ]);
 

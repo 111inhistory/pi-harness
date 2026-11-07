@@ -24,7 +24,7 @@ import {
   type AgentSession, type ExtensionAPI,
 } from '@earendil-works/pi-coding-agent';
 
-import capabilityExtension from '../../extensions/capability.ts';
+import capabilityExtension from '../../src/capability/extension.ts';
 import { CAPABILITY_STEP_TOOL_NAME } from '../../src/capability/contracts.ts';
 import {
   CAPABILITY_DISCOVERY_RECORD, CAPABILITY_DISCOVERY_RECORD_VERSION,
