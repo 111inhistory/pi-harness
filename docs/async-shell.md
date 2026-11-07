@@ -32,13 +32,15 @@ pi-job read TASK_ID
 pi-job cancel TASK_ID
 ```
 
+任务 ID 统一为 `job_<8 位小写十六进制>`，例如 `job_3f8a1c2d`；创建时原子占用目录，碰撞时另取 ID，不覆盖已有任务。后续命令直接使用返回的 ID。
+
 `--wait` 控制本次调用等待多久，到期后任务继续运行。`--timeout` 控制任务本身的运行上限。等待窗口内完成时直接返回结果，不额外发送完成通知。
 
 `poll` 不等待新输出，默认读取尚未返回的增量。结果包含 `id`、`status`、`exitCode`、`output`、`cursor`、`logPath` 和 `truncated`。游标是过滤后日志的 UTF-8 字节偏移。每次 `output` 最多 32 KiB，累计日志保留；`truncated` 表示本次没有容纳全部输出，可继续查询或读取日志文件。任务已进入终态时，也应继续读取尚未返回的输出。
 
 `create`、`poll`、`send`、`key`、`cancel` 和自动完成通知共享默认消费游标，回调或其他调用可能先取走输出。需要独立回读时使用 `read --cursor OFFSET`；`read` 不推进默认游标。`cancel` 返回当次尚未消费的输出，清理失败时返回非零退出码；无法确认资源退出时，宿主继续保留归属围栏。
 
-任务状态、原始 PTY 日志与过滤后的文本日志保存在 `os.tmpdir()/pi-async-shell-<uid>/<任务ID>/`。Windows 通常使用 `%TEMP%/pi-async-shell-0/<任务ID>/`，其中 `0` 是缺少 Unix UID 时的目录后缀。每个任务使用独立 tmux server 或 psmux `-L pi-job-<任务ID>` 命名空间，不使用当前用户正在操作的会话。
+任务状态、原始 PTY 日志与过滤后的文本日志保存在任务根目录下的 `<任务ID>/`。默认根目录为 `os.tmpdir()/pi-async-shell-<uid>/`；连接宿主时，CLI 沿用宿主分配的固定根目录，子进程修改 `TMPDIR`／`TEMP` 不改变任务定位。Windows 通常使用 `%TEMP%/pi-async-shell-0/<任务ID>/`，其中 `0` 是缺少 Unix UID 时的目录后缀。每个任务使用独立 tmux server 或 psmux `-L pi-job-<任务ID>` 命名空间，不使用当前用户正在操作的会话。
 
 Windows 按实际目录 ACL 验证私有性，共享临时目录中的宽泛访问授权会被拒绝，Harness 不会自动改写已有目录权限。
 
@@ -87,12 +89,15 @@ Windows 的 `.cmd`／`.bat` 目标经 `cmd.exe` 启动并转义参数，包括 `
 | `PI_AGENT_ID` | 当前 Actor，Main 或 Subagent ID |
 | `PI_AGENT_SOCKET` | 当前 Actor 的受管端点地址 |
 | `PI_ASYNC_SHELL_TOKEN` | 当前执行代次的归属标识 |
+| `PI_ASYNC_SHELL_ROOT` | 宿主分配的任务根目录，供 CLI 和后代进程一致定位 |
 
 wrapper 从环境读取回调地址。注册与完成事件进入同一个 Actor 端点，由宿主按异步 Shell 协议接收。结果不伪装成 Agent 消息，不授予消息工具权限，也不转发给父节点代为处理。
 
 Subagent 有未完成 Shell 任务时，Runner 保留当前 Job 和会话，并暂停活动时间预算计时；完成结果先入队，再释放等待。子会话关闭会撤销其执行标识并停止所属任务。根会话切换、分叉、重载或关闭时，旧宿主停止所持任务并保留资源围栏，直到清理结束。
 
-IPC 投递失败或超时不证明结果未入队，因此不会自动重发未知结果。CLI 的日志可用于后续人工查询。
+IPC 投递失败或超时不证明结果未入队，因此不会自动重发未知结果。明确拒收的注册不发送完成回调；注册结果未知时保留原有清理围栏。CLI 的日志可用于后续人工查询。
+
+测试入口会移除继承自真实会话的 Actor、回调地址、执行 token 与任务根目录；CLI 定向测试同样隔离这些环境。回调测试只使用显式创建的测试端点，不向运行测试的真实对话发送事件。
 
 ## 验证范围
 

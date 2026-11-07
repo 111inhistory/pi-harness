@@ -32,6 +32,8 @@ import path from "node:path";
 import { ensurePrivateDirectory } from "../ipc/endpoint.ts";
 import { writeSocket } from "../ipc/socket.ts";
 import { AsyncShellError } from "./errors.ts";
+import { isTaskId } from "./task-id.ts";
+import { samePath } from "../fs-path.ts";
 import { OutputFilter } from "./output.ts";
 import {
   childCommand,
@@ -126,14 +128,14 @@ function assertSupported(): void {
 }
 
 export function stateRoot(): string {
-  return path.join(os.tmpdir(), `pi-async-shell-${process.getuid?.() ?? 0}`);
+  return path.resolve(process.env["PI_ASYNC_SHELL_ROOT"] || path.join(os.tmpdir(), `pi-async-shell-${process.getuid?.() ?? 0}`));
 }
 
-export function taskDirectory(id: string): string {
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
+export function taskDirectory(id: string, root = stateRoot()): string {
+  if (!isTaskId(id)) {
     throw new AsyncShellError("invalid_id", `Not an async-shell task id: ${id}`);
   }
-  return path.join(stateRoot(), id);
+  return path.join(root, id);
 }
 
 /**
@@ -141,10 +143,9 @@ export function taskDirectory(id: string): string {
  * with a directory that arrived in an external frame, so the shape is checked
  * here instead of trusting the caller: a task may only ever stop its own server.
  */
-function checkedTaskDirectory(dir: string): string {
+function checkedTaskDirectory(dir: string, root: string): string {
   const resolved = path.resolve(dir);
-  const root = path.resolve(stateRoot());
-  if (path.dirname(resolved) !== root || !/^[A-Za-z0-9_-]{1,64}$/.test(path.basename(resolved))) {
+  if (!samePath(path.dirname(resolved), root) || !isTaskId(path.basename(resolved))) {
     throw new AsyncShellError("invalid_directory", `Not an async-shell task directory under ${root}: ${dir}`);
   }
   return resolved;
@@ -377,7 +378,8 @@ async function sendFrame(target: CallbackTarget, frame: AsyncShellFrame): Promis
   try {
     await writeSocket(target.socket, frame);
   } catch (error) {
-    throw new AsyncShellError("callback_failed", `The async-shell host did not accept a frame: ${messageOf(error)}`);
+    const code = errorCode(error) === "registration_rejected" ? "registration_rejected" : "callback_failed";
+    throw new AsyncShellError(code, `The async-shell host did not accept a frame: ${messageOf(error)}`);
   }
 }
 
@@ -405,9 +407,20 @@ export interface CreateTaskOptions {
 export async function createTask(options: CreateTaskOptions): Promise<ShellResult> {
   assertSupported();
   if (options.argv.length === 0) throw new AsyncShellError("invalid_command_args", "create requires a command.");
-  const id = crypto.randomUUID();
-  ensurePrivateDirectory(stateRoot());
-  const dir = taskDirectory(id);
+  const root = stateRoot();
+  ensurePrivateDirectory(root);
+  let id: string;
+  let dir: string;
+  for (;;) {
+    id = `job_${crypto.randomBytes(4).toString("hex")}`;
+    dir = taskDirectory(id, root);
+    try {
+      fs.mkdirSync(dir, { mode: 0o700 });
+      break;
+    } catch (error) {
+      if (errorCode(error) !== "EEXIST") throw error;
+    }
+  }
   ensurePrivateDirectory(dir);
   const paths = taskPaths(dir);
   const createdAt = Date.now();
@@ -429,21 +442,22 @@ export async function createTask(options: CreateTaskOptions): Promise<ShellResul
         kind: ASYNC_SHELL_KIND, token: options.callback.token, operation: "register", id, directory: dir, pid: process.pid,
       });
     } catch (error) {
-      // A refused or unanswered write does not prove the host did not register
-      // this directory, so it is kept and never re-registered. One failed
-      // completion is the distinct unregister event for that case; the host can
-      // also release the closed directory through its own retirement path.
+      // Keep ambiguous submissions fenced and never replay registration. A
+      // distinct completion releases a possibly accepted submission; an explicit
+      // registration rejection proves this submission needs no unregistration.
       const state: TaskState = { id, status: "failed", exitCode: null, createdAt, finalizedAt: Date.now() };
       fs.appendFileSync(paths.filtered, `async-shell: ${messageOf(error)}\n`);
       writeState(paths, state);
       fs.writeFileSync(paths.closed, "", { mode: 0o600 });
-      try {
-        await sendFrame(options.callback, {
-          kind: ASYNC_SHELL_KIND, token: options.callback.token, operation: "complete", id, notify: false,
-          result: consumeOutput(paths, state),
-        });
-      } catch {
-        // Still ambiguous: the directory stays closed, so a later release is a no-op.
+      if (errorCode(error) !== "registration_rejected") {
+        try {
+          await sendFrame(options.callback, {
+            kind: ASYNC_SHELL_KIND, token: options.callback.token, operation: "complete", id, notify: false,
+            result: consumeOutput(paths, state),
+          });
+        } catch {
+          // Still ambiguous: the directory stays closed, so a later release is a no-op.
+        }
       }
       throw new AsyncShellError(
         "register_failed",
@@ -563,8 +577,8 @@ export function sendKey(dir: string, key: string): void {
  * Cancel one task and wait for its monitor to finish cleanup, so a retiring root
  * can fence the resource. Idempotent; a finished task resolves immediately.
  */
-export async function cancelTask(dir: string): Promise<void> {
-  const paths = taskPaths(checkedTaskDirectory(dir));
+export async function cancelTask(dir: string, root = stateRoot()): Promise<void> {
+  const paths = taskPaths(checkedTaskDirectory(dir, root));
   if (exists(paths.closed)) return;
   const task = readTaskFile(paths);
   fs.writeFileSync(paths.cancel, "", { mode: 0o600 });

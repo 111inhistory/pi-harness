@@ -1,6 +1,7 @@
-import path from 'node:path';
-import { taskDirectory } from './tmux.ts';
+import { stateRoot, taskDirectory } from './tmux.ts';
+import { samePath } from '../fs-path.ts';
 import { randomBytes } from 'node:crypto';
+import { AsyncShellError } from './errors.ts';
 import { validateAsyncShellFrame, type ShellResult } from './protocol.ts';
 
 interface Owner {
@@ -15,13 +16,14 @@ export interface AsyncShellHostOptions {
   accepting(): boolean;
   deliver(actorId: string, result: ShellResult): Promise<void>;
   wake(actorId: string): void;
-  cancel(directory: string): Promise<void>;
+  cancel(directory: string, root: string): Promise<void>;
 }
 
 /** One root owns execution leases; a shell result never impersonates an Agent. */
 export class AsyncShellHost {
   readonly #options: AsyncShellHostOptions;
   readonly #owners = new Map<string, Owner>();
+  readonly #root = stateRoot();
   #closed = false;
 
   constructor(options: AsyncShellHostOptions) { this.#options = options; }
@@ -38,6 +40,7 @@ export class AsyncShellHost {
       PI_AGENT_ID: actorId,
       PI_AGENT_SOCKET: this.#options.address(actorId),
       PI_ASYNC_SHELL_TOKEN: owner.token,
+      PI_ASYNC_SHELL_ROOT: this.#root,
     };
   }
 
@@ -46,19 +49,22 @@ export class AsyncShellHost {
   async receive(actorId: string, input: unknown): Promise<void> {
     const frame = validateAsyncShellFrame(input);
     const owner = this.#owners.get(actorId);
+    function refuse(message: string): never {
+      throw new AsyncShellError(frame.operation === 'register' ? 'registration_rejected' : 'execution_rejected', message);
+    }
     if (owner === undefined || frame.token !== owner.token) {
-      throw new Error('The async shell execution no longer owns this Agent context.');
+      refuse('The async shell execution no longer owns this Agent context.');
     }
     if (this.#closed || owner.retiring) {
       // The original lease still owns cancellation. Acknowledge its terminal
       // cleanup without delivering into a retiring context or a revived Actor.
       if (frame.operation === 'complete' && owner.tasks.has(frame.id)) return;
-      throw new Error('The async shell execution no longer owns this Agent context.');
+      refuse('The async shell execution no longer owns this Agent context.');
     }
     if (frame.operation === 'register') {
-      if (!this.#options.accepting()) throw new Error('The async shell host is retiring.');
-      if (path.resolve(frame.directory) !== taskDirectory(frame.id)) throw new Error('The async shell task directory does not match its ID.');
-      if (owner.tasks.has(frame.id)) throw new Error(`Async shell task ${frame.id} is already registered.`);
+      if (!this.#options.accepting()) refuse('The async shell host is retiring.');
+      if (!samePath(frame.directory, taskDirectory(frame.id, this.#root))) refuse('The async shell task directory does not match its ID.');
+      if (owner.tasks.has(frame.id)) refuse(`Async shell task ${frame.id} is already registered.`);
       owner.tasks.set(frame.id, frame.directory);
       return;
     }
@@ -80,7 +86,7 @@ export class AsyncShellHost {
     // Revoke first and keep the resource lease until cancellation finishes.
     owner.retiring = true;
     owner.release = (async () => {
-      const settled = await Promise.allSettled([...owner.tasks.values()].map(directory => this.#options.cancel(directory)));
+      const settled = await Promise.allSettled([...owner.tasks.values()].map(directory => this.#options.cancel(directory, this.#root)));
       this.#options.wake(actorId);
       const failures = settled.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
       if (failures.length > 0) throw new AggregateError(failures.map(result => result.reason), 'Async shell tasks did not all stop.');

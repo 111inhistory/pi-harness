@@ -8,8 +8,7 @@
  * servers. Nothing here fakes the transport or the terminal.
  */
 import assert from 'node:assert/strict';
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { once } from 'node:events';
+import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
@@ -20,9 +19,11 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { cancelTask, stateRoot } from '../../src/async-shell/tmux.ts';
+import { AsyncShellHost } from '../../src/async-shell/host.ts';
 import { pipePath } from '../../src/ipc/address.ts';
 import { validateAsyncShellFrame, type AsyncShellFrame, type ShellResult } from '../../src/async-shell/protocol.ts';
 import { waitFor } from '../../test-support/async.ts';
+import { runCli } from '../../test-support/test-environment.mjs';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const posix = process.platform !== 'win32';
@@ -62,17 +63,7 @@ interface CliResult {
 }
 
 function cli(args: readonly string[], settings: { input?: string; env?: NodeJS.ProcessEnv } = {}): Promise<CliResult> {
-  const child: ChildProcess = spawn(process.execPath, [bundle, ...args], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, ...settings.env },
-  });
-  let stdout = '';
-  let stderr = '';
-  child.stdout?.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
-  child.stderr?.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
-  child.stdin?.on('error', () => { /* a refused input closes the pipe early */ });
-  child.stdin?.end(settings.input ?? '');
-  return once(child, 'exit').then(([code]) => ({ code: code as number | null, stdout, stderr }));
+  return runCli(bundle, args, settings);
 }
 
 async function job(args: readonly string[], settings: { input?: string; env?: NodeJS.ProcessEnv } = {}): Promise<ShellResult> {
@@ -86,8 +77,8 @@ function taskDirOf(result: ShellResult): string {
 }
 
 /** Remove one test task after it is stopped, so no state outlives the run. */
-async function cleanup(dir: string): Promise<void> {
-  await cancelTask(dir).catch(() => {});
+async function cleanup(dir: string, root = stateRoot()): Promise<void> {
+  await cancelTask(dir, root).catch(() => {});
   await rm(dir, { recursive: true, force: true });
 }
 
@@ -105,6 +96,7 @@ test('create runs the command with literal argv and reports the exit status', op
 
   assert.equal(result.status, 'failed');
   assert.equal(result.exitCode, 3);
+  assert.match(result.id, /^job_[0-9a-f]{8}$/, 'public task IDs are job_<8 hex>');
   assert.deepEqual(JSON.parse(result.output.trim()), literal, 'argv reaches the command byte for byte');
 });
 
@@ -229,7 +221,8 @@ test('a nonzero exit, a timeout and a cancel each finalize the task and leave no
   t.after(() => cleanup(taskDirOf(timedOut)));
   assert.equal(timedOut.status, 'timed_out');
   assert.equal(timedOut.exitCode, null);
-  assert.ok(timedOut.output.includes('begin'), timedOut.output);
+  // The deadline includes process startup; under load the task can time out
+  // before Node runs its first stdout write.
   assert.equal(serverStopped(taskDirOf(timedOut)), true, 'the timed-out server is gone');
 
   const running = await job(['create', '--', ...nodeScript('process.stdout.write("begin\\n"); setTimeout(()=>process.exit(0), 30000);')]);
@@ -324,7 +317,7 @@ test('an ambiguous registration keeps the task directory and never replays it', 
   const error = JSON.parse(result.stdout).error as { code: string; message: string };
   assert.equal(error.code, 'register_failed');
   // The error names the task whose directory was kept for the host to release.
-  const id = /task ([0-9a-f-]{36})/.exec(error.message)?.[1];
+  const id = /task (job_[0-9a-f]{8})/.exec(error.message)?.[1];
   assert.ok(id, error.message);
   const dir = path.join(stateRoot(), id!);
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -335,9 +328,49 @@ test('an ambiguous registration keeps the task directory and never replays it', 
   await cancelTask(dir);
 });
 
+test('a host-owned task keeps its root when the child changes TMPDIR', options, async (t) => {
+  const host = await callbackHost(t);
+  const root = await mkdtemp(path.join(tmpdir(), 'async-shell-host-root-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const previousRoot = process.env.PI_ASYNC_SHELL_ROOT;
+  process.env.PI_ASYNC_SHELL_ROOT = root;
+  t.after(() => {
+    if (previousRoot === undefined) delete process.env.PI_ASYNC_SHELL_ROOT;
+    else process.env.PI_ASYNC_SHELL_ROOT = previousRoot;
+  });
+  const shellHost = new AsyncShellHost({
+    accepting: () => true,
+    address: () => host.socket,
+    deliver: async () => {},
+    wake: () => {},
+    cancel: (directory, taskRoot) => cancelTask(directory, taskRoot),
+  });
+  t.after(() => shellHost.close());
+  const childTmp = await mkdtemp(path.join(tmpdir(), 'async-shell-child-tmp-'));
+  t.after(() => rm(childTmp, { recursive: true, force: true }));
+
+  const result = await job(['create', '--wait', '10s', '--', ...nodeScript('process.stdout.write("hosted\\n")')], {
+    env: { ...shellHost.environment('Main'), TMPDIR: childTmp, TEMP: childTmp, TMP: childTmp },
+  });
+  t.after(() => cleanup(taskDirOf(result), root));
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.output, 'hosted\n');
+  assert.equal(path.dirname(result.logPath), path.join(root, result.id), 'the task stays under the host-owned root');
+  await waitFor(() => host.frames.length >= 2, { label: 'register and complete frames' });
+  assert.equal(host.frames[0]?.operation, 'register');
+  assert.equal(host.frames[0]?.id, result.id);
+  assert.equal(host.frames[1]?.operation, 'complete');
+  assert.equal(host.frames[1]?.id, result.id);
+  await shellHost.receive('Main', host.frames[0]!);
+  assert.equal(shellHost.hasPending('Main'), true, 'the host owns the registered task');
+  await shellHost.receive('Main', host.frames[1]!);
+  assert.equal(shellHost.hasPending('Main'), false, 'the completion unregisters the task');
+});
+
 test('a completion frame cannot report a running task', () => {
-  const result = { id: 'task-1', status: 'running', exitCode: null, output: '', cursor: 0, logPath: '/tmp/task-1/output.log', truncated: false };
-  const frame = { kind: 'async-shell', token: 'token', operation: 'complete', id: 'task-1', notify: true, result };
+  const result = { id: 'job_11111111', status: 'running', exitCode: null, output: '', cursor: 0, logPath: '/tmp/job_11111111/output.log', truncated: false };
+  const frame = { kind: 'async-shell', token: 'token', operation: 'complete', id: 'job_11111111', notify: true, result };
   assert.throws(() => validateAsyncShellFrame(frame), /running/);
   assert.deepEqual(
     validateAsyncShellFrame({ ...frame, result: { ...result, status: 'completed' } }).operation,

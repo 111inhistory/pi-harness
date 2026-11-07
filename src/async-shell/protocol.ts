@@ -14,12 +14,14 @@
  * continues from `cursor`.
  */
 
+import { isTaskId } from "./task-id.ts";
+
 export const ASYNC_SHELL_KIND = "async-shell";
 
 /** Upper bound of one result's `output`, in bytes of UTF-8. */
 export const MAX_RESULT_BYTES = 32 * 1024;
 
-const MAX_ID_CHARS = 64;
+const MAX_ID_CHARS = 12;
 const MAX_TOKEN_CHARS = 512;
 const MAX_PATH_CHARS = 4096;
 
@@ -142,6 +144,7 @@ export function validateAsyncShellFrame(value: unknown): AsyncShellFrame {
   if (value["kind"] !== ASYNC_SHELL_KIND) throw new AsyncShellFrameError("The frame is not an async-shell frame.");
   const token = text(value["token"], "token", MAX_TOKEN_CHARS);
   const id = text(value["id"], "id", MAX_ID_CHARS);
+  if (!isTaskId(id)) throw new AsyncShellFrameError("id must have the form job_<8 lowercase hexadecimal digits>.");
   const operation = value["operation"];
   if (operation === "register") {
     const directory = text(value["directory"], "directory", MAX_PATH_CHARS);

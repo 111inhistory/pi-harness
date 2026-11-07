@@ -29,8 +29,8 @@ test('async shell callbacks share Agent endpoints and cannot target siblings or 
   const environment = host.environment('sub_01');
   host.environment('Main');
   const frame = {
-    kind: 'async-shell', operation: 'register', id: 'fake-task',
-    token: environment.PI_ASYNC_SHELL_TOKEN, directory: taskDirectory('fake-task'), pid: process.pid,
+    kind: 'async-shell', operation: 'register', id: 'job_11111111',
+    token: environment.PI_ASYNC_SHELL_TOKEN, directory: taskDirectory('job_11111111'), pid: process.pid,
   };
   await assert.rejects(writeSocket(getAgentSocketPath('Main', root), frame), /no longer owns/);
   await assert.rejects(writeSocket(getBroadcastSocketPath('sub_01', root), frame), /owning Agent endpoint/);

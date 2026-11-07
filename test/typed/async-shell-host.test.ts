@@ -5,7 +5,7 @@ import os from 'node:os';
 import { AsyncShellHost } from '../../src/async-shell/host.ts';
 import type { ShellResult } from '../../src/async-shell/protocol.ts';
 
-const id = '11111111-1111-4111-8111-111111111111';
+const id = 'job_11111111';
 const directory = path.join(os.tmpdir(), `pi-async-shell-${process.getuid?.() ?? 0}`, id);
 const result: ShellResult = {
   id, status: 'completed', exitCode: 0, output: 'done\n', cursor: 5,

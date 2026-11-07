@@ -33,6 +33,8 @@ Completion is delivered automatically to the Agent that created the task. When n
 pi-job poll TASK_ID
 ```
 
+Task IDs use `job_<8 lowercase hex digits>`, for example `job_3f8a1c2d`. Use the exact ID returned by `create`. The host supplies a stable task root, so changing a command's temporary directory does not change task lookup.
+
 `poll` returns immediately with new output and current status. Use it when a progress check will inform your next action; wait for the completion event otherwise.
 
 Results contain `id`, `status`, `exitCode`, `output`, `cursor`, `logPath`, and `truncated`. Check status and exit code before treating the command as successful. Terminal states are `completed`, `failed`, `cancelled`, and `timed_out`.

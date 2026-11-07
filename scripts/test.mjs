@@ -1,6 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { stripCallbackEnv } from '../test-support/test-environment.mjs';
 
 const mode = process.argv[2] ?? 'all';
 if (!['all', 'typed'].includes(mode)) throw new Error(`Unknown test group: ${mode}`);
@@ -21,7 +22,7 @@ if (files.length === 0) throw new Error(`No tests found for ${mode}`);
 // never another harness session's processes. Windows has no POSIX groups.
 const grouped = process.platform !== 'win32';
 const child = spawn(process.execPath, ['--import', 'tsx', '--test', '--test-timeout=60000', ...files], {
-  stdio: 'inherit', detached: grouped,
+  stdio: 'inherit', detached: grouped, env: stripCallbackEnv(process.env),
 });
 let interrupted = null;
 for (const signal of ['SIGINT', 'SIGTERM']) {
