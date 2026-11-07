@@ -1,54 +1,54 @@
-# Capability enable rewrite handoff
+# Capability 启用重写交接计划
 
-## Authorized scope
+## 授权范围
 
-Keep `/capability`, its read-only list/category/filter UI and completion. Keep `capability.manualTools`, manual branch authorization, discovery exclusion, root-only qualification, and direct/MCP/Codemode admission. Replace only the old enable implementation. Preserve unrelated work and the Pi 1.5.0 migration. Do not merge, commit or clean branches without a user request.
+保留 `/capability` 及其只读的 list/category/filter 界面与补全。保留 `capability.manualTools`、手动分支授权、发现排除、仅根会话资格以及直接/MCP/Codemode 准入。仅替换旧版 enable 实现。保留无关工作以及 Pi 1.5.0 迁移成果。未经用户要求，不合并、不提交也不清理分支。
 
-The old enable command parser, execution, picker, name/namespace completion and `manual.ts`/`selector.ts` implementation are removed as the starting point. During this state the command accepts browsing only; existing manual records still authorize tools under the live permission checks. No replacement enable implementation has been approved as correct merely because the old one passed tests.
+旧版 enable 命令解析器、执行逻辑、picker、名称/命名空间补全以及 `manual.ts`/`selector.ts` 实现作为起点已被移除。在该状态下，该命令仅接受浏览；现有的 manual 记录在实时权限检查下仍可授权工具。不能仅因为旧实现通过了测试，就认定任何替代的 enable 实现是正确的。
 
-Receive-side activation of `msg_write` is explicitly required. Keep the existing cross-session receive path and make it part of acceptance for the rewrite.
+明确要求实现接收侧的 `msg_write` 激活。保留现有的跨会话接收路径，并将其作为本次重写的验收内容。
 
-Cache stability is a hard acceptance requirement: append newly available tools and subsequent context updates; never rebuild or rewrite the existing prompt head or earlier conversation merely because a tool is enabled. Check the serialized provider request, not just an intermediate projection. Provider limitations must be demonstrated and must not excuse avoidable head rewriting.
+缓存稳定性是硬性验收要求：追加新可用工具及后续上下文更新；绝不能仅仅因为启用了工具就重建或重写已有的提示词头部或早前对话。必须检查序列化的提供方请求，而不能仅检查中间投影。提供方的限制必须给出实证，不能作为规避本可避免的头部重写的借口。
 
-The user also authorizes `/subagent sessions connect <uid|sessionId>` as described below. This is local information delivery plus automatic `msg_write` activation, with no new authentication or connection authorization layer.
+用户同时授权了下文所述的 `/subagent sessions connect <uid|sessionId>`。这是本地信息传递加上自动激活 `msg_write`，不引入新的认证或连接授权层。
 
-## Implementation plan
+## 实现计划
 
-1. Inspect the current diff and coordinate before editing shared files. Existing uncommitted changes in `prompt.ts`, `discovery-record.ts` and the manual timestamp regression predate this removal. Treat them as input to review, not a proven cache fix. Session custom-entry timestamps use the actual SDK format; verify this rather than assuming numeric milliseconds.
-2. Trace the actual Pi 1.5.0 request pipeline before choosing an implementation: `setActiveTools`, branch entry persistence, `before_agent_start`, context projection, native tool/rules patches, provider conversion, reload, compaction and branch navigation. Read the installed SDK documentation and relevant code. Identify which request prefixes change and why. Separate changes caused by tool declarations from changes caused by authorization memory.
-3. Write a small concrete design before adding mechanisms. Retain the user-visible enable entry (picker and named targets as appropriate to the final design), append-only branch authorization, explicit per-target outcomes, and manualTools restrictions. Reuse the current catalog and shared activation/admission modules. Do not reintroduce a second policy engine, compatibility aliases, or broad defensive state machinery.
-4. Place authorization memory at a stable position in the conversation. Enabling a tool must not rewrite the original system message or earlier conversation prefix. Rebuilding the same branch without new events must produce the same projected transcript. Review anchoring across equal timestamps, SDK string timestamps, tool-result boundaries, reload, compaction and fork/switch. Prefer an existing native event/entry identity when it gives a stronger ordering anchor than timestamps. Do not promote a timestamp guess into a transaction invariant.
-5. Verify provider handling of mid-conversation system/tool patches. Appending a system section alone is not proof of preserving cache: conversion can flatten it into the prompt head. Avoid duplicate tool descriptions/instructions when the native declarations or Codemode query already supply them. If a tool-schema change inherently invalidates a provider cache segment, measure and state that boundary instead of claiming zero misses.
-6. Preserve honest activation/persistence outcomes. Only report tools the SDK actually activated and tools explicitly authorized by this operation. Repeat enable is idempotent. Unknown, hidden, unqualified and masked members must not be reported as enabled. A persistence exception must not be reported as durable success. Do not silently broaden permissions or use rollback/replay assumptions without checking the real boundary.
-7. Restore enable parsing/execution/completion and any picker only after the activation, authorization and projection paths share the intended semantics. Browsing and cancellation have no activation or record side effects. Batch targets should use one native active-set change where feasible. If namespace support is retained, resolve exact names and explicit namespace refs consistently and report member outcomes without enlarging the user's selection.
-8. Support MCP tools after reconnect through Pi's native `/mcp` command. Read the current SDK registry after reconnect, not a startup snapshot or an independent MCP connection. Newly registered and re-registered tools must appear in catalog browsing, enable completion/picker when restored, and named enable resolution. Revalidate the selected target against the current registry at execution time; do not activate a stale registration captured before disconnect. Preserve manualTools rules and native MCP/resource/Codemode qualification across reconnect. Test both stable tool names and changed/replaced tool registrations, including reconnect after enable and opening a picker before reconnect. Do not require restarting the session or running model discovery to make reconnected tools eligible for user enable.
-9. Keep cross-session receive activation: before delivering a peer message that triggers a Main turn, make `msg_write` available under the normal qualification rules. Activate only `msg_write`, preserve existing active tools, avoid a user capability-discovery record, and make repeated receipts idempotent. An already active authorized reply tool must not emit a false failure. Explicit `manualTools` restrictions remain enforced; receipt must not manufacture a user grant. Verify normal and quiescing/compaction delivery paths and preserve epoch/resource ownership fences and unknown-delivery no-replay rules.
-10. Update the current interface/configuration/memory docs to describe the final implementation. Put investigations, tradeoffs, cache measurements and acceptance evidence in `docs/reviews/`. Rewrite claims from the removed enable implementation rather than copying its previous acceptance status.
+1. 在编辑共享文件之前，检查当前 diff 并提前协调。`prompt.ts`、`discovery-record.ts` 中现有的未提交更改以及 manual 时间戳回归发生在本次移除之前。应将它们视为待审查的输入，而不是已证实的缓存修复方案。会话 custom-entry 时间戳使用的是实际 SDK 格式；应核实这一点，而不是假定为数值型毫秒数。
+2. 在选择实现前，追踪实际的 Pi 1.5.0 请求管线：`setActiveTools`、分支条目持久化、`before_agent_start`、上下文投影、原生 tool/rules 补丁、提供方转换、reload、压缩（compaction）以及分支导航。阅读已安装的 SDK 文档和相关代码。识别哪些请求前缀发生改变以及原因。将工具声明引起的变更与授权记忆引起的变更区分开。
+3. 在添加机制之前先编写简明具体的设计。保留用户可见的 enable 入口（根据最终设计合理保留 picker 及指定名称的目标）、仅追加的分支授权、针对每个目标的明确结果以及 manualTools 限制。复用当前目录和共享的激活/准入模块。不要重新引入第二套策略引擎、兼容别名或宽泛的防御性状态机制。
+4. 将授权记忆放置在对话中的稳定位置。启用工具绝不能改写原始系统消息或早前对话前缀。在没有新事件的情况下重建同一分支必须产生完全相同的投影 transcript。复查在相同时间戳、SDK 字符串时间戳、tool-result 边界、reload、压缩以及 fork/switch 时的锚定表现。当既有的原生事件/条目标识能够提供比时间戳更强烈的时序锚点时，优先使用原生标识。不要将时间戳推测提升为事务不变量。
+5. 验证提供方对对话中途 system/tool 补丁的处理方式。仅仅追加一个 system 段落并不能证明保留了缓存：转换过程可能会将其展平并入提示词头部。当原生声明或 Codemode 查询已经提供了工具描述/指令时，避免重复描述。如果工具 schema 的变更天然会使提供方的某段缓存失效，应实测并说明该边界，而不是声称零未命中（zero misses）。
+6. 保持如实的激活/持久化结果汇报。仅报告 SDK 实际已激活的工具以及本次操作显式授权的工具。重复启用应具备幂等性。未知、隐藏、不具备资格或被遮蔽的成员绝不能报告为已启用。持久化异常绝不能报告为持久成功。不要在未检查真实边界的情况下隐式放宽权限，也不要使用回滚/重放假定。
+7. 仅在激活、授权和投影路径具备统一的预期语义之后，才恢复 enable 的解析/执行/补全以及相关 picker。浏览与取消不得产生激活或记录副作用。批量目标在可行时应使用单次原生活跃集变更。若保留命名空间支持，应一致地解析精确名称与显式命名空间引用，并报告各成员的处理结果，不得扩大用户的选择范围。
+8. 支持在通过 Pi 原生 `/mcp` 命令重连后的 MCP 工具。重连后应读取当前 SDK 注册表，而不是启动时的快照或独立的 MCP 连接。新注册和重新注册的工具必须出现在目录浏览、恢复后的 enable 补全/picker 以及指定名称的 enable 解析中。在执行时应针对当前注册表重新验证所选目标；不要激活断连前捕获的陈旧注册项。跨重连保持 manualTools 规则与原生 MCP/资源/Codemode 资格。测试稳定的工具名称与已更改/替换的工具注册项，包括启用后重连以及在重连前打开 picker。不需要重启会话或运行模型发现即可让重连后的工具具备用户启用资格。
+9. 保留跨会话接收激活：在投递会触发 Main 轮次的对等节点消息之前，在常规资格规则下使 `msg_write` 可用。仅激活 `msg_write`，保留现有的活跃工具，避免生成用户能力发现记录，并确保重复接收具备幂等性。对已经激活且已获授权的回复工具，不能误报失败。显式的 `manualTools` 限制必须继续执行；接收消息不得凭空制造用户授权。验证常规投递与静默/压缩（quiescing/compaction）投递路径，并保持代次/资源所有权围栏以及未知投递禁止重放规则。
+10. 更新当前的接口、配置与记忆文档以说明最终实现。将调查、权衡取舍、缓存测量和验收证据放入 `docs/reviews/`。改写来自已移除 enable 实现的声明，而不是直接照搬其先前的验收状态。
 
-## Session connect command
+## 会话连接命令
 
-Implement `/subagent sessions connect <uid|sessionId>` under the existing `sessions` subcommand. Retain bare `/subagent sessions` for listing. Use the exact uid shown in the live session list or the full native session ID; do not add a singular `session` compatibility alias. Resolve the target against current live session records and use its actual published metadata and managed Main address.
+在现有的 `sessions` 子命令下实现 `/subagent sessions connect <uid|sessionId>`。保留不带参数的 `/subagent sessions` 用于列出项。使用存活会话列表中显示的精确 uid 或完整的原生 session ID；不添加单数形式的 `session` 兼容别名。根据当前存活会话记录解析目标，并使用其实际发布的元数据及受管 Main 地址。
 
-Append one concise message to the current agent's conversation with the selected session's identity, name if present, working directory and Main reply address, and enough instruction to use `msg_write` for communication. The message must reach actual model context, not just a UI notification. Use the existing native message delivery semantics: deliver correctly while idle or busy, obey compaction and session-transition fences, and never inject an old root's result into a different session. Prefer an informational context message that does not trigger an unsolicited contact turn; the agent can use the supplied information on its next turn.
+向当前 Agent 对话追加一条简明消息，包含所选会话的身份标识、名称（若存在）、工作目录与 Main 回复地址，以及使用 `msg_write` 通信的充分指引。该消息必须进入实际的模型上下文，而不仅是 UI 通知。使用现有的原生消息投递语义：无论空闲还是忙碌均能正确投递，遵循压缩与会话切换围栏，绝不把旧根节点的结果注入到其他会话中。优先采用不触发未请求联络轮次的信息性上下文消息；Agent 可以在其下一轮中利用所提供的信息。
 
-Automatically make `msg_write` available to the current agent for the next model request. Share the rewrite's activation logic and preserve existing tools. This user-issued connect command is itself explicit authorization for this single tool: if `msg_write` is manual, use the ordinary user-grant path as needed without another enable command, confirmation, ACL, pairing token or handshake. Respect existing scope, hidden-tool and host execution boundaries. Distinguish this explicit user action from receiving a peer message, which does not invent a manual user grant.
+在下一次模型请求时自动为当前 Agent 提供 `msg_write`。共享本次重写的激活逻辑并保留现有工具。此用户发起的 connect 命令本身即是对该单一工具的显式授权：若 `msg_write` 为 manual，则按需走常规的用户授权路径，无需额外的 enable 命令、确认提示、ACL、配对 token 或握手。遵守现有的作用域、隐藏工具与宿主执行边界。将此显式用户操作与接收对等节点消息区分开——接收消息不会凭空生成 manual 用户授权。
 
-Connect provides information locally. Do not send a greeting or any other message to the target, wake it, copy its transcript, inject the full session catalog, create persistent connection state, or change the existing free cross-session messaging model. A stale or unknown target is a normal lookup error. Do not add a new authentication mechanism.
+connect 在本地提供信息。不得向目标发送问候语或任何其他消息、不得唤醒目标、不得复制其 transcript、不得注入完整的会话目录、不得创建持久连接状态，也不得改变现有的自由跨会话消息模型。陈旧或未知的目标属于常规查找错误。不添加新的认证机制。
 
-Add parsing and completion for the new subcommand. Verify real model-context delivery, `msg_write` availability on the next turn, no remote delivery, no unrelated tool activation, manual grant behavior, repeated connect, unknown/exited targets, busy sessions, session switch during lookup/delivery, and cached-prefix stability. Update the command/interface docs only when this implementation exists.
+为新子命令添加解析与补全。验证真实模型上下文投递、下一轮中 `msg_write` 的可用性、无远程投递、无无关工具激活、manual 授权行为、重复连接、未知/已退出目标、忙碌会话、查找/投递期间的会话切换以及缓存前缀稳定性。仅在完成该实现后才更新命令/接口文档。
 
-## Acceptance
+## 验收要求
 
-- `/capability` and `list [tool|mcp|namespace] [filter]` retain grouping, ordering, filtering, active/manual tags and forced-Tab completion.
-- Before authorization, manual tools are absent from discovery, cannot execute directly or through Codemode/MCP, and cannot leak into a child. Being default-active or receiving a peer message does not grant manual authorization.
-- Explicit enable affects only intended registered/qualified targets. Verify actual SDK masking, repeated enable, record failure reporting, picker cancellation and non-TUI behavior if a picker is restored.
-- Compare serialized provider requests before enable, immediately after, on the next unchanged turn, after a second enable, and after reload/compaction/fork. Assert the prefix properties at the provider boundary, not only the intermediate projection helper.
-- Exercise the real SDK with an offline model and a real local MCP fixture. Preserve existing manual memory/policy tests, including the pending string-timestamp regression; fix the underlying implementation if it fails.
-- Use Pi's native `/mcp` reconnect path in a real SDK regression. Verify that browsing and restored enable completion/picker use the new registry, that both new and re-registered MCP tools can be explicitly enabled without restarting or model discovery, and that stale registrations cannot bypass permission or activation checks.
-- A received cross-session message exposes `msg_write` on the triggered turn, allows a reply, does not load the namespace, creates no manual grant, and remains idempotent on subsequent receipts. Keep explicit manual denial coverage.
-- `/subagent sessions connect <uid|sessionId>` appends the selected session's contact information to the current model context and automatically enables only `msg_write`. No remote message, pairing, extra authentication or permission prompt is introduced. Existing prompt head/history remains unchanged; explicit connect can authorize a manual `msg_write` through the common user-grant path.
-- Run `npm run check`, `npm run check:json`, and `npm run check:docs` after the rewrite. Run online cache checks only against an available authorized provider; report cacheRead/cacheWrite and exact tested provider/model/API conditions without committing secrets or machine paths. Report online providers and Windows as untested when not exercised.
+- `/capability` 与 `list [tool|mcp|namespace] [filter]` 保留分组、排序、过滤、active/manual 标签以及强制 Tab 补全。
+- 获得授权前，manual 工具不会出现在发现结果中，无法直接执行或通过 Codemode/MCP 执行，也不会泄漏给子 Agent。默认激活（default-active）或收到对等节点消息均不赋予 manual 授权。
+- 显式启用仅影响预期的、已注册且具备资格的目标。若恢复了 picker，应验证实际的 SDK 遮蔽、重复启用、记录失败报告、picker 取消以及非 TUI 场景下的行为。
+- 对比启用前、启用后紧接着、下一个未变更轮次、第二次启用后以及 reload/压缩/fork 后的序列化提供方请求。在提供方边界断言前缀属性，而不是仅断言中间投影辅助函数。
+- 使用真实 SDK、离线模型以及真实本地 MCP fixture 运行测试。保留现有的 manual 记忆/策略测试，包括待处理的字符串时间戳回归测试；若失败则修复底层实现。
+- 在真实 SDK 回归测试中使用 Pi 原生 `/mcp` 重连路径。验证浏览以及恢复后的 enable 补全/picker 使用新注册表，新注册和重新注册的 MCP 工具均可在不重启或无需模型发现的情况下被显式启用，且陈旧注册项无法绕过权限或激活检查。
+- 收到的跨会话消息会在所触发的轮次中暴露 `msg_write`、允许回复、不加载整个命名空间、不创建 manual 授权，且在后续接收时保持幂等。保留对显式 manual 拒绝的测试覆盖。
+- `/subagent sessions connect <uid|sessionId>` 将所选会话的联络信息追加到当前模型上下文中，并自动仅启用 `msg_write`。不引入远程消息、配对、额外认证或权限提示。现有的提示词头部/历史保持不变；显式 connect 可通过通用用户授权路径授权 manual 的 `msg_write`。
+- 重写后运行 `npm run check`、`npm run check:json` 与 `npm run check:docs`。仅在存在可用授权提供方时运行在线缓存检查；汇报 cacheRead/cacheWrite 以及确切测试的提供方/模型/API 条件，不提交密钥或机器路径。未进行实际测试时，如实声明在线提供方与 Windows 为未测。
 
-## Decision boundaries
+## 决策边界
 
-If provider conversion or a weak projection boundary requires substantially more machinery, document the trigger, user-visible effect, recovery, implementation cost and recommended tradeoff before expanding architecture. Follow AGENTS.md; do not weaken manualTools or declare partial failure successful for cache stability.
+若提供方转换或薄弱的投影边界需要大幅增加机制，在扩张架构前先记录触发条件、用户可见影响、恢复方式、实现成本与推荐的权衡取舍。遵循 AGENTS.md；不得为了缓存稳定性而削弱 `manualTools`，也不得将部分失败宣称为成功。

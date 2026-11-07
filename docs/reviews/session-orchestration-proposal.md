@@ -1,167 +1,167 @@
-# Proposal: An independent external orchestrator with a lightweight Pi
+# 提案：基于轻量 Pi 的独立外部编排器
 
-Status: proposal for a separate project, not a current pi-harness interface contract or an implementation task in this repository. This replaces the earlier idea of implementing the session-management and cron suite inside the Harness. Presets remain [postponed](agent-presets-proposal.md). Ordinary Agent discovery and communication remain [a separate Harness proposal](agent-discovery-communication-proposal.md).
+状态：独立项目的提案，不构成当前 pi-harness 接口契约或本仓库内的实现任务。本提案取代了此前在 Harness 内部实现会话管理与 cron 套件的构想。Preset 仍处于[暂缓状态](agent-presets-proposal.md)。常规 Agent 发现与通信仍为[独立的 Harness 提案](agent-discovery-communication-proposal.md)。
 
-## Decision and goal
+## 决策与目标
 
-External orchestration should live in an independent project. That project may embed a lightweight Pi session as its reasoning and dialogue engine. Using Pi for decisions does not imply making Pi's extension runtime the owner of orchestration.
+外部编排应置于一个独立项目中。该项目可以嵌入一个轻量 Pi 会话作为其推理与对话引擎。使用 Pi 做出决策并不意味着要让 Pi 的扩展运行时成为编排的所有者。
 
-The project manages a set of independent Pi executions, observes progress and arranges later checks. It does not initially need a workflow DAG, a web platform, a generic scheduler service or a preset system.
+该项目管理一组独立的 Pi 执行，观察进度并安排后续检查。初期不需要工作流 DAG、Web 平台、通用调度器服务或 preset 系统。
 
-## Responsibility ownership
+## 职责归属
 
-| Responsibility | Owner |
+| 职责 | 所有者 |
 | --- | --- |
-| Managed Pi process handles, launch and continuation | External orchestrator runtime |
-| Session discovery, management scope and native-history lookup | External orchestrator runtime |
-| JSONL slicing, preprocessing and output budgets | External orchestrator runtime |
-| Schedules, pending wake-ups, cancellation and management state | External orchestrator runtime |
-| Interpretation of evidence, coordination and intervention decisions | Lightweight Pi inside the orchestrator |
-| Actual model/tool execution inside a worker | The target worker Pi and its SDK |
-| Native interruption of the worker's current run | A minimal target-side control operation |
-| Ordinary peer messages and bounded Agent discovery | Existing/thin Harness integration |
-| Native session identity, name and conversation history | Pi's native session mechanism |
+| 受管 Pi 进程句柄、启动与继续运行 | 外部编排器运行时 |
+| 会话发现、管理范围与原生历史查找 | 外部编排器运行时 |
+| JSONL 切片、预处理与输出预算 | 外部编排器运行时 |
+| 调度计划、待处理唤醒、取消与管理状态 | 外部编排器运行时 |
+| 证据解读、协调与干预决策 | 编排器内部的轻量 Pi |
+| Worker 内部真实的模型／工具执行 | 目标 Worker Pi 及其 SDK |
+| 对 Worker 当前运行的原生中断 | 目标端极简控制操作 |
+| 常规 peer 消息与有范围的 Agent 发现 | 现有／轻薄的 Harness 集成 |
+| 原生会话身份、名称与对话历史 | Pi 原生会话机制 |
 
-The lightweight Pi is a collaborator of the external runtime. It must not be the sole in-memory owner of timers or process handles. A model turn ending, context compaction or changing its dialogue branch must not silently destroy management state.
+轻量 Pi 是外部运行时的协作者。它不能是定时器或进程句柄唯一的内存中持有者。模型轮次结束、上下文压缩或切换对话分支绝不能静默销毁管理状态。
 
-An independent project does not require a separate scheduling daemon: one local process can own the orchestration runtime and host a Pi SDK session. Separate processes/services are justified only by an actual deployment or availability requirement.
+独立项目不需要单独的调度守护进程（daemon）：单个本地进程即可持有编排运行时并托管 Pi SDK 会话。只有实际的部署或可用性需求才能证明引入独立进程／服务的合理性。
 
-## Minimal structure
+## 最小结构
 
 ```text
-User / external events / scheduled deadlines
+用户 / 外部事件 / 计划截止时间
                   |
-       External orchestrator runtime
-       - managed Pi handles and native session lookup
-       - bounded observation and management operations
-       - schedules and delivery bookkeeping
+       外部编排器运行时
+       - 受管 Pi 句柄与原生会话查找
+       - 有界观察与管理操作
+       - 调度计划与投递记账
                   |
-       Lightweight Pi SDK session
-       - receives goals and observations
-       - reasons about progress and blockers
-       - calls the runtime's tools
+       轻量 Pi SDK 会话
+       - 接收目标与观察结果
+       - 推理进度与阻塞项
+       - 调用运行时的工具
                   |
-       Worker Pi sessions via existing IPC / thin control adapters
+       通过现有 IPC / 轻薄控制适配器连接的 Worker Pi 会话
 ```
 
-The runtime supplies facts and effects; the embedded Pi supplies decisions. Do not put a hidden autonomous planner in the runtime or let a timer directly decide that a worker must restart.
+运行时提供事实与副作用；嵌入式 Pi 提供决策。不应在运行时中放置隐藏的自主规划器，也不应让定时器直接决定 Worker 必须重启。
 
-## Tool surface belongs to the external project
+## 工具表面归属于外部项目
 
-The discussed names can remain useful without becoming Harness-owned tools:
+所讨论的工具名称依然有效，但无需成为 Harness 持有的工具：
 
-| Tool | Meaning |
+| 工具 | 含义 |
 | --- | --- |
-| `session_list` | List live and resumable native sessions within the configured management scope. |
-| `session_poll` | Return an explicitly bounded, preprocessed slice of recorded JSONL; not a live-state oracle. |
-| `session_stop` | Request interruption of a live target's current run; leave its process and child Jobs intact. |
-| `session_create` | Start a new managed Pi execution in an explicit cwd with a task and instructions. Deferred. |
-| `session_resume` | Continue identified native history without silently creating a new identity. Deferred. |
-| `session_connect` | Arrange peer contact and respective collaboration responsibilities. Deferred. |
-| `session_rename` | Change the target's native name through a real host operation. Deferred. |
-| Cron capability | Arrange, list and cancel future observations/wake-ups. Deferred. |
+| `session_list` | 列出配置的管理范围内活跃（live）及可恢复的原生会话。 |
+| `session_poll` | 返回显式有界且经过预处理的已记录 JSONL 切片；并非实时状态的预言机（oracle）。 |
+| `session_stop` | 请求中断活跃目标当前的运行；保持其进程和子 Job 完好。 |
+| `session_create` | 在显式的 cwd 中携带 task 和 instructions 启动新的受管 Pi 执行。已暂缓。 |
+| `session_resume` | 继续指定的原生历史，而不静默创建新身份。已暂缓。 |
+| `session_connect` | 安排 peer 联系及各自的协作职责。已暂缓。 |
+| `session_rename` | 通过真实的宿主操作修改目标的原生名称。已暂缓。 |
+| Cron capability | 安排、列出并取消未来的观察／唤醒。已暂缓。 |
 
-The initial tool subset and launch interface are separate-project implementation decisions. The discussion has not authorized implementing all rows at once.
+初始工具子集和启动接口属于独立项目的实现决策。讨论中并未授权一次性实现表格中的所有行。
 
-The external runtime can expose these operations directly as tools to its embedded Pi. An MCP adapter can later let another explicitly authorized Pi use them; it is not required merely to connect an embedded Pi to its own host.
+外部运行时可以直接向其嵌入式 Pi 暴露这些操作作为工具。后续可通过 MCP 适配器允许其他显式授权的 Pi 使用它们；但仅为了将嵌入式 Pi 连接到它自身的宿主时，并不需要 MCP。
 
-When exposed to ordinary Pi clients, management tools remain manual and distinct from ordinary discovery/message tools. In the embedded Pi, the user explicitly starts an orchestrator with a displayed management scope and tool set. Loading project text or receiving a worker message cannot silently broaden that scope.
+当向普通 Pi 客户端暴露时，管理工具依然属于 manual 工具，并与普通的发现／消息工具有所区分。在嵌入式 Pi 中，用户显式启动一个展示了管理范围和工具集的编排器。加载项目文本或接收 Worker 消息不能静默拓宽该范围。
 
-## Lightweight Pi
+## 轻量 Pi
 
-Start with a normal Pi SDK session and explicit instructions, current model settings and a small management tool loadout. Keep its native conversation for reasoning and audit. No predefined-preset catalog, `/preset` command, Seed compiler or special profile engine is needed.
+从常规的 Pi SDK 会话入手，搭配显式指令、当前模型设置和精简的管理工具配置。保留其原生对话用于推理与审计。不需要预定义的 preset 目录、`/preset` 命令、Seed 编译器或特殊的 profile 引擎。
 
-A default coordination instance need not load repository-editing tools or unrelated MCP backends, because the runtime already owns the required observations and management effects. This is a minimal default, not a universal claim that an orchestrator must never edit or implement.
+默认的协调实例无需加载仓库编辑工具或无关的 MCP 后端，因为运行时已经持有必需的观察与管理副作用。这属于极简默认配置，并不代表编排者绝对不能进行编辑或实现。
 
-The host must distinguish active tool declarations from execution restrictions. A small active set is not an OS sandbox or an authorization engine. Current management scope and tool authority remain host-checked at the point of action.
+宿主必须区分活跃工具声明与执行限制。精简的激活工具集不是操作系统沙箱，也不是授权引擎。当前管理范围与工具职权仍由宿主在执行时核验。
 
-Future model/profile selection can reuse Pi mechanisms; it does not decide process ownership or schedule lifetime. See the separate deferred preset research rather than adding it to the first implementation.
+未来的模型／profile 选择可以复用 Pi 机制；它不决定进程归属或计划生命周期。相关内容参见已暂缓的独立 preset 调研，而不应加入首期实现中。
 
-## Observations and interruption
+## 观察与中断
 
-Preserve the bounded poll decisions from discussion:
+保留讨论中关于有界轮询（bounded poll）的决策：
 
-- `session_poll` reads recorded content; full history is not the default.
-- A practical starting budget is 20 returned content events, at most 100 when requested, 1 MiB scanned, 4 KiB per text entry and 32 KiB total output. These are initial budgets, not performance promises or a new configuration framework.
-- Define the default scope as `journal_tail`, not the current runtime branch. Native `branch()` can move an in-memory leaf without appending; an external file reader cannot infer that active leaf reliably.
-- Preserve event identity/parent relation when a slice may span branches; do not present different branches as one conversation.
-- Exclude thinking, system/configuration metadata and tool arguments by default. Tool results have bounded status/text summaries.
-- Mark limited observation honestly. Missing results in a window do not prove a tool is running or absent.
-- Do not derive `idle` or queued-message state from JSONL. A separate live host snapshot, if needed, requires the target's actual facts.
-- Read files without repairing them. Ignore an incomplete trailing line, retain a bounded snapshot size and do not chase continuous appends.
-- Non-live resumable sessions may be observed without starting them. Full history and incremental cursor APIs are deferred.
+- `session_poll` 读取已记录的内容；默认不读取全量历史。
+- 实用的初始预算为：返回 20 个 content 事件，请求时最多 100 个，扫描上限 1 MiB，单条文本 entry 上限 4 KiB，总输出上限 32 KiB。这些属于初始预算，不是性能承诺，也不是新的配置框架。
+- 将默认范围定义为 `journal_tail`，而非当前运行时分支。原生 `branch()` 可以在不追加 entry 的情况下移动内存中的叶节点；外部文件读取器无法可靠推断该活跃叶节点。
+- 当切片可能跨越分支时，保留事件身份／父级关系；不应将不同分支渲染为同一条对话。
+- 默认排除 thinking、系统／配置元数据和工具参数。工具结果提供有界的 status/text 摘要。
+- 如实标记观察的有界性。窗口内缺少结果不能证明工具正在运行或不存在。
+- 不要从 JSONL 推导 `idle` 或消息排队状态。若需要单独的活跃宿主快照，必须基于目标的实际事实。
+- 读取文件时不应擅自修复文件。忽略不完整的尾行，保留有界快照大小，不追踪持续追加。
+- 非活跃的可恢复会话无需启动即可观察。全量历史与增量游标（cursor）API 已暂缓。
 
-`session_stop` requires a thin worker-side abort operation. Killing a Pi process is not equivalent to stopping its current run. Reuse the native abort path, including cooperative cancellation of in-flight model/tool work; do not clear queued messages, terminate the Pi process or issue stop to child Jobs. Already applied tool effects are not undone.
+`session_stop` 需要目标 Worker 端提供轻薄的 abort 操作。强杀（kill）Pi 进程不等同于停止其当前运行。复用原生 abort 路径，包括对进行中模型／工具工作的协同取消；不要清空排队消息、不要终止 Pi 进程，也不要向下级 Job 发出停止信号。已经生效的工具副作用不会被撤回。
 
-A request receipt is not proof the run has exited. Reuse existing local IPC ownership and unknown-delivery rules. No blind replay after an uncertain stop. Do not generalize this minimal endpoint into a remote administration framework.
+收到请求回执不等于运行已经退出。复用现有的本地 IPC 归属及未知投递规则。停止结果未知时严禁盲目重放。不要将这个极简端点泛化为远程管理框架。
 
-## Scheduling, when implemented
+## 调度计划（实现时）
 
-Schedules belong to the external runtime, not RootService, a worker's branch or the model's pending tool call. A deadline creates a host event for the lightweight Pi, which then observes and decides what to do.
+调度计划归属于外部运行时，而非 RootService、Worker 的分支或模型待处理的工具调用。截止时间会为轻量 Pi 创建一个宿主事件，随后由轻量 Pi 观察并决定如何处理。
 
-Required boundaries:
+必要边界：
 
-- No model `while + sleep` loop just to wait.
-- At most one pending wake-up per recurring task; skip missed ticks rather than producing catch-up bursts.
-- A busy or temporarily unavailable reasoning session does not create an unbounded queue.
-- Cancellation stops future ticks without claiming to retract accepted events.
-- A timer cannot automatically stop/restart a worker merely because time elapsed.
-- Model-session reset and runtime shutdown are different lifecycles. Task ownership must be explicit, not inherited accidentally from a Pi generation.
+- 禁止仅为了等待而在模型中执行 `while + sleep` 循环。
+- 每个周期性任务最多只有一个待处理唤醒；跳过错过的 tick，而不产生追赶性并发脉冲（catch-up bursts）。
+- 处于繁忙或暂时不可用的推理会话不会导致无限增长的队列。
+- 取消会停止未来的 tick，但不能声称能撤回已接收的事件。
+- 定时器不能仅因时间流逝就自动停止／重启 Worker。
+- 模型会话重置与运行时关闭属于不同的生命周期。任务归属必须显式确定，不能意外继承自某一代 Pi（Pi generation）。
 
-An independent runtime can support durable schedules if restart-survival is an actual requirement. It does not make persistence free: storage, missed deadlines and target revalidation still require a contract. Choose those deliberately; do not assume an in-memory timer survives the project process exiting.
+如果重启后存活是真实需求，独立运行时可以支持持久化调度。但这并不意味着持久化是免费的：存储、错过的截止时间以及目标重新校验仍需要契约约束。应审慎选型；不要假设内存中的定时器能在项目进程退出后继续存活。
 
-## Human commands and interaction
+## 人工命令与交互
 
-Human management commands belong to the independent project's CLI/TUI or its embedded Pi command layer, not automatically to the worker Harness:
+人工管理命令属于独立项目的 CLI/TUI 或其嵌入式 Pi 命令层，不会自动归入 Worker Harness：
 
-| Proposed entry | Behavior |
+| 提议入口 | 行为 |
 | --- | --- |
-| `/session` / `/session list [filter]` | Browse the scoped live+resumable list; group by lifecycle facts and filter in place. |
-| `/session poll [id]` | Select a target if omitted and show one bounded recorded-content slice with scope and truncation information. No hidden refresh loop. |
-| `/session stop [id]` | Select a permitted live target, then explicitly choose “stop current run”; highlighting alone has no effect. |
-| Create/resume/connect/rename entries | Deferred with the corresponding operations; no empty UI shell is required now. |
-| Cron entries | Deferred with scheduling; when implemented, expose list/cancel without requiring a model turn. |
+| `/session` / `/session list [filter]` | 浏览指定范围内的活跃及可恢复列表；按生命周期事实分组并就地过滤。 |
+| `/session poll [id]` | 若省略 id 则选择目标，展示一份带有范围与截断信息的有界已记录内容切片。没有隐藏的刷新循环。 |
+| `/session stop [id]` | 选择允许操作的活跃目标，随后显式确认“停止当前运行”；仅高亮选中项不起任何作用。 |
+| 创建／恢复／连接／重命名入口 | 随对应操作一同暂缓；目前不需要空 UI 外壳。 |
+| Cron 入口 | 随调度一同暂缓；实现时暴露 list/cancel，且无需消耗模型轮次。 |
 
-Use native Pi controls when the embedded Pi owns the interaction. Do not build another UI framework. Preserve exact-ID shortcuts, keyboard completion, focus/IME, cancellation without side effects, long-list scrolling and narrow-width handling. Non-TUI clients need explicit arguments or clear unsupported-interaction feedback; never choose a target for them.
+当交互归嵌入式 Pi 管辖时，使用原生 Pi 控件。不要另建 UI 框架。保留精确 ID 快捷方式、键盘补全、焦点／输入法（IME）、无副作用取消、长列表滚动和窄屏适配。非 TUI 客户端需要显式参数或明确的不支持交互反馈；绝不能替它们擅自选择目标。
 
-The ordinary Harness retains `/agent` discovery and child-only `/subagent` operations as described in the companion proposal. Migrating the old `/subagent sessions` entry must wait until the replacement is actually available; remove rather than keep a redundant alias at that point. The standalone runtime does not depend on automatic command-name candidate expansion in Pi's editor.
+普通 Harness 保留配套提案中所述的 `/agent` 发现与仅限子级的 `/subagent` 操作。迁移旧的 `/subagent sessions` 入口必须等到替代方案切实可用；届时应直接删除而非保留冗余别名。独立运行时不依赖 Pi 编辑器中命令名的自动候选展开。
 
-Direct human management actions do not silently enable their corresponding tools in a worker or broaden the embedded Agent's configured scope.
+直接的人工管理动作不会在 Worker 中静默启用其对应工具，也不会拓宽嵌入式 Agent 所配置的范围。
 
-## Harness boundary
+## Harness 边界
 
-This repository explicitly excludes an external scheduling service from its product scope. The independent project is the correct owner of that responsibility. Do not move its process registry, history scanner, management queue or cron into Harness modules for convenience.
+本仓库的产品范围明确排除了外部调度服务。独立项目是该职责的正确归属者。不要为了图方便而将其进程注册表、历史扫描器、管理队列或 cron 搬入 Harness 模块中。
 
-The Harness may provide ordinary messages and the minimal host operation required for native interruption. Existing session directory and native metadata are reusable integration points, not mandates to duplicate them externally. An optional live status adapter must report facts without asking a model to answer.
+Harness 可以提供常规消息以及原生中断所需的极简宿主操作。现有的会话目录和原生元数据属于可复用的集成点，但并不要求在外部重复维护一份。可选的实时状态适配器必须直接报告事实，而不能询问模型作答。
 
-The contact-based `agent_list` proposal remains independent. Ordinary peers do not gain management tools, and a management-wide session list does not become their discovery source.
+基于联系人（contact）的 `agent_list` 提案保持独立。普通 peer 不会获得管理工具，全局管理会话列表也不会成为它们的发现来源。
 
-## Evidence and reusable ideas
+## 证据与可复用构想
 
-| Evidence | What survives |
+| 证据 | 保留的内容 |
 | --- | --- |
-| User chooses an independent orchestration project with a lightweight Pi | Runtime owns orchestration; Pi can still supply reasoning. |
-| Current repository's scope excludes an external scheduling service | Keep implementation and lifecycle outside the worker Harness. |
-| Existing Pi SDK, IPC and native session storage | Reuse identity, history, model execution, UI and interruption rather than cloning the Harness. |
-| Abandoned Work experiment | Stable identity and observation separate from execution are useful; TODO/Branch/focus/Desc machinery stays abandoned. |
-| Preset/Seed investigation | Preserve as deferred research; it is not a prerequisite for a lightweight Pi. |
-| Native `branch()` and append-only histories | A file tail is not necessarily the active runtime branch; observation must state its scope. |
+| 用户选择带轻量 Pi 的独立编排项目 | 运行时持有编排权；Pi 仍可提供推理能力。 |
+| 当前仓库的范围排除了外部调度服务 | 实现与生命周期保留在 Worker Harness 之外。 |
+| 现有的 Pi SDK、IPC 与原生会话存储 | 复用身份、历史、模型执行、UI 与中断机制，而非克隆 Harness。 |
+| 已废弃的 Work 实验 | 稳定身份以及与执行分离的观察是有价值的；TODO/Branch/focus/Desc 机制保持废弃。 |
+| Preset/Seed 调研 | 作为已暂缓的调研保留；它不是轻量 Pi 的前提条件。 |
+| 原生 `branch()` 与只追加历史 | 文件尾部不必然是活跃运行时分支；观察必须声明其范围。 |
 
-## Razor decisions and acceptance
+## 奥卡姆剃刀裁决与验收
 
-Principle: every concept must protect an actual goal or needed distinction. This proposal covers ownership and minimal local orchestration, not a general workflow platform or OS isolation.
+原则：每个概念都必须保护实际目标或必要的区分。本提案涵盖所有权与极简本地编排，而非通用工作流平台或操作系统级隔离。
 
-| Concept | Verdict | Reason |
+| 概念 | 裁决 | 原因 |
 | --- | --- | --- |
-| Independent orchestration runtime | Keep | Process/schedule ownership must outlive individual model turns and worker contexts. |
-| Embedded lightweight Pi | Keep | Reuses a mature reasoning/tool/UI engine without making it the management-state owner. |
-| Separate daemon/service split | Defer | One local runtime can initially host the Pi SDK session. |
-| Worker-side abort adapter | Keep | Only the worker can implement native current-run interruption accurately. |
-| Harness-owned process manager / cron | Replace | The responsibility is real, but belongs to the independent project. |
-| Work workflow engine | Delete | Its planning value does not justify another task/execution model. |
-| Preset/Seed implementation | Defer | Explicitly postponed; current functionality does not depend on it. |
-| Durable schedules / live-process adoption | Prove first | Their ownership/recovery cost requires a concrete requirement. |
+| 独立编排运行时 | 保留（Keep） | 进程／调度所有权的生命周期必须长于单个模型轮次与 Worker 上下文。 |
+| 嵌入式轻量 Pi | 保留（Keep） | 复用成熟的推理／工具／UI 引擎，同时不让其成为管理状态的所有者。 |
+| 拆分为独立守护进程／服务 | 暂缓（Defer） | 单个本地运行时初期即可托管 Pi SDK 会话。 |
+| Worker 端 abort 适配器 | 保留（Keep） | 只有 Worker 才能准确实现对当前运行的原生中断。 |
+| Harness 持有进程管理器／cron | 替换（Replace） | 该职责确实存在，但归属于独立项目。 |
+| Work 工作流引擎 | 删除（Delete） | 其规划价值不足以支撑引入另一套任务／执行模型。 |
+| Preset/Seed 实现 | 暂缓（Defer） | 已明确暂缓；当前功能不依赖它。 |
+| 持久化调度／接管活跃进程 | 先证明可行（Prove first） | 其所有权／恢复代价需要具体需求支撑。 |
 
-Acceptance must exercise real Pi workers, local IPC and an embedded SDK session, not only mocked handlers. Prove that recorded observation is bounded and branch-honest; stop leaves the process and child Jobs intact; management scope is enforced; ordinary messages do not grant management authority; human list/selection/cancel flows work in a real terminal; and resetting the reasoning dialogue does not implicitly lose external process handles or schedule definitions.
+验收必须涵盖真实的 Pi worker、本地 IPC 和嵌入式 SDK 会话，不能仅用 mock handler。证明记录观察具有边界且诚实反映分支；stop 保持进程与子 Job 完好；管理范围得到强制执行；普通消息不授予管理权限；人工 list/selection/cancel 流程在真实终端中可用；重置推理对话不会隐式丢失外部进程句柄或调度定义。
 
-Before implementation, settle the independent project's minimal launch mode, management scope and the initial observation/control subset. Runtime persistence and future scheduling must be stated as supported or unsupported, not hidden behind “lightweight.”
+在实现前，应确定独立项目的极简启动模式、管理范围以及初始观察／控制子集。运行时持久化与未来调度必须明确声明为支持或不支持，不能隐蔽在“轻量”说辞之后。

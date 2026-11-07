@@ -1,117 +1,117 @@
-# Proposal: Agent discovery and communication
+# 提案：Agent 发现与通信
 
-Status: proposal, not the current interface contract. This document records the discussed design; it does not authorize runtime implementation. External orchestration belongs to [a separate project](session-orchestration-proposal.md), which may embed a lightweight Pi; its session-management and scheduling runtime is outside this Harness. Presets and Seed research are [postponed separately](agent-presets-proposal.md) and are not dependencies of this proposal.
+状态：提案，不构成当前接口契约。本文记录讨论过的设计；不作为运行时实现的授权。外部编排归属于[独立项目](session-orchestration-proposal.md)，该项目可嵌入轻量 Pi；其会话管理与调度运行时位于本 Harness 之外。Preset 与 Seed 调研已[单独暂缓](agent-presets-proposal.md)，不作为本提案的依赖。
 
-## Goal
+## 目标
 
-Let an ordinary Agent recognize its parent, children and permitted peers, then communicate through the existing message tool. Do not require ordinary Agents to understand Pi session management or grant external orchestration tools merely because a message arrived.
+让普通 Agent 能够识别其父级（parent）、子级（children）和受允许的同级（peers），并通过现有的消息工具进行通信。不要求普通 Agent 理解 Pi 会话管理，也不仅因收到消息就授予外部编排工具。
 
-A peer is another collaborating Agent. For an independent Pi process, its native session is the implementation carrier, not a second model-facing collaboration concept.
+peer 是另一个协作中的 Agent。对于独立的 Pi 进程，其原生会话是实现载体，而非面向模型的第二套协作概念。
 
-## Decisions established in discussion
+## 讨论中确定的决策
 
-| Subject | Decision |
+| 主题 | 决策 |
 | --- | --- |
-| Listing | Replace `subagent_list` with `agent_list`; do not retain a compatibility alias. |
-| Creating children | Keep `subagent_create`. It only creates Subagents. |
-| Stopping children | Keep `subagent_stop`. It only controls Subagents within the existing authority boundary. |
-| Main peer visibility | Show peers explicitly made discoverable by the user or an authorized external orchestrator, plus peers with which actual message delivery has occurred. |
-| Subagent visibility | Preserve the existing parent/sibling/child scope and depth rules. Do not add machine-wide peer discovery to Subagents. |
-| Automatic activation | After communication, enable `agent_list` automatically. This is a narrowly scoped discovery affordance, not an orchestration grant. |
-| Message destination | Use the existing managed Socket path in `msg_write.path`. No `session:` address scheme. |
-| Message source | Put complete cross-session identity in `from`, such as `<stable-session-uid>:Main`. No separate wire `session` field. |
-| Human naming | Use the native session name; remove intent rather than maintaining another description field. |
+| 列表查询 | 将 `subagent_list` 替换为 `agent_list`；不保留兼容别名。 |
+| 创建子级 | 保留 `subagent_create`。它仅用于创建 Subagent。 |
+| 停止子级 | 保留 `subagent_stop`。它仅在现有权限边界内控制 Subagent。 |
+| Main 端 peer 可见性 | 展示被用户或已授权外部编排器显式设为可发现的 peer，以及发生过实际消息投递的 peer。 |
+| Subagent 可见性 | 保留现有的 parent/sibling/child 范围与深度规则。不为 Subagent 添加全机范围的 peer 发现。 |
+| 自动激活 | 发生通信后，自动启用 `agent_list`。这属于严格限定范围的发现便利，而非编排授权。 |
+| 消息目标地址 | 在 `msg_write.path` 中使用现有的受管 Socket 路径。不使用 `session:` 地址方案。 |
+| 消息源标识 | 在 `from` 中填入完整的跨会话身份，例如 `<stable-session-uid>:Main`。不在线路协议中单设 `session` 字段。 |
+| 人工可见名称 | 使用原生会话名称；直接删除意图（intent），而不维护额外的描述字段。 |
 
-The final wire and address simplification is a separately requested implementation. This proposal defines the discovery behavior that should build on it.
+最终的线路与地址简化属于另行要求的实现。本提案定义应构建于其之上的发现行为。
 
 ## `agent_list`
 
-### Main view
+### Main 视图
 
-A Main query separates its child tree from visible peers:
+Main 侧的查询将其子级树与可见 peer 分开：
 
 ```text
 children
-  Existing Subagent tree, with its existing status/history projection.
+  现有的 Subagent 树，保持现有的状态／历史投影。
 
 peers
-  Parallel Agents explicitly opened for discovery or already contacted.
+  显式开放发现或已经产生过联系的同级 Agent。
 ```
 
-Main has no parent. For Subagent callers, retain the existing scoped tree model rather than forcing a breaking parent/children/peers response redesign merely for visual symmetry.
+Main 没有 parent。对于 Subagent 调用方，保留现有的有范围树模型，而不必仅为视觉上的对称性就强行重构 parent/children/peers 的破坏性响应结构。
 
-Reuse existing detailed subtree lookup, `all`, display windows and history fields where they retain their meaning. In particular, `all` may remove a display window; it must never bypass peer visibility or reveal all live sessions. Lookup by ID must apply the same visibility rule as listing.
+在语义仍然成立之处，复用现有的子树详细查找、`all`、展示窗口与历史字段。特别是，`all` 可以取消展示窗口限制；但绝不能绕过 peer 可见性或暴露所有活跃会话。按 ID 查找必须应用与列表查询相同的可见性规则。
 
-Peer entries contain only basic identification and contact metadata: stable identity, native name when present, cwd, Main Socket path and reliably available reachability information. Do not label a peer `running` merely because a PID exists or a message arrived. Detailed runtime inspection belongs to the manual orchestration interface.
+Peer 条目仅包含基本标识与联系元数据：稳定身份标识、存在时的原生名称、cwd、Main Socket 路径以及可靠可用的可达性信息。不能仅因 PID 存在或收到了消息，就将 peer 标记为 `running`。详细的运行时检查属于 manual 编排接口的范畴。
 
-Do not expose transcripts, system prompts, tool arguments or credentials through this list. A peer's visible name is not its routing identity. Renaming does not change the contact relationship or destination identity.
+不通过此列表暴露 transcript、系统提示词、工具参数或凭据。Peer 的可见名称不是其路由身份。重命名不会改变联系关系或目标身份。
 
-### Visibility and contact
+### 可见性与联系
 
-The underlying directory remains a host addressing index. Directory membership alone is insufficient to make a session appear in Main's peer list.
+底层目录仍然是宿主寻址索引。仅凭目录中存在条目，并不足以让会话出现在 Main 的 peer 列表中。
 
-A peer is visible when at least one of these holds:
+当至少满足以下条件之一时，peer 才可见：
 
-1. The user explicitly opened that peer for discovery.
-2. An authorized external orchestrator opened or connected it.
-3. The current Agent has successfully sent a message to it or accepted a message from it.
+1. 用户显式将该 peer 开放用于发现。
+2. 经授权的外部编排器开放或连接了该 peer。
+3. 当前 Agent 已成功向其发送消息，或已成功接收来自它的消息。
 
-“Opened for discovery” means the explicit visibility choice discussed by the user; it must not be inferred merely from `agent_list` being active. The exact user command and storage representation for that choice remain to be specified.
+“开放用于发现”指用户讨论过的显式可见性选择；绝不能仅因 `agent_list` 处于激活状态就推断其开放。该选择的具体用户命令与存储表示形式仍待规范。
 
-Contact is directional evidence: a sender records its confirmed handoff; a receiver records actual acceptance. If a send times out or disconnects with unknown outcome, do not invent a confirmed sender-side contact or replay the message. The receiver may independently have observed and recorded acceptance.
+联系（contact）是有方向的证据：发送方记录其已确认的交接（handoff）；接收方记录实际的接收（acceptance）。若发送超时或断连且结果未知，不要凭空构造发送方已确认的联系证据，也不要重放消息。接收方可能已独立观察并记录了接收事实。
 
-A failed or refused send does not create a contact. Reading the directory, constructing an address or previewing a picker does not create one either. Rejecting a self-send must happen before it can create a peer entry.
+发送失败或被拒收不会建立联系。读取目录、构造地址或在选择器中预览条目同样不会建立联系。对自发自收（self-send）的拒绝必须在生成 peer 条目之前发生。
 
-Reuse native branch history/custom-entry mechanisms for contact evidence. Do not create a second mutable database of Agent identity or a new permission ledger. Where existing incoming message metadata can supply the evidence, derive it rather than duplicating it. Outgoing evidence must retain the actual peer identity, because plain success text alone is insufficient for restoration.
+复用原生分支历史／自定义 entry 机制来存储联系证据。不要创建第二套可变的 Agent 身份数据库或新的权限账本。凡是现有入站消息元数据能够提供证据之处，应直接推导而非重复记录。出站证据必须保留真实的 peer 身份，因为仅凭单纯的成功文本不足以完成恢复。
 
-Branch behavior follows the current visible branch: contact evidence that is no longer on that branch must not leak into it from an abandoned branch. An explicit external visibility setting has its own scope and must not be mistaken for branch contact history. Exact restoration format is an implementation decision requiring focused review.
+分支行为遵循当前可见分支：不再位于该分支上的联系证据，绝不能从已被放弃的分支泄漏进来。显式的外部可见性设置有其自身的作用域，不能与分支联系历史相混淆。确切的恢复格式属于需要专项审查的实现决策。
 
-A known but currently unreachable peer may remain known; its stale path is not proof of liveness. Whether the default list hides unreachable known peers or labels them is a presentation decision, not a reason to erase contact evidence.
+已知但当前不可达的 peer 可以保持已知状态；其陈旧路径不能作为存活证据。默认列表是隐藏不可达的已知 peer 还是为其打上标记，属于呈现层面的决策，不能成为抹去联系证据的理由。
 
-## Automatic `agent_list` activation
+## 自动激活 `agent_list`
 
-The narrowly permitted transition is:
+严格受限的允许转换流程如下：
 
 ```text
-Actual ordinary message handoff or acceptance
-  -> record/derive the peer contact where applicable
-  -> activate the registered agent_list tool
-  -> continue through native message delivery
+实际的常规消息交接或接收
+  -> 在适用之处记录／推导 peer 联系
+  -> 激活已注册的 agent_list 工具
+  -> 继续通过原生消息投递流程流转
 ```
 
-Activation is host-owned and must happen before a receiving model turn builds its tool loadout. The contact result and activation must be visible to that turn. If the session is busy, preserve native steer/queue behavior; do not start a parallel model loop.
+激活归宿主管辖，且必须在接收端模型轮次构建其工具配置前发生。该轮次必须能看到联系结果与激活状态。若会话正忙，保持原生 steer/queue 行为；不要启动并行的模型循环。
 
-This activation:
+此项激活：
 
-- enables only `agent_list`, not its entire namespace;
-- does not run Capability retrieval or activate `session_*`, cron or other manual tools;
-- does not grant child creation, stopping or arbitrary global discovery;
-- does not override hidden exposure or an explicit role denial;
-- does not reinterpret a message body as authorization;
-- treats `agent_list` as the discussed ordinary discovery tool, not a manual orchestration capability;
-- uses current registration and existing activation mechanics rather than a new activation subsystem.
+- 仅启用 `agent_list`，而不启用其所在的整个命名空间；
+- 不运行 Capability 检索，也不激活 `session_*`、cron 或其他 manual 工具；
+- 不授予创建子级、停止子级或任意全局发现的权限；
+- 不覆盖隐藏暴露或显式的角色拒绝（role denial）；
+- 不将消息体重新解读为授权凭据；
+- 将 `agent_list` 视为讨论中所述的常规发现工具，而非 manual 编排能力；
+- 使用当前的注册机制和现有的激活机制，而非建立新的激活子系统。
 
-Automatic listing does not automatically grant `msg_write`. An Agent with existing message authority can use the supplied reply address. A separate decision would be needed if reply authority itself must be granted on receipt.
+自动获得列表能力不会自动授予 `msg_write`。已具备消息权限的 Agent 可以使用随消息提供的回复地址。若接收消息时必须同时授予回复权限，则需要另行决策。
 
-Restoring a branch containing contact evidence must restore the intended listing affordance through the same derivation, instead of waiting for another live message. A failed automatic activation must not be reported as successful; contact and tool availability are separate facts.
+恢复包含联系证据的分支时，必须通过同样的推导逻辑恢复预期的列表能力，而无需等待另一条实时消息。自动激活失败绝不能误报为成功；联系事实与工具可用性属于两项独立的事实。
 
-## Messages
+## 消息
 
-The user supplies only the destination path and body:
+用户仅提供目标路径与内容正文：
 
 ```json
 {"path":"/tmp/project-sockets/peer/Main.sock","content":"Please review the parser change and reply with findings."}
 ```
 
-For cross-session traffic the sender host constructs one NDJSON frame:
+对于跨会话通信，发送端宿主构建单条 NDJSON 帧：
 
 ```json
 {"from":"syntheticuid:Main","content":"Please review the parser change and reply with findings."}
 ```
 
-The receiving host parses the composite identity at the IPC boundary, resolves it against the managed directory and maps it to the Runtime's internal sender representation. Do not treat it as a local Actor ID. Internal typed distinctions may remain where Runtime admission needs them; they are not another public identity protocol.
+接收端宿主在 IPC 边界解析复合身份，依据受管目录进行解析，并将其映射为 Runtime 内部的发送者表示形式。不要将其当作本地 Actor ID。Runtime 准入需要区分内部类型时可以保留内部类型区别；但它们不是另一套公开身份协议。
 
-The model sees the same ordinary message label used for other peers:
+模型看到的是与其他 peer 格式相同的普通消息标签：
 
 ```text
 [Message from syntheticuid:Main]
@@ -119,67 +119,67 @@ Reply address: /tmp/project-sockets/syntheticuid/Main.sock
 Please review the parser change and reply with findings.
 ```
 
-Native names may improve human display, but the stable source and usable reply path must remain unambiguous. Do not infer a target's execution state from this message or display a fabricated `running` status.
+原生名称可改善人工展示效果，但稳定的来源与可用的回复路径必须保持清晰明确。不能从这条消息推断目标的执行状态，也不能显示伪造的 `running` 状态。
 
-Keep actual Socket ownership checks, Main-to-Main restrictions for cross-session messages, host-bound identity and the prohibition on self-send. Same-user local IPC retains the existing trust model; composite `from` is not cryptographic authentication. Do not introduce an authentication system as part of this UI/protocol simplification.
+保留实际的 Socket 所有权校验、跨会话消息的 Main-to-Main 限制、宿主绑定的身份标识以及禁止自发自收。同用户本地 IPC 保留现有的信任模型；复合 `from` 并非密码学身份验证。不要将引入身份验证系统作为本轮 UI／协议简化的一部分。
 
-## Human commands and interaction
+## 人工命令与交互
 
-Commands are a user interface over the same relationship projection and host operations, not a second tool API or a way to change model permissions incidentally.
+命令是基于同一关系投影和宿主操作的用户界面，而不是第二套工具 API，也不是顺带更改模型权限的途径。
 
-| Command | Default interaction |
+| 命令 | 默认交互 |
 | --- | --- |
-| `/agent` | Open a bounded, grouped Agent list; equivalent to the list entry below, not a statistics notification. |
-| `/agent list [parent|children|peers] [filter]` | Show the requested relationships with a plain text filter; no relation argument means all relationships visible to this caller. |
-| `/subagent` | Open the child-management view, reusing the children projection and selecting a permitted child action. |
-| `/subagent stop [id|--all]` | Keep existing child-only stopping. Without a target, show a child picker; merely opening or cancelling it does not stop anything. |
+| `/agent` | 打开有界、已分组的 Agent 列表；等价于下方的 list 入口，而非统计通知。 |
+| `/agent list [parent|children|peers] [filter]` | 配合纯文本过滤器展示所请求的关系；省略 relation 参数表示对当前调用方可见的所有关系。 |
+| `/subagent` | 打开子级管理视图，复用 children 投影并选择受允许的子级操作。 |
+| `/subagent stop [id|--all]` | 保留现有仅限子级的停止操作。不带 target 时展示子级选择器；仅打开或取消不会停止任何对象。 |
 
-`/agent` is the discovery entry; `/subagent` retains the child-control meaning. The child-management view reuses the same list renderer/data instead of implementing another list. Move the old `/subagent list` functionality to `/agent list`; do not retain two synonymous list commands or a compatibility alias. Move the old `/subagent sessions` management-wide view to `/session list` as described in the companion proposal. Removing those old command paths is part of the future implementation, not a statement that current code already changed.
+`/agent` 是发现入口；`/subagent` 保留子级控制含义。子级管理视图复用相同的列表渲染器／数据，而非另行实现一套列表。将旧的 `/subagent list` 功能移至 `/agent list`；不保留两个同义的 list 命令或兼容别名。按配套提案所述，将旧的 `/subagent sessions` 全局管理视图移至 `/session list`。移除这些旧命令路径属于未来的实现工作，并非声明当前代码已经更改。
 
-The list groups parent, children and peers, preserves a compact hierarchy for children and uses native names with stable identity available as secondary information. It shows the actual message address when inspecting an item. Basic peer visibility must be identical between the command and model tool: no unfiltered global directory fallback. Subagent callers keep their current scope even if the human formatter can display different relationship headings.
+列表对 parent、children 和 peers 进行分组，为 children 保留紧凑的层级结构，并使用原生名称，同时提供稳定身份作为辅助信息。检查条目时会显示实际的消息地址。命令与模型工具之间的基础 peer 可见性必须一致：不存在未经筛选的全局目录后备逻辑。即使人工格式化器可以显示不同的关系标题，Subagent 调用方依然保持其当前范围。
 
-Typing filters the current visible list. Empty input shows the complete permitted view; zero matches offers a recoverable empty state. Use the native Pi selector/scroll components for long lists, preserve keyboard navigation and focus/IME behavior, and handle narrow widths. Print/non-interactive mode may return the same grouped data as text instead of attempting a custom terminal screen.
+键入内容可过滤当前可见列表。空输入展示完整的受允许视图；零匹配提供可恢复的空状态。长列表应使用原生 Pi 选择器／滚动组件，保留键盘导航与焦点／输入法（IME）行为，并处理窄屏情况。打印／非交互模式可以纯文本形式返回相同的分组数据，而不应尝试渲染自定义终端屏幕。
 
-Selecting a peer is an observation, not a message send. Do not auto-contact, auto-connect or grant tools from highlighting an item. Child-control actions must be visibly distinguished from peer observation; an unrelated peer never receives a Stop action through this UI.
+选中 peer 属于观察操作，并非发送消息。不要因为高亮某一条目就自动建立联系、自动连接或授予工具。子级控制动作必须与 peer 观察在视觉上明确区分；无关的 peer 绝不能通过该 UI 接收到 Stop 操作。
 
-Parameter completion should cover list/stop verbs, relationship values and currently valid child IDs, preserve trailing spaces and exclude impossible next arguments. Free text filters have no invented completion candidates. Follow the current SDK editor's completion lifecycle: the known command-name acceptance issue (next-level candidates require another Tab) is not fixed by this proposal. Do not replace the editor or add timers to simulate automatic expansion.
+参数补全应覆盖 list/stop 动词、关系值以及当前有效的 child ID，保留末尾空格并排除不可能的下一个参数。自由文本过滤器不虚构补全候选。遵循当前 SDK 编辑器的补全生命周期：已知的命令名确认问题（下一级候选需要额外按一次 Tab）不在本提案修复范围内。不要替换编辑器，也不要添加定时器来模拟自动展开。
 
-Human invocation of `/agent` does not by itself activate the model's `agent_list`; model activation follows explicit capability enabling or the communication-trigger rule. Human cancellation and browsing produce no contact or authorization records.
+人工调用 `/agent` 本身不会激活模型的 `agent_list`；模型端激活遵循显式 capability 启用或通信触发规则。人工取消与浏览不产生联系或授权记录。
 
-## Razor assessment
+## 奥卡姆剃刀评估
 
-Principle: every independent concept must protect a current goal or real distinction. This audit covers discovery and message affordances, not execution scheduling or OS isolation.
+原则：每个独立概念都必须保护当前目标或真实区分。本项审计涵盖发现与消息便利，不涉及执行调度或操作系统级隔离。
 
-| Evidence | Consequence |
+| 证据 | 结论影响 |
 | --- | --- |
-| User explicitly separates ordinary collaboration from manual orchestration | Ordinary discovery cannot require session-management authorization. |
-| User permits a small activation boundary on communication | Automatic activation is restricted to `agent_list`. |
-| Existing Subagent tree and session directory already own identities | Merge their projections; do not create a unified Agent registry. |
-| Current message/address discussion rejects `session:` and an extra session field | Reuse Socket destinations and complete `from` identity. |
+| 用户明确区分常规协作与 manual 编排 | 常规发现不能要求会话管理授权。 |
+| 用户允许在通信后建立狭窄的激活边界 | 自动激活被严格限制在 `agent_list`。 |
+| 现有的 Subagent 树与会话目录已持有身份 | 合并它们的投影；不创建统一的 Agent 注册表。 |
+| 当前消息／地址讨论否决了 `session:` 和额外的 session 字段 | 复用 Socket 目标与完整的 `from` 身份。 |
 
-| Concept | Verdict | Deletion test / strongest survival argument |
+| 概念 | 裁决 | 删除检验／最有力的保留理由 |
 | --- | --- | --- |
-| `agent_list` | Keep | Ordinary Agents need a view of actual collaboration relationships. |
-| `subagent_create` / `subagent_stop` names | Keep | Renaming them to generic Agent operations hides their parent-child authority boundary. |
-| Separate general-purpose `session_list` for ordinary Agents | Merge | Its useful discovery responsibility belongs in the bounded `agent_list`; the manual management list remains distinct. |
-| Contact visibility rule | Keep | Without it, a small collaboration affordance leaks the whole directory. |
-| Automatic `agent_list` activation | Keep | The user explicitly accepts this small transition after communication. |
-| Implicit activation of the orchestration namespace | Delete | Convenient replies do not justify granting control of independent sessions. |
-| Session intent | Delete | Current purpose can be communicated in the message; native name already owns human identification. |
-| Unified Agent identity registry | Delete | Existing registries can supply a view without copying ownership. |
-| Contact persistence representation | Prove first | Restoration matters, but exact duplication and branch semantics need implementation evidence. |
+| `agent_list` | 保留（Keep） | 普通 Agent 需要获知真实的协作关系视图。 |
+| `subagent_create` / `subagent_stop` 名称 | 保留（Keep） | 将其重命名为泛化 Agent 操作会掩盖其父子权限边界。 |
+| 面向普通 Agent 的独立通用 `session_list` | 合并（Merge） | 其有益的发现职责归入有界的 `agent_list`；manual 管理列表保持独立。 |
+| 联系人可见性规则 | 保留（Keep） | 缺少该规则，微小的协作便利就会泄漏整个目录。 |
+| 自动激活 `agent_list` | 保留（Keep） | 用户明确接受通信后发生这一轻微状态跃迁。 |
+| 隐式激活编排命名空间 | 删除（Delete） | 便捷回复不能成为授予独立会话控制权的理由。 |
+| 会话意图（Session intent） | 删除（Delete） | 当前意图可在消息中沟通；原生名称已承担人工标识职责。 |
+| 统一 Agent 身份注册表 | 删除（Delete） | 现有注册表足以提供视图，无需复制所有权。 |
+| 联系人持久化表示形式 | 先证明可行（Prove first） | 恢复至关重要，但具体重复记录与分支语义需要实现证据。 |
 
-## Acceptance
+## 验收标准
 
-- Main cannot enumerate a hidden untouched peer, including via `all` or ID lookup.
-- Explicit opening or an authorized connect makes the intended peers visible without exposing unrelated ones.
-- Actual incoming acceptance enables only `agent_list` before the next native model request; sending success does likewise for the sender.
-- Refused sends and uncertain sender-side outcomes do not fabricate confirmed contacts; no replay is introduced.
-- Self-send does not create a peer or wake the current session as an external sender.
-- Restoring/forking a branch follows its visible contact evidence and current role denials.
-- Subagent list scope and create/stop permissions retain their current behavior.
-- Native names can change without invalidating identity or contact routing.
-- `/agent list` and the tool agree about permitted peers under the same context; relationship/filter changes cannot reveal hidden peers.
-- The child-control picker excludes unrelated peers; opening/cancelling it never stops a child.
-- Exercise real editor completion for verbs, relationship values and child IDs, and real terminal list filtering/navigation/resize/IME focus; direct parser calls alone do not establish the command UX.
-- Verify with real SDK sessions and real local Sockets, plus a human terminal view; parser-only or handler-only tests are insufficient.
+- Main 不能枚举隐藏且未产生过接触的 peer，包括通过 `all` 或 ID 查找。
+- 显式开放或经授权的连接可使目标 peer 可见，同时不暴露无关 peer。
+- 实际的入站接收在下一次原生模型请求前仅启用 `agent_list`；发送成功对发送方同理。
+- 被拒收的发送与发送端结果未知的情况不会伪造已确认的联系；不引入重放机制。
+- 自发自收不会创建 peer，也不会将当前会话作为外部发送者唤醒。
+- 恢复／fork 分支遵循其可见联系证据以及当前的 role denial。
+- Subagent 列表范围及 create/stop 权限保持当前行为不变。
+- 修改原生名称不会破坏身份标识或联系路由。
+- 在相同上下文中，`/agent list` 与工具对允许的 peer 判定一致；更改关系／过滤器不能揭示隐藏的 peer。
+- 子级控制选择器排除无关 peer；仅打开／取消绝不会停止子级。
+- 针对动词、关系值和 child ID 演练真实编辑器补全，并演练真实终端列表过滤／导航／窗口缩放／输入法（IME）焦点；仅靠直接调用解析器无法确立命令的用户体验。
+- 使用真实 SDK 会话与真实本地 Socket 配合人工终端视图进行验证；仅有解析器或 handler 的测试是不充分的。

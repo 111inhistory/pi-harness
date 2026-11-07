@@ -1,117 +1,117 @@
-# Shared provider and inherited-context design
+# 共享 Provider 与继承上下文设计
 
-## Status and scope
+## 状态与范围
 
-This document records the agreed architecture and tradeoffs before implementation. It is a design, not a description of delivered behavior. Current contracts remain in [interface-contract.md](../interface-contract.md); current ownership remains in [architecture.md](../architecture.md).
+本文档记录实现前已达成一致的架构与权衡。这是一份设计文档，而非对已交付行为的描述。当前有效契约以 [interface-contract.md](../interface-contract.md) 为准；当前模块所有权以 [architecture.md](../architecture.md) 为准。
 
-Capability and Subagent share one provider adaptation layer and one inherited-context assembly path. This iteration covers Responses and Anthropic Messages. Chat Completions adaptation is deferred. Provider adapters reuse Pi's native request conversion, authentication and streaming; they do not introduce another HTTP client or provider catalog.
+Capability 与 Subagent 共享一层 Provider 适配层和一条继承上下文组装路径。本次迭代覆盖 Responses 与 Anthropic Messages。Chat Completions 适配予以推迟。Provider 适配器复用 Pi 的原生请求转换、身份认证和流式传输；不引入额外的 HTTP 客户端或 Provider 目录。
 
-The implementation must preserve the existing uncommitted enable rewrite, manual authorization, native MCP reconnect behavior, lifecycle fences and unrelated proposals. No merge, commit, gateway restart or plugin/configuration replacement is part of this design.
+实现必须保留现有的未提交 enable 重写、手动授权、原生 MCP 重连行为、生命周期围栏及无关提案。本设计不包含任何合并、提交、网关重启或插件／配置替换。
 
-## Agreed decisions
+## 已达成一致的决策
 
-| Area | Decision | Tradeoff |
+| 领域 | 决策 | 权衡 |
 | --- | --- | --- |
-| Local identity | Every child retains its own native session ID, storage and IPC identity. | Cache reuse must not depend on replacing a child's local identity with its parent's. |
-| Cache identity | An inherited branch carries its parent's effective outbound cache key. A fresh branch starts with its own key. | Related branches can reuse a prefix; this does not guarantee a hit or repair differences in tools, effort or rendered context. |
-| Provider ownership | Capability and Subagent consume the same provider policy and request integration. | Provider conditions leave business orchestration; adapters still require concrete capability declarations. |
-| Transcript ownership | Captured history, appended instructions and tool declarations have separate explicit inputs. | Callers can no longer rely on changing a live tool set to implicitly rewrite inherited instructions. |
-| Tool authority | Registration, model declaration and execution admission remain separate. | A retained declaration may describe a tool the child cannot execute. Admission remains authoritative. |
-| Tool removal | Do not implement tool removal in this iteration. Do not emit removal events or add a removal API. | Old declarations may remain visible and occupy context. Removal after compaction is a possible future design, not an implemented policy. |
-| Capability pseudo-removal | Continue retaining inherited declarations while blocking their execution through the tool-call hook and explaining the restriction in appended instructions. | The model can still attempt a blocked call. The hook must reject it; soft instructions alone are insufficient. |
-| Explicit cache controls | Do not add cache breakpoints, prewarming, TTL settings or explicit-only cache mode in this iteration. | Shared keys and preserved prefixes improve current behavior without depending on unverified Codex breakpoint support. |
-| Protocol scope | Implement Responses and Anthropic Messages; defer Chat Completions-specific tool extensions. | No universal promise of append-only tool transport for other APIs. |
-| Thinking level | Inherit the parent's requested thinking level independently of tool-transport support. | Model-native clamping may still apply. Lack of additive tools must not force a child to low. |
+| 本地身份 | 每个子节点保留自身原生的会话 ID、存储与 IPC 身份。 | 缓存复用不得依赖将子节点的本地身份替换为父节点身份。 |
+| 缓存身份 | 继承分支携带其父节点的有效出站缓存键。Fresh 分支使用自身的键启动。 | 相关分支可复用前缀；这不保证命中，也不能弥补工具、思考预算（effort）或渲染上下文上的差异。 |
+| Provider 所有权 | Capability 与 Subagent 使用相同的 Provider 策略与请求集成。 | Provider 条件与业务编排解耦；适配器仍需要明确的能力声明。 |
+| Transcript 所有权 | 捕获的历史记录、追加的指示与工具声明拥有各自独立的显式输入。 | 调用方无法再依赖变更活跃工具集合来隐式改写继承的指示。 |
+| 工具权限 | 注册、模型声明与执行准入保持分离。 | 保留的声明可能描述了子节点无法执行的工具。准入检查依然是最终依据。 |
+| 工具移除 | 本次迭代不实现工具移除。不发出移除事件，也不增加移除 API。 | 旧声明可能继续可见并占用上下文。压缩后移除属于未来可能的设计，并非已实现的策略。 |
+| Capability 伪移除 | 继续保留继承的声明，同时通过工具调用钩子阻止其执行，并在追加的指示中说明此限制。 | 模型仍可能尝试被阻止的调用。钩子必须拒绝该调用；仅靠软性指示是不够的。 |
+| 显式缓存控制 | 本次迭代不添加缓存断点、预热、TTL 设置或仅显式缓存模式。 | 共享键与保留的前缀改善了当前行为，而不依赖未经证实的 Codex 断点支持。 |
+| 协议范围 | 实现 Responses 与 Anthropic Messages；推迟针对 Chat Completions 的特定工具扩展。 | 不对其他 API 作出仅追加工具传输的通用承诺。 |
+| 思考级别（Thinking level） | 继承父节点所请求的思考级别，独立于工具传输支持。 | 原生模型限制仍可能生效。缺乏增量工具支持不得强迫子节点降至 low。 |
 
-## Module boundaries and interfaces
+## 模块边界与接口
 
-The following are semantic contracts. Exact TypeScript names and file layout will be finalized before parallel implementation; existing APIs should be reused where they already express the contract.
+以下为语义契约。具体的 TypeScript 名称与文件布局将在并行实现前确定；在现有 API 已能表达该契约之处应予以复用。
 
-### Inherited-context capture
+### 继承上下文捕获
 
-The capture module owns the native branch snapshot, resolved physical model, thinking level, system context, tool snapshot and outbound cache identity. It removes unresolved spawning calls using the existing native-history rules. It does not encode provider requests, activate tools or apply Capability discovery projection.
+捕获模块持有原生分支快照、已解析的物理模型、思考级别、系统上下文、工具快照及出站缓存身份。它依据现有的原生历史规则移除未解析的衍生调用。它不负责编码 Provider 请求、激活工具或应用 Capability 发现投影。
 
-A tool snapshot distinguishes declarations carried by the native transcript from the current executable loadout. It retains declaration order and historical schema changes. Capturing a branch must not resolve every historical declaration to the latest registry schema and rewrite the past.
+工具快照区分了原生 transcript 所携带的声明与当前可执行装配（loadout）。它保留声明顺序及历史 schema 变更。捕获分支不得将每条历史声明解析为最新的注册表 schema 从而改写历史。
 
-A child receives a new local session ID. The inherited cache identity must survive nested inheritance and durable continuation. Existing root/branch navigation and generation ownership rules still apply; an old callback must not install identity into a replacement root. Persisted cache identity must contain no credentials or provider account identifiers. Do not add a second session-state store merely for caching.
+子节点获得新的本地会话 ID。继承的缓存身份必须在嵌套继承与持久化继续运行中留存。现有的根／分支导航与代次所有权规则依然适用；旧回调不得将身份写入替代的根。持久化的缓存身份不得包含凭据或 Provider 账户标识。不应仅仅为了缓存而添加第二个会话状态存储。
 
-The effective cache key must respect existing request behavior, including supported upstream overrides and disabled caching. Do not infer a parent's effective key solely from its current local ID when the session already inherited or overrode its cache identity. A cache key may remain stable across a model change, but reuse is not promised across models, accounts or endpoints.
+有效缓存键必须遵循现有的请求行为，包括受支持的上游覆盖与禁用缓存设置。当会话已经继承或覆盖了其缓存身份时，不得仅仅根据其当前本地 ID 推断父节点的有效键。缓存键在模型变更时可能保持稳定，但不承诺跨模型、账户或端点复用。
 
-### Context assembly and projection
+### 上下文组装与投影
 
-Assembly receives an inherited prefix and explicit additions. New child instructions and tool definitions are appended at their intended transcript position. Supported transports must not move those additions into the initial system message or initial tool inventory.
+组装逻辑接收继承的前缀与显式追加项。新的子节点指示与工具定义被追加到其预期的 transcript 位置。受支持的传输协议不得将这些追加项移入初始系统消息或初始工具清单中。
 
-Capability owns discovery-memory projection and search instructions. Subagent owns task, role and communication instructions. Both call the same assembly primitives. Provider support is not decided inside Capability memory projection.
+Capability 持有发现记忆投影与搜索指示。Subagent 持有任务、角色与通信指示。两者调用相同的组装原语。Provider 支持不由 Capability 记忆投影内部决定。
 
-Normal inherited branching and post-compaction reconstruction are distinct cases. This iteration must not introduce tool removal during compaction or treat compaction as permission to discard authorization. Existing branch memory and manual-tool isolation remain intact.
+常规继承分支与压缩后重建是不同的场景。本次迭代不得在压缩期间引入工具移除，也不得将压缩视为丢弃授权的许可。现有的分支记忆与仅手动工具隔离保持完好。
 
-### Tool operations and execution admission
+### 工具操作与执行准入
 
-Tool operations have three separate responsibilities:
+工具操作具有三项独立的职责：
 
-1. Register a local executable implementation through Pi's registry.
-2. Apply the permitted executable loadout through existing activation/admission rules.
-3. Record newly available model declarations at the context tail through Pi's transcript representation.
+1. 通过 Pi 的注册表注册本地可执行实现。
+2. 通过现有的激活／准入规则应用受允许的可执行装配。
+3. 通过 Pi 的 transcript 表示形式在上下文末尾记录新可用的模型声明。
 
-One caller may orchestrate all three, but no operation should implicitly grant authority merely because a tool schema is present. Reuse the existing activation implementation for discovery, explicit enable, cross-session reply activation and explicit connect authorization.
+同一个调用方可以同时编排这三项职责，但任何操作均不应仅仅因为存在工具 schema 就隐式授予权限。在发现、显式启用、跨会话回复激活以及显式连接授权中复用现有的激活实现。
 
-This iteration supports tool additions and necessary same-name declaration updates. It does not add tool removal. If an inherited capability retrieval session cannot execute a historical tool, its declaration remains historical context and its call is blocked.
+本次迭代支持工具追加以及必要的同名声明更新。不增加工具移除功能。若继承的 Capability 检索会话无法执行历史工具，其声明仍作为历史上下文保留，且调用会被阻止。
 
-The capability retrieval execution allowlist contains only the internal retrieval tools, currently `capability_step`. The tool-call hook enforces this independently of prompt text. Inherited placeholders must never call parent execute handles. Existing tests must cover direct calls and nested execution paths so a retained declaration cannot become an execution bypass.
+Capability 检索执行的 allowlist 仅包含内部检索工具，目前为 `capability_step`。工具调用钩子独立于提示词文本强制执行此规则。继承的占位工具绝不能调用父节点的执行句柄。现有测试必须覆盖直接调用与嵌套执行路径，确保保留的声明不会成为执行绕过漏洞。
 
-Tool usage guidance has a separate placement contract. Subagent namespace instructions contain only stable shared guidance. Tool descriptions describe purpose, behavior and results; they must not absorb the complete guideline body. Tool-specific guidance, including create-only requirements, is appended at the tool's activation/declaration position through the context layer. Enabling create after list must not change the earlier namespace instructions. Repeated enablement must not duplicate guidance. Replay and recovery must retain the original placement; compaction reconstruction must preserve applicable guidance without implementing removal. Do not restore owned `promptSnippet`/`promptGuidelines` metadata merely to let Pi patch the leading tools/rules sections. Verify namespace instruction serialization in each native provider; local namespace metadata alone is not evidence that the model received the guidance.
+工具使用指导具有独立的放置契约。Subagent 命名空间指示仅包含稳定的共享指导。工具描述阐明用途、行为与结果；不得吸收完整的准则正文。工具专有指导（包括仅限创建的要求）通过上下文层追加在工具的激活／声明位置。在 list 之后启用 create 不得改变较早的命名空间指示。重复启用不得重复追加指导。回放与恢复必须保留原始放置位置；压缩重建必须保留适用的指导且不实现移除。不应仅仅为了让 Pi 修补头部的 tools／rules 段落而恢复专有的 `promptSnippet`／`promptGuidelines` 元数据。验证每个原生 Provider 中的命名空间指示序列化；仅有本地命名空间元数据并不能证明模型已收到该指导。
 
-Manual-only tools remain excluded from child eligibility under the current contract. Prefix preservation must not copy prohibited interfaces or bypass the existing manualTools boundary. Capability selection is not a manual grant. Ordinary incoming peer messages do not manufacture manual authorization; an explicit connect command can use the ordinary user-grant path for `msg_write`.
+在当前契约下，仅手动工具在子节点中依然不具备入选资格。前缀保留不得复制受禁用的接口或绕过现有的 manualTools 边界。Capability 选择不属于手动授权。常规的对等节点入站消息不会凭空产生手动授权；显式连接命令可为 `msg_write` 使用常规用户授权路径。
 
-### Shared provider adaptation
+### 共享 Provider 适配
 
-Provider adaptation consumes the concrete model capabilities, context additions, declaration operations and outbound cache identity. It translates these intentions through supported Pi APIs and hooks. It does not choose search results, routing roles or tool permissions.
+Provider 适配消费具体的模型能力、上下文追加项、声明操作及出站缓存身份。它通过受支持的 Pi API 与钩子转换这些意图。它不决定搜索结果、路由角色或工具权限。
 
-For Responses, use native mid-conversation system messages and `additional_tools` when the exact model declares support. Keep `supportsAdditionalTools` and `supportsToolSearch` distinct. Shared cache identity changes the outbound cache key without replacing local session identity. Magpie's mapping from a body key to Codex wire headers is a deployment behavior, not a reason to hard-code Magpie account logic into the Harness.
+对于 Responses，在确切模型声明支持时，使用原生会话途中系统消息与 `additional_tools`。区分 `supportsAdditionalTools` 与 `supportsToolSearch`。共享缓存身份在不替换本地会话身份的前提下改变出站缓存键。Magpie 将请求体中的 key 映射到 Codex 线路请求头属于部署层行为，不能作为在 Harness 中硬编码 Magpie 账户逻辑的理由。
 
-For Anthropic Messages, use native mid-conversation system messages and inline tool additions when the exact transport declares support. Reuse Pi's beta-header handling and tool conversion. Preserve existing native cache-control behavior; do not add a new breakpoint policy. Do not implement or emit `tool_removal` in this iteration even though the provider supports it.
+对于 Anthropic Messages，在确切传输协议声明支持时，使用原生会话途中系统消息与行内工具追加。复用 Pi 的 beta 请求头处理与工具转换。保留现有的原生 cache-control 行为；不添加新的断点策略。即使该 Provider 支持，本次迭代也不实现或发出 `tool_removal`。
 
-For other transports or models without declared additive support, keep an explicit non-additive path and report its cache limitation. Do not guess support from a model name, silently enable compat flags or implement the deferred Chat Completions extension as part of this work.
+对于其他传输协议或未声明增量支持的模型，保留显式的非增量路径并报告其缓存限制。不得通过模型名称猜测支持情况、静默开启兼容性标志，或将已推迟的 Chat Completions 扩展作为此项工作的一部分来实现。
 
-The adapter should use the existing payload hook or equivalent supported request seam. Verify that the seam executes for both ordinary child sessions and Capability's internal sessions. Compose with existing hooks rather than replacing them, and restore any session-local wrapper on cleanup. Keep exact wire conversion in Pi.
+适配器应使用现有的 payload 钩子或等效的受支持请求切入点。验证该切入点在常规子会话与 Capability 内部会话中均能执行。与现有钩子进行组合而非替换它们，并在清理时恢复会话局部包装器。精确的线路格式转换保留在 Pi 内部。
 
-### Business orchestration
+### 业务编排
 
-Capability captures context, starts a retrieval session through the shared execution lifetime, validates selections and activates actual tools through the existing tool API. It must not own provider request encoding, cache identity generation or a thinking-level fallback tied to additive support.
+Capability 捕获上下文，通过共享执行生命周期启动检索会话，校验所选内容，并通过现有工具 API 激活实际工具。它不得持有 Provider 请求编码、缓存身份生成或绑定到增量支持的思考级别降级逻辑。
 
-Subagent owns fresh/inherited task routing, budgets, tree identity, IPC and continuation. It passes an assembled session request into the shared child execution path. Capability does not become a publicly registered Subagent merely because it reuses that path.
+Subagent 持有 Fresh／Inherited 任务路由、预算、树身份、IPC 与继续运行。它将组装好的会话请求传递至共享的子节点执行路径中。Capability 不会仅因复用了该路径就成为公开注册的 Subagent。
 
-Cross-session connect resolves a live peer, appends contact context and activates `msg_write` through existing rules. It does not gain a separate provider adapter, remote greeting, authorization service or connection state machine.
+跨会话连接解析活跃的对等节点，追加联系人上下文，并通过现有规则激活 `msg_write`。它不增加独立的 Provider 适配器、远程问候、授权服务或连接状态机。
 
-## Evidence and limits
+## 证据与局限
 
-Official [OpenAI prompt-caching guidance](https://developers.openai.com/api/docs/guides/prompt-caching) illustrates a stable key across one user's sessions and forks. It also distinguishes a shared prefix from an eligible cached prefix. This supports the chosen direction but is not a cache-hit guarantee for a subscription proxy.
+官方 [OpenAI prompt-caching guidance](https://developers.openai.com/api/docs/guides/prompt-caching) 说明了在单个用户的会话与分叉之间保持稳定的键。它还区分了共享前缀与符合条件的已缓存前缀。这支持了所选方向，但这并非订阅代理的缓存命中保证。
 
-Controlled online probes used only Luna through Magpie and pinned one account. Distinct local session IDs with a shared outbound key reused most of the inherited prefix. Two trials with three inherited parent exchanges and three interleaved rounds per branch retained roughly 98–99 percent cached input for the shared-key child and parent. Independent-key children sometimes read a partial prefix and sometimes missed. These observations do not establish the backend's internal isolation or eviction algorithm.
+受控的在线探测仅通过 Magpie 使用 Luna 并固定单个账户。具有共享出站键的不同本地会话 ID 复用了大部分继承的前缀。包含 3 轮继承父节点交互且每个分支交替进行 3 轮的两组试验中，共享键的子节点和父节点保留了约 98%–99% 的已缓存输入。独立键的子节点有时读取到部分前缀，有时未命中。这些观察结果并未证实后端的内部隔离或淘汰算法。
 
-The probes held effort and tool declarations fixed and did not execute the real Harness lifecycle. They do not prove the historical main-session miss cause. Do not claim every independent key misses or every shared key hits.
+探测过程中固定了 effort 与工具声明，且未执行真实的 Harness 生命周期。它们并不能证明历史主会话未命中的根本原因。不得声称每个独立键都会未命中，也不得声称每个共享键都会命中。
 
-Magpie's inspected Codex preparation removes top-level `prompt_cache_options`; content-level breakpoint handling by the upstream is unverified. Explicit cache controls are deferred for this iteration. Official Codex credit billing has no separate cache-write surcharge, while cached input still has a credit rate; API pricing and subscription usage are different contracts.
+经审查的 Magpie Codex 预处理逻辑移除了顶层的 `prompt_cache_options`；上游对内容级别断点的处理未经证实。显式缓存控制在本次迭代中予以推迟。官方 Codex 额度计费没有单独的缓存写入附加费，而已缓存输入仍需扣除额度；API 定价与订阅用量属于不同的契约。
 
-No real Anthropic inference is authorized for this iteration. Anthropic verification uses real SDK serialization against an offline fixture; any live Anthropic endpoint remains untested. Further online probes are restricted to the explicit Luna route and must not use auto/group aliases that can select another model.
+本次迭代未获授权运行真实的 Anthropic 推理。Anthropic 验证在离线 fixture 上使用真实的 SDK 序列化；任何实时 Anthropic 端点均保持未测状态。后续在线探测仅限于显式的 Luna 路由，不得使用可能选择其他模型的 auto／group 别名。
 
-## Acceptance and delivery
+## 验收与交付
 
-- Real SDK request capture must show separate local session IDs and shared inherited cache identity, including nested inheritance and durable continuation.
-- Shared adapters must be exercised through both Capability and Subagent call sites, not just helper-unit tests.
-- Responses and Anthropic request captures must preserve inherited prompt and tool prefixes under supported additive capabilities and append only the intended new instructions/declarations.
-- Capability must retain its execution restriction: inherited tools are soft-disabled in appended instructions and rejected by the tool-call hook. No parent execute handle is transferred.
-- Tool registration, activation and declaration tests must cover additions, same-name updates, MCP reconnect and manual authorization. This iteration must introduce no removal API or removal events.
-- Thinking level must not be lowered merely because additive tools are unavailable. Native provider constraints remain observable.
-- Fresh children must not accidentally inherit a parent's cache identity. Branch switches, compaction, cleanup and model changes must not cause identity leakage between unrelated sessions.
-- Deferred or unsupported transports must not be presented as verified append-only implementations.
-- Code delivery requires `npm run check`, with JSON/docs checks for changed assets. Online results must be reported separately from offline tests; Windows and real Anthropic inference must be marked untested when not exercised.
-- Keep existing work uncommitted. Do not merge to the main branch or clean branches without a user request. Integrate the pending connect work only after its shared activation and context contracts are reconciled with this design and the cache acceptance gate is satisfied.
+- 真实 SDK 请求捕获必须展示独立的本地会话 ID 与共享的继承缓存身份，包含嵌套继承与持久化继续运行。
+- 共享适配器必须通过 Capability 与 Subagent 两个调用点同时进行测试，而不仅是辅助单元测试。
+- Responses 与 Anthropic 请求捕获必须在受支持的增量能力下保留继承的提示词与工具前缀，且仅追加预期的全新指示／声明。
+- Capability 必须保留其执行限制：继承的工具在追加指示中被软禁用，并被工具调用钩子拒绝。不传递父节点的执行句柄。
+- 工具注册、激活与声明测试必须覆盖追加、同名更新、MCP 重连与手动授权。本次迭代不得引入移除 API 或移除事件。
+- 不得仅仅因为增量工具不可用就降低思考级别。原生 Provider 约束仍可观察到。
+- Fresh 子节点绝不能意外继承父节点的缓存身份。分支切换、压缩、清理和模型变更不得导致无关会话之间的身份泄漏。
+- 推迟或不支持的传输协议不得作为已验证的仅追加实现呈现。
+- 代码交付要求通过 `npm run check`，并对变更资产执行 JSON／文档检查。在线测试结果必须与离线测试分开报告；未进行验证的 Windows 与真实 Anthropic 推理必须标明未测。
+- 现有工作保持未提交状态。未经用户要求，不得合并到主分支或清理分支。仅当待定的 connect 工作与本设计的共享激活及上下文契约达成一致并满足缓存验收门禁后，方可进行集成。
 
-## Implementation ownership
+## 实现归属
 
-The lead agent owns interface contracts, module boundaries, integration and final review. The architecture is implemented incrementally: define only the contracts needed for the first end-to-end slice, let executors identify concrete missing inputs or ownership gaps, and extend the contracts centrally as those gaps are demonstrated. Do not require a complete future framework before implementation or add speculative extension points.
+Lead Agent 持有接口契约、模块边界、集成与最终审查。架构采用增量实现：仅定义第一个端到端切片所需的契约，由执行者识别具体缺失的输入或归属缺口，并在这些缺口得到证实后集中扩展契约。实现前不要求完备的未来框架，也不增加投机性的扩展点。
 
-The first slice connects inherited cache identity, a tool/context snapshot, append-only child additions and the existing SDK execution entry for Responses and Anthropic. Persistence, call-site details and hook composition may reveal additional contract requirements; the lead resolves those requirements with affected executors before they independently add overlapping state.
+第一个切片打通继承缓存身份、工具／上下文快照、仅追加的子节点追加项，以及 Responses 和 Anthropic 的现有 SDK 执行入口。持久化、调用点细节与钩子组合可能会揭示额外的契约需求；Lead 在受影响的执行者各自独立添加重叠状态之前出面协调并解决这些需求。
 
-Implementation may be delegated only after assigning non-overlapping file ownership or isolated worktrees. Workers must use the shared contracts rather than independently inventing provider flags, authorization state or persistence formats. Public architecture and interface documents should be updated to the final delivered implementation, not copied from this proposal before code exists.
+仅在分配了无重叠的文件所有权或隔离的 git worktree 后，方可委派实现工作。Worker 必须遵循共享契约，而非各自发明 Provider 标志、授权状态或持久化格式。公开的架构与接口文档应更新为最终交付的实现，不得在代码存在之前直接照抄本提案内容。

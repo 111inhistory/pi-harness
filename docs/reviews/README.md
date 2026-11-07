@@ -26,6 +26,7 @@
 | [Agent 发现与通信提案](agent-discovery-communication-proposal.md) | 有范围的 peer 可见性、通信后启用 `agent_list`、统一消息身份；尚未实施 |
 | [独立外部编排提案](session-orchestration-proposal.md) | 独立项目拥有管理与调度，轻量 Pi 负责决策；不在 Harness 内实现，不依赖 preset |
 | [Agent Preset 暂缓提案](agent-presets-proposal.md) | 预定义 role、配置组合与 Seed-fork 调研；明确暂缓，不进入本轮实现 |
+| [尾部文本工具接口与 fallback 提案](text-tool-interfaces-fallback-proposal.md) | 官方 DS 文本声明实验与网关转换证据；未实现，配置与 fallback 尚未明确想清楚 |
 
 ## 使用边界
 
