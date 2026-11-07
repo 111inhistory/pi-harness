@@ -24,12 +24,16 @@ export class NativeDeliveryRouter {
   constructor(deps: NativeDeliveryDeps) { this.#deps = deps; }
 
   async toMain(message: RuntimeDelivery): Promise<void> {
-    // A cross-session peer addresses Main directly. Load the reply tool before
-    // the triggered turn builds its loadout; failure must not drop the message.
-    if (message.type === 'message' && message.external !== undefined) this.#deps.activateReply();
+    const external = message.type === 'message' && message.external !== undefined;
     const result = sendDelivery(deliveryEntryFor(message), {
       isActive: () => this.#deps.ownsContext(),
-      send: (payload) => this.#deps.sendToMain(payload, this.#deps.canWake()),
+      send: (payload) => {
+        // A cross-session peer addresses Main directly. Load the reply tool only
+        // after ownership is confirmed and before the triggered turn builds its
+        // loadout; a stale root must not activate a tool in the current root.
+        if (external) this.#deps.activateReply();
+        return this.#deps.sendToMain(payload, this.#deps.canWake());
+      },
     });
     if (!result.accepted) throw new SubagentError('runtime_closed', 'The original root no longer owns this notification.');
     const handoff = await result.completion;

@@ -15,7 +15,6 @@ type Receipt = MessageReceipt | BroadcastReceipt;
  */
 export type SessionEndpoint =
   | { readonly kind: 'local' }
-  | { readonly kind: 'self' }
   | { readonly kind: 'foreign' }
   | { readonly kind: 'session'; readonly session: LiveSession };
 
@@ -77,9 +76,6 @@ export function createMessageWriteTool(options: {
       const endpoint = await options.host.resolveEndpoint(address);
       if (!endpoint.isManaged) {
         const target = await options.host.sessionEndpoint(address);
-        if (target.kind === 'self') {
-          throw new SubagentError('invalid_target', 'A session cannot send a cross-session message to itself.');
-        }
         if (target.kind === 'foreign') {
           throw new SubagentError('invalid_target', 'Cross-session messages are Main-to-Main only.');
         }

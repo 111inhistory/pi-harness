@@ -42,12 +42,13 @@ const SOCKET_ROOT = path.join(tmpdir(), `pi-session-connect-${process.pid}-${Mat
 process.env['PI_SUBAGENT_SOCKET_DIR'] = SOCKET_ROOT;
 
 async function loadHarness() {
-  const [root, directory, records] = await Promise.all([
+  const [root, directory, records, peers] = await Promise.all([
     import('../../src/subagent/root-service.ts'),
     import('../../src/subagent/session-directory.ts'),
     import('../../src/capability/discovery-record.ts'),
+    import('../../src/subagent/session-peers.ts'),
   ]);
-  return { ...root, ...directory, records };
+  return { ...root, ...directory, ...peers, records };
 }
 
 interface Recorded {
@@ -264,7 +265,7 @@ async function sdkFixture(t: TestContext, options: { manual?: boolean } = {}) {
   const [{ default: harnessExtension }, directory, root] = await Promise.all([
     import('../../extensions/harness.ts'),
     import('../../src/subagent/session-directory.ts'),
-    import('../../src/subagent/root-service.ts'),
+    import('../../src/subagent/session-peers.ts'),
   ]);
   const runtime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,

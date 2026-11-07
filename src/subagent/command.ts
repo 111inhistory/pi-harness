@@ -7,7 +7,8 @@
  * `sessions connect` only appends local context to the current conversation.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { RootService, SessionConnect } from "./root-service.ts";
+import type { RootService } from "./root-service.ts";
+import type { SessionConnect } from "./session-peers.ts";
 import { SubagentError, type StopResult } from "./runtime.ts";
 import { renderSubagentList } from "./status-view.ts";
 import { sessionMainAddress, type LiveSession } from "./session-directory.ts";

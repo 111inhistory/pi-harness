@@ -80,7 +80,7 @@ export function parentModelRuntime(registry: unknown, subject = "this session"):
   );
 }
 
-/** Pin a virtual selection to the physical response that issued the spawning call. */
+/** Pin a tool call to its producing response; commands inherit the latest response. */
 export function physicalModelForCall(
   ctx: Pick<ExtensionContext, "model" | "modelRegistry" | "sessionManager">,
   toolCallId?: string,
@@ -89,8 +89,8 @@ export function physicalModelForCall(
   if (selected === null || selected.api !== "pi-virtual") return selected;
   const messages = ctx.sessionManager.buildSessionProjection().messages;
   const producing = messages.findLast(message => message.role === "assistant" &&
-    message.content.some(block => block.type === "toolCall" &&
-      (block.id === toolCallId || toolCallId?.startsWith(`${block.id}/`))));
+    (toolCallId === undefined || message.content.some(block => block.type === "toolCall" &&
+      (block.id === toolCallId || toolCallId.startsWith(`${block.id}/`)))));
   const physical = producing?.role === "assistant"
     ? parentModelRuntime(ctx.modelRegistry, "inherited context").getPhysicalModel(producing.provider, producing.model)
     : undefined;

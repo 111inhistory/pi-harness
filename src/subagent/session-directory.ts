@@ -8,8 +8,9 @@
  * directory lists what is running, each session's name, and the managed socket
  * address of its Main.
  *
- * There is one address space: the same managed Unix Socket path `msg_write`
- * already uses. The directory only maps a path to the live session that owns it.
+ * There is one address space: the same managed Unix Socket / Windows Named
+ * Pipe address `msg_write` already uses. The directory only maps a path to the
+ * live session that owns it.
  * Cross-session frames carry the same `from` field as local ones, with the
  * sender expressed as `<stable-session-uid>:Main`; the receiving managed
  * endpoint parses that composite identity and hands Runtime a typed external
@@ -35,14 +36,15 @@ import path from 'node:path';
 
 import { samePath } from '../fs-path.ts';
 import { managedFrame } from '../ipc/message.ts';
-import { deriveSessionUid, endpointKey, getAgentSocketPath, writeSocket } from '../ipc/socket.ts';
+import { deriveSessionUid, getAgentSocketPath, writeSocket } from '../ipc/socket.ts';
 import { SubagentError } from './runtime.ts';
 
 export const SESSION_DIRECTORY = 'sessions';
 
 const RECORD_VERSION = 1;
-const UID_PATTERN = /^[0-9a-z]{1,32}$/i;
-const SENDER_PATTERN = /^([0-9a-z]{1,32}):Main$/i;
+/** Session uids are exactly the lowercase 8-hex fold `deriveSessionUid` writes. */
+const UID_PATTERN = /^[0-9a-f]{8}$/;
+const SENDER_PATTERN = /^([0-9a-f]{8}):Main$/;
 
 /** One live session as published in the shared socket root. */
 export interface LiveSession {
@@ -211,18 +213,6 @@ export async function liveSessions(root: string): Promise<LiveSession[]> {
 export async function sessionByUid(root: string, uid: string): Promise<LiveSession | null> {
   if (!UID_PATTERN.test(uid)) return null;
   return (await liveSessions(root)).find((session) => session.uid === uid) ?? null;
-}
-
-/** The live session whose Main endpoint is exactly this managed address. */
-export async function sessionByMainAddress(root: string, address: string): Promise<LiveSession | null> {
-  const key = endpointKey(address);
-  return (await liveSessions(root)).find((session) => endpointKey(sessionMainAddress(session)) === key) ?? null;
-}
-
-/** The live session that a record names, or null when it is not reachable. */
-export async function sessionById(root: string, sessionId: unknown): Promise<LiveSession | null> {
-  if (typeof sessionId !== 'string' || sessionId === '') return null;
-  return (await liveSessions(root)).find((session) => session.sessionId === sessionId) ?? null;
 }
 
 /** A remote refusal keeps its code; a transport failure is a delivery error. */

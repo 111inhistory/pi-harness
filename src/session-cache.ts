@@ -12,9 +12,9 @@
  *    it replaces the native default key on Responses payloads.
  * 3. none: When cacheRetention is 'none', caching is disabled and no cache key
  *    is emitted/injected.
- * 4. existing final onPayload override: An existing onPayload hook composed with
- *    this wrapper runs after default/inherited key application, and any modification
- *    it makes is final and authoritative.
+ * 4. existing final onPayload override: An existing onPayload hook composed by the
+ *    session cache installation runs after default/inherited key application, and any
+ *    modification it makes is final and authoritative.
  *
  * Transports:
  * - Responses (openai-responses, azure-openai-responses, openai-codex-responses):
@@ -23,10 +23,7 @@
  *   never injected with OpenAI prompt cache fields.
  */
 
-import {
-  classifyProviderTransport,
-  type ProviderTransport,
-} from './provider-session.ts';
+import { classifyProviderTransport } from './provider-session.ts';
 
 // The provider key limit counts Unicode code points, not UTF-16 code units.
 // Keep this small wire constraint here: Pi's extension loader does not expose
@@ -56,29 +53,6 @@ export interface SessionCacheOptions {
   readonly cacheRetention?: CacheRetention | undefined;
 }
 
-export type SessionCacheOptionsSource =
-  | SessionCacheOptions
-  | (() => SessionCacheOptions);
-
-export interface SessionCacheIdentity {
-  /**
-   * Effective outbound cache key, or undefined if caching is disabled or no key is set.
-   * Limited to 64 Unicode code points when present.
-   */
-  readonly effectiveKey: string | undefined;
-
-  /** Whether caching is disabled (cacheRetention === 'none'). */
-  readonly disabled: boolean;
-
-  /** Whether the effective key was derived from an explicit inheritedKey. */
-  readonly isInherited: boolean;
-}
-
-export type OnPayloadFn = (
-  payload: unknown,
-  model: unknown,
-) => unknown | Promise<unknown>;
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -90,52 +64,6 @@ function normalizeKey(value: string | undefined): string | undefined {
 
 function isResponsesTransport(model: unknown): boolean {
   return classifyProviderTransport(model) === 'responses';
-}
-
-/**
- * Resolve the effective outbound cache identity from session options.
- *
- * Rules:
- * - If cacheRetention is 'none', caching is disabled and effectiveKey is undefined.
- * - Else if inheritedKey is non-empty, effectiveKey is the clamped inheritedKey (isInherited = true).
- * - Else if nativeSessionId is non-empty, effectiveKey is the clamped nativeSessionId (isInherited = false).
- * - Otherwise, effectiveKey is undefined.
- */
-export function resolveSessionCacheIdentity(
-  options: SessionCacheOptions,
-): SessionCacheIdentity {
-  const disabled = options.cacheRetention === 'none';
-  if (disabled) {
-    return {
-      effectiveKey: undefined,
-      disabled: true,
-      isInherited: false,
-    };
-  }
-
-  const rawInherited = normalizeKey(options.inheritedKey);
-  if (rawInherited !== undefined) {
-    return {
-      effectiveKey: limitSessionCacheKey(rawInherited),
-      disabled: false,
-      isInherited: true,
-    };
-  }
-
-  const rawNative = normalizeKey(options.nativeSessionId);
-  if (rawNative !== undefined) {
-    return {
-      effectiveKey: limitSessionCacheKey(rawNative),
-      disabled: false,
-      isInherited: false,
-    };
-  }
-
-  return {
-    effectiveKey: undefined,
-    disabled: false,
-    isInherited: false,
-  };
 }
 
 /**
@@ -187,30 +115,4 @@ export function applySessionCacheToPayload(
   }
 
   return payload;
-}
-
-/**
- * Wraps an existing or absent onPayload hook with session cache adaptation.
- *
- * The wrapped hook applies cache key adaptation first, then delegates to any
- * existingOnPayload hook. Any payload or field returned by existingOnPayload
- * takes final precedence over default, inherited, and retention-none rules.
- */
-export function wrapSessionCacheOnPayload(
-  options: SessionCacheOptionsSource,
-  existingOnPayload?: OnPayloadFn,
-): OnPayloadFn {
-  return async (payload: unknown, model: unknown): Promise<unknown> => {
-    const resolvedOptions = typeof options === 'function' ? options() : options;
-    const transformed = applySessionCacheToPayload(payload, model, resolvedOptions);
-
-    if (existingOnPayload) {
-      const overridden = await existingOnPayload(transformed, model);
-      if (overridden !== undefined) {
-        return overridden;
-      }
-    }
-
-    return transformed;
-  };
 }

@@ -13,8 +13,6 @@ import {
   parseSessionSenderId,
   registerSession,
   SESSION_DIRECTORY,
-  sessionById,
-  sessionByMainAddress,
   sessionByUid,
   sessionMainAddress,
   sessionSenderId,
@@ -29,7 +27,7 @@ async function root(t: test.TestContext): Promise<string> {
   return directory;
 }
 
-test("a published session is readable by uid, id and Main endpoint", async (t) => {
+test("a published session is readable by uid and publishes its Main endpoint", async (t) => {
   const socketRoot = await root(t);
   const session = await registerSession(socketRoot, {
     sessionId: "session-alpha", cwd: "/tmp/project", name: "parser work",
@@ -43,10 +41,6 @@ test("a published session is readable by uid, id and Main endpoint", async (t) =
   const live = await liveSessions(socketRoot);
   assert.deepEqual(live.map((entry) => entry.sessionId), ["session-alpha"]);
   assert.equal((await sessionByUid(socketRoot, session.uid))?.sessionId, "session-alpha");
-  assert.equal((await sessionById(socketRoot, "session-alpha"))?.uid, session.uid);
-  assert.equal((await sessionByMainAddress(socketRoot, sessionMainAddress(session)))?.sessionId, "session-alpha");
-  assert.equal(await sessionByMainAddress(socketRoot, getAgentSocketPath("Main", "/tmp/elsewhere")), null);
-  assert.equal(await sessionById(socketRoot, "missing"), null);
   assert.equal(await sessionByUid(socketRoot, "../escape"), null);
 });
 
@@ -56,6 +50,11 @@ test("the wire identity is the stable session uid followed by Main", () => {
   const sender = sessionSenderId(uid);
   assert.equal(sender, `${uid}:Main`);
   assert.deepEqual(parseSessionSenderId(sender), { uid });
+  assert.deepEqual(parseSessionSenderId("deadbeef:Main"), { uid: "deadbeef" });
+  assert.equal(parseSessionSenderId("DEADBEEF:Main"), null, "the uid is lowercase only");
+  assert.equal(parseSessionSenderId("abc123:Main"), null, "no legacy short uid format");
+  assert.equal(parseSessionSenderId("deadbee:Main"), null, "a uid is exactly eight hex digits");
+  assert.equal(parseSessionSenderId("deadbeeg:Main"), null, "a uid contains hex digits only");
   assert.equal(parseSessionSenderId(`${uid}:sub_01`), null, "a subagent is not a cross-session identity");
   assert.equal(parseSessionSenderId("Main"), null, "a local actor id is not a session identity");
   assert.equal(parseSessionSenderId(`${uid}:`), null);
@@ -108,7 +107,7 @@ test("dead and malformed records are never reported as live sessions", async (t)
 
   const malformed = [
     { ...valid, version: 99 },
-    { ...valid, uid: "000000" },
+    { ...valid, uid: "00000000" },
     { ...valid, socketDir: "/tmp/elsewhere" },
     { ...valid, sessionId: "" },
     { ...valid, name: 42 },

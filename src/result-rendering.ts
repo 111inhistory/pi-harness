@@ -70,7 +70,7 @@ function createDeliveryRenderer(): MessageRenderer<DeliveryCustomMessage['detail
     const details = message.details;
     const shell = details !== undefined && 'result' in details ? details.result : undefined;
     const title = details === undefined ? message.customType
-      : 'result' in details ? `shell ${details.result.id} · ${details.result.status}`
+      : 'result' in details ? `${details.result.id} · ${details.result.status}`
       : details.status === undefined
         ? details.sourceId
         : `${details.sourceId} · ${details.status} · round ${details.round}`;

@@ -18,17 +18,34 @@ function deps(overrides: Partial<NativeDeliveryDeps> = {}): NativeDeliveryDeps {
   };
 }
 
-test('an external Main message activates the reply tool before delivery', async () => {
+test('an external Main message activates the reply tool after the ownership check and before delivery', async () => {
   const order: string[] = [];
   const router = new NativeDeliveryRouter(deps({
-    activateReply: () => order.push('activate'),
+    ownsContext: () => { order.push('owns'); return true; },
+    activateReply: () => { order.push('activate'); },
     sendToMain: () => { order.push('send'); },
   }));
   await router.toMain({
     type: 'message', from: 'Main', content: 'peer ping',
     external: { sessionId: 'peer', sender: 'peer:Main', replyTo: '/tmp/peer/Main.sock' },
   });
-  assert.deepEqual(order, ['activate', 'send']);
+  assert.deepEqual(order, ['owns', 'activate', 'send']);
+});
+
+test('a stale root neither activates the reply tool nor forwards the peer message', async () => {
+  let activations = 0;
+  let sends = 0;
+  const router = new NativeDeliveryRouter(deps({
+    ownsContext: () => false,
+    activateReply: () => { activations += 1; },
+    sendToMain: () => { sends += 1; },
+  }));
+  await assert.rejects(router.toMain({
+    type: 'message', from: 'Main', content: 'peer ping',
+    external: { sessionId: 'peer', sender: 'peer:Main', replyTo: '/tmp/peer/Main.sock' },
+  }), /no longer owns this notification/);
+  assert.equal(activations, 0);
+  assert.equal(sends, 0);
 });
 
 test('a local child message does not activate the reply tool', async () => {

@@ -17,21 +17,17 @@ import { DEFAULT_HARNESS_CONFIG, type HarnessConfig } from '../harness-config.ts
 import { createSubagentStore, EVENTS, SUBAGENT_SESSIONS_DIR, writeFileAtomic } from './storage.ts';
 import { hasJobView, jobViewPaths, writeJobView, readTranscript } from './view.ts';
 import { routeSubagent } from './routing.ts';
-import { DEFAULT_SOCKET_DIR, deriveSessionUid, endpointKey, getAgentSocketPath } from '../ipc/socket.ts';
-import { ipc } from '../ipc/platform.ts';
-import {
-  liveSessions, registerSession,
-  sendToSessionEndpoint, sessionMainAddress, unregisterSession, updateSessionName,
-  type LiveSession,
-} from './session-directory.ts';
+import { DEFAULT_SOCKET_DIR, deriveSessionUid, getAgentSocketPath } from '../ipc/socket.ts';
+import type { LiveSession } from './session-directory.ts';
+import { SessionPeers, type SessionConnect } from './session-peers.ts';
 import { ensurePrivateSocketRoot } from '../ipc/platform.ts';
 import { activateToolNames } from '../capability/activation.ts';
-import { enableCapabilityTargets } from '../capability/enable.ts';
 import { setCapabilityParent, type CapabilityToolCatalog } from '../capability/scope.ts';
 import { ActorSessionStore } from './actor-sessions.ts';
 import { AgentListeners } from './listeners.ts';
 import { NativeJobRunner } from './native-runner.ts';
 import { NativeDeliveryRouter } from './native-delivery.ts';
+import type { DeliveryCustomMessage } from './delivery.ts';
 import { createNativeSessionFactory } from './native-session.ts';
 import { installSessionSurface, type SubagentSurfaceCreateOptions } from './surface.ts';
 import type { ManagedWriteHost, SessionEndpoint } from './message-write.ts';
@@ -59,39 +55,6 @@ interface RootServiceOptions {
 
 type RootPhase = 'initializing' | 'open' | 'quiescing' | 'detached' | 'failed';
 
-/** The custom context message a user-issued connect appends to this session. */
-export const SESSION_CONTACT = 'subagent-session-contact';
-
-/** One peer session made reachable from this agent, with its grant outcome. */
-export interface SessionConnect {
-  readonly session: LiveSession;
-  /** The peer's managed `Main` address, as written into the contact message. */
-  readonly address: string;
-  /** Tools this connect made usable through the shared enable path. */
-  readonly enabled: readonly string[];
-  readonly alreadyEnabled: readonly string[];
-  /** Set when the branch record failed: the grant is not durable. */
-  readonly recordError: string | null;
-}
-
-/**
- * The contact message itself: identity, working directory and reply address.
- * It states that nothing was sent, so a later turn does not mistake the
- * information for an already-open conversation.
- */
-function contactMessage(session: LiveSession, address: string): string {
-  const name = session.name === null ? '(unnamed)' : session.name;
-  return [
-    'The user connected a live Pi session to this conversation.',
-    `- uid: ${session.uid}`,
-    `- session: ${session.sessionId}`,
-    `- name: ${name}`,
-    `- cwd: ${session.cwd}`,
-    `- Main address: ${address}`,
-    '',
-    'Use msg_write with that address to message this session. Nothing has been sent to it yet.',
-  ].join('\n');
-}
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const errorOf = (error: unknown): Error => error instanceof Error ? error : new Error(String(error));
 const resultText = (value: unknown): string | null => {
@@ -135,6 +98,7 @@ export class RootService implements ManagedWriteHost {
   readonly listeners: AgentListeners;
   readonly shell: AsyncShellHost;
   readonly #delivery: NativeDeliveryRouter;
+  readonly #peers: SessionPeers;
   readonly #store: ReturnType<typeof createSubagentStore<SessionManager>>;
   readonly #historyDir: string;
   #temporaryResults: string | null = null;
@@ -267,28 +231,26 @@ export class RootService implements ManagedWriteHost {
       ownsContext: () => this.#mayPersist(),
       canWake: () => this.active,
       activateReply: () => this.#activateReplyTool(),
-      sendToMain: async (message, triggerTurn) => {
-        const gate = this.#compaction;
-        if (gate !== null) await gate.promise;
-        // Quiescing still owns the old root: a terminal notice may be retained
-        // after retirement starts. Only a detached root refuses the handover.
-        if (!this.#mayPersist()) {
-          throw new SubagentError('runtime_closed', 'The original root no longer owns this delivery.');
-        }
-        // Waking is a current-state decision, not a snapshot taken before the gate.
-        await options.api.sendMessage(message, { triggerTurn: triggerTurn && this.active, deliverAs: 'steer' });
-      },
+      sendToMain: (message, triggerTurn) => this.#acceptMainDelivery(message, triggerTurn),
       appendRetained: (agentId, message) => this.#appendNotice(agentId, message),
       onError: (error) => this.#report(error),
     });
     // Validate the private root inside initialize(), so failure is latched and
     // tools report it rather than repeatedly rebuilding an insecure service.
     this.#socketRoot = socketRoot;
+    this.#peers = new SessionPeers({
+      api: options.api, context: options.context, root: socketRoot, sessionId,
+      assertOperational: () => this.assertOperational(),
+      waitForCompaction: () => this.#compaction?.promise ?? Promise.resolve(),
+      report: error => this.#report(error),
+    });
   }
 
   readonly #socketRoot: string;
-  /** Native compaction rewrites the context; deliveries wait for it to finish. */
+  /** Compaction holds SDK handoff; admitted messages remain owned by this root. */
   #compaction: { readonly promise: Promise<void>; readonly resolve: () => void } | null = null;
+  readonly #mainDeliveries: Array<{ message: DeliveryCustomMessage; triggerTurn: boolean }> = [];
+  #mainDeliveryDrain: Promise<void> | null = null;
   /** The resolved nesting limit of this root's snapshot. */
   get maxDepth(): number { return this.#options.config.subagent.maxDepth; }
   get active(): boolean { return this.#phase === 'open' && this.#failure === null && this.#options.ownsContext(); }
@@ -330,7 +292,7 @@ export class RootService implements ManagedWriteHost {
       this.#phase = 'open';
       for (const event of this.#pendingEvents.splice(0)) this.#event(event);
       await this.listeners.sync();
-      await this.#publishSession();
+      await this.#peers.publish();
     } catch (error) {
       this.#failure = errorOf(error);
       this.#phase = 'failed';
@@ -453,94 +415,9 @@ export class RootService implements ManagedWriteHost {
   /** The socket root every live session of this user publishes itself under. */
   get socketRoot(): string { return this.#socketRoot; }
 
-  /** Live sessions reachable from here, including this one. */
-  listSessions(): Promise<LiveSession[]> {
-    return liveSessions(this.#socketRoot);
-  }
-
-  /**
-   * Classify a managed address against this root and the shared directory.
-   *
-   * This is the one place that decides whether an address is local, this session's
-   * own Main, another live session's Main, or another session's non-Main
-   * endpoint. It uses the same address space as every other `msg_write` call;
-   * whether an address belongs to a session's endpoint namespace is the IPC
-   * platform adapter's answer, not a filesystem assumption made here.
-   */
-  async sessionEndpoint(address: string): Promise<SessionEndpoint> {
-    const ownSocketDir = path.join(this.#socketRoot, deriveSessionUid(this.sessionId));
-    if (endpointKey(address) === endpointKey(getAgentSocketPath('Main', ownSocketDir))) {
-      return { kind: 'self' };
-    }
-    const live = await liveSessions(this.#socketRoot);
-    for (const session of live) {
-      if (session.sessionId === this.sessionId) continue;
-      if (endpointKey(address) === endpointKey(getAgentSocketPath('Main', session.socketDir))) {
-        return { kind: 'session', session };
-      }
-    }
-    for (const session of live) {
-      if (session.sessionId === this.sessionId) continue;
-      if (ipc.belongsToNamespace(address, session.socketDir)) return { kind: 'foreign' };
-    }
-    return { kind: 'local' };
-  }
-
-  /**
-   * Make one live peer session reachable from this agent.
-   *
-   * The user named the session, so this call is itself the explicit grant for
-   * `msg_write`: it goes through the same enable path as `/capability enable`,
-   * which is the only path allowed to authorize a manual tool. Nothing is sent
-   * to the target, no pairing or connection state is kept, and the contact is an
-   * ordinary custom context message: it starts no turn and rewrites no prompt
-   * head. Receiving a peer message stays a separate, receipt-scoped activation.
-   */
-  async connectSession(target: string): Promise<SessionConnect> {
-    this.assertOperational();
-    const wanted = target.trim();
-    if (wanted === '') {
-      throw new SubagentError('invalid_command_args', 'connect requires one live session uid or session id.');
-    }
-    const session = (await liveSessions(this.#socketRoot))
-      .find((candidate) => candidate.uid === wanted || candidate.sessionId === wanted);
-    if (session === undefined) {
-      throw new SubagentError('session_not_found', `No live session matches ${wanted}.`);
-    }
-    if (session.sessionId === this.sessionId) {
-      throw new SubagentError('invalid_target', 'A session cannot connect to itself.');
-    }
-    // The directory read awaited; a root that lost its branch must not write.
-    this.assertOperational();
-    // A native compaction rewrites the context, so append after it finishes.
-    const gate = this.#compaction;
-    if (gate !== null) await gate.promise;
-    this.assertOperational();
-    // Everything below is synchronous: no await may separate the ownership
-    // check from the branch record and the context append it fences.
-    const activation = enableCapabilityTargets(this.#options.api, ['msg_write'], {
-      branch: this.#options.context.sessionManager.getBranch(),
-    });
-    const usable = [...activation.enabled, ...activation.alreadyEnabled];
-    if (!usable.includes('msg_write')) {
-      const reason = activation.skipped.find((skip) => skip.name === 'msg_write')?.reason
-        ?? (activation.unresolved.includes('msg_write') ? 'not_registered' : 'not_activated');
-      throw new SubagentError('msg_write_unavailable', `msg_write cannot be enabled for this session: ${reason}.`);
-    }
-    const address = sessionMainAddress(session);
-    this.#options.api.sendMessage({
-      customType: SESSION_CONTACT,
-      content: contactMessage(session, address),
-      display: true,
-    }, { triggerTurn: false });
-    return {
-      session,
-      address,
-      enabled: activation.enabled,
-      alreadyEnabled: activation.alreadyEnabled,
-      recordError: activation.recordError,
-    };
-  }
+  listSessions(): Promise<LiveSession[]> { return this.#peers.list(); }
+  sessionEndpoint(address: string): Promise<SessionEndpoint> { return this.#peers.endpoint(address); }
+  connectSession(target: string): Promise<SessionConnect> { return this.#peers.connect(target); }
 
   /**
    * A peer session addressed this Main; make the reply tool callable before the
@@ -560,15 +437,51 @@ export class RootService implements ManagedWriteHost {
   }
 
   /**
-   * Hold deliveries while native compaction rewrites the context.
-   *
-   * A steer handed to the SDK mid-compaction can land inside the rewritten
-   * boundary or interleave with the retried turn. The extension opens this gate
-   * on `session_before_compact` and closes it on `session_compact` or
-   * `session_compact_failed`; every Main delivery waits here.
+   * Admit messages immediately while native compaction holds SDK handoff.
+   * The root owns the queued payloads until one handoff attempt each; callers
+   * can finish without waiting for the summary model request.
    */
+  async #acceptMainDelivery(message: DeliveryCustomMessage, triggerTurn: boolean): Promise<void> {
+    if (!this.#mayPersist()) throw new SubagentError('runtime_closed', 'The original root no longer owns this delivery.');
+    if (this.#compaction !== null || this.#mainDeliveryDrain !== null || this.#mainDeliveries.length > 0) {
+      // Admission transfers ownership to this root. The caller need not wait
+      // for compaction or replay a message whose SDK handoff is still pending.
+      this.#mainDeliveries.push({ message, triggerTurn });
+      this.#flushMainDeliveries();
+      return;
+    }
+    await this.#handoffMain(message, triggerTurn);
+  }
+
+  async #handoffMain(message: DeliveryCustomMessage, triggerTurn: boolean): Promise<void> {
+    if (!this.#mayPersist()) throw new SubagentError('runtime_closed', 'The original root no longer owns this delivery.');
+    await this.#options.api.sendMessage(message, { triggerTurn: triggerTurn && this.active, deliverAs: 'steer' });
+  }
+
+  #flushMainDeliveries(): void {
+    if (this.#compaction !== null || this.#mainDeliveryDrain !== null || this.#mainDeliveries.length === 0) return;
+    const operation = Promise.resolve().then(() => this.#drainMainDeliveries());
+    this.#mainDeliveryDrain = operation;
+    void operation.then(() => {
+      this.#mainDeliveryDrain = null;
+      this.#flushMainDeliveries();
+    });
+  }
+
+  async #drainMainDeliveries(): Promise<void> {
+    while (this.#compaction === null && this.#mainDeliveries.length > 0) {
+      const delivery = this.#mainDeliveries.shift()!;
+      try {
+        await this.#handoffMain(delivery.message, delivery.triggerTurn);
+      } catch (error) {
+        // A failed SDK handoff may already be queued. Report once; never replay.
+        this.#report(errorOf(error));
+      }
+    }
+  }
+
   beginCompaction(): void {
-    if (this.#compaction !== null) return;
+    if (!this.active || this.#compaction !== null) return;
     let resolve!: () => void;
     const promise = new Promise<void>((done) => { resolve = done; });
     this.#compaction = { promise, resolve };
@@ -579,64 +492,17 @@ export class RootService implements ManagedWriteHost {
     if (gate === null) return;
     this.#compaction = null;
     gate.resolve();
+    this.#flushMainDeliveries();
   }
 
-  /**
-   * Mirror a native session rename into the shared directory.
-   *
-   * The SDK reports the new name; this session owns its record, so it rewrites
-   * only the name and keeps the rest of the published identity. Reachability is
-   * auxiliary: a failed update is reported, never fatal.
-   */
-  async syncSessionName(name: string | null): Promise<void> {
-    try {
-      await updateSessionName(this.#socketRoot, { sessionId: this.sessionId, name });
-    } catch (error) {
-      this.#report(new Error(`This session's published name was not updated: ${errorOf(error).message}`));
-    }
-  }
-
-  /**
-   * Deliver one message to another live session's Main.
-   *
-   * The receiving root owns admission: this call only frames the sender and
-   * writes one NDJSON request to the target's managed Main endpoint. An error
-   * response, a timeout or a disconnect does not prove the message was not
-   * handed over, so nothing is retried here.
-   */
-  async sendCrossSession(command: {
-    readonly target: LiveSession;
-    readonly content: string;
-    readonly signal?: AbortSignal | undefined;
-  }): Promise<void> {
-    this.assertOperational();
-    return sendToSessionEndpoint({
-      sender: { sessionId: this.sessionId, uid: deriveSessionUid(this.sessionId) },
-      ...command,
-    });
-  }
-
-  /**
-   * Publish this session for cross-session addressing. Reachability is
-   * auxiliary: a failed publish is reported, and this root keeps running.
-   */
-  async #publishSession(): Promise<void> {
-    try {
-      await registerSession(this.#socketRoot, {
-        sessionId: this.sessionId,
-        cwd: this.#options.context.cwd,
-        name: this.#options.context.sessionManager.getSessionName() ?? null,
-      });
-    } catch (error) {
-      this.#report(new Error(`This session is not reachable from other sessions: ${errorOf(error).message}`));
-    }
-  }
+  syncSessionName(name: string | null): Promise<void> { return this.#peers.syncName(name); }
+  sendCrossSession(command: Parameters<SessionPeers['send']>[0]): Promise<void> { return this.#peers.send(command); }
 
   retire(): Promise<void> {
     if (this.#retirement !== null) return this.#retirement;
     this.#phase = 'quiescing';
-    // Release deliveries waiting on a compaction that will never finish here;
-    // they fail the active check instead of hanging past retirement.
+    // Release the compaction hold and retain accepted messages in the original
+    // context before detaching; quiescence prevents them from waking Main.
     this.endCompaction();
     const jobs = this.runtime.jobs().jobs.filter((job) => ['running', 'stopping', 'finalizing'].includes(job.status));
     for (const job of jobs) if (job.status === 'running') this.runtime.cancelJob(job.jobId);
@@ -644,10 +510,14 @@ export class RootService implements ManagedWriteHost {
       const results = await Promise.allSettled([
         this.shell.close(),
         this.listeners.close(),
-        unregisterSession(this.#socketRoot, this.sessionId),
+        this.#peers.close(),
         ...jobs.map((job) => this.runtime.jobDone(job.jobId)),
       ]);
       const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+      // Job completion can enqueue its final notice. Drain after all producers
+      // retire, while this generation still owns the original SDK context.
+      this.#flushMainDeliveries();
+      if (this.#mainDeliveryDrain !== null) await this.#mainDeliveryDrain;
       this.#phase = 'detached';
       if (this.#persistenceFailure !== null) throw this.#persistenceFailure;
       if (failures.length !== 0) throw new AggregateError(failures.map((result) => result.reason), 'The root did not retire all resources.');

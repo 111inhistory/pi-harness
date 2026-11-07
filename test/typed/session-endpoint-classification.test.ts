@@ -62,7 +62,7 @@ async function fixture(t: TestContext) {
   return { cwd, harness, service };
 }
 
-test('sessionEndpoint separates self, peer Main, peer non-Main and local endpoints', async (t) => {
+test('sessionEndpoint separates peer Main, peer non-Main and local endpoints', async (t) => {
   const { cwd, harness, service } = await fixture(t);
   const peer = await harness.registerSession(SOCKET_ROOT, { sessionId: 'peer-session', cwd, name: 'peer work' });
   t.after(() => harness.unregisterSession(SOCKET_ROOT, peer.sessionId));
@@ -73,7 +73,7 @@ test('sessionEndpoint separates self, peer Main, peer non-Main and local endpoin
   const own = (await service.listSessions()).find((session) => session.sessionId === service.sessionId);
   assert.ok(own, 'this root publishes itself under the shared socket root');
 
-  assert.deepEqual(await service.sessionEndpoint(harness.sessionMainAddress(own)), { kind: 'self' });
+  assert.deepEqual(await service.sessionEndpoint(harness.sessionMainAddress(own)), { kind: 'local' });
   assert.deepEqual(await service.sessionEndpoint(harness.sessionMainAddress(peer)), { kind: 'session', session: peer });
 
   const peerEndpoints = [

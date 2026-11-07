@@ -16,8 +16,9 @@
  * - Identical keys are not duplicate-appended; fresh sessions (without inherited key)
  *   write no entry and naturally default to the local session ID.
  * - Session installation wraps `agent.streamFunction` to compose `options.onPayload`.
- *   The existing hook has final authority; if an existing hook changes the effective key
- *   on Responses, the change is recorded to lineage. Anthropic requests never persist null.
+ *   The existing hook has final authority; if it leaves a valid nonempty cache key on a
+ *   Responses payload, that key is recorded to lineage. A missing or empty key is never
+ *   recorded as `null`: only an explicit install/record of `null` durably disables caching.
  * - Cleanup restores the previous `agent.streamFunction`.
  */
 
@@ -131,18 +132,6 @@ export function installSessionCacheIdentity(
   session: SessionCacheTarget,
   key?: string | null,
 ): () => void {
-  if (
-    !session ||
-    !session.agent ||
-    typeof session.agent.streamFunction !== 'function' ||
-    !session.sessionManager ||
-    typeof session.sessionManager.appendCustomEntry !== 'function' ||
-    typeof session.sessionManager.getBranch !== 'function' ||
-    typeof session.sessionManager.getSessionId !== 'function'
-  ) {
-    throw new Error('A live agent stream boundary and sessionManager are required to install session cache identity.');
-  }
-
   const manager = session.sessionManager;
 
   // Append lineage entry only if an explicit key is provided and differs from the branch head.
@@ -186,15 +175,18 @@ export function installSessionCacheIdentity(
         }
       }
 
-      // 3. Only observe Responses payloads. If an existing final hook changed the effective key,
-      // record the actual update to lineage so capture can observe it, avoiding duplicate writes.
+      // 3. Observe only valid nonempty string keys on Responses payloads. If an existing
+      // final hook changed the effective key, record the actual update to lineage so
+      // capture can observe it. A missing/empty key is not evidence that caching was
+      // disabled (e.g. temporary cacheRetention: 'none' or a transport-side omission),
+      // so it must not overwrite lineage with a durable null.
       if (classifyProviderTransport(requestModel) === 'responses' && isRecord(finalPayload)) {
-        const finalKey = typeof finalPayload['prompt_cache_key'] === 'string'
-          ? (limitSessionCacheKey(finalPayload['prompt_cache_key']) ?? null)
-          : null;
-        const currentBranchKey = resolveSessionCacheKey(manager);
-        if (finalKey !== currentBranchKey) {
-          recordSessionCacheIdentity(manager, finalKey);
+        const finalKey = finalPayload['prompt_cache_key'];
+        if (typeof finalKey === 'string' && finalKey.length > 0) {
+          const observedKey = limitSessionCacheKey(finalKey) ?? null;
+          if (observedKey !== resolveSessionCacheKey(manager)) {
+            recordSessionCacheIdentity(manager, observedKey);
+          }
         }
       }
 

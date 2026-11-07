@@ -73,6 +73,9 @@ test('virtual capture pins the producing physical model before dropping its spaw
   assert.notEqual(snapshot.model?.api,'pi-virtual');
   assert.ok(!snapshot.entries.some(entry=>entry.type==='message' && entry.message.role==='assistant'));
   assert.equal(physicalModelForCall(ctx,'spawn/1')?.id,physical.id,'nested tool calls resolve their producing outer call');
+  assert.equal(captureInheritedContext(pi,ctx).model?.id,physical.id,'commands inherit the latest physical response');
+  manager.appendMessage({...assistant([{type:'text',text:'latest answer'}]),stopReason:'stop'});
+  assert.equal(captureInheritedContext(pi,ctx).model?.id,physical.id,'commands do not require a tool call in the response');
   assert.throws(()=>captureInheritedContext(pi,ctx,'missing'),/physical model.*unavailable/);
   assert.equal(ctx.model?.api,'pi-virtual','parent selection remains untouched');
 });

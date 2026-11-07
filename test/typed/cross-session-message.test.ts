@@ -222,7 +222,7 @@ test("a frame naming an unknown session is refused before any delivery", { timeo
   await listeners.sync();
 
   await assert.rejects(
-    writeSocket(sessionMainAddress(receiver), { from: "ffffff:Main", content: "hello" }),
+    writeSocket(sessionMainAddress(receiver), { from: "ffffffff:Main", content: "hello" }),
     { code: "unknown_session" },
   );
   assert.deepEqual(sends, []);
@@ -372,15 +372,13 @@ test("msg_write uses the same path for local and cross-session targets", async (
     assert.ok(reply?.type === "text" && reply.text.includes(`Successfully sent message to ${remotePath}`),
       "the success text carries the address verbatim, without transport escaping");
 
-    // Self and foreign non-Main endpoints are refused before any write.
-    for (const refused of ["self", "foreign"] as const) {
-      kind = { kind: refused };
-      await assert.rejects(
-        createMessageWriteTool({ cwd, senderId: "Main", host })
-          .execute("call", { path: remotePath, content: "hello" }, undefined, undefined, ctx),
-        (error: unknown) => error instanceof SubagentError && error.code === "invalid_target",
-      );
-    }
+    // Foreign non-Main endpoints are refused before any write.
+    kind = { kind: "foreign" };
+    await assert.rejects(
+      createMessageWriteTool({ cwd, senderId: "Main", host })
+        .execute("call", { path: remotePath, content: "hello" }, undefined, undefined, ctx),
+      (error: unknown) => error instanceof SubagentError && error.code === "invalid_target",
+    );
     await assert.rejects(
       createMessageWriteTool({ cwd, senderId: "Main", host })
         .execute("call", { path: "not-an-address", content: "hello" }, undefined, undefined, ctx),

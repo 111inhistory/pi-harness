@@ -95,13 +95,13 @@ test('Subagent completion messages fold with sender and round visible, and expan
 
 test('async shell completion folds output with its task status and preserves result data', () => {
   initTheme('dark');
-  const result = { id: 'fake-task', status: 'completed', exitCode: 0, output: `${'build output\n'.repeat(50)}FINAL_SHELL_OUTPUT`, cursor: 1000, logPath: '/tmp/project/output.log', truncated: false };
+  const result = { id: 'job_11111111', status: 'completed', exitCode: 0, output: `${'build output\n'.repeat(50)}FINAL_SHELL_OUTPUT`, cursor: 1000, logPath: '/tmp/project/output.log', truncated: false };
   const message = { role: 'custom' as const, customType: 'async-shell-result', content: JSON.stringify(result), display: true, details: { source: 'host', result }, timestamp: 0 };
   const before = structuredClone(message);
   const component = new CustomMessageComponent(message, renderers().shell);
   const collapsed = component.render(80);
   assert.ok(collapsed.length < 20);
-  assert.match(plain(collapsed), /shell fake-task.*completed/);
+  assert.match(plain(collapsed), /job_11111111.*completed/);
   assert.doesNotMatch(plain(collapsed), /FINAL_SHELL_OUTPUT/);
   component.setExpanded(true);
   assert.match(plain(component.render(80)), /FINAL_SHELL_OUTPUT/);
