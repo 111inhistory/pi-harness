@@ -18,15 +18,16 @@
 | `capability/command.ts`、`capability/catalog.ts`、`capability/enable.ts`、`capability/activation.ts` | `/capability` 目录浏览与用户启用、按实时注册表解析启用目标、激活的共享实现（发现、命令与跨会话回复工具加载） | 检索会话、路由、Subagent 状态 |
 | `capability/admission.ts` | 单次操作的工具准入视图：一次解析作用域链与分支记录，提供 `declares`（声明）、`admits`（执行）、`admitsManual` 与 `admitsServer` | 跨请求缓存、第二套权限服务、改写激活集 |
 | `listeners.ts`、`ipc/` | 端点目录、监听、NDJSON 分帧、平台资源归属校验，以及“端点属于哪个 session 命名空间”的地址分类（Unix 为目录包含，Windows 为管道名前缀） | 用显示窗口决定可达性、另写广播状态机、用文件系统路径推断管道归属 |
-| `session-directory.ts` | 跨 session 目录的发布、存活校验与归属删除，受管 `Main` 路径寻址，`<uid>:Main` 复合发送者身份，跨 session 单帧写入 | 认证协议、跨主机调度、第二套消息状态机 |
+| `session-peers.ts`、`session-directory.ts` | 根持有的跨 session 操作对象、连接与目录名称同步；目录发布、存活校验与归属删除，受管 `Main` 寻址、复合发送者身份与单帧写入 | 根代次、压缩闸门、Runtime、认证协议或跨主机调度 |
 | `native-delivery.ts`、`delivery.ts` | 独立通知封装、检查原生交接结果、明确拒收后的保留会话追加 | 模型已读回执、自动重发或消息合并 |
+| `btw/command.ts`、`btw/session.ts`、`btw/panel.ts` | `/btw` 命令、内存继承会话、工具阻断和临时问答面板；关闭与根生命周期清理 | Actor／Job、持久化问答或主会话消息写入 |
 | `inherited-context.ts` | 共享分支捕获，在清理未决工具前锁定物理模型，并捕获独立的出站缓存标识 | 伪造身份或跨分支泄漏 |
 | `provider-session.ts`、`session-transcript.ts` | 按明确模型能力判断原生追加路径，组装尾部指令与工具声明；请求编码交给 Pi | 路由、执行授权、手写协议请求 |
 | `session-cache.ts`、`session-cache-runtime.ts` | Responses 出站缓存标识、现有 payload hook 组合、原生分支缓存标识记录 | 改写本地 Session ID、账号路由或保证缓存命中 |
 | `async-shell/cli.ts`、`async-shell/tmux.ts`、`async-shell/output.ts` | 异步命令接口、每任务终端资源、完整 PTY 日志、增量过滤输出和完成回调 | Agent 拓扑、模型轮次或执行授权 |
 | `async-shell/platform*.ts` | POSIX tmux Socket／Windows psmux label、终端启动与输入、进程归属查询、Windows batch 参数传输 | 任务状态、输出游标或通知路由 |
 | `async-shell/host.ts`、`async-shell/surface.ts` | 每次 Shell 的调用者环境、执行代次归属、未完成任务登记与取消 | tmux 状态机、消息工具授予或跨主机调度 |
-| `tool-guidance.ts`、`subagent/tool-guidance.ts` | 按工具首次声明位置投影共同及专属指引，按系统段落标记去重 | 改写工具描述、授予执行权限或移除工具 |
+| `prompt-section-journal.ts`、`tool-guidance.ts`、`capability/tool-instructions.ts` | 初始指引随工具声明投影；分支记录保存正文与落点，变更在上下文尾部追加系统更新 | 用最新资产覆盖历史指引、授予执行权限或移除工具 |
 
 `subagent_create` 在本批 Runner 本地就绪后返回。本地就绪包括路由完成、会话创建、扩展与工具配置完成、初始输入就绪和 IPC 监听就绪。返回项包含 `id`、`socket`、`role` 与 `model`。它不等待首次模型流分发，也不把 `running` 当作启动成功证明。注册后的启动失败不会撤销同批其他节点，也不自动重试。运行时 Job 注册和执行状态仍由 Runtime 独立管理。
 
@@ -92,7 +93,9 @@ Main 默认不激活 `msg_write`（`defaultActive: false`）。收到跨 session
 
 运行中的输入交给原生 steer。SDK 尚未就绪或暂时空闲时，输入由该 Job 的 Runner 持有；缓冲不代表模型已经读取。事件交给 SDK 后，插件不因用户清队列而重放。
 
-通知路径检查实际交接结果，不把同步 `accepted` 标志当作成功。只有明确尚未交出的拒收，才能追加到保留会话。任意 SDK 异常不能证明未入队；这类错误可见，但不会盲目重发。
+Main 压缩期间，Root 持有待投递队列，入队后应答，摘要生成不占用 Socket 应答窗口。闸门放行后顺序尝试 SDK 交接，退役等待生产者结束和队列排空；交接失败报告一次且不重放。丢失代次所有权后不再向 SDK 写入。
+
+直接交接和向子会话的通知路径检查实际交接结果，不把同步 `accepted` 标志当作成功。只有明确尚未交出的拒收，才能追加到保留会话。任意 SDK 异常不能证明未入队；这类错误可见，但不会盲目重发。
 
 普通消息和终态是独立原生事件。一次模型请求可消费多个原生事件，不要求每个事件单独请求一次模型。
 
@@ -128,9 +131,9 @@ Capability 通过共享执行句柄创建内部 SDK 会话，不要求公开 Sub
 
 Capability 与 Subagent 共用 `provider-session.ts` 的能力判断。Responses 和 Anthropic Messages 的工具追加、同名接口更新与中途 system 消息继续由 Pi 原生 provider 编码；Chat Completions 保持原生行为，不增加本轮适配。Capability 沿用捕获的 thinking level，不因缺少增量工具能力而降为 low。检索会话保留非 manual 的继承声明，并由 tool-call hook 和不持有父执行句柄的占位工具阻止执行。限制说明追加在上下文尾部。本轮不实现工具移除或显式缓存断点。
 
-Inherited 与检索会话保留独立本地 Session ID，Responses 请求仅替换原生默认 `prompt_cache_key` 为继承标识；既有自定义 key 与最终 payload hook 优先。`harness-cache-identity` 原生 custom 条目保存分支缓存标识，支持嵌套继承、恢复和续跑。Fresh 默认沿用自己的标识。主会话未安装出站观察 wrapper 时，任意外部 hook 改写的最终 key 不能保证被捕获，见[已知问题](known-issues.md)。
+Inherited 与检索会话保留独立本地 Session ID，Responses 请求仅替换原生默认 `prompt_cache_key` 为继承标识；既有自定义 key 与最终 payload hook 优先。`harness-cache-identity` 原生 custom 条目保存分支缓存标识，支持嵌套继承、恢复和续跑。Fresh 默认沿用自己的标识。观察器仅将有效非空字符串 key 写入 lineage；请求暂时使用 `cacheRetention: none` 或最终 payload 缺少 key 不改变继承身份。仅显式记录或安装 `key: null` 才持续禁用，最终 payload hook 仍可覆盖当前请求。主会话未安装出站观察 wrapper 时，任意外部 hook 改写的最终 key 不能保证被捕获，见[已知问题](known-issues.md)。
 
-Subagent namespace 保留稳定共同指引。由于 Pi 的原生工具编码不携带 namespace instructions，请求在首个成员声明后投影共同指引；create 与 msg_write 的专属指引在各自首次声明后投影。指引使用独立系统段落标记，不进入工具 description，也不使用工具元数据改写头部 rules。重复启用和已有标记不重复投影。
+工具指引统一使用增量系统更新。原生工具的 `promptGuidelines` 由 SDK 比较已有状态并追加更新；所有已声明 namespace 的共同 instructions，包括 MCP 与用户直接启用的 namespace，由当前目录提供，首次投递与后续变更追加到当前尾部。静态资产可随首次工具声明初始化，之后不再覆盖历史正文。`prompt-section-journal.ts` 保存已投递的正文、落点与上下文边界：工具指引使用 `harness-tool-guidance`，Capability 记忆使用 `harness-capability-memory`，共用重放逻辑。新发现、嵌套发现与正文变更只追加新版本；清空指引追加原生段落撤销更新。压缩或显式上下文编辑形成新边界时恢复最新状态。Capability 仅在对应 namespace 指引确已投递时省略重复 prose，未投递时保留；判断使用来源身份。Main、内部检索与 `/btw` 继承会话沿分支重放，更新不授予执行权限。
 
 内部引擎为 `src/capability/agent.ts`，外层装配为 `extensions/capability.ts`。唯一内部工具 `capability_step` 先增量接受已见 refs，再并行调用现有 Broker 搜索。内部选择先留在本次 Run，外层结束后统一保存、激活和投影。没有新增选择的 step 累计计数，上限默认为 3 加一次首轮额度，可配置 `capability.noSelectionLimit`；显式 finish 或达到上限后不再发模型请求。异常结束仍可交付此前已选成果，状态为 `partial`。具体语义和 Budget 见[内部批量检索](interface-contract.md#内部批量检索与增量提交)。
 

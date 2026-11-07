@@ -112,6 +112,7 @@ test('absent config files resolve to the built-in defaults', async (t) => {
   assert.equal(config.capability.noSelectionLimit, 3);
   assert.equal(config.codemode.memoryLimitBytes, 256 * 1024 * 1024);
   assert.equal(config.codemode.defaultMaxOutputTokens, 10_000);
+  assert.equal(config.btw.panelMinRows, 8);
   assert.equal(config.subagent.prompts.common, '');
   assert.equal(config.subagent.prompts.inherited, promptString('subagent-turns.json', 'inheritedContext'));
   assert.deepEqual(resolveHarnessConfig(), DEFAULT_HARNESS_CONFIG);
@@ -129,6 +130,7 @@ test('global overrides merge field by field and retain untouched defaults', asyn
     },
     capability: { budget: budget(4, 8), search: { bm25: { k: 1.2, b: 0.5, d: 0.1 } } },
     codemode: { defaultMaxOutputTokens: 512 },
+    btw: { panelMinRows: 12 },
   });
   const config = loadHarnessConfig({ cwd, agentDir, projectTrusted: false });
   assert.equal(config.subagent.maxDepth, 3);
@@ -142,6 +144,7 @@ test('global overrides merge field by field and retain untouched defaults', asyn
   assert.deepEqual(config.capability.search.limits, DEFAULT_HARNESS_CONFIG.capability.search.limits);
   assert.equal(config.codemode.defaultMaxOutputTokens, 512);
   assert.equal(config.codemode.memoryLimitBytes, DEFAULT_HARNESS_CONFIG.codemode.memoryLimitBytes);
+  assert.equal(config.btw.panelMinRows, 12);
 });
 
 test('a trusted project composes with the global layer and wins per field', async (t) => {
@@ -259,6 +262,18 @@ test('positive integer limits reject zero, fractions and non-finite values', () 
   expectError(
     resolveError([{ source: 'global', value: { codemode: { memoryLimitBytes: Number.POSITIVE_INFINITY } } }]),
     'global', 'codemode.memoryLimitBytes',
+  );
+  expectError(
+    resolveError([{ source: 'global', value: { btw: { panelMinRows: 0 } } }]),
+    'global', 'btw.panelMinRows',
+  );
+  expectError(
+    resolveError([{ source: 'global', value: { btw: { panelMinRows: 7.5 } } }]),
+    'global', 'btw.panelMinRows',
+  );
+  expectError(
+    resolveError([{ source: 'global', value: { btw: { panelHeight: 10 } } }]),
+    'global', 'btw.panelHeight',
   );
 });
 

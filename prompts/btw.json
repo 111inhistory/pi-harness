@@ -1,0 +1,4 @@
+{
+  "system": "Answer the user's side question directly. Treat the ongoing task as background context. All tools are blocked.",
+  "toolsBlocked": "Tool execution is disabled in /btw."
+}

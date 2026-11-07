@@ -50,5 +50,8 @@
   "codemode": {
     "memoryLimitBytes": 268435456,
     "defaultMaxOutputTokens": 10000
+  },
+  "btw": {
+    "panelMinRows": 8
   }
 }

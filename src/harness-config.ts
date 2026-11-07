@@ -49,6 +49,10 @@ export interface HarnessConfig {
     readonly memoryLimitBytes: number;
     readonly defaultMaxOutputTokens: number;
   };
+  readonly btw: {
+    /** Fewest rows the docked `/btw` panel may occupy; a shorter terminal refuses to open. */
+    readonly panelMinRows: number;
+  };
 }
 
 export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
@@ -74,6 +78,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
     },
   },
   codemode: { memoryLimitBytes: 256 * 1024 * 1024, defaultMaxOutputTokens: 10_000 },
+  btw: { panelMinRows: 8 },
 };
 
 export class HarnessConfigError extends Error {

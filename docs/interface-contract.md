@@ -164,6 +164,12 @@ refs 去空白并去重；未知 ref 使本次提交整体拒绝，但不清除�
 
 内部 Budget 与零选择上限通过 `harness.json` 配置，详见[Harness 参数配置](harness-configuration.md#capability)。这些值不作为公开工具参数。
 
+### 工具指引与缓存前缀
+
+增量规则适用于所有工具来源。原生 `promptGuidelines` 由 SDK 追加变化；namespace、MCP 与用户直接启用工具的共同指引使用分支记录固定正文和落点。当前目录中的新指引追加到尾部，不把它写回历史声明。指引变化、撤销与 Capability 新发现也只追加新的系统更新；重复请求和恢复不重复追加。
+
+Capability 的初始投影可按可见结果建立历史落点；之后即使嵌套调用结果不可见，也在当前尾部更新，不改写旧 checkpoint。仅在原生指引已实际投递时省略同源重复正文。历史版本保留，最新状态遵守当前资格与权限，执行权仍由工具声明和宿主检查决定。
+
 ### 与 Subagent 的关系
 
 **Capability 的检索 Agent 复用 Subagent 的底层执行能力。** 系统通过 `src/subagent/execution.ts` 中的 `openSubagentExecution` 统一管理会话生命周期、超时与清理，不为 Capability 另建一套会话创建、预算、取消和清理流程。
@@ -171,6 +177,20 @@ refs 去空白并去重；未知 ref 使本次提交整体拒绝，但不清除�
 Capability 与 Subagent 配套装配和配置（`extensions/harness.ts`），不要求用户分别配置两套执行环境。Capability 直接调用内部执行入口，不要求公开的 `subagent_create`、`subagent_list` 或 `subagent_stop` 工具已注册或已激活。
 
 Capability 调用仍等待检索完成，再返回筛选后的资源。复用执行代码不改变检索权限，不向内部检索 Agent 开放父 Agent 的执行权限。
+
+## `/btw` 独立问答
+
+`/btw [question]` 在交互式终端底部打开独立问答面板（内联停靠，不覆盖主对话）。无参数时显示输入框；带参数时直接提问。打开时捕获当前分支上下文、系统提示词、模型、思考级别与缓存标识，再追加独立问答指令。虚拟模型使用最近一条响应的物理模型；无法确定时拒绝启动。
+
+同一面板中的追问沿用临时会话。问答只存在内存中，不写入主对话、不生成 Subagent 任务、通知或通信端点，也不占用子节点名额。所有工具调用由执行钩子阻断，继承的声明仅保留不可执行的占位实现；manual 工具声明仍按子会话边界排除。
+
+面板固定在终端底部、占满可用宽度，高度为终端半屏（`round(终端行数 / 2)`），不低于配置的首选最小行数 `btw.panelMinRows`（默认 8 行），不随回答长度变化；主对话在面板上方保持可见与可滚动，关闭后恢复主输入框。终端行数不足以容纳首选最小行数与一行主对话（默认 9 行）时，`/btw` 报错拒绝打开，这是尽力而为的检查，不代表 SDK 布局最终会给出的高度。打开期间把终端缩小到该下限以下时，面板改为一行错误提示并停止接受输入，恢复高度后自动恢复显示，问答内容与滚动位置保持不变。
+
+SDK 停靠区的页脚、待处理消息、状态行与 widget 会共同占用空间，可能裁切面板底部。首选最小行数约束面板请求的高度，实际显示空间由 SDK 分配；放大终端或减少 widget 可恢复显示。
+
+`/btw` 只在全屏（fullscreen）渲染下可用；常规（regular）渲染下拒绝打开，并提示把 `tuiMode` 设为 `fullscreen`。回答区独立滚动：鼠标滚轮与 PgUp／PgDn 只移动回答视口；溢出时显示滚动条，可点击或拖拽滑块（拖动在指针移出滚动条列后继续，直到释放），指针落在标题行或输入框同一列不会滚动回答。停在底部时自动跟随新文本，向上阅读时不因流式更新跳动，滚回底部即恢复跟随。面板消费落在其范围内的滚轮事件，边界处不会带动主对话滚动。
+
+Enter 提问，Shift+Enter 换行，Ctrl+C 仅取消当前回答（取消完成后可继续提问，失败会显示错误），Esc 关闭面板并清理临时会话。主会话退出、重载或切换分支时也会关闭面板。重新打开会捕获新的主对话快照，不恢复之前的问答。
 
 ## Subagent
 
@@ -262,7 +282,7 @@ session 生命周期（创建、恢复、停止、轮询、定时检查）与 `/
 - **消息**：向目标 Main 端点写单帧 NDJSON `{"from":"<sender-uid>:Main","content":"..."}`；接收端在 IPC 边界校验发送者 uid 是当前存活的已发布 session，并映射为 Runtime 的外部发送者描述。只有 Main 参与跨 session；自发、广播与非 Main 端点拒绝；不确定交接不重发。
 - **编排者身份**：外部编排者必须作为已发布的 Pi session 参与（通过 SDK 或 CLI 运行），复用上述发布、寻址与收发。本仓库不为非 session 的外部进程新增客户端身份、第二套接收端点或管理通道。
 - **名称**：原生 session name；`/name` 通过 `session_info_changed` 同步到目录，其他 session 与人类界面读取同一份名称。
-- **平台与信任**：仅 POSIX；同一用户本机；记录与 `from` 都是声明，不是认证。
+- **平台与信任**：POSIX Unix Socket／Windows Named Pipe；同一用户本机；记录与 `from` 都是声明，不是认证。
 - **非目标**：进程创建/停止/托管、stop/poll 的宿主请求协议、cron、管理范围、`/session`/`/cron`、transcript 读取与 `session_*` 工具。
 
 `/subagent sessions` 是只读发现视图；`connect` 只把选中 session 的联系信息写入本会话上下文并启用 `msg_write`，不向对方发送消息，也不构成管理入口。
@@ -308,6 +328,8 @@ Agent 应通过提供的 `msg_write` 发送消息；`write` 保持 SDK 原生文
 
 子节点终态通知不创建 continuation Job。父 Subagent 若已因取消或失败关闭，晚到的子节点通知仅追加到保留历史，不自动续跑。只有显式消息向已停止节点发起新一轮执行；Main 的原生通知唤醒行为保持不变。
 
+Main 压缩期间，消息进入所属根代次的内存待投递队列后即可应答；发送方不等待摘要生成。应答表示根已接管消息，不表示已落盘或模型已读。压缩结束后按接管顺序交给 SDK；退役在原上下文中排空队列且不唤醒 Main。丢失代次所有权的消息不能写入新根，投递失败由接收根报告，结果未知的交接不重放。
+
 **交接异常不等于未入队。** 向运行中 SDK 会话交接消息或跨 Socket 写入时，抛出异常、断连或超时并不证明消息未入队；只有明确收到“未交出”的同步拒收才允许转入保留历史，严禁对结果未知的已提交消息自动重发。
 
 通知的排队、中断和后续执行沿用 Pi steer message，不另设通知专用的取消或恢复规则。每条通知独立作为 steer message 投递，保留宿主来源和本轮任务结果。
@@ -350,6 +372,8 @@ Harness 为没有专用结果渲染器的工具提供统一预览，包括 Capab
 
 ## 提示词与架构
 
+本节指引与其他 namespace、MCP 指引共用分支记录与增量更新规则；会话恢复重放已有正文和落点。
+
 工具提示词应表达上述使用流程和行为边界。提示词正文存放在 `prompts/`，通过 `src/prompt-text.ts` 的类型化缓存 getter 读取；执行代码保留数据装配、参数结构和权限判断。角色说明与路由偏好仍来自 `subagent-routing.json`，不新增模板框架或静默回退正文。
 
 ### Subagent 提示词装配
@@ -358,8 +382,8 @@ Harness 为没有专用结果渲染器的工具提供统一预览，包括 Capab
 
 | 模块 | 资产字段 | 装配位置 |
 | --- | --- | --- |
-| A：共同范围与通信 | tools 的 `namespace`、`instructions` | Subagent namespace；共同指引随已启用成员进入提示词 |
-| B：派生与协调 | tools 的 `create.guideline` | 仅追加到 `subagent_create.promptGuidelines`，不追加到 list／stop 的共同指引 |
+| A：共同范围与通信 | tools 的 `namespace`、`instructions` | 初始共同指引随首次成员声明投影；正文变化在尾部增量更新，Capability 记忆不重复该 namespace 的 instructions |
+| B：派生与协调 | tools 的 `create.guideline` | 随 `subagent_create` 首次声明投影独立系统段落，不追加到 list／stop 的共同指引 |
 | C：子会话身份与交付 | turns 的 `context` | 所有子会话的 `appendSystemPrompt`；替换实际 Agent ID、Parent ID 与父端点 |
 | D1：Fresh 职责 | `subagent-routing.json` 的角色说明 | Fresh 路由后注入，续跑保留已记录角色 |
 | 共同工作指引 | `subagent.prompts.common`，内置为空 | Fresh 与 Inherited 的当前会话装配均追加一次非空正文 |
