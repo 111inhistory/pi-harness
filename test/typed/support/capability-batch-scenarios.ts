@@ -319,7 +319,10 @@ export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixt
       : {};
     return typeof sections["capabilities"] === "string" ? [sections["capabilities"]] : [];
   }).join("\n");
-  assert.equal(occurrences(firstMemory, namespaceInstructions), 1, "the next request carries exactly one guidance copy");
+  assert.equal(occurrences(firstMemory, namespaceInstructions), 0, "capability memory does not duplicate native namespace guidance");
+  const systemInstructions = firstNext.messages.flatMap(message => message.role === "system"
+    ? [message.content, ...Object.values(message.sections ?? {})] : []).join("\n");
+  assert.equal(occurrences(systemInstructions, namespaceInstructions), 1, "the next request carries exactly one native guidance copy");
   const repeated = await call("capability", {});
   assert.equal(repeated.isError, false, JSON.stringify(repeated.details));
   const repeatedFirst = repeated.content[0];
@@ -351,7 +354,10 @@ export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixt
       : {};
     return typeof sections["capabilities"] === "string" ? [sections["capabilities"]] : [];
   }).join("\n");
-  assert.equal(occurrences(repeatedMemory, namespaceInstructions), 1, "repeated discovery keeps one memory copy");
+  assert.equal(occurrences(repeatedMemory, namespaceInstructions), 0, "repeated discovery does not duplicate native guidance in memory");
+  const repeatedInstructions = addedContext.messages.flatMap(message => message.role === "system"
+    ? [message.content, ...Object.values(message.sections ?? {})] : []).join("\n");
+  assert.equal(occurrences(repeatedInstructions, namespaceInstructions), 1, "repeated discovery keeps one native guidance copy");
   const resolved = resolveTranscriptTools(addedContext.messages, "changes");
   assert.deepEqual(resolved.requestTools, [], "current Responses use inline tool declarations rather than a second top-level loadout");
   const wire = convertResponsesMessages(

@@ -18,6 +18,7 @@
 import {
   createCapabilityScopeView,
   type CapabilityScopedTool,
+  type CapabilityScopeView,
 } from "./scope.ts";
 
 /** A catalog whose tool records keep their concrete metadata type. */
@@ -27,6 +28,7 @@ export interface TypedToolCatalog<T extends CapabilityScopedTool> {
 
 /** One operation's qualified tools, names and lookup map. */
 export interface EligibleToolCatalog<T extends CapabilityScopedTool> {
+  readonly scope: CapabilityScopeView;
   readonly tools: readonly T[];
   readonly names: ReadonlySet<string>;
   readonly byName: ReadonlyMap<string, T>;
@@ -64,7 +66,7 @@ export function createEligibleToolCatalog<T extends CapabilityScopedTool>(
     names.add(tool.name);
     byName.set(tool.name, tool);
   }
-  return { tools, names, byName };
+  return { scope: view, tools, names, byName };
 }
 
 /** The metadata supplied after selection; extra tool fields are preserved. */

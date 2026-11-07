@@ -106,7 +106,7 @@ function mcpName(name: string): McpIdentity | null {
     : { server: rest.slice(0, split), tool: rest.slice(split + width), basis: 'tool name' };
 }
 
-function mcpIdentity(name: string, namespace: string, path: string): McpIdentity | null {
+export function mcpIdentity(name: string, namespace: string, path: string): McpIdentity | null {
   const explicit = /^mcp:([^/]+)(?:\/(.+))?$/.exec(path);
   if (explicit?.[1]) return { server: explicit[1], ...(explicit[2] ? { tool: explicit[2] } : {}), basis: 'source path' };
   const bracketed = /^<mcp:(.+)>$/.exec(path);

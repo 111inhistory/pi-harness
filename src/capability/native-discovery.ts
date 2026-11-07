@@ -7,12 +7,12 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import { createToolAdmission, isMcpExecutionTool, isNativeDiscoveryTool } from './admission.ts';
 import { installCapabilityCodemode } from './codemode.ts';
+import { projectDiscoveryDeclarations } from './declarations.ts';
 import { DEFAULT_HARNESS_CONFIG, type HarnessConfigProvider } from '../harness-config.ts';
 import { promptString } from '../prompt-text.ts';
 
 const text = {
   disabledDescription: promptString('native-discovery.json', 'disabledDescription'),
-  codemodeFallback: promptString('native-discovery.json', 'codemodeFallback'),
   resourceReadRequirement: promptString('native-discovery.json', 'resourceReadRequirement'),
 };
 
@@ -84,25 +84,8 @@ export function installNativeDiscoveryBoundary(
     currentContext = ctx;
     const admission = admissionFor(ctx);
     const allowed = (name: string) => admission.declares(name);
-    // Old branch checkpoints can contain catalogs/declarations from before this
-    // boundary was installed. Filter structured state, not arbitrary user text.
-    const messages = event.messages.map((message) => {
-      if (message.role !== 'system') return message;
-      const sections = { ...message.sections };
-      delete sections['mcp_servers'];
-      return {
-        ...message,
-        sections,
-        ...(message.toolsAdded ? { toolsAdded: message.toolsAdded.filter((tool) => allowed(tool.name)).map((tool) => {
-          // Old native Codemode snapshots embed a catalog inside this retained
-          // declaration. Filtering separate MCP declarations is not enough.
-          if (tool.name !== 'codemode' || !/\bsearchTools\b|\bmcp__/.test(tool.description)) return tool;
-          const current = pi.getAllTools().find((entry) => entry.name === 'codemode');
-          return { ...tool, description: current?.description ?? text.codemodeFallback };
-        }) } : {}),
-        ...(message.toolsRemoved ? { toolsRemoved: message.toolsRemoved.filter((tool) => allowed(tool.name)) } : {}),
-      };
-    });
+    const messages = projectDiscoveryDeclarations(event.messages, allowed,
+      () => pi.getAllTools().find(tool => tool.name === 'codemode')?.description);
     return { messages };
   });
   return declaredTools;

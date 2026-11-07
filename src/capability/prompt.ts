@@ -13,9 +13,30 @@
  */
 import { discoveryRecords, type CapabilityHit, type DiscoveryMemory } from './discovery-record.ts';
 import { promptString } from '../prompt-text.ts';
+import type { TranscriptMessageLike } from '../session-transcript.ts';
+import {
+  PROMPT_SECTION_RECORD_VERSION,
+  promptSectionRecords,
+  replayPromptSections,
+  type PromptSectionRecord,
+} from '../prompt-section-journal.ts';
 
 const memoryHeader: string = promptString('capability-policy.json', 'memoryHeader');
 export const CAPABILITY_SECTION = 'capabilities';
+export const CAPABILITY_PROMPT_RECORD = 'harness-capability-memory';
+
+export interface CapabilityPromptOptions {
+  readonly allowsTool?: (name: string) => boolean;
+  /** Live instructions for already-discovered resources; null withdraws the prose. */
+  readonly instructions?: ReadonlyMap<string, string | null>;
+  /** Shared instructions already emitted by another native section producer. */
+  readonly nativeGuidanceRefs?: ReadonlySet<string>;
+}
+
+export interface CapabilityPromptJournal extends CapabilityPromptOptions {
+  readonly checkpointId: string | null;
+  appendEntry(customType: string, data: unknown): void;
+}
 
 /** Messages are copied without interpreting their model-specific content. */
 export interface ProjectionMessage {
@@ -50,7 +71,21 @@ function keep(value: CapabilityHit, keys: readonly string[]): CapabilityHit {
  */
 const HIT_TEXT_FIELDS = ['name', 'description', 'instructions', 'filePath'] as const;
 
-function selected(result: DiscoveryMemory, allowsTool: (name: string) => boolean): SelectedHit[] {
+/** No omission is implied without an actual native guidance producer. */
+const EMPTY_GUIDANCE_REFS: ReadonlySet<string> = new Set();
+
+function textFields(hit: CapabilityHit, nativeGuidanceRefs: ReadonlySet<string>): readonly string[] {
+  return hit.ref !== undefined && nativeGuidanceRefs.has(hit.ref)
+    ? HIT_TEXT_FIELDS.filter((field) => field !== 'instructions')
+    : HIT_TEXT_FIELDS;
+}
+
+function selected(
+  result: DiscoveryMemory,
+  allowsTool: (name: string) => boolean,
+  instructions?: ReadonlyMap<string, string | null>,
+  nativeGuidanceRefs: ReadonlySet<string> = EMPTY_GUIDANCE_REFS,
+): SelectedHit[] {
   const hits: SelectedHit[] = [];
   const allowed = (hit: CapabilityHit): boolean => typeof hit.name === 'string' && allowsTool(hit.name);
   for (const category of categories) {
@@ -60,9 +95,14 @@ function selected(result: DiscoveryMemory, allowsTool: (name: string) => boolean
       const tools = toolCategories.has(category);
       if (members && !members.some(allowed)) continue;
       if (!members && tools && (hit.kind === 'tool' || hit.tool) && !allowed(hit)) continue;
+      const fields = textFields(hit, nativeGuidanceRefs);
+      const liveInstructions = fields.includes('instructions') && instructions?.has(hit.ref)
+        ? { instructions: instructions.get(hit.ref) ?? '' }
+        : {};
       hits.push({
         category,
-        ...keep(hit, HIT_TEXT_FIELDS),
+        ...keep(hit, fields),
+        ...liveInstructions,
         ref: category === 'skills' && hit.filePath ? hit.filePath : hit.ref,
         ...(members ? { tools: members.filter(allowed).map((tool) => keep(tool, ['ref', 'name', 'description', 'exposure'])) } : {}),
         ...(!members && tools ? keep(hit, ['exposure', 'tool', 'server']) : {}),
@@ -92,7 +132,7 @@ function render(state: State): string | null {
 export function capabilityPromptTranscript(
   messages: readonly ProjectionMessage[],
   branch: readonly unknown[] | null | undefined,
-  { allowsTool = () => true }: { allowsTool?: (name: string) => boolean } = {},
+  { allowsTool = () => true, instructions, nativeGuidanceRefs }: CapabilityPromptOptions = {},
 ): ProjectionMessage[] {
   const clean = messages.flatMap((message) => {
     if (message.role !== 'system' || !(CAPABILITY_SECTION in (message.sections ?? {}))) return [message];
@@ -104,7 +144,7 @@ export function capabilityPromptTranscript(
   const baseline: State = new Map();
   const anchored = new Map<string, SelectedHit[]>();
   for (const record of discoveryRecords(branch)) {
-    const hits = selected(record.result, allowsTool);
+    const hits = selected(record.result, allowsTool, instructions, nativeGuidanceRefs);
     // A visible result anchors its own update immediately after it. Anything the
     // model can no longer see (compacted, inherited, or a nested call whose outer
     // tool dropped the details) folds into the leading checkpoint.
@@ -132,4 +172,93 @@ export function capabilityPromptTranscript(
     }
   }
   return output;
+}
+
+/**
+ * Freeze every emitted Capability section, including namespace, MCP and Skill
+ * guidance. Later discoveries and live instruction changes become tail updates;
+ * a nested result's absence never moves a new discovery into an old checkpoint.
+ */
+export function projectRecordedCapabilityPrompt(
+  messages: readonly ProjectionMessage[],
+  branch: readonly unknown[],
+  options: CapabilityPromptJournal,
+): ProjectionMessage[] {
+  const desired = capabilityPromptTranscript(messages, branch, options);
+  const text = latestCapabilityText(desired);
+  const records = promptSectionRecords(branch, CAPABILITY_PROMPT_RECORD);
+  const journal = {
+    checkpointId: options.checkpointId,
+    appendEntry: options.appendEntry,
+    recordType: CAPABILITY_PROMPT_RECORD,
+    sectionName: (id: string) => id,
+  };
+  const replay = (history: readonly PromptSectionRecord[]): ProjectionMessage[] => replayPromptSections(
+    messages as readonly TranscriptMessageLike[],
+    [{ id: CAPABILITY_SECTION, text, eligible: true }],
+    history,
+    journal,
+  ) as ProjectionMessage[];
+  if (records.length > 0) return replay(records);
+
+  const initial: PromptSectionRecord[] = [];
+  const remember = (value: string | null, position: PromptSectionRecord['position']): void => {
+    const record: PromptSectionRecord = {
+      version: PROMPT_SECTION_RECORD_VERSION,
+      checkpointId: options.checkpointId,
+      id: CAPABILITY_SECTION,
+      text: value,
+      position,
+    };
+    options.appendEntry(CAPABILITY_PROMPT_RECORD, record);
+    initial.push(record);
+  };
+
+  // Native inherited markers are already history: adopt them, then append any
+  // newly desired state instead of regenerating their bodies at older anchors.
+  for (const [ordinal, message] of messages.entries()) {
+    const value = capabilityText(message);
+    if (value !== undefined) remember(value, ordinal);
+  }
+  if (initial.length > 0) return replay(initial);
+
+  // Durable discovery records own historical prose; live registry replacements
+  // are delivered as a later desired update, including on first initialization.
+  const bootstrap = capabilityPromptTranscript(messages, branch, {
+    allowsTool: options.allowsTool ?? (() => true),
+    nativeGuidanceRefs: options.nativeGuidanceRefs ?? EMPTY_GUIDANCE_REFS,
+  });
+  // Persist even the empty initial state. Otherwise the first later hidden
+  // discovery would still bootstrap into the head and invalidate the old prefix.
+  remember(capabilityText(bootstrap[0]) ?? null, 'head');
+  let ordinal = -1;
+  let next = 0;
+  for (const message of bootstrap) {
+    if (message === messages[next]) {
+      ordinal = next++;
+      continue;
+    }
+    if (next === 0 && message.role === 'system' && messages[0]?.role === 'system') {
+      // The pure bootstrap merged its checkpoint into the first native system.
+      ordinal = next++;
+      continue;
+    }
+    const value = capabilityText(message);
+    if (value !== undefined && ordinal >= 0) remember(value, ordinal);
+  }
+  return replay(initial);
+}
+
+function capabilityText(message: ProjectionMessage | undefined): string | null | undefined {
+  if (message?.role !== 'system') return undefined;
+  const value = message.sections?.[CAPABILITY_SECTION];
+  return typeof value === 'string' || value === null ? value : undefined;
+}
+
+function latestCapabilityText(messages: readonly ProjectionMessage[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const value = capabilityText(messages[index]);
+    if (value !== undefined) return value;
+  }
+  return null;
 }

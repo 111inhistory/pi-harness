@@ -27,6 +27,9 @@ import {
   type CapabilityHit,
   type CapabilitySearchCoverage,
 } from "../../src/capability/discovery-record.ts";
+import { projectToolGuidance, toolGuidanceSection } from "../../src/tool-guidance.ts";
+import { SUBAGENT_TOOL_GUIDANCE } from "../../src/subagent/tool-guidance.ts";
+import type { TranscriptMessageLike } from "../../src/session-transcript.ts";
 
 interface DiscoveryDetails {
   readonly status: "ok" | "partial";
@@ -192,6 +195,10 @@ function records(messages: readonly ProjectionMessage[]): RememberedHit[] {
   return parsed.filter(isRememberedHit);
 }
 
+function occurrences(text: string, needle: string): number {
+  return needle === "" ? 0 : text.split(needle).length - 1;
+}
+
 test("discovery appends a native section immediately and preserves original messages", () => {
   const found = result("a");
   const messages = [head, user, found];
@@ -206,6 +213,57 @@ test("discovery appends a native section immediately and preserves original mess
   assert.doesNotMatch(section(projected) ?? "", /Large on-demand body|score|npm:\/\/candidate/);
   assert.deepEqual(messages, before);
   assert.deepEqual(capabilityPromptTranscript(projected, entries(...messages)), projected);
+});
+
+test("native Subagent guidance is projected once while namespace memory keeps third-party instructions", () => {
+  const common = SUBAGENT_TOOL_GUIDANCE.find((entry) => entry.id === "subagent")?.text;
+  assert.ok(common && common.trim().length > 0);
+  const subagent: CapabilityHit = {
+    ref: "namespace://subagent",
+    name: "subagent",
+    instructions: common,
+    tools: [{ ref: "tool://subagent_list", name: "subagent_list", description: "List agents", exposure: "direct" }],
+  };
+  const guidanceHit: CapabilityHit = {
+    ref: "namespace://third-party-guidance",
+    name: "third-party-guidance",
+    instructions: "Third-party guidance stays in request memory",
+  };
+  const found = result("a", { mcp: [subagent, group], guidance: [guidanceHit] });
+  const messages = [head, user, found];
+  const projected = capabilityPromptTranscript(messages, entries(...messages), {
+    nativeGuidanceRefs: new Set([subagent.ref!]),
+  });
+  const remembered = records(projected);
+  assert.equal(remembered.find((hit) => hit.ref === subagent.ref)?.instructions, undefined,
+    "the Subagent namespace leaves its common guidance to the native guidance path");
+  assert.equal(remembered.find((hit) => hit.ref === group.ref)?.instructions, group.instructions,
+    "a third-party namespace keeps its own instructions");
+  assert.equal(remembered.find((hit) => hit.ref === guidanceHit.ref)?.instructions, guidanceHit.instructions,
+    "third-party guidance text is untouched");
+  assert.match(section(projected) ?? "", /\/skills\/slides\/SKILL.md/);
+
+  const declaration: ProjectionMessage = {
+    role: "system",
+    content: "",
+    sections: { preamble: "Unchanging base" },
+    toolsAdded: [{ name: "subagent_list" }],
+    timestamp: 0,
+  };
+  const composed = projectToolGuidance(
+    [declaration, ...projected] as unknown as readonly TranscriptMessageLike[],
+    SUBAGENT_TOOL_GUIDANCE,
+  );
+  const sections = (message: unknown): Record<string, string> => {
+    const value = (message as { readonly sections?: unknown }).sections;
+    return typeof value === "object" && value !== null ? value as Record<string, string> : {};
+  };
+  const native = composed.flatMap((message) =>
+    message.role === "system" ? [sections(message)[toolGuidanceSection("subagent")] ?? ""] : []).join("\n");
+  assert.equal(occurrences(native, common), 1, "the native guidance path still supplies the common text once");
+  const systemText = composed.flatMap((message) =>
+    message.role === "system" ? Object.values(sections(message)) : []).join("\n");
+  assert.equal(occurrences(systemText, common), 1, "the composed request carries exactly one shared guidance copy");
 });
 
 test("repeated discoveries produce no redundant patches, later guidance preserves members", () => {

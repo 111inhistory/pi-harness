@@ -22,6 +22,7 @@ import { discoveryRecords } from './discovery-record.ts';
 import {
   createCapabilityScopeView,
   type CapabilityRootOnlyPolicy,
+  type CapabilityScopeView,
   type CapabilityScopedTool,
   type CapabilityToolCatalog,
 } from './scope.ts';
@@ -109,11 +110,12 @@ export function branchToolSelection(branch: readonly unknown[] | null | undefine
 export function createToolAdmission(
   host: AdmissionHost,
   branch: readonly unknown[] | null | undefined,
+  catalog?: { readonly scope: CapabilityScopeView; readonly tools: readonly AdmissionTool[] },
 ): ToolAdmission {
-  const scope = createCapabilityScopeView(host);
+  const scope = catalog?.scope ?? createCapabilityScopeView(host);
   const { selected, manual } = branchToolSelection(branch);
   const active = new Set(host.getActiveTools());
-  const tools = host.getAllTools();
+  const tools = catalog?.tools ?? host.getAllTools();
   const rootOnly: CapabilityRootOnlyPolicy | null = scope.rootOnly;
 
   // Manual tools belong to the root session and require the user's own record;

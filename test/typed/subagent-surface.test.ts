@@ -33,7 +33,7 @@ import {
   SUBAGENT_NAMESPACE,
 } from "../../src/subagent/surface.ts";
 import { SUBAGENT_TOOL_GUIDANCE } from "../../src/subagent/tool-guidance.ts";
-import { projectToolGuidance, toolGuidanceSection } from "../../src/tool-guidance.ts";
+import { projectRecordedToolGuidance, projectToolGuidance, toolGuidanceSection } from "../../src/tool-guidance.ts";
 import {
   droppedInheritedTools,
   harnessToolsForDepth,
@@ -537,6 +537,67 @@ test("real serializers carry projected section text at the tail without duplicat
   assert.equal(occurrences(anthropicJson, asset.instructions), 1);
   assert.equal(occurrences(anthropicJson, asset.create.guideline), 1);
   assert.match(anthropicJson, new RegExp(toolGuidanceSection("subagent")));
+});
+
+test("a later null guidance marker permits an incremental reinstatement", () => {
+  const section = toolGuidanceSection('delivery');
+  const text = 'Current delivery guidance';
+  const native: Message[] = [
+    anchor('msg_write'),
+    { role: 'system', content: '', sections: { [section]: text }, timestamp: 1 },
+    { role: 'system', content: '', sections: { [section]: null }, timestamp: 2 },
+    { role: 'user', content: 'Continue', timestamp: 3 },
+  ];
+  const projected = projectToolGuidance(native, [{ id: 'delivery', tools: ['msg_write'], text }]);
+  assert.deepEqual(projected.slice(0, native.length), native);
+  assert.deepEqual((projected.at(-1) as SystemMessage).sections, { [section]: text });
+  assert.equal(projected.length, native.length + 1, 'the null marker supersedes the earlier identical text');
+});
+
+test("recorded guidance updates preserve native Responses and Anthropic request prefixes", async () => {
+  const manager = SessionManager.inMemory('/tmp/project');
+  manager.appendMessage(anchor('msg_write'));
+  manager.appendMessage({ role: 'user', content: 'First question', timestamp: 1 });
+  const project = (target: SessionManager, text: string) => projectRecordedToolGuidance(
+    target.buildSessionProjection().messages,
+    [{ id: 'msg_write', tools: ['msg_write'], text }],
+    {
+      branch: target.getBranch(), checkpointId: null,
+      appendEntry: (kind, data) => { target.appendCustomEntry(kind, data); },
+    },
+  );
+  const answer = (timestamp: number) => manager.appendMessage({
+    role: 'assistant', api: 'openai-responses', provider: 'offline-responses', model: 'offline',
+    content: [{ type: 'text', text: 'Answer' }], stopReason: 'stop', timestamp,
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+  });
+  const first = project(manager, 'Initial delivery guidance');
+  answer(2);
+  manager.appendMessage({ role: 'user', content: 'Second question', timestamp: 3 });
+  const updated = project(manager, 'Updated delivery guidance');
+  answer(4);
+  manager.appendMessage({ role: 'user', content: 'Third question', timestamp: 5 });
+  const later = project(manager, 'Updated delivery guidance');
+  const restored = SessionManager.inMemory('/tmp/project', {}, [manager.getHeader()!, ...manager.getEntries()]);
+  const resumed = project(restored, 'Updated delivery guidance');
+
+  const firstResponses = responsesWire(first);
+  const updatedResponses = responsesWire(updated);
+  const laterResponses = responsesWire(later);
+  assert.deepEqual(updatedResponses.slice(0, firstResponses.length), firstResponses);
+  assert.deepEqual(laterResponses.slice(0, updatedResponses.length), updatedResponses,
+    'the update stays before the later answer and question');
+  assert.deepEqual(responsesWire(resumed), laterResponses, 'resume replays the exact recorded placements');
+
+  const firstAnthropic = await anthropicWire(first) as { messages: unknown[]; system: unknown };
+  const updatedAnthropic = await anthropicWire(updated) as { messages: unknown[]; system: unknown };
+  const laterAnthropic = await anthropicWire(later) as { messages: unknown[]; system: unknown };
+  const resumedAnthropic = await anthropicWire(resumed);
+  assert.deepEqual(updatedAnthropic.system, firstAnthropic.system);
+  assert.deepEqual(updatedAnthropic.messages.slice(0, firstAnthropic.messages.length), firstAnthropic.messages);
+  assert.deepEqual(laterAnthropic.messages.slice(0, updatedAnthropic.messages.length), updatedAnthropic.messages);
+  assert.deepEqual(resumedAnthropic, laterAnthropic);
 });
 
 test("real Chat Completions serialization keeps guidance through native collapse", async () => {

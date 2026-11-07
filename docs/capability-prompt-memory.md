@@ -4,9 +4,10 @@ Capability discovery is lazy, but selected capabilities must survive session
 compaction and nested tool calls.
 
 `src/capability/prompt.ts` projects a native `<capabilities>` system
-section on the current session branch. The primary source of truth is the
-canonical `capability-discovery` custom entry appended to the branch through
-`pi.appendEntry` (defined in `src/capability/discovery-record.ts`).
+section on the current session branch. Canonical `capability-discovery` entries
+own discovery facts; `harness-capability-memory` records preserve the section
+versions and placements already emitted to the model. Both follow the native
+branch. `src/prompt-section-journal.ts` owns shared placement replay.
 
 ## Durable branch storage
 
@@ -20,8 +21,9 @@ after the shared activation call reports the tool active.
   even when the calling outer tool drops or summarizes the inner `details`.
 - Canonical entries are the only memory source. The projection does not read
   `toolResult.details` or reconstruct memory from older result messages.
-- Visible results anchor updates by `toolCallId`. Discoveries outside visible
-  context fold into the leading checkpoint.
+- The initial projection can anchor visible results by `toolCallId` and fold
+  older discoveries into its checkpoint. Once recorded, every later discovery
+  appends a section update, including a nested result absent from model history.
 - Persist-before-activate: Capability appends the discovery record to the
   branch before calling synchronous tool activation.
 
@@ -31,9 +33,11 @@ after the shared activation call reports the tool active.
   and selected group members. Native declarations, Codemode interface queries,
   or fallback result metadata provide argument schemas; branch records do not
   duplicate schemas.
-- Shared instructions: this section injects shared instructions. Capability tool-result
-  text omits them, including fallback results, so the same guidance is not copied
-  into both the tool result and its anchored memory section.
+- Shared instructions: every declared namespace can emit its current instructions
+  through a native guidance section, including MCP and namespaces enabled directly
+  by the user. Capability memory omits this prose only when that producer actually
+  emitted it. Otherwise memory retains the instructions, including when direct
+  declarations are hidden. Tool-result text omits the shared prose in both cases.
 - Skills: absolute entry paths, names, and descriptions. The host does not infer
   constraints or associations from Skill prose. A Skill ref is its entry path;
   the model uses native file read to understand the guidance. The host installs
@@ -60,9 +64,11 @@ after the shared activation call reports the tool active.
   Coverage explicitly marks remote search as `not_searched`. Remote candidates
   never enter branch records, system sections, or summaries.
 
-Discovery memory never grants tool authority. The projection checks group members
-against the current live tool registry on every model request. If the current
-scope disallows a tool, the projection excludes that tool.
+Discovery memory never grants tool authority. The latest section state checks
+group members against the current live registry and scope on every request.
+Earlier emitted versions keep their original text and placement; an unavailable
+member is removed by a later state update. Native declaration and execution
+checks remain authoritative.
 
 ## Native discovery boundary
 
@@ -89,36 +95,36 @@ prefix. Normal discovery updates retain the prefix behavior described below.
 
 ## Timing and cache behavior
 
-The `context_with_system` hook runs before every model request, not only at
-`before_agent_start`. Each visible Capability result anchors a section update
-immediately after that result. Repeated identical selections emit no redundant
-patch. Previously sent messages stay unchanged as new discoveries arrive.
+The `context_with_system` hook runs before every model request. On first use,
+existing discovery facts initialize the journal at their visible anchors or the
+leading checkpoint. Even an empty initial state is recorded without changing the
+prompt. Every later discovery, live namespace instruction change, or withdrawal
+appends a system update after the current last message. It never rewrites the
+older checkpoint when a nested result is invisible. Identical state appends no
+update.
 
-Discoveries compacted out of the visible history fold into the leading system
-checkpoint in the request projection. Pi's stored checkpoint need not
-store the section; the projection rebuilds it from raw branch records on every
-request. This covers reloads, repeated compaction, branch changes, and inherited
-sessions. An isolated retrieval session applies the same projection to its
-inherited snapshot.
+The shared journal records the exact emitted text and fixed placement. Later
+turns and reloads replay those versions between their original neighbors. The
+current registry cannot supply historical versions of namespace instructions, so
+new live namespace guidance is first delivered at the tail; static asset guidance
+can initialize at its first declaration. Later asset changes are tail updates.
+Clearing guidance appends a native section removal and retains its history.
+Native compaction or explicit context editing creates a new context boundary;
+the latest recorded state initializes that boundary once.
 
-The section is model-facing request state; `ctx.getSystemPrompt()` and the raw
-session checkpoint do not contain this projection. A user enablement adds no
-Capability memory section: its authorization remains in branch records. Native
-tool declarations communicate the interface. Subagent usage guidance is a
-separate projection: stable namespace guidance follows the first member's
-declaration, and create/message-specific guidance follows the corresponding
-first declaration. Explicit system section markers prevent duplicates without
-placing the guidance in tool descriptions or rewriting owned tools/rules
-metadata. On compaction, Pi's native tool checkpoint supplies the new declaration
-anchor; the guidance projection is rebuilt without a second persistence format.
+The section is request state; `ctx.getSystemPrompt()` and the raw native
+checkpoint do not contain these projected updates. Journal entries belong to the
+branch and survive rewind and inheritance. Main and the isolated retrieval
+session use the same projection. `/btw` replays the inherited emitted sections
+inside its own memory session. User enablement records remain authority only;
+the namespace's guidance is separate from that authorization.
 
-Compatible Responses and Anthropic models retain system updates at their
-historical positions through Pi's native serializers. Chat Completions and other
-providers keep native conversion, including system-message folding where
-required; the shared guidance projection still supplies the rules to them.
-Third-party tools carrying prompt snippets or guidelines can continue to cause
-Pi-owned tools/rules patches. Prefix preservation does not guarantee a cache
-hit, and compaction itself changes the checkpoint prefix.
+Compatible Responses and Anthropic models preserve incremental system updates
+through native serialization. Other transports retain their native conversion,
+including system folding when required. Native `ToolDefinition.promptGuidelines`
+remain SDK-owned: the SDK diffs the replayed sections against current definitions
+and appends changed sections, including after resume. This journal adds no copy
+of those native rules. Prefix preservation does not itself guarantee a cache hit.
 
 ## Unresolved SDK allowlist discrepancy
 
@@ -143,6 +149,12 @@ are in [known issues](known-issues.md#严格工具-allowlist-下的激活记忆�
   immutability, idempotence, deduplication, shared guidance updates, native and
   repeated compaction, raw-entry restoration, branch isolation, and Responses
   prefix preservation.
+- `test/typed/capability-guidance-journal.test.ts`: checks ordinary namespace,
+  MCP, live instruction revisions, hidden discoveries, direct enablement,
+  withdrawal, scope updates and resume against Responses and Anthropic wire.
+- `test/typed/prompt-section-journal.test.ts` and
+  `test/typed/tool-guidance-record.test.ts`: check shared ordering, fixed
+  placement, domain isolation, boundary rebasing and malformed-record errors.
 - `test/typed/capability-record.test.ts`: checks record normalization, exclusion
   of argument schemas, branch serialization, and coverage reporting.
 - `test/typed/capability-nested.test.ts`: checks that nested tool calls retain
