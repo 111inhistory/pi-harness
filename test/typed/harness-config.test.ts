@@ -96,6 +96,15 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
+test("boolean fields accept boolean values and reject invalid types", () => {
+  const custom = (val: unknown) => resolveHarnessConfig([{ source: "global", value: { capability: { pruneOnCompaction: val } } }]);
+  assert.equal(custom(false).capability.pruneOnCompaction, false);
+  assert.equal(custom(true).capability.pruneOnCompaction, true);
+  expectError(resolveError([{ source: "global", value: { capability: { pruneOnCompaction: "true" } } }]), "global", "capability.pruneOnCompaction");
+  expectError(resolveError([{ source: "global", value: { capability: { pruneOnCompaction: 1 } } }]), "global", "capability.pruneOnCompaction");
+  expectError(resolveError([{ source: "global", value: { capability: { pruneOnCompaction: null } } }]), "global", "capability.pruneOnCompaction");
+});
+
 test('absent config files resolve to the built-in defaults', async (t) => {
   const { agentDir, cwd } = await tempRoots(t);
   const config = loadHarnessConfig({ cwd, agentDir, projectTrusted: true });
@@ -110,6 +119,7 @@ test('absent config files resolve to the built-in defaults', async (t) => {
     tools: 8, mcp: 8, skills: 6, skillBodies: 6, requestTokens: 128, descriptionChars: 240, skillBodyChars: 60_000,
   });
   assert.equal(config.capability.noSelectionLimit, 3);
+  assert.equal(config.capability.pruneOnCompaction, true);
   assert.equal(config.codemode.memoryLimitBytes, 256 * 1024 * 1024);
   assert.equal(config.codemode.defaultMaxOutputTokens, 10_000);
   assert.equal(config.btw.panelMinRows, 8);
@@ -128,7 +138,7 @@ test('global overrides merge field by field and retain untouched defaults', asyn
       inheritedToolWaitMs: 5_000,
       routingRetry: { maxAttempts: 2, baseDelayMs: 100, maxDelayMs: 200, jitterRatio: 0.5 },
     },
-    capability: { budget: budget(4, 8), search: { bm25: { k: 1.2, b: 0.5, d: 0.1 } } },
+    capability: { budget: budget(4, 8), pruneOnCompaction: false, search: { bm25: { k: 1.2, b: 0.5, d: 0.1 } } },
     codemode: { defaultMaxOutputTokens: 512 },
     btw: { panelMinRows: 12 },
   });
@@ -140,6 +150,7 @@ test('global overrides merge field by field and retain untouched defaults', asyn
   assert.equal(config.subagent.inheritedToolWaitMs, 5_000);
   assert.deepEqual(config.subagent.routingRetry, { maxAttempts: 2, baseDelayMs: 100, maxDelayMs: 200, jitterRatio: 0.5 });
   assert.deepEqual(config.capability.budget, budget(4, 8));
+  assert.equal(config.capability.pruneOnCompaction, false);
   assert.deepEqual(config.capability.search.bm25, { k: 1.2, b: 0.5, d: 0.1 });
   assert.deepEqual(config.capability.search.limits, DEFAULT_HARNESS_CONFIG.capability.search.limits);
   assert.equal(config.codemode.defaultMaxOutputTokens, 512);

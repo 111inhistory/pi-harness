@@ -241,6 +241,7 @@ export default function capabilityExtension(
   });
 
   pi.on('session_compact', (_event, ctx) => {
+    if (!configFor(ctx).capability.pruneOnCompaction) return;
     const branch = ctx.sessionManager.getBranch();
     // The active branch identifies the boundary even when summaries repeat.
     const checkpointId = branch.findLast(entry => entry.type === 'compaction')!.id;

@@ -7,7 +7,11 @@ import shellPreflight from '../extensions/shell-preflight.ts';
 
 function handlers() {
   const registered = new Map();
-  shellPreflight({ on: (name, handler) => registered.set(name, handler) });
+  shellPreflight({
+    on: (name, handler) => registered.set(name, handler),
+    events: { on() {}, emit() {} },
+    registerCommand() {},
+  });
   return registered;
 }
 
@@ -15,7 +19,7 @@ test('Windows chat commands are checked and executed by native PowerShell operat
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'shell-preflight-chat-'));
   try {
     const command = '$value = "中文"; [Console]::WriteLine($value); Set-Content -LiteralPath marker.txt -Value $value -Encoding utf8';
-    const result = await handlers().get('user_bash')({ command }, { cwd });
+    const result = await handlers().get('user_bash')({ command }, { cwd, isProjectTrusted: () => false });
     assert.ok(result.operations);
     await assert.rejects(access(path.join(cwd, 'marker.txt')), { code: 'ENOENT' });
     const chunks = [];
@@ -27,7 +31,7 @@ test('Windows chat commands are checked and executed by native PowerShell operat
 });
 
 test('Windows chat rejects invalid PowerShell instead of falling through to Bash', { skip: process.platform !== 'win32' }, async () => {
-  const result = await handlers().get('user_bash')({ command: 'if ($true) {' }, { cwd: os.tmpdir() });
+  const result = await handlers().get('user_bash')({ command: 'if ($true) {' }, { cwd: os.tmpdir(), isProjectTrusted: () => false });
   assert.equal(result.result.exitCode, 2);
   assert.match(result.result.output, /shell preflight failed/);
   assert.equal(result.operations, undefined);

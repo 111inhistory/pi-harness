@@ -1,0 +1,3 @@
+[submodule "codex-command-policy"]
+	path = vendor/codex-command-policy
+	url = https://github.com/111inhistory/codex-command-policy.git

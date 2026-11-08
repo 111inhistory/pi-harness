@@ -33,6 +33,7 @@ export interface HarnessConfig {
   };
   readonly capability: {
     readonly noSelectionLimit: number;
+    readonly pruneOnCompaction: boolean;
     /**
      * Tool name patterns (exact, or a trailing `*` prefix) that only the user
      * may enable. They are invisible to model discovery and never inherited by
@@ -48,6 +49,24 @@ export interface HarnessConfig {
   readonly codemode: {
     readonly memoryLimitBytes: number;
     readonly defaultMaxOutputTokens: number;
+  };
+  readonly shell: {
+    readonly preflight: boolean;
+    readonly approval: {
+      readonly enabled: boolean;
+      readonly mode: 'ask' | 'auto' | 'yolo';
+      readonly command: readonly string[];
+      readonly ruleFiles: readonly string[];
+      readonly commandTimeoutMs: number;
+      readonly manualTimeoutMs: number;
+      readonly notificationUrl: string;
+      readonly reviewer: {
+        readonly enabled: boolean;
+        readonly provider: string;
+        readonly model: string;
+        readonly timeoutMs: number;
+      };
+    };
   };
   readonly btw: {
     /** Fewest rows the docked `/btw` panel may occupy; a shorter terminal refuses to open. */
@@ -70,6 +89,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
   },
   capability: {
     noSelectionLimit: 3,
+    pruneOnCompaction: true,
     manualTools: [],
     budget: { modelCalls: { soft: 16, hard: 20 }, activeTimeMs: { soft: 180_000, hard: 360_000 }, lifetimeMs: 600_000 },
     search: {
@@ -78,6 +98,14 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
     },
   },
   codemode: { memoryLimitBytes: 256 * 1024 * 1024, defaultMaxOutputTokens: 10_000 },
+  shell: {
+    preflight: true,
+    approval: {
+      enabled: false, mode: 'auto', command: [], ruleFiles: [], commandTimeoutMs: 10_000, manualTimeoutMs: 30_000,
+      notificationUrl: '',
+      reviewer: { enabled: true, provider: 'openai-codex', model: 'codex-auto-review', timeoutMs: 90_000 },
+    },
+  },
   btw: { panelMinRows: 8 },
 };
 
@@ -144,7 +172,35 @@ function mergeNode(base: object, value: unknown, source: string, field: string, 
   const merged: Record<string, unknown> = { ...base };
   for (const [key, item] of Object.entries(patch)) {
     const child = field === '' ? key : `${field}.${key}`;
-    if (child === 'capability.manualTools') {
+    if (child === 'shell.approval.mode') {
+      if (item !== 'ask' && item !== 'auto' && item !== 'yolo') throw new HarnessConfigError(source, child, 'must be ask, auto, or yolo.');
+      merged[key] = item;
+    } else if (child === 'shell.approval.command') {
+      if (!Array.isArray(item) || item.some(entry => typeof entry !== 'string' || entry.trim() === '')) {
+        throw new HarnessConfigError(source, child, 'must be an array of non-empty strings.');
+      }
+      merged[key] = [...item];
+    } else if (child === 'shell.approval.ruleFiles') {
+      if (!Array.isArray(item) || item.some(entry => typeof entry !== 'string' || entry.trim() === '')) {
+        throw new HarnessConfigError(source, child, 'must be an array of non-empty strings.');
+      }
+      const dir = path.dirname(source);
+      merged[key] = item.map(entry => path.isAbsolute(entry) ? entry : path.resolve(dir, entry));
+    } else if (child === 'shell.approval.notificationUrl') {
+      if (typeof item !== 'string') throw new HarnessConfigError(source, child, 'must be an HTTP(S) URL or an empty string.');
+      if (item !== '') {
+        let url: URL;
+        try { url = new URL(item); }
+        catch { throw new HarnessConfigError(source, child, 'must be an HTTP(S) URL or an empty string.'); }
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+          throw new HarnessConfigError(source, child, 'must be an HTTP(S) URL or an empty string.');
+        }
+      }
+      merged[key] = item;
+    } else if (child === 'shell.approval.reviewer.provider' || child === 'shell.approval.reviewer.model') {
+      if (typeof item !== 'string' || item.trim() === '') throw new HarnessConfigError(source, child, 'must be a non-empty string.');
+      merged[key] = item;
+    } else if (child === 'capability.manualTools') {
       if (!Array.isArray(item) || item.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
         throw new HarnessConfigError(source, child, 'must be an array of non-empty tool name patterns.');
       }
@@ -164,6 +220,10 @@ function mergeNode(base: object, value: unknown, source: string, field: string, 
       if (field === 'subagent.prompts') merged[key] = promptPatch(previous as string, item, source, child);
       else if (typeof previous === 'number') {
         merged[key] = numberValue(item, source, child);
+        origins.set(child, layer);
+      } else if (typeof previous === 'boolean') {
+        if (typeof item !== 'boolean') throw new HarnessConfigError(source, child, 'must be a boolean.');
+        merged[key] = item;
         origins.set(child, layer);
       } else merged[key] = mergeNode(previous as object, item, source, child, origins, layer);
     }

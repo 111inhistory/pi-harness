@@ -2,7 +2,8 @@
   "name": "pi-harness",
   "version": "0.1.0",
   "private": true,
-  "description": "Capability discovery and Subagent execution for Pi, with optional Shell Preflight",
+  "license": "MPL-2.0",
+  "description": "Capability discovery and Subagent execution for Pi, with optional Shell checks and approval",
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
@@ -14,9 +15,12 @@
       "./extensions/capability.ts",
       "./extensions/btw.ts"
     ],
-    "skills": ["./skills"]
+    "skills": [
+      "./skills"
+    ]
   },
   "scripts": {
+    "license:generate": "npm exec --yes --package=license@1.0.3 -- license MPL-2.0 --raw --name=\"Pi Harness contributors\" --email=\"\" > LICENSE",
     "build:async-shell": "node scripts/build-async-shell.mjs",
     "install:async-shell": "npm run build:async-shell && node scripts/install-async-shell.mjs",
     "typecheck": "tsc --noEmit",
@@ -50,5 +54,8 @@
     "tsx": "4.20.6",
     "typebox": "1.3.27",
     "typescript": "5.9.3"
+  },
+  "optionalDependencies": {
+    "@mzwing/pi-permission-auto-review": "1.0.1"
   }
 }

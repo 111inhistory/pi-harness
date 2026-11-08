@@ -43,7 +43,7 @@ import type {
   NativeSessionRequest,
 } from "./native-types.ts";
 
-const ROOT_EXTENSIONS = ['subagent', 'capability', 'btw'].map(name =>
+const ROOT_EXTENSIONS = ['subagent', 'capability', 'btw', 'shell-preflight'].map(name =>
   fileURLToPath(new URL(`../../extensions/${name}.ts`, import.meta.url)));
 
 /**

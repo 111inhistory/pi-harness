@@ -71,6 +71,29 @@ Fresh 与 Inherited 直接子节点在同一 Subagent 树内使用独立的父�
 
 `jitterRatio` 的范围为 `0` 到 `1`，最大间隔不小于基础间隔。每次物理请求仍计入原 Job 的 Budget。
 
+## Shell 检查与权限
+
+可选入口 `extensions/shell-preflight.ts` 同时提供语法检查与命令审批。两者独立配置；默认仅做语法检查。子 Agent 使用根会话的模式与审批队列。
+
+| 字段 | 默认值 | 含义 |
+| --- | --- | --- |
+| `shell.preflight` | `true` | 执行前检查 Shell 语法 |
+| `shell.approval.enabled` | `false` | 启用 Shell 权限审批 |
+| `shell.approval.mode` | `auto` | 没有分支模式记录时的默认值：`ask`、`auto` 或 `yolo` |
+| `shell.approval.command` | `[]` | 静态判断程序及参数数组；空数组表示交给后续审批 |
+| `shell.approval.ruleFiles` | `[]` | 传给静态判断程序的规则文件路径列表；相对路径相对于定义该层的 `harness.json` 所在目录解析，多层配置按数组整层替换（不跨层拼接）。规则在根会话首次需要时读取并缓存，修改规则文件在 `/reload` 或创建新根配置快照后生效；读取失败直接阻止命令，未启用或处于 YOLO 模式跳过读取。 |
+| `shell.approval.commandTimeoutMs` | `10000` | 静态判断程序超时，单位毫秒 |
+| `shell.approval.manualTimeoutMs` | `30000` | 人工界面显示后的审批期限，单位毫秒 |
+| `shell.approval.notificationUrl` | `""` | 人工审批展示时发送 JSON POST 的 HTTP(S) URL，空字符串关闭 |
+| `shell.approval.reviewer.enabled` | `true` | Auto Approve 是否使用可选自动审查 |
+| `shell.approval.reviewer.provider` | `openai-codex` | 审查模型提供方 |
+| `shell.approval.reviewer.model` | `codex-auto-review` | 审查模型；不会静默替换为其他模型 |
+| `shell.approval.reviewer.timeoutMs` | `90000` | 自动审查超时，单位毫秒 |
+
+`Ask` 使用明确规则，其余请求交用户；`Auto Approve` 在规则之外调用自动审查，失败时转人工；`YOLO` 跳过权限审批，仍遵守语法检查开关。`/permissions ask|auto|yolo` 保存当前分支的模式选择，并对后续请求生效；resume 与 `/reload` 恢复选择，没有记录时才使用配置默认值。页脚显示当前模式。人工审批超时、取消或无交互界面均不执行命令。
+
+可选自动审查包要求 Node.js 24 或更新版本；Node.js 22 仍支持基础功能，并将需要自动审查的请求转人工。审批覆盖 Bash、PowerShell 与 `pi-job create`，不提供文件工具权限或操作系统沙箱。
+
 ## 提示词定制
 
 仅开放 `subagent.prompts.common` 和 `subagent.prompts.inherited` 两段。每段可提供 `replace`、`append`，值都是普通字符串：
@@ -105,6 +128,10 @@ Fresh 与 Inherited 直接子节点在同一 Subagent 树内使用独立的父�
 `capability.budget` 使用与 Subagent 相同的结构，默认模型调用 soft 16／hard 20，活跃时间 soft 180,000／hard 360,000 毫秒，总存活时间 600,000 毫秒。
 
 `capability.noSelectionLimit` 默认为 3。没有新增接受 ref 的 step 累计计数，首轮搜索额外保留一次额度；额外额度由这个值推导，不单独配置。
+
+### 压缩淘汰开关
+
+`capability.pruneOnCompaction` 默认为 `true`。为 `true` 时，原生会话压缩成功后会自动计算并淘汰窗口期内未使用的 Capability 工具（基线工具、手动授权工具、`capability` 和 `codemode` 保持保护）；为 `false` 时跳过未来 `session_compact` 自动淘汰，不向分支写入 `capability-prune` 记录，不改变当前激活工具集合，也不清除已持久化历史或自动恢复此前已被淘汰的工具。
 
 ### 手动启用名单
 

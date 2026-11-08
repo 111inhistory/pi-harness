@@ -171,6 +171,18 @@ Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返�
 
 发现记录按当前分支保存，不重复存储参数 schema；请求投影依据当前声明提供接口。严格工具 allowlist 可能拒绝不匹配的 MCP 成员。当前先写记录、再激活的顺序会让未激活成员残留在规范记忆中，后续投影可能再次展示它们。这是与成功获得能力才应累积的要求不一致的已知缺陷，详见[已知问题](known-issues.md#严格工具-allowlist-下的激活记忆不一致)。
 
+## Shell 执行前检查
+
+可选入口 `extensions/shell-preflight.ts` 装配 `src/shell-approval/extension.ts`。语法检查与权限审批使用独立配置，共用实际 Shell、命令前缀和工作目录。Pi 原生工具继续负责执行、输出和取消。
+
+权限协调器由根会话持有，包含模式、代次取消信号和人工审批队列。子会话不重复加载该入口，通过原生事件总线取得所属根的检查函数；来源身份由宿主传入。等待人工审批通过子会话总线通知 Job 暂停活跃时间计费，总存活期限继续累计。
+
+静态策略 command 从 stdin 接收 JSON，只返回允许、拒绝或待审批。配置只接受 `shell.approval.ruleFiles` 文件路径列表，相对路径以声明它的配置文件所在目录为基准。根会话首次需要规则时读取文件正文并缓存；`/reload` 或新配置快照重新加载。文件加载失败直接阻止执行，不转交模型或人工绕过。WASM 继续接收正文，不访问规则文件。
+
+策略进程启动时清除 Harness 回调环境变量；进程失败、超时或无效输出转待审批。可选自动审查仅导入上游插件的公开 `/review` 模块，通过父 ModelRuntime 调用指定模型；不加载完整权限插件。
+
+人工队列只展示一项，使用 Pi 的权限阻塞状态、可见通知与终端提示音。倒计时从展示开始，超时或取消均拒绝；下一项在原生界面关闭后展示。页脚独立显示权限模式，不替代审批组件。公开配置与边界见 [Shell 权限审批](shell-permissions.md)。
+
 ## 代码与未迁移边界
 
 `src/` 与 `extensions/` 生产代码为严格 TypeScript（`storage.ts`、`view.ts`、`routing.ts`、`job-budget.ts`、`pi-job-budget.ts` 位于 `src/subagent/`，`inherited-context.ts` 负责原生继承捕获，`prompt-text.ts` 提供缓存 getter，`skills.ts` 位于 `src/capability/`，`shell-preflight.ts` 位于 `src/` 与 `extensions/`）；`scripts/` 与历史测试用例（`test/*.test.mjs`）保持 MJS。

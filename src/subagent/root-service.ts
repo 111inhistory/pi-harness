@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { AsyncShellHost } from '../async-shell/host.ts';
 import { installAsyncShellSurface } from '../async-shell/surface.ts';
+import { installInheritedShellChecks } from '../shell-approval/bridge.ts';
 import { cancelTask } from '../async-shell/tmux.ts';
 import type { ShellResult } from '../async-shell/protocol.ts';
 import { existsSync } from 'node:fs';
@@ -167,6 +168,7 @@ export class RootService implements ManagedWriteHost {
       modelRegistry: () => this.#registry,
       parentCapabilityScope: (id) => this.#parentScope(id),
       installChildSurface: (api, scope) => {
+        installInheritedShellChecks(api, options.api, scope.senderId);
         installAsyncShellSurface(api, async () => {
           this.assertOperational();
           return this.shell;

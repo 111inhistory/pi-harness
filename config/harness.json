@@ -30,6 +30,7 @@
   "capability": {
     "manualTools": [],
     "noSelectionLimit": 3,
+    "pruneOnCompaction": true,
     "budget": {
       "modelCalls": { "soft": 16, "hard": 20 },
       "activeTimeMs": { "soft": 180000, "hard": 360000 },
@@ -51,6 +52,24 @@
   "codemode": {
     "memoryLimitBytes": 268435456,
     "defaultMaxOutputTokens": 10000
+  },
+  "shell": {
+    "preflight": true,
+    "approval": {
+      "enabled": false,
+      "mode": "auto",
+      "command": [],
+      "ruleFiles": [],
+      "commandTimeoutMs": 10000,
+      "manualTimeoutMs": 30000,
+      "notificationUrl": "",
+      "reviewer": {
+        "enabled": true,
+        "provider": "openai-codex",
+        "model": "codex-auto-review",
+        "timeoutMs": 90000
+      }
+    }
   },
   "btw": {
     "panelMinRows": 8

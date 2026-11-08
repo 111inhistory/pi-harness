@@ -63,4 +63,5 @@ git diff --cached
 
 - **严禁提交本机真实信息**：代码、测试 fixture 与文档统一使用合成占位数据（如 `fake-provider`、`fake-model`、`/tmp/project`）。严禁提交真实 API Key、OAuth Token、主机名或开发机隐私路径。
 - **历史与文档分离**：提交前必看 `git diff --cached`，保持小步原子提交。公共文档（`docs/*.md`）只描述当前有效设计与接口契约，不写阶段进度表；代码审查与复现材料归入 `docs/reviews/`，淘汰/过时方案归入 `docs/archive/`。
+- **提交主题格式**：统一 `type(scope): desc`，`type` 取 `feat`／`fix`／`docs`／`refactor`／`test`／`chore`，内容用英文。
 - **交付汇报**：仅在用户要求时合入主分支或清理分支；交付汇报须明确区分 **“已改 / 已测 / 未测”**。

@@ -28,6 +28,7 @@ import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-age
 import { capabilityAllowsTool, capabilityAvailableTools } from "../capability/scope.ts";
 import { getAgentSocketPath } from "../ipc/socket.ts";
 import { installModelCallBudget } from "./pi-job-budget.ts";
+import { SHELL_APPROVAL_WAIT } from '../shell-approval/bridge.ts';
 import { resolveSessionCacheKey } from "../session-cache-runtime.ts";
 import { childContext, childPromptBlocks, composeAssignment, continuationControlPrompt } from './prompt.ts';
 import { readTranscript } from "./view.ts";
@@ -261,6 +262,7 @@ export class NativeJobRunner {
     let execution: NativeExecution | null = null;
     let unsubscribe: (() => void) | null = null;
     let unsubscribeBudget: (() => void) | null = null;
+    let unsubscribeApproval: (() => void) | null = null;
     let updateRetainedTools: (() => void) | null = null;
     let finalizeActor: (() => void) | null = null;
 
@@ -268,6 +270,7 @@ export class NativeJobRunner {
     // session exists, and the failure path before creation still releases it.
     const releaseJobResources = (): void => {
       unsubscribeBudget?.();
+      unsubscribeApproval?.();
       unsubscribe?.();
     };
 
@@ -491,6 +494,16 @@ export class NativeJobRunner {
         request.budget,
       );
 
+      // Root TUI owns the actual dialog; the child's bus accounts for its wait.
+      let approvalsWaiting = 0;
+      unsubscribeApproval = opened.capabilityScope.events?.on(SHELL_APPROVAL_WAIT, pending => {
+        if (pending === true) {
+          if (approvalsWaiting++ === 0) request.pauseActive();
+        } else if (pending === false && approvalsWaiting > 0) {
+          approvalsWaiting -= 1;
+          if (approvalsWaiting === 0 && !live.cancelled) request.resumeActive();
+        }
+      }) ?? null;
       // This Job's history is scoped by the append-only SessionManager tree: the
       // boundary is the leaf at start, and native compaction appends entries
       // instead of rewriting or dropping them.

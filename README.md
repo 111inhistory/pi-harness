@@ -18,6 +18,10 @@ Harness 为 Pi 增加按需工具发现、并行委派和独立问答能力。�
 
 子 Agent 共享工作目录。并行改代码时应按文件分工；需要隔离修改或测试状态时，使用不同 worktree。
 
+## 许可证
+
+本项目采用 [Mozilla Public License 2.0](LICENSE)。依赖及保留的第三方代码按各自许可证分发。
+
 ## 开始使用
 
 需要 Node.js **22.19.0 或更新版本**。当前适配 Pi **1.5.0**。跨会话协作支持 Linux 和原生 Windows；异步 Shell 在 POSIX 上使用 tmux，在 Windows 上使用 psmux。
@@ -53,7 +57,7 @@ pi -e /path/to/pi-harness/extensions/result-rendering.ts \
 pi install /path/to/pi-harness
 ```
 
-Pi 会在用户设置的 `packages` 中登记该目录。更新仓库后，重新启动 Pi 或执行 `/reload` 即可加载当前入口。请同时删除 `extensions` 中指向此包的重复入口；从旧版本迁移时移除 `extensions/harness.ts`。可选的 Shell Preflight 仍通过独立的 `-e` 或 `extensions` 条目加载。
+Pi 会在用户设置的 `packages` 中登记该目录。更新仓库后，重新启动 Pi 或执行 `/reload` 即可加载当前入口。请同时删除 `extensions` 中指向此包的重复入口；从旧版本迁移时移除 `extensions/harness.ts`。可选的 Shell 检查与权限审批仍通过独立的 `-e` 或 `extensions` 条目加载。
 
 只希望试用或选择部分插件时，可使用上面的 `-e` 命令；`pi config` 可配置包内各资源的启用状态。
 
@@ -65,7 +69,7 @@ Pi 会在用户设置的 `packages` 中登记该目录。更新仓库后，重�
 | [capability.ts](extensions/capability.ts) | Capability 发现、启用、权限投影、MCP 装配与 Main 最终出站缓存标识观察 |
 | [btw.ts](extensions/btw.ts) | `/btw` 独立问答 |
 | [result-rendering.ts](extensions/result-rendering.ts) | 工具结果与消息的折叠显示 |
-| [shell-preflight.ts](extensions/shell-preflight.ts) | 可选的 Shell 执行前检查 |
+| [shell-preflight.ts](extensions/shell-preflight.ts) | 可选的 Shell 语法检查、权限模式与人工审批 |
 
 包配置默认加载前四项；Shell Preflight 单独启用。Subagent 与 Capability 通常一起加载，注册入口分开，底层继续共享执行能力、配置与权限状态。独立问答和结果渲染可按需选择。未加载 Capability 入口时，不安装 Main 最终出站缓存标识观察器。
 
@@ -166,7 +170,7 @@ npm run install:async-shell
 - 共享工作目录不等于修改隔离；停止任务也不会撤销已经写入的文件。
 - 缓存复用取决于模型、提供方和请求内容，不能保证命中或固定节省比例。
 
-可选的 Shell Preflight 会在执行前检查聊天框里的 Shell 命令；需要时额外加载 `extensions/shell-preflight.ts`。它与主 Harness 分开启用。
+可选的 Shell 检查会在执行前检查聊天框与工具调用里的命令；额外加载 `extensions/shell-preflight.ts` 后，可通过 `shell.approval.enabled` 启用 Ask、Auto Approve 和 YOLO 权限模式。语法检查与权限审批独立开关，配置见 [Harness 参数配置](docs/harness-configuration.md)。
 
 ## 更多资料
 

@@ -7,7 +7,8 @@ import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-s
 import { fauxProvider, InMemoryCredentialStore, normalizeContext, type AssistantMessage, type Message, type Model, type Api } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type AgentSession, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import capabilityExtension from '../../src/capability/extension.ts';
-import { appendDiscoveryRecord, latestPruneRecord } from '../../src/capability/discovery-record.ts';
+import { appendDiscoveryRecord, appendPruneRecord, latestPruneRecord } from '../../src/capability/discovery-record.ts';
+import { DEFAULT_HARNESS_CONFIG } from '../../src/harness-config.ts';
 import { convertResponsesMessages } from '../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js';
 
 const USED = 'fixture_browser_open';
@@ -173,3 +174,92 @@ test(`real compaction prunes unused tools and rediscovery keeps the checkpoint p
   assert.match(JSON.stringify(errors), /Synthetic prune persistence failure/);
 });
 }
+
+test("compaction skips pruning when capability.pruneOnCompaction is false", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-capability-pruning-off-"));
+  let session: AgentSession | undefined;
+  t.after(async () => { session?.dispose(); await rm(root, { recursive: true, force: true }); });
+  const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+  const faux = fauxProvider({ models: [{ id: "pruning-fixture" }] });
+  let script = ["discover", "use", "done"];
+  faux.provider.streamSimple = (model, context) => {
+    const message = answer(model, script.shift() ?? "done", false);
+    const stream = new AssistantMessageEventStream();
+    stream.push({ type: "done", reason: message.stopReason as "stop" | "toolUse", message });
+    stream.end();
+    return stream;
+  };
+  runtime.registerNativeProvider(faux.provider);
+  const model = { ...faux.models[0]!, api: "openai-responses", compat: {
+    supportsMidConvoSystemMessages: true, supportsAdditionalTools: true,
+  } } as Model<Api>;
+  const settings = SettingsManager.inMemory({ packages: [], extensions: [],
+    defaultTools: ["read", "bash", "edit", "write", "capability", BASELINE], retry: { enabled: false },
+    cacheWarming: "off", compaction: { enabled: false, keepRecentTokens: 0 } });
+  const errors: unknown[] = [];
+  const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
+    noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
+    extensionFactories: [{ name: "capability-pruning-fixture", factory(api) {
+      capabilityExtension(api, {
+        discovery: false,
+        config: {
+          ...DEFAULT_HARNESS_CONFIG,
+          capability: {
+            ...DEFAULT_HARNESS_CONFIG.capability,
+            pruneOnCompaction: false,
+          },
+        },
+      });
+      api.registerTool({ name: BASELINE, label: BASELINE, description: "Configured baseline",
+        parameters: { type: "object", properties: {} },
+        execute: async () => ({ content: [{ type: "text", text: "Baseline" }], details: {} }),
+      });
+      for (const name of [USED, UNUSED, "previously_pruned"]) api.registerTool({
+        name, label: name, description: name, defaultActive: false,
+        namespace: { name: "browser-fixture", instructions: "Use the browser fixture" },
+        parameters: { type: "object", properties: {} },
+        execute: async () => ({ content: [{ type: "text", text: "Executed" }], details: {} }),
+      });
+      api.registerTool({ name: "capability", label: "Discover", description: "Offline discovery",
+        parameters: { type: "object", properties: {} }, async execute(toolCallId) {
+          appendDiscoveryRecord(api, toolCallId, { status: "ok", tools: [{ ref: "tool://" + BASELINE, name: BASELINE }], skills: [], mcp: [{
+            ref: "namespace://browser-fixture", name: "browser-fixture", instructions: "Use the browser fixture",
+            tools: [USED, UNUSED].map(name => ({ ref: "tool://" + name, name })),
+          }] }, coverage);
+          api.setActiveTools([...new Set([...api.getActiveTools(), USED, UNUSED])]);
+          return { content: [{ type: "text", text: "Selected browser fixture" }], details: {} };
+        } });
+      api.on("session_before_compact", event => ({ compaction: {
+        summary: "Historical browser tools: " + USED + ", " + UNUSED,
+        firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore,
+      } }));
+    } }],
+  });
+  await loader.reload();
+  assert.deepEqual(loader.getExtensions().errors, []);
+  session = (await createAgentSession({ cwd: root, agentDir: root, modelRuntime: runtime, model,
+    settingsManager: settings, resourceLoader: loader, sessionManager: SessionManager.inMemory(root) })).session;
+  await session.bindExtensions({ onError: error => { errors.push(error); } });
+
+  // Pre-seed a historical prune record on the branch
+  appendPruneRecord({ appendEntry: (k, d) => session!.sessionManager.appendCustomEntry(k, d) }, "prior-checkpoint", ["previously_pruned"], []);
+
+  await session.prompt("Discover and use one browser member.");
+  assert.ok(session.getActiveToolNames().includes(UNUSED));
+  assert.ok(session.getActiveToolNames().includes(USED));
+  assert.ok(!session.getActiveToolNames().includes("previously_pruned"));
+
+  await session.compact();
+
+  // With pruneOnCompaction false:
+  // 1. UNUSED was not pruned
+  assert.ok(session.getActiveToolNames().includes(UNUSED));
+  assert.ok(session.getActiveToolNames().includes(USED));
+  // 2. Previously pruned tool is not auto-restored
+  assert.ok(!session.getActiveToolNames().includes("previously_pruned"));
+  // 3. Historical prune record is preserved, no new record appended
+  const latest = latestPruneRecord(session.sessionManager.getBranch());
+  assert.equal(latest?.checkpointId, "prior-checkpoint");
+  assert.deepEqual(latest?.removedTools, ["previously_pruned"]);
+  assert.deepEqual(errors, []);
+});
