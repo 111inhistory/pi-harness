@@ -11,16 +11,17 @@ Use the existing shell tool to call `pi-job`. Commands run in a real terminal an
 ## Create a task
 
 ```bash
-pi-job create --wait 5s --timeout 10m -- npm run build
+pi-job create --wait <duration> --timeout <duration> -- npm run build
 ```
 
-- `--wait` limits how long this call waits. If the task is still running, retain its returned `id` and continue independent work.
-- `--timeout` limits the task's runtime. Choose a suitable limit for bounded work such as builds and tests.
+- `--wait <duration>` is optional and limits how long this call waits. Choose the duration for the task; if it is still running, retain its returned `id` and continue independent work.
+- `--timeout <duration>` is optional and limits the task's runtime. Choose a suitable limit for bounded work such as builds and tests.
+- Both duration values use a non-negative integer followed by an optional lowercase unit: `s` (seconds), or `m` (minutes). A value without a unit means milliseconds; fractions and negative values are rejected.
 - With no `--wait`, return after startup without waiting for completion.
 - Put the executable and its arguments after `--`. Shell syntax requires an explicit shell:
 
 ```bash
-pi-job create --wait 5s --timeout 10m -- bash -c 'npm run build && npm test'
+pi-job create -- bash -c 'npm run build && npm test'
 ```
 
 Windows `.cmd` and `.bat` launchers, including `npm`, are resolved using PATH and PATHEXT. Their arguments are escaped for cmd.exe; literal CR/LF inside an argument is refused. Use an executable or stdin for multiline payloads.

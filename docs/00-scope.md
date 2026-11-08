@@ -22,16 +22,21 @@ Pi Harness 是基于 Pi SDK 构建的 Coding Agent Harness 扩展。项目核心
 - 统一通过专用的 `msg_write` 工具向受管端点发送纯文本消息；SDK 原生 `write` 工具保持文件写入语义完全不变。
 - 宿主统一处理传输分帧与发送者身份绑定；调用方提供纯文本正文与目标地址。
 - Unix 平台使用基于 UID 隔离且校验 inode 的 Unix Socket；Windows 平台使用命名管道。
-- 同一用户、同一 Socket 根下的多个 Pi session 可通过已发布目录互相发现，并按对方 `Main` 的受管 Socket 路径由 Main 互相发消息；不提供跨主机调度或自动广播。该能力当前只在 POSIX 平台实现，Windows 明确不支持。
+- 同一机器、同一用户、同一 Socket 根下的多个 Pi session 可通过已发布目录互相发现，并通过对方 `Main` 的受管端点互相发消息。POSIX 使用 Unix Socket，Windows 使用命名管道；不提供跨主机调度或自动广播。
 - session 生命周期编排（创建、恢复、停止、轮询、定时检查）由独立外部项目承担；本仓库只提供发现、寻址、消息与命名接口，不注册 `session_*` 工具。
 
 ### 4. Shell Preflight（附加功能）
 
 - 独立配置与使用。拦截聊天框命令，Windows 环境下通过 PowerShell AST 校验后分发，防止命令选错 Shell。
 
+### 5. 独立问答与异步 Shell（附加能力）
+
+- `/btw` 在终端底部提供继承当前背景的临时独立问答，阻断工具调用，不写入主对话。
+- 异步 Shell 通过 `pi-job` 运行终端任务，返回增量输出，并将完成结果交回发起调用的 Agent；POSIX 使用 tmux，Windows 使用 psmux。
+
 ## 待交付与实验状态
 
-- **用户查看与控制入口**：面向用户的可视化查看、停止与干预界面仍未交付。面向模型的 `subagent_list` 接口仅供 Agent 查询拓扑，不能替代用户界面。
+- **用户交互界面**：`/subagent` 已提供任务与会话查看、任务停止和显式会话连接。可视化／交互式任务管理界面，以及通过用户命令直接向子 Agent 发送消息，仍未交付。
 - **Capability 远端审批**：远端候选的审批对象、交互界面与安装流程未实现。当前仅搜索本地已注册资源，不向模型返回远端候选；覆盖状态标明 `not_searched`，不代表远端无资源。
 - **Work 方案状态**：Work 实验代码集中在 `experiments/work/` 目录。交付形态尚未决定，主线不加载 Work，也不执行其测试。
 
@@ -47,7 +52,7 @@ Pi Harness 是基于 Pi SDK 构建的 Coding Agent Harness 扩展。项目核心
 
 - 生产代码位于 `src/` 与 `extensions/`，全部采用严格 TypeScript。
 - 当前自动化回归主要基于真实 Pi SDK 与本地模拟模型，验证核心状态机、存储 v2 与进程级 IPC 通信。
-- 真实供应商多轮在线压测、复杂网络波动以及 Windows 实机全套套件仍属于待验收场景，详见 [已知问题与验收边界](known-issues.md)。
+- Linux 与 Windows 的完整离线套件已运行；macOS 实机、多用户切换、管道权限隔离，以及真实提供方多轮在线行为、长时压力与复杂网络波动仍未全面验收，详见[已知问题与验收边界](known-issues.md)。
 - SDK `1.5.0` 的 allowlist 差异未解决。严格白名单下可能拒绝激活部分 MCP 工具，导致选择记录与实际激活状态不一致。
 
 ## 文档入口
@@ -58,6 +63,8 @@ Pi Harness 是基于 Pi SDK 构建的 Coding Agent Harness 扩展。项目核心
 - [存储 v2 与历史说明](subagent-storage.md)：事件格式、会话文件归属与恢复边界
 - [能力提示词记忆规范](capability-prompt-memory.md)：分支条目持久化与权限过滤
 - [Harness 参数配置](harness-configuration.md)：全局与项目参数、Budget 与提示词段落定制
+- [异步 Shell](async-shell.md)：终端后端、任务命令、增量输出和生命周期
+- [Provider 传输行为](provider-transports.md)：增量工具协议、兼容位与缓存标识边界
 - [已知问题与验收边界](known-issues.md)：未实现功能、待验收场景与现有限制
 - [文档目录](README.md)：文档架构与阅读索引
 - [提示词资产说明](../prompts/README.md)：提示词文件清单、数据装配与更新方式

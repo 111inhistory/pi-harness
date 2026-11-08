@@ -62,12 +62,12 @@ Pi 会在用户设置的 `packages` 中登记该目录。更新仓库后，重�
 | 入口 | 职责 |
 | --- | --- |
 | [subagent.ts](extensions/subagent.ts) | 子任务、会话通信与依附其生命周期的异步 Shell |
-| [capability.ts](extensions/capability.ts) | Capability 发现、启用、权限投影与 MCP 装配 |
+| [capability.ts](extensions/capability.ts) | Capability 发现、启用、权限投影、MCP 装配与 Main 最终出站缓存标识观察 |
 | [btw.ts](extensions/btw.ts) | `/btw` 独立问答 |
 | [result-rendering.ts](extensions/result-rendering.ts) | 工具结果与消息的折叠显示 |
 | [shell-preflight.ts](extensions/shell-preflight.ts) | 可选的 Shell 执行前检查 |
 
-包配置默认加载前四项；Shell Preflight 单独启用。Subagent 与 Capability 通常一起加载，注册入口分开，底层继续共享执行能力、配置与权限状态。独立问答和结果渲染可按需选择。
+包配置默认加载前四项；Shell Preflight 单独启用。Subagent 与 Capability 通常一起加载，注册入口分开，底层继续共享执行能力、配置与权限状态。独立问答和结果渲染可按需选择。未加载 Capability 入口时，不安装 Main 最终出站缓存标识观察器。
 
 已有配置若显式引用 `extensions/harness.ts`，请替换为所需的上述入口；该聚合入口已移除。
 

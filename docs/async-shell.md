@@ -27,6 +27,7 @@ npm run install:async-shell
 ```sh
 pi-job create -- npm run build
 pi-job create --wait 5s --timeout 10m -- npm run build
+pi-job create --cwd /tmp/project -- npm run build
 pi-job poll TASK_ID
 pi-job read TASK_ID
 pi-job cancel TASK_ID
@@ -34,7 +35,7 @@ pi-job cancel TASK_ID
 
 任务 ID 统一为 `job_<8 位小写十六进制>`，例如 `job_3f8a1c2d`；创建时原子占用目录，碰撞时另取 ID，不覆盖已有任务。后续命令直接使用返回的 ID。
 
-`--wait` 控制本次调用等待多久，到期后任务继续运行。`--timeout` 控制任务本身的运行上限。等待窗口内完成时直接返回结果，不额外发送完成通知。
+`--cwd <dir>` 指定任务工作目录；未指定时使用调用 CLI 时的当前目录。`--wait` 控制本次调用等待多久，到期后任务继续运行。`--timeout` 控制任务本身的运行上限。等待窗口内完成时直接返回结果，不额外发送完成通知。
 
 `poll` 不等待新输出，默认读取尚未返回的增量。结果包含 `id`、`status`、`exitCode`、`output`、`cursor`、`logPath` 和 `truncated`。游标是过滤后日志的 UTF-8 字节偏移。每次 `output` 最多 32 KiB，累计日志保留；`truncated` 表示本次没有容纳全部输出，可继续查询或读取日志文件。任务已进入终态时，也应继续读取尚未返回的输出。
 

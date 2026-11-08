@@ -2,7 +2,7 @@
 
 Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的指定提示词段落。路由角色、模型、thinking 与角色工具策略继续使用 `subagent-routing.json`。Pi 原生设置继续使用 Pi 的配置入口。
 
-完整示例见 [`config/harness.json`](../config/harness.json)。示例保留当前默认值；生产默认值统一定义在 `src/harness-config.ts`。仓库里的示例不会自动写入用户目录。
+配置示例见 [`config/harness.json`](../config/harness.json)。数值、列表配置采用当前默认值；`prompts.common` 与 `prompts.inherited` 的空对象表示不修改内置正文，并非展开后的默认正文。生产默认值统一定义在 `src/harness-config.ts`。仓库里的示例不会自动写入用户目录。
 
 ## 配置位置与生效时间
 

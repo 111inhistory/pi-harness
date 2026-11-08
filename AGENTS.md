@@ -10,6 +10,8 @@
   - 项目目标与总览：[docs/00-scope.md](docs/00-scope.md)、[docs/README.md](docs/README.md)
   - 公开接口与行为契约：[docs/interface-contract.md](docs/interface-contract.md)
   - 模块所有权与运行时边界：[docs/architecture.md](docs/architecture.md)
+  - 配置与传输：[docs/harness-configuration.md](docs/harness-configuration.md)、[docs/provider-transports.md](docs/provider-transports.md)
+  - 异步 Shell：[docs/async-shell.md](docs/async-shell.md)
   - 会话存储 v2 与分支恢复：[docs/subagent-storage.md](docs/subagent-storage.md)、[docs/capability-prompt-memory.md](docs/capability-prompt-memory.md)
   - 提示词资产与写作规范：[prompts/README.md](prompts/README.md)、[docs/writing-guide.md](docs/writing-guide.md)
   - 已知问题与待验收边界：[docs/known-issues.md](docs/known-issues.md)

@@ -28,6 +28,7 @@
     }
   },
   "capability": {
+    "manualTools": [],
     "noSelectionLimit": 3,
     "budget": {
       "modelCalls": { "soft": 16, "hard": 20 },

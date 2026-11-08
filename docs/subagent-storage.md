@@ -52,7 +52,7 @@ Subagent 会话存储使用增量生命周期事件与独立子会话文件。�
 
 子文件位于 `$PI_CODING_AGENT_DIR/subagent-sessions/<rootId>/<agentId>.jsonl`，使用原生 Pi 格式。
 
-- Job 开始时，子文件写入原生 `subagent-job-start` 标记。根分支的同名 v2 事件记录标记 ID，建立可恢复起点。
+- Job 开始时，根分支的 `subagent-job-start` v2 事件以 `startEntryId` 记录子会话当时已有的叶条目 ID，建立可恢复起点。子文件不写入 `subagent-*` 标记；读取该轮历史时，从起点条目之后开始切片。
 - 根 Job 没有终态事件时，重启将其恢复为 `failed`，错误为 `job_interrupted`。结束位置从对应原生分支求取，之后追加恢复终态。
 - 文件或起点尚未落盘时，不视为已执行，保留任务文本供后续重述。
 - Inherited 种子在创建时过滤 `subagent-*` 条目，再写入子文件。捕获时不额外裁剪压缩前的原生对话；末尾未完成的工具调用按快照规则过滤。持久化 Job 只保留 `seedFile`、`seedLeafId` 等元数据，不常驻 `entries` 数组。
@@ -140,4 +140,4 @@ subagent-sessions/<rootId>/views/<jobId>/result.txt
 
 ## 7. 验证范围
 
-默认回归覆盖事件折叠、分支隔离、身份补丁、写时复制、Job 视图、停止和恢复。未验证场景（Linux 长时间压力、多用户、Windows 实机）见[已知问题](known-issues.md)。
+默认回归覆盖事件折叠、分支隔离、身份补丁、写时复制、Job 视图、停止和恢复。Linux 与 Windows 的完整离线套件已运行；长期压力、多用户切换与管道权限隔离等未验证场景见[已知问题](known-issues.md)。
