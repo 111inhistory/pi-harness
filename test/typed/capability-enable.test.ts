@@ -370,6 +370,72 @@ test('an unknown subcommand is refused without touching tools or the branch', as
   assert.deepEqual(fixture.fixture.entries(), []);
 });
 
+const browserTools: readonly FakeTool[] = [
+  { name: 'open_page', exposure: 'deferred', namespace: { name: 'browser', aliases: ['web'] } },
+  { name: 'get_tabs', exposure: 'deferred', namespace: { name: 'browser', aliases: ['web'] } },
+  { name: 'browser_internal', exposure: 'hidden', namespace: { name: 'browser', aliases: ['web'] } },
+];
+
+test('enable resolves arbitrary namespaces and aliases without including hidden members', () => {
+  for (const target of ['browser', 'namespace://browser', 'web', 'namespace://web']) {
+    const fixture = manualHost(browserTools);
+    const result = enableCapabilityTargets(fixture.api, [target]);
+    assert.deepEqual(result.enabled, ['open_page', 'get_tabs'], target);
+    assert.deepEqual(result.unresolved, [], target);
+    assert.deepEqual([...manualEnabledTools(fixture.branch())], ['open_page', 'get_tabs'], target);
+  }
+});
+
+test('enable accepts SDK MCP namespace names and aliases as well as server refs', () => {
+  for (const target of ['mcp://git', 'namespace://mcp__git', 'mcp__git', 'namespace://git', 'git']) {
+    const fixture = manualHost();
+    const result = enableCapabilityTargets(fixture.api, [target]);
+    assert.deepEqual(result.enabled, ['mcp__git__status', 'mcp__git__log'], target);
+    assert.deepEqual(result.unresolved, [], target);
+  }
+});
+
+test('an exact tool name wins over a namespace alias while an explicit namespace still expands', () => {
+  const fixture = manualHost([...browserTools, { name: 'web', exposure: 'deferred' }]);
+  assert.deepEqual(resolveEnableTargets(fixture.api, ['web']).names, ['web']);
+  assert.deepEqual(resolveEnableTargets(fixture.api, ['namespace://web']).names, ['open_page', 'get_tabs']);
+});
+
+test('the picker offers generic and MCP namespace groups and records only the chosen members', async () => {
+  for (const [target, expected] of [
+    ['namespace://browser', ['open_page', 'get_tabs']],
+    ['namespace://mcp__git', ['mcp__git__status', 'mcp__git__log']],
+    ['mcp://git', ['mcp__git__status', 'mcp__git__log']],
+  ] as const) {
+    const fixture = command([...tools, ...browserTools]);
+    await fixture.run('enable', async (_title, options) => {
+      assert.ok(!options.some(option => option.includes('browser_internal')));
+      const group = options.find(option => option.startsWith(`${target}  (`));
+      assert.ok(group, `${target} is available without typing a target`);
+      return group;
+    });
+    assert.deepEqual(fixture.fixture.activeNames(), expected, target);
+    assert.deepEqual([...manualEnabledTools(fixture.fixture.branch())], expected, target);
+    assert.equal(fixture.notifications.at(-1)?.type, 'info');
+  }
+});
+
+test('group completions survive the tool limit and resolve namespace aliases', async () => {
+  const many: FakeTool[] = Array.from({ length: 60 }, (_, i) => ({ name: `tool_${i}`, exposure: 'deferred' }));
+  const fixture = command([...many, ...tools, ...browserTools]);
+  const all = await fixture.completions('enable ');
+  assert.equal(all?.length, 50);
+  for (const target of ['namespace://browser', 'namespace://mcp__git', 'namespace://subagent', 'mcp://git']) {
+    assert.ok(all?.some(item => item.value === `enable ${target} `), target);
+  }
+  for (const prefix of ['enable web', 'enable namespace://web']) {
+    const items = await fixture.completions(prefix);
+    assert.ok(items?.some(item => item.value === 'enable namespace://browser '), prefix);
+  }
+  const mcp = await fixture.completions('enable namespace://mcp__g');
+  assert.deepEqual(mcp?.map(item => item.value), ['enable namespace://mcp__git ']);
+});
+
 test('argument completion keeps the same shape for the editor wrapper', () => {
   const fixture = manualHost();
   const items = capabilityArgumentCompletions('enable ', fixture.api);

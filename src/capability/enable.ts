@@ -107,9 +107,9 @@ function serverMatches(tool: EnableTool, server: string): boolean {
  * An exact registered tool name always wins, including a hidden one, so the
  * refusal names the real reason instead of pretending the tool does not exist.
  * `mcp://<server>` and `namespace://<name>` expand explicitly; a bare name that
- * matches no tool but a non-MCP namespace expands too, because a namespace is
- * the only thing that name can mean. Hidden members are left out of an
- * expansion: the user named a group, not a set of hidden registrations.
+ * matches no tool but a namespace name or alias expands too. This includes
+ * the SDK's MCP namespaces; `mcp://` also accepts their server aliases.
+ * Hidden members are left out of a group expansion.
  */
 function expandTarget(host: EnableHost, target: string): TargetExpansion | null {
   const tools = host.getAllTools();
@@ -126,8 +126,7 @@ function expandTarget(host: EnableHost, target: string): TargetExpansion | null 
   if (explicit === null || explicit === '') return null;
   const members = tools
     .filter((tool) => tool.exposure !== 'hidden'
-      && tool.namespace?.name === explicit
-      && !tool.namespace.name.startsWith('mcp__'))
+      && (tool.namespace?.name === explicit || tool.namespace?.aliases?.includes(explicit) === true))
     .map((tool) => tool.name);
   return members.length === 0 ? null : { target, members };
 }

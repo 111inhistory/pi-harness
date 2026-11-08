@@ -258,7 +258,9 @@ test('full SDK: manual tools stay unreachable until the user records them, then 
     Object.defineProperty(enableContext, 'ui', {
       value: { notify: (text: string, type: string = 'info') => { enableNotices.push({ text, type }); } },
     });
-    await enableCommand.handler(`enable ${MANUAL_TOOLS.join(' ')}`, enableContext);
+    const mcpNamespace = session.getAllTools().find(tool => tool.name === MCP_TOOL)?.namespace?.name;
+    assert.ok(mcpNamespace, 'the real SDK registers an MCP namespace');
+    await enableCommand.handler(`enable manual_fixture namespace://${mcpNamespace} read_mcp_resource`, enableContext);
     assert.match(enableNotices.at(-1)?.text ?? '', /Enabled/);
     for (const name of MANUAL_TOOLS) {
       assert.ok(session.getActiveToolNames().includes(name), `${name} is active`);

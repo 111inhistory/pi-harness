@@ -41,7 +41,7 @@ export class CapabilityCommandError extends Error {
 const VERBS = ['list', 'enable'] as const;
 const DESCRIPTION_CHARS = 72;
 const COMPLETION_LIMIT = 50;
-const PICKER_TITLE = 'Enable a capability tool';
+const PICKER_TITLE = 'Enable a capability tool or group';
 const NAMESPACE_SCHEME = 'namespace://';
 const MCP_SCHEME = 'mcp://';
 
@@ -131,7 +131,7 @@ function pickerLabel(entry: CapabilityCatalogEntry): string {
 }
 
 /**
- * Open the terminal picker over the current catalog and return the chosen tool.
+ * Open the terminal picker over registered groups and individual tools.
  *
  * Returns null when the user cancels or the mode has no terminal UI; the caller
  * has already told the user what happened and must not touch any state.
@@ -142,7 +142,9 @@ async function pickTarget(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promi
     ctx.ui.notify('No eligible tools are registered. Nothing to enable.', 'info');
     return null;
   }
-  const labels = view.entries.map(pickerLabel);
+  const groups = enableGroups(pi, new Set(), new Set(view.entries.map(entry => entry.name)));
+  const targets = [...groups.map(group => group.label), ...view.entries.map(entry => entry.name)];
+  const labels = [...groups.map(group => `${group.label}  (${group.description})`), ...view.entries.map(pickerLabel)];
   let choice: string | undefined;
   try {
     choice = await ctx.ui.select(PICKER_TITLE, labels);
@@ -155,7 +157,7 @@ async function pickTarget(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promi
     return null;
   }
   const index = labels.indexOf(choice);
-  return index < 0 ? null : view.entries[index]!.name;
+  return index < 0 ? null : targets[index]!;
 }
 
 async function runEnable(pi: ExtensionAPI, targets: readonly string[], ctx: ExtensionCommandContext): Promise<void> {
@@ -209,7 +211,8 @@ export function capabilityArgumentCompletions(prefix: string, pi: ExtensionAPI):
     const chosen = new Set(trailingSpace ? rest : rest.slice(0, -1));
     const head = text.slice(0, text.length - fragment.length);
     const needle = fragment.toLowerCase();
-    const items: { value: string; label: string; description: string }[] = createCapabilityCatalog(pi).entries
+    const view = createCapabilityCatalog(pi);
+    const items: { value: string; label: string; description: string }[] = view.entries
       .filter((entry) => !chosen.has(entry.name)
         && (entry.name.toLowerCase().startsWith(needle) || entry.display.toLowerCase().startsWith(needle)))
       .map((entry) => ({
@@ -219,41 +222,50 @@ export function capabilityArgumentCompletions(prefix: string, pi: ExtensionAPI):
       }));
     // A group expands to all of its registered members; the explicit scheme
     // keeps a group distinct from a tool with the same text.
-    for (const group of enableGroups(pi, chosen)) {
-      if (!group.label.toLowerCase().startsWith(needle) && !group.name.toLowerCase().startsWith(needle)) continue;
-      items.push({ value: `${head}${group.label} `, label: group.label, description: group.description });
+    const groups: typeof items = [];
+    const groupNeedle = needle.replace(/^(?:namespace|mcp):\/\//, '');
+    for (const group of enableGroups(pi, chosen, new Set(view.entries.map(entry => entry.name)))) {
+      if (needle.includes('://') && !group.label.startsWith(needle.slice(0, needle.indexOf('://') + 3))) continue;
+      if (!group.label.toLowerCase().startsWith(needle)
+        && !group.name.toLowerCase().startsWith(groupNeedle)
+        && !group.aliases.some(alias => alias.toLowerCase().startsWith(groupNeedle))) continue;
+      groups.push({ value: `${head}${group.label} `, label: group.label, description: group.description });
     }
-    return items.length === 0 ? null : items.slice(0, COMPLETION_LIMIT);
+    const matches = [...groups, ...items];
+    return matches.length === 0 ? null : matches.slice(0, COMPLETION_LIMIT);
   }
   return null;
 }
 
 /** Registered group refs, read from the live registry so a reconnect is visible. */
-function enableGroups(pi: ExtensionAPI, chosen: ReadonlySet<string>): {
-  readonly label: string; readonly name: string; readonly description: string;
+function enableGroups(pi: ExtensionAPI, chosen: ReadonlySet<string>, eligible: ReadonlySet<string>): {
+  readonly label: string; readonly name: string; readonly aliases: readonly string[]; readonly description: string;
 }[] {
   const servers = new Map<string, number>();
-  const namespaces = new Map<string, number>();
+  const namespaces = new Map<string, { count: number; aliases: Set<string> }>();
   for (const tool of pi.getAllTools()) {
-    if (tool.exposure === 'hidden' || chosen.has(tool.name)) continue;
+    if (!eligible.has(tool.name) || chosen.has(tool.name)) continue;
     const namespace = tool.namespace?.name;
     if (namespace === undefined) continue;
     if (namespace.startsWith('mcp__')) {
-      for (const alias of tool.namespace?.aliases ?? [namespace.replace(/^mcp__/, '')]) {
+      const aliases = tool.namespace?.aliases;
+      for (const alias of aliases?.length ? aliases : [namespace.replace(/^mcp__/, '')]) {
         servers.set(alias, (servers.get(alias) ?? 0) + 1);
       }
-      continue;
     }
-    namespaces.set(namespace, (namespaces.get(namespace) ?? 0) + 1);
+    const group = namespaces.get(namespace) ?? { count: 0, aliases: new Set<string>() };
+    group.count++;
+    for (const alias of tool.namespace?.aliases ?? []) group.aliases.add(alias);
+    namespaces.set(namespace, group);
   }
   return [
     ...[...servers].map(([name, count]) => ({
-      label: `${MCP_SCHEME}${name}`, name,
+      label: `${MCP_SCHEME}${name}`, name, aliases: [],
       description: `MCP server · ${count} registered tool${count === 1 ? '' : 's'}`,
     })),
-    ...[...namespaces].map(([name, count]) => ({
-      label: `${NAMESPACE_SCHEME}${name}`, name,
-      description: `Namespace · ${count} registered tool${count === 1 ? '' : 's'}`,
+    ...[...namespaces].map(([name, group]) => ({
+      label: `${NAMESPACE_SCHEME}${name}`, name, aliases: [...group.aliases],
+      description: `Namespace · ${group.count} registered tool${group.count === 1 ? '' : 's'}`,
     })),
   ];
 }
