@@ -9,7 +9,19 @@ import { createCapabilityBroker } from "../src/capability/broker.ts";
 async function workspace(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-capability-skills-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  return { root, cwd: path.join(root, "workspace"), agentDir: path.join(root, "agent") };
+  const agentDir = path.join(root, "agent");
+  await mkdir(agentDir, { recursive: true });
+  await writeSettings(agentDir);
+  return { root, cwd: path.join(root, "workspace"), agentDir };
+}
+
+// A custom agentDir does not disable the SDK's automatic ~/.agents/skills scan.
+// Use its native resource filter so these fixtures depend only on their own files.
+async function writeSettings(agentDir, settings = {}) {
+  await writeFile(path.join(agentDir, "settings.json"), JSON.stringify({
+    ...settings,
+    skills: ["!**/.agents/skills/**", ...(settings.skills ?? [])],
+  }));
 }
 async function skill(filePath, name, extra = "") {
   await mkdir(path.dirname(filePath), { recursive: true });
@@ -26,7 +38,7 @@ test("loaded package/temporary Skills are searchable without scanning other conf
   await skill(temporarySkill, "ppt-template");
   await skill(privateSkill, "private-ppt", "disable-model-invocation: true\n");
   await skill(path.join(agentDir, "skills", "not-loaded", "SKILL.md"), "excluded-ppt");
-  await writeFile(path.join(agentDir, "settings.json"), JSON.stringify({ skills: ["-skills/not-loaded"] }));
+  await writeSettings(agentDir, { skills: ["-skills/not-loaded"] });
   const selected = [command("ppt-master", packageSkill), command("ppt-template", temporarySkill), command("private-ppt", privateSkill)];
   const loaded = await discoverSessionSkills({ getCommands: () => [...selected, selected[0], { source: "extension", name: "unrelated" }] }, { cwd, agentDir });
   assert.deepEqual(loaded.skills.map((entry) => entry.name), ["ppt-master", "ppt-template", "private-ppt"]);
@@ -50,7 +62,7 @@ test("native package-object whitelist, blacklist and empty selection cannot be b
   await skill(architecture, "hai-architecture");
   await mkdir(agentDir, { recursive: true });
   const discover = async (selection) => {
-    await writeFile(path.join(agentDir, "settings.json"), JSON.stringify({ packages: [{ source: repo, skills: selection }] }));
+    await writeSettings(agentDir, { packages: [{ source: repo, skills: selection }] });
     return discoverSessionSkills({ getCommands: () => [command("hai-debug", debug), command("hai-architecture", architecture)] }, { cwd, agentDir });
   };
   assert.deepEqual((await discover(["skills/hai-debug/**"])).skills.map((entry) => entry.name), ["hai-debug"]);
@@ -61,7 +73,7 @@ test("native package-object whitelist, blacklist and empty selection cannot be b
 test("configured resource filters apply with an empty command inventory; missing paths are reported", async (t) => {
   const { cwd, agentDir } = await workspace(t);
   await skill(path.join(agentDir, "skills", "unselected", "SKILL.md"), "unselected-ppt");
-  await writeFile(path.join(agentDir, "settings.json"), JSON.stringify({ skills: ["-skills/unselected"] }));
+  await writeSettings(agentDir, { skills: ["-skills/unselected"] });
   assert.deepEqual((await discoverSessionSkills({ getCommands: () => [] }, { cwd, agentDir })).skills, []);
   const loaded = await discoverSessionSkills({ getCommands: () => [{ name: "skill:broken", source: "skill" }, command("missing", path.join(cwd, "missing.md"))] }, { cwd, agentDir });
   assert.deepEqual(loaded.skills, []);
