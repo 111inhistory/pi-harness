@@ -141,6 +141,12 @@ Fresh 与 Inherited 直接子节点在同一 Subagent 树内使用独立的父�
 
 授权看记录，不看激活状态：名单内工具因 `defaultActive`、历史恢复或其他扩展而激活时，`before_agent_start` 仍会把它从声明中移除，`tool_call` 与 Codemode 准入也会拒绝，直到用户启用。已启用的 manual MCP 工具参与原生 MCP 准入与资源读取资格。名单解析只按名字匹配，不读取工具描述、来源或 MCP 服务器名。
 
+### 延迟 schema
+
+`capability.lazySchemas` 默认为空数组，列出需要延迟暴露 schema 的 MCP 服务器或 namespace。每项必须是明确的 `mcp://<server>` 或 `namespace://<name>` 引用（成员引用 `mcp://<server>/<tool>` 归并到其 server）；未知 scheme 被忽略，后一层配置整体替换前一层，不做合并。
+
+该配置仅在 Codemode 已启用且 `codemode.mode` 为 `only` 时生效；Codemode 未启用或为 `on` 模式时配置保留但不生效，沿用原生声明方式。命中组的成员仍以名称出现在发现结果与 `describeNamespace` 中，但参数与返回值 schema 不进入原生工具声明，也不内联进 Codemode 描述；模型通过 `describeTool` 读取完整接口后经 Codemode 执行。命中组中 model-only 工具不能经 Codemode 调用，配置命中时应显式报告而不能隐藏其声明。模式切换只改变声明投影，不改变启用集合、授权记录或工具 exposure。未生效的配置本身不是拒绝理由。
+
 ### 搜索
 
 `capability.search.bm25` 直接传给 MiniSearch：
