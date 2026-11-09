@@ -223,7 +223,8 @@ test('enabling a tool appends to the request and never rewrites the head', { tim
     'the projection does not change the collapsed provider request');
   assert.deepEqual(wire(projected(after, branch), true), wire(after, true),
     'nor a mid-conversation-system request');
-  assert.deepEqual(projected(after, branch), projected(after, branch), 'and it is deterministic');
+  const once = projected(after, branch);
+  assert.deepEqual(projected(after, branch), once, 're-running the projection is a no-op (deterministic, no extra records)');
 
   // 5) A transport with mid-conversation system messages keeps the head and prefix.
   const midBefore = wire(before, true);

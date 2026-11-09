@@ -1,0 +1,247 @@
+{
+  "version": 1,
+  "contracts": [
+    {
+      "id": "testing.contract-hook",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/testing.md",
+          "heading": "## 提交前关联检查"
+        }
+      ],
+      "tests": [
+        "test/test-contracts.test.mjs"
+      ]
+    },
+    {
+      "id": "capability.native-exposure",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 原生发现入口与 Codemode"
+        }
+      ],
+      "tests": [
+        "test/typed/capability-native-exposure.test.ts",
+        "test/typed/capability-native-discovery.test.ts",
+        "test/typed/capability-main-default-activation.test.ts",
+        "test/typed/capability-mcp-reconnect.test.ts",
+        "test/typed/capability-codemode-boundary.test.ts"
+      ]
+    },
+    {
+      "id": "capability.activation-reachability",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 原生发现入口与 Codemode"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### `/capability` 命令"
+        }
+      ],
+      "tests": [
+        "test/typed/capability-reachability.test.ts",
+        "test/typed/capability-enable.test.ts"
+      ]
+    },
+    {
+      "id": "capability.lazy-schemas",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/harness-configuration.md",
+          "heading": "### 延迟 schema"
+        }
+      ],
+      "tests": [
+        "test/typed/capability-lazy-schemas.test.ts",
+        "test/typed/capability-lazy-schemas-codemode.test.ts",
+        "test/typed/capability-lazy-schemas-sdk.test.ts",
+        "test/typed/capability-codemode-mode.test.ts"
+      ]
+    },
+    {
+      "id": "capability.manual-enable",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/harness-configuration.md",
+          "heading": "### 手动启用名单"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### `/capability` 命令"
+        }
+      ],
+      "tests": [
+        "test/typed/capability-manual.test.ts",
+        "test/typed/capability-manual-sdk.test.ts",
+        "test/typed/capability-manual-assembly.test.ts"
+      ]
+    },
+    {
+      "id": "capability.search-broker",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 内部批量检索与增量提交"
+        },
+        {
+          "path": "docs/harness-configuration.md",
+          "heading": "### 搜索"
+        }
+      ],
+      "tests": [
+        "test/typed/capability-broker.test.ts",
+        "test/typed/capability-agent.test.ts",
+        "test/typed/capability-step-contract.test.ts",
+        "test/typed/capability-step-feedback.test.ts",
+        "test/capability-skills.test.mjs"
+      ]
+    },
+    {
+      "id": "capability.result-projection",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 主 Agent 的可见范围"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 工具指引与缓存前缀"
+        }
+      ],
+      "tests": [
+        "test/typed/capability-result.test.ts",
+        "test/typed/capability-prompt.test.ts",
+        "test/typed/capability-prompts.test.ts",
+        "test/typed/capability-guidance-journal.test.ts",
+        "test/typed/capability-record.test.ts"
+      ]
+    },
+    {
+      "id": "capability.compaction-prune",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/capability-prompt-memory.md",
+          "heading": "## 压缩与未使用能力淘汰"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 压缩时收缩发现能力"
+        }
+      ],
+      "tests": [
+        "test/typed/capability-compaction-prune.test.ts",
+        "test/typed/capability-compaction-sdk.test.ts"
+      ]
+    },
+    {
+      "id": "capability.scope-admission",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 主 Agent 的可见范围"
+        }
+      ],
+      "tests": [
+        "test/typed/capability-scope-view.test.ts",
+        "test/typed/capability-tool-catalog.test.ts",
+        "test/typed/capability-nested.test.ts",
+        "test/typed/capability-session-sdk.test.ts",
+        "test/capability-scope.test.mjs"
+      ]
+    },
+    {
+      "id": "capability.partial-delivery",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 主 Agent 的可见范围"
+        }
+      ],
+      "tests": [
+        "test/typed/capability-partial.test.ts",
+        "test/typed/capability-feedback-sdk.test.ts"
+      ]
+    },
+    {
+      "id": "capability.provider-prefix",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/provider-transports.md",
+          "heading": "## 工具与指引更新"
+        }
+      ],
+      "tests": [
+        "test/typed/capability-provider-prefix.test.ts",
+        "test/typed/responses-tool-prefix.test.ts"
+      ]
+    },
+    {
+      "id": "capability.allowlist-mask",
+      "kind": "regression",
+      "failure": "Strict CLI tool allowlist keeps an MCP registration but the SDK silently refuses to activate a non-matching member; the discovery record could still list the unactivated tool, so request memory advertised a tool the session could not call.",
+      "docs": [
+        {
+          "path": "docs/known-issues.md",
+          "heading": "### 严格工具 allowlist 下的激活记忆不一致"
+        }
+      ],
+      "tests": [
+        "test/typed/capability-allowlist-mask.test.ts"
+      ]
+    },
+    {
+      "id": "preset.config",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/harness-configuration.md",
+          "heading": "## 模型 Preset"
+        }
+      ],
+      "tests": [
+        "test/typed/preset-config.test.ts",
+        "test/typed/preset-modifiers.test.ts",
+        "test/typed/preset-resolve.test.ts"
+      ]
+    },
+    {
+      "id": "preset.runtime",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "## 模型 Preset"
+        }
+      ],
+      "tests": [
+        "test/typed/preset-apply.test.ts",
+        "test/typed/preset-state.test.ts",
+        "test/typed/preset-command.test.ts",
+        "test/typed/preset-instruction.test.ts",
+        "test/typed/preset-extension.test.ts",
+        "test/typed/preset-sdk.test.ts"
+      ]
+    }
+  ],
+  "reviews": {
+    "capability.provider-prefix": {
+      "docs": "08743e2b55aa3beece61d6456f52e1db5a79180169cebb0df5a9d95a36772a36",
+      "tests": "61ddeedd4bde7745318e3775d88cc488d5689ff76d18f9f5354c9fe91cf8319e",
+      "reason": "Test-only refactor: replaced a self-comparison assertion with an idempotent-replay check; the documented provider-prefix behavior is unchanged."
+    }
+  }
+}

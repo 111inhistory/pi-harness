@@ -14,6 +14,7 @@
   - 异步 Shell：[docs/async-shell.md](docs/async-shell.md)
   - 会话存储 v2 与分支恢复：[docs/subagent-storage.md](docs/subagent-storage.md)、[docs/capability-prompt-memory.md](docs/capability-prompt-memory.md)
   - 提示词资产与写作规范：[prompts/README.md](prompts/README.md)、[docs/writing-guide.md](docs/writing-guide.md)
+  - 测试架构与文档关联：[docs/testing.md](docs/testing.md)、[test/contracts.json](test/contracts.json)
   - 已知问题与待验收边界：[docs/known-issues.md](docs/known-issues.md)
 - **资产与配置入口**：工具链与脚本以 `package.json`、`tsconfig.json` 为准；模型提示词正文统一存于 `prompts/*.json`（由 `src/prompt-text.ts` 加载），路由示例见 `config/subagent-routing.json`，不在业务代码中硬编码额外副本。
 
@@ -51,6 +52,10 @@ node --import tsx --test test/typed/subagent-surface.test.ts
 # 4) Prompt、配置与文档自检（JSON 合法性与 Markdown 技术语言/链接验证）
 npm run check:json
 npm run check:docs
+
+# 5) 测试与文档契约关联检查（pre-commit 默认执行 --staged；--all 审计全量登记）
+npm run check:test-contracts
+node scripts/check-test-contracts.mjs --all
 
 # 5) 提交前暂存内容与脱敏自检
 git status --short
