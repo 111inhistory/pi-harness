@@ -1,12 +1,13 @@
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createCodemodeExtension, type ExtensionAPI, type ExtensionToolContext, type ToolDefinition } from '@earendil-works/pi-coding-agent';
+import { createCodemodeExtension, type ExtensionAPI, type ExtensionContext, type ExtensionToolContext, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { CodemodeSandbox, parseCodemodeSource, renderToolSample, type CodemodeTool, type CodemodeJsonSchema, toCodemodeIdentifier } from '@earendil-works/pi-codemode';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { ClassifierContext, ImagesContext, ModelType, Usage } from '@earendil-works/pi-ai';
 import { DEFAULT_HARNESS_CONFIG, type HarnessConfigProvider } from '../harness-config.ts';
 import { promptString } from '../prompt-text.ts';
+import { lazySchemasActive, matchesLazySchemaRef, parseLazySchemaRefs } from './lazy-schemas.ts';
 
 const codemodeScope = promptString('native-discovery.json', 'codemodeScope');
 
@@ -175,6 +176,12 @@ export function installCapabilityCodemode(
   configFor: HarnessConfigProvider = () => DEFAULT_HARNESS_CONFIG,
 ): () => ReadonlySet<string> {
   let hiddenDeclarations = new Set<string>();
+  // Lazy-schema projection needs the effective harness config, which is loaded
+  // from a context. Track the current one so prepareLoadout can read the refs
+  // without an extra parameter on this entry point.
+  let currentContext: ExtensionContext | undefined;
+  pi.on('session_start', (_event, ctx) => { currentContext = ctx; });
+  pi.on('before_agent_start', (_event, ctx) => { currentContext = ctx; });
   createCodemodeExtension()({
     ...pi,
     registerTool(definition) {
@@ -187,12 +194,25 @@ export function installCapabilityCodemode(
         prepareLoadout(loadout) {
           const active = new Set(loadout.declared.map((tool) => tool.name));
           const admits = permitsDeclarationFor();
-          const scoped = { ...loadout, callable: loadout.callable.filter((tool) => active.has(tool.name) && admits(tool.name)) };
+          // Lazy schemas: while Codemode is active in only mode, matched groups
+          // are withheld from the Codemode directory and from their own native
+          // declaration. execute() still builds the full sandbox declarations, so
+          // describeTool/executeTool keep working.
+          const refs = parseLazySchemaRefs(currentContext ? configFor(currentContext).capability.lazySchemas : []);
+          const lazy = lazySchemasActive(pi) && !refs.empty
+            ? new Set(loadout.callable
+                .filter((tool) => active.has(tool.name) && matchesLazySchemaRef(refs, tool.name, loadout.getNamespace(tool.name)))
+                .map((tool) => tool.name))
+            : new Set<string>();
+          const scoped = { ...loadout, callable: loadout.callable.filter((tool) => active.has(tool.name) && admits(tool.name) && !lazy.has(tool.name)) };
           const changes = native.prepareLoadout?.(scoped);
-          hiddenDeclarations = new Set(changes?.hiddenDeclarations ?? []);
-          if (!changes?.descriptions?.['codemode']) return changes;
-          const description = scopeDescription(changes.descriptions['codemode']);
-          return { ...changes, descriptions: { ...changes.descriptions, codemode: description } };
+          hiddenDeclarations = new Set([...(changes?.hiddenDeclarations ?? []), ...lazy]);
+          const codemodeDescription = changes?.descriptions?.['codemode'];
+          const descriptions = codemodeDescription === undefined
+            ? changes?.descriptions
+            : { ...changes?.descriptions, codemode: scopeDescription(codemodeDescription) };
+          if (changes === undefined && lazy.size === 0) return undefined;
+          return { ...(changes ?? {}), hiddenDeclarations: [...hiddenDeclarations], ...(descriptions === undefined ? {} : { descriptions }) };
         },
         // Pi uses this from the MCP `tool_call` handler to wait for the servers a call
         // may reach. A script's sandbox sees the already-active local catalog, so
