@@ -730,6 +730,58 @@
       "tests": [
         "test/typed/native-extension-loader.test.ts"
       ]
+    },
+    {
+      "id": "shell.job-command",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/shell-permissions.md",
+          "heading": "## Codex WASM 策略程序"
+        }
+      ],
+      "tests": [
+        "test/typed/job-command.test.ts"
+      ]
+    },
+    {
+      "id": "subagent.path-identity",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/subagent-storage.md",
+          "heading": "### 4.3 所属权与 Fork：写时复制"
+        }
+      ],
+      "tests": [
+        "test/typed/native-path.test.ts"
+      ]
+    },
+    {
+      "id": "prompt.assets",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "prompts/README.md",
+          "heading": "## 修改与校验"
+        }
+      ],
+      "tests": [
+        "test/typed/prompt-text.test.ts"
+      ]
+    },
+    {
+      "id": "subagent.temporary-results",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 本轮结果直接交付"
+        }
+      ],
+      "tests": [
+        "test/typed/temporary-results.test.ts"
+      ]
     }
   ],
   "reviews": {
