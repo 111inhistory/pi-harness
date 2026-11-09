@@ -249,7 +249,8 @@
         "test/typed/session-cache.test.ts",
         "test/typed/session-cache-runtime.test.ts",
         "test/typed/session-cache-persistence.test.ts",
-        "test/typed/main-session-cache.test.ts"
+        "test/typed/main-session-cache.test.ts",
+        "test/typed/native-session-factory.test.ts"
       ]
     },
     {
@@ -279,7 +280,8 @@
       "tests": [
         "test/typed/harness-config.test.ts",
         "test/typed/harness-config-sdk.test.ts",
-        "test/typed/harness-config-deadline.test.ts"
+        "test/typed/harness-config-deadline.test.ts",
+        "test/typed/native-session-factory.test.ts"
       ]
     },
     {
@@ -289,6 +291,10 @@
         {
           "path": "docs/provider-transports.md",
           "heading": "## 工具与指引更新"
+        },
+        {
+          "path": "docs/capability-prompt-memory.md",
+          "heading": "## 时序与缓存行为"
         }
       ],
       "tests": [
@@ -344,7 +350,8 @@
         "test/typed/cross-session-message.test.ts",
         "test/typed/cross-session-reply-activation.test.ts",
         "test/typed/cross-session-reply-manual.test.ts",
-        "test/typed/managed-message-write.test.ts"
+        "test/typed/managed-message-write.test.ts",
+        "test/typed/runtime-domain-contract.test.ts"
       ]
     },
     {
@@ -473,9 +480,7 @@
         "test/typed/async-shell-cli.test.ts",
         "test/typed/async-shell-cli-ambient.test.ts",
         "test/typed/async-shell-id.test.ts",
-        "test/typed/async-shell-ipc.test.ts",
-        "test/typed/async-shell-render.test.ts",
-        "test/typed/async-shell-host.test.ts"
+        "test/typed/async-shell-render.test.ts"
       ]
     },
     {
@@ -497,17 +502,21 @@
       ]
     },
     {
-      "id": "inherited.context",
+      "id": "inherited.capture",
       "kind": "design",
       "docs": [
         {
           "path": "docs/architecture.md",
           "heading": "## 创建、执行与恢复"
+        },
+        {
+          "path": "docs/provider-transports.md",
+          "heading": "## 缓存标识"
         }
       ],
       "tests": [
         "test/typed/inherited-context.test.ts",
-        "test/typed/inherited-declarations-prefix.test.ts"
+        "test/typed/native-session-factory.test.ts"
       ]
     },
     {
@@ -520,14 +529,11 @@
         }
       ],
       "tests": [
-        "test/typed/subagent-lifecycle.test.ts",
-        "test/subagent-runtime.test.mjs",
-        "test/subagent-contract-redesign.test.mjs",
-        "test/typed/native-job-runner.test.ts",
         "test/typed/native-session-factory.test.ts",
         "test/typed/subagent-execution.test.ts",
-        "test/typed/actor-sessions.test.ts",
-        "test/typed/runtime-domain-contract.test.ts"
+        "test/subagent-runtime.test.mjs",
+        "test/subagent-contract-redesign.test.mjs",
+        "test/typed/native-job-runner.test.ts"
       ]
     },
     {
@@ -546,7 +552,8 @@
       "tests": [
         "test/typed/subagent-command.test.ts",
         "test/typed/subagent-session-connect.test.ts",
-        "test/typed/root-service-list.test.ts"
+        "test/typed/root-service-list.test.ts",
+        "test/subagent-contract-redesign.test.mjs"
       ]
     },
     {
@@ -555,7 +562,15 @@
       "docs": [
         {
           "path": "docs/interface-contract.md",
-          "heading": "## Subagent"
+          "heading": "### Subagent 调用形态"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### Subagent 提示词装配"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 通信指引"
         }
       ],
       "tests": [
@@ -584,7 +599,8 @@
         "test/subagent-routing-retry.test.mjs",
         "test/typed/subagent-routing-config.test.ts",
         "test/typed/subagent-runtime-config.test.ts",
-        "test/typed/subagent-model-runtime.test.ts"
+        "test/typed/subagent-model-runtime.test.ts",
+        "test/typed/runtime-domain-contract.test.ts"
       ]
     },
     {
@@ -602,6 +618,10 @@
         {
           "path": "docs/interface-contract.md",
           "heading": "### 普通消息与终态通知独立投递"
+        },
+        {
+          "path": "docs/architecture.md",
+          "heading": "### 原生交接"
         }
       ],
       "tests": [
@@ -609,7 +629,9 @@
         "test/typed/subagent-delivery.test.ts",
         "test/typed/delivery-compaction.test.ts",
         "test/typed/native-delivery.test.ts",
-        "test/typed/agent-listeners.test.ts"
+        "test/typed/agent-listeners.test.ts",
+        "test/typed/native-job-runner.test.ts",
+        "test/typed/subagent-lifecycle.test.ts"
       ]
     },
     {
@@ -639,7 +661,8 @@
       ],
       "tests": [
         "test/typed/runtime-parent-hold.test.ts",
-        "test/typed/parent-hold-sdk.test.ts"
+        "test/typed/parent-hold-sdk.test.ts",
+        "test/typed/native-job-runner.test.ts"
       ]
     },
     {
@@ -655,7 +678,10 @@
         "test/typed/service-retirement-fence.test.ts",
         "test/typed/root-service-boundary.test.ts",
         "test/typed/root-service-ready.test.ts",
-        "test/typed/root-service-result.test.ts"
+        "test/typed/root-service-result.test.ts",
+        "test/typed/native-job-runner.test.ts",
+        "test/typed/subagent-lifecycle.test.ts",
+        "test/typed/runtime-domain-contract.test.ts"
       ]
     },
     {
@@ -675,7 +701,10 @@
         "test/subagent-storage.test.mjs",
         "test/subagent-view.test.mjs",
         "test/typed/review-lifecycle-storage.test.ts",
-        "test/typed/session-transcript.test.ts"
+        "test/typed/session-transcript.test.ts",
+        "test/typed/actor-sessions.test.ts",
+        "test/subagent-contract-redesign.test.mjs",
+        "test/typed/runtime-domain-contract.test.ts"
       ]
     },
     {
@@ -698,7 +727,47 @@
       "docs": [
         {
           "path": "docs/interface-contract.md",
-          "heading": "## Subagent"
+          "heading": "### Subagent 调用形态"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 内部批量检索与增量提交"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 本轮结果直接交付"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 广播"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 跨 session 消息"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 自动完成通知"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 普通消息与终态通知独立投递"
+        },
+        {
+          "path": "docs/architecture.md",
+          "heading": "### 外部 Socket"
+        },
+        {
+          "path": "docs/architecture.md",
+          "heading": "## 创建、执行与恢复"
+        },
+        {
+          "path": "docs/architecture.md",
+          "heading": "## 退役、树切换与写入权限"
+        },
+        {
+          "path": "docs/subagent-storage.md",
+          "heading": "## 4. 架构"
         }
       ],
       "tests": [
@@ -782,13 +851,64 @@
       "tests": [
         "test/typed/temporary-results.test.ts"
       ]
+    },
+    {
+      "id": "inherited.declarations",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/capability-prompt-memory.md",
+          "heading": "## 时序与缓存行为"
+        },
+        {
+          "path": "docs/capability-prompt-memory.md",
+          "heading": "## 原生发现边界"
+        }
+      ],
+      "tests": [
+        "test/typed/inherited-declarations-prefix.test.ts"
+      ]
+    },
+    {
+      "id": "async-shell.host",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/async-shell.md",
+          "heading": "## Harness 接入"
+        }
+      ],
+      "tests": [
+        "test/typed/async-shell-host.test.ts",
+        "test/typed/async-shell-ipc.test.ts"
+      ]
     }
   ],
   "reviews": {
     "capability.provider-prefix": {
       "docs": "08743e2b55aa3beece61d6456f52e1db5a79180169cebb0df5a9d95a36772a36",
-      "tests": "61ddeedd4bde7745318e3775d88cc488d5689ff76d18f9f5354c9fe91cf8319e",
-      "reason": "Test-only refactor: replaced a self-comparison assertion with an idempotent-replay check; the documented provider-prefix behavior is unchanged."
+      "tests": "3aa3803b47130b84cc40976cc60eaacca14c05e069411a8801fb2f644b77aac3",
+      "reason": "Removed redundant same-input self-comparison; the remaining wire(projected)==wire(after) assertions guard the documented provider-prefix behavior."
+    },
+    "ipc.transport": {
+      "docs": "457594b0e83ae9b216876f9c7995997d9879bf6bb44417cd3b9c0d54790a4516",
+      "tests": "f556b74bbe9e04475b48f148b356deb4905253bed88867b9b37ea102a6a79835",
+      "reason": "Only a cross-reference anchor in the External Socket section changed after the heading rename; the transport contract is unchanged."
+    },
+    "subagent.surface": {
+      "docs": "29c0de3af370c86b37a44de5e55cc78046552ac4891211157c47cd3788c2e77c",
+      "tests": "a997f9abde87e87229e36efc619f4d2c58f3c8523ae0098d1d822316b0391490",
+      "reason": "Precise call-surface section renamed and mapping refined; the surface behavior and tests are unchanged."
+    },
+    "subagent.integration": {
+      "docs": "36a9a1390d8992c7152636a237326dcf788aaf57f7c19fb66b18439460b0d5c9",
+      "tests": "724704d451155986cb1f315723ecb47afccff0c23888f66d1474b9761ca92d0a",
+      "reason": "Mapped the offline SDK scenario file to the concrete sections it exercises; scenarios are unchanged."
+    },
+    "subagent.socket": {
+      "docs": "7216b044f0e7d4aa77ed1e49a258ad02d6fade8d2beaeab7add3d62692d1720c",
+      "tests": "779b03af3cf721ebc29011e186a33310d67f15443092c3dafca6bab4d48347a6",
+      "reason": "Only a cross-reference anchor in the External Socket section changed after the heading rename; the socket contract is unchanged."
     }
   }
 }

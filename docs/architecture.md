@@ -95,7 +95,7 @@ Main 默认不激活 `msg_write`（`defaultActive: false`）。收到跨 session
 
 发现由同一目录提供：`RootService.initialize` 在监听就绪后发布记录（含原生 session name），`retire` 按记录归属删除。跨 session 没有独立地址协议：目标就是对方 `Main` 的受管端点地址（Unix Socket 文件或 Windows Named Pipe），接收端在 IPC 边界解析 `<uid>:Main` 复合身份。地址是否属于某个 session 的端点命名空间由 `ipc/` 平台适配层判定（`belongsToNamespace`），`RootService.sessionEndpoint` 只保留 Main-to-Main 的业务准入；分类不构成端点归属或授权。
 
-`subagent_list` 将筛选后的拓扑投影为 `children` 树，省去 `parentId` 和外层 `items`；窗口和展开规则见[接口契约](interface-contract.md#当前调用形态-1)。监听由当前根注册表决定，覆盖已停止但可续跑的 Actor，不复用 `subagent_list` 的每组四项显示窗口。大量累计 Actor 会增加监听资源占用；系统资源不足会报告错误，不把它解释成 Actor 不存在。
+`subagent_list` 将筛选后的拓扑投影为 `children` 树，省去 `parentId` 和外层 `items`；窗口和展开规则见[接口契约](interface-contract.md#subagent-调用形态)。监听由当前根注册表决定，覆盖已停止但可续跑的 Actor，不复用 `subagent_list` 的每组四项显示窗口。大量累计 Actor 会增加监听资源占用；系统资源不足会报告错误，不把它解释成 Actor 不存在。
 
 ### 原生交接
 
