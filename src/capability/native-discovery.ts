@@ -96,9 +96,16 @@ export function installNativeDiscoveryBoundary(
 function executionTool<TParams extends ToolDefinition['parameters'], TDetails, TState>(
   tool: ToolDefinition<TParams, TDetails, TState>,
 ): ToolDefinition<TParams, TDetails, TState> {
+  // Preserve the native exposure the MCP extension computed for each tool
+  // (`codemode`/`deferred`/`direct`/`hidden`). Capability controls which tools
+  // become *active* through selective activation; it must not rewrite exposure,
+  // which would change how codemode, only mode and the declaration mask treat
+  // the tool. Only hidden tools and the disabled native discovery tools stay
+  // hidden, and every MCP tool starts inactive so Capability decides what to
+  // declare.
   const scoped: ToolDefinition<TParams, TDetails, TState> = {
     ...tool, defaultActive: false,
-    exposure: tool.exposure === 'hidden' || isNativeDiscoveryTool(tool.name) ? 'hidden' : 'deferred',
+    exposure: tool.exposure === 'hidden' || isNativeDiscoveryTool(tool.name) ? 'hidden' : tool.exposure ?? 'direct',
   };
   if (tool.name !== 'read_mcp_resource') return scoped;
   return {
