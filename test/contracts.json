@@ -326,6 +326,189 @@
       "tests": [
         "test/typed/result-rendering.test.ts"
       ]
+    },
+    {
+      "id": "cross-session.messaging",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 跨 session 消息"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 广播"
+        }
+      ],
+      "tests": [
+        "test/typed/cross-session-message.test.ts",
+        "test/typed/cross-session-reply-activation.test.ts",
+        "test/typed/cross-session-reply-manual.test.ts",
+        "test/typed/managed-message-write.test.ts"
+      ]
+    },
+    {
+      "id": "ipc.transport",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/architecture.md",
+          "heading": "### 外部 Socket"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 跨 session 消息"
+        }
+      ],
+      "tests": [
+        "test/typed/ipc-endpoint.test.ts",
+        "test/typed/ipc-socket.test.ts",
+        "test/typed/ipc-message.test.ts",
+        "test/typed/ipc-response.test.ts",
+        "test/typed/ipc-broadcast-error.test.ts",
+        "test/typed/session-endpoint-classification.test.ts",
+        "test/typed/session-directory.test.ts",
+        "test/typed/session-name-sync.test.ts"
+      ]
+    },
+    {
+      "id": "shell.approval",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/shell-permissions.md",
+          "heading": "## 执行顺序"
+        },
+        {
+          "path": "docs/shell-permissions.md",
+          "heading": "## 审批模式"
+        }
+      ],
+      "tests": [
+        "test/typed/shell-approval-command.test.ts",
+        "test/typed/shell-approval-ui.test.ts",
+        "test/typed/shell-approval-sdk.test.ts",
+        "test/typed/shell-approval-bridge.test.ts",
+        "test/typed/shell-permissions-command.test.ts",
+        "test/typed/shell-permissions-persistence.test.ts"
+      ]
+    },
+    {
+      "id": "shell.reviewer",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/shell-permissions.md",
+          "heading": "## 自动审查"
+        }
+      ],
+      "tests": [
+        "test/typed/shell-approval-reviewer.test.ts",
+        "test/typed/shell-auto-review-feedback.test.ts"
+      ]
+    },
+    {
+      "id": "shell.policy-wasm",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/shell-permissions.md",
+          "heading": "## 静态命令策略"
+        },
+        {
+          "path": "docs/shell-permissions.md",
+          "heading": "## Codex WASM 策略程序"
+        }
+      ],
+      "tests": [
+        "test/typed/shell-rule-files.test.ts"
+      ]
+    },
+    {
+      "id": "shell.notification",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/shell-permissions.md",
+          "heading": "## 命令入口与状态"
+        },
+        {
+          "path": "docs/shell-permissions.md",
+          "heading": "## 边界"
+        }
+      ],
+      "tests": [
+        "test/typed/shell-approval-notification.test.ts",
+        "test/typed/shell-url-notification.test.ts"
+      ]
+    },
+    {
+      "id": "shell.preflight",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/architecture.md",
+          "heading": "## Shell 执行前检查"
+        }
+      ],
+      "tests": [
+        "test/shell-preflight.test.mjs",
+        "test/shell-preflight-extension.test.mjs"
+      ]
+    },
+    {
+      "id": "async-shell.tasks",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/async-shell.md",
+          "heading": "## 创建与查询"
+        },
+        {
+          "path": "docs/async-shell.md",
+          "heading": "## 输入"
+        }
+      ],
+      "tests": [
+        "test/typed/async-shell-cli.test.ts",
+        "test/typed/async-shell-cli-ambient.test.ts",
+        "test/typed/async-shell-id.test.ts",
+        "test/typed/async-shell-ipc.test.ts",
+        "test/typed/async-shell-render.test.ts",
+        "test/typed/async-shell-host.test.ts"
+      ]
+    },
+    {
+      "id": "async-shell.platform",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/async-shell.md",
+          "heading": "## 安装"
+        },
+        {
+          "path": "docs/async-shell.md",
+          "heading": "## 当前限制"
+        }
+      ],
+      "tests": [
+        "test/typed/async-shell-platform.test.ts",
+        "test/async-shell-sdk.test.mjs"
+      ]
+    },
+    {
+      "id": "inherited.context",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/architecture.md",
+          "heading": "## 创建、执行与恢复"
+        }
+      ],
+      "tests": [
+        "test/typed/inherited-context.test.ts",
+        "test/typed/inherited-declarations-prefix.test.ts"
+      ]
     }
   ],
   "reviews": {
