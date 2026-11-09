@@ -2,7 +2,6 @@ import {
   createBashToolDefinition, createPowerShellToolDefinition, getAgentDir, SettingsManager,
   type ExtensionAPI, type ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
-import { promptStrings } from '../prompt-text.ts';
 import type { AsyncShellHost } from './host.ts';
 
 /** Keep native shell execution, schemas and rendering; scope only its environment. */
@@ -19,10 +18,6 @@ export function installAsyncShellSurface(
     const definition = factory(process.cwd());
     api.registerTool({
       ...definition,
-      promptGuidelines: [
-        ...(definition.promptGuidelines ?? []),
-        ...promptStrings('async-shell.json', 'guidelines'),
-      ],
       async execute(id, input, signal, onUpdate, context) {
         const host = await current(context);
         bound = host;

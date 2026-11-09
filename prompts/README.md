@@ -21,7 +21,6 @@ JSON 仅为存储格式，不改变面向模型的排版、空白或装配方式
 | `execution-budget.json` | `warning` | 共享 Budget 的软阈值收尾提示 |
 | `capability-tools.json` | 工具说明与参数定义 | Capability 公开工具与内部 `capability_step` 的说明及参数文本 |
 | `capability-policy.json` | 策略条目与指引 | 检索执行边界、预算收尾及分支记忆的指引 |
-| `async-shell.json` | `guidelines` | 原生 Shell 工具中追加的异步任务创建、查询与输入指引 |
 | `native-discovery.json` | 原生工具声明 | Codemode 与原生 MCP 适配器维护的工具说明 |
 
 ## 内容与逻辑的边界
