@@ -187,6 +187,63 @@ export function retainEligibleSelectedTools<
   };
 }
 
+/** One refreshed selection plus the members that lost reachability. */
+export interface ReachableSelectedTools<TResult> {
+  readonly result: TResult;
+  /** Selected tool member names dropped because the session has no call path. */
+  readonly dropped: readonly string[];
+}
+
+/**
+ * Drop selected tool members the session cannot call.
+ *
+ * Eligibility (registered, permitted, not hidden) is handled by
+ * {@link retainEligibleSelectedTools}; this keeps the orthogonal question of
+ * reachability: whether an already-eligible member has any execution entry the
+ * model can use. A member whose entry depends on a disabled capability is
+ * dropped here, before the discovery record is written, while non-tool
+ * identities and Skill hits stay untouched.
+ */
+export function retainReachableSelectedTools<
+  TResult extends {
+    readonly tools: readonly THit[];
+    readonly mcp: readonly THit[];
+  },
+  THit extends SelectedToolHit,
+  TTool extends CapabilityScopedTool,
+>(
+  result: TResult,
+  catalog: TypedToolCatalog<TTool>,
+  isReachable: (tool: TTool) => boolean,
+): ReachableSelectedTools<TResult> {
+  const eligible = createEligibleToolCatalog(catalog).byName;
+  const dropped: string[] = [];
+  const keep = (member: SelectedToolHit): boolean => {
+    if (typeof member.name !== "string") return true;
+    const tool = eligible.get(member.name);
+    if (tool === undefined) return true;
+    if (isReachable(tool)) return true;
+    dropped.push(member.name);
+    return false;
+  };
+  const filterHit = (hit: THit): THit | null => {
+    if (Array.isArray(hit.tools)) {
+      const tools = hit.tools.filter((member) => isSelectedToolHit(member) ? keep(member) : true);
+      return tools.length === 0 ? null : { ...hit, tools, toolCount: tools.length } as THit;
+    }
+    if (hit.kind !== "tool") return hit;
+    return keep(hit) ? hit : null;
+  };
+  return {
+    result: {
+      ...result,
+      tools: result.tools.flatMap((hit) => { const kept = filterHit(hit); return kept === null ? [] : [kept]; }),
+      mcp: result.mcp.flatMap((hit) => { const kept = filterHit(hit); return kept === null ? [] : [kept]; }),
+    },
+    dropped,
+  };
+}
+
 function enrichSelectedHit<THit extends SelectedToolHit>(
   hit: THit,
   registered: ReadonlyMap<string, CapabilityInterfaceTool>,

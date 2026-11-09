@@ -58,7 +58,7 @@ import {
   CAPABILITY_TOOL_DESCRIPTION,
   CAPABILITY_TOOL_NAME,
 } from "./contracts.ts";
-import { createCapabilityBroker, type CapabilityProviders } from "./broker.ts";
+import { createCapabilityBroker, type CapabilityProviders, type CapabilitySearchHit } from "./broker.ts";
 import { harnessConfigFor, type HarnessConfig } from "../harness-config.ts";
 import {
   CAPABILITY_DISCOVERY_SYSTEM_PROMPT,
@@ -85,8 +85,8 @@ import { appendDiscoveryRecord } from "./discovery-record.ts";
 import { openSubagentExecution } from "../subagent/execution.ts";
 import { parentModelRuntime } from "../subagent/model-runtime.ts";
 import { installNativeDiscoveryBoundary } from "./native-discovery.ts";
-import { createEligibleToolCatalog, retainEligibleSelectedTools, supplySelectedToolInterfaces } from "./tool-catalog.ts";
-import { activateToolNames } from "./activation.ts";
+import { createEligibleToolCatalog, retainEligibleSelectedTools, retainReachableSelectedTools, supplySelectedToolInterfaces } from "./tool-catalog.ts";
+import { activateToolNames, codemodeAvailable, toolReachability } from "./activation.ts";
 import { argumentCompletionProvider } from "../autocomplete.ts";
 import { installCapabilityCommand } from "./command.ts";
 import { manualToolMatcher } from "./manual-tools.ts";
@@ -291,6 +291,12 @@ export default function capabilityExtension(
           // tool that was unregistered, hidden or denied during retrieval never
           // enters the branch record or the published selection.
           result = retainSelectedTools(pi, result, "catalog");
+          // Reachability is judged against the live session before the record is
+          // written, so a selected tool whose only call path is Codemode is never
+          // recorded as available while Codemode is disabled.
+          if (result.status !== "failed") {
+            result = retainReachableTools(pi, result);
+          }
           if (result.status !== "failed") {
             // Persist before activation. Memory is the durability contract, so a
             // failed record write fails closed: nothing is advertised as selected
@@ -450,6 +456,7 @@ function activateSelectedTools(pi: ExtensionAPI, result: CapabilityDiscoveryResu
       warnings.push(`selected tool "${skip.name}" is not registered in this session`);
     }
     if (skip.reason === "hidden") warnings.push(`selected tool "${skip.name}" is hidden and cannot be activated`);
+    if (skip.reason === "unreachable") warnings.push(`selected tool "${skip.name}" has no usable call path because Codemode is not enabled in this session`);
   }
   return { activated: outcome.activated, warnings, active: outcome.active };
 }
@@ -498,6 +505,54 @@ function retainSelectedTools(
     status: "partial",
     warnings: [...result.warnings, ...detail, reason],
   };
+}
+
+/**
+ * Drop selected tool members this session has no execution entry for.
+ *
+ * A deferred/direct tool becomes callable when activated, but a `codemode`
+ * -exposure tool can only be reached from a script. If Codemode is disabled or
+ * ineligible, activating such a member would publish a tool the model cannot
+ * call. The rejection happens before the discovery record is written, so an
+ * unreachable member is never remembered as available. Successful Skills are
+ * independent and stay published; losing every tool while keeping no Skill
+ * fails closed.
+ */
+function retainReachableTools(pi: ExtensionAPI, result: CapabilityDiscoveryResult): CapabilityDiscoveryResult {
+  if (result.status === "failed") return result;
+  const context = { codemodeAvailable: codemodeAvailable(pi) };
+  const retained = retainReachableSelectedTools(
+    result, pi, (tool) => toolReachability(tool.exposure, context) === null,
+  );
+  const names = [...new Set(retained.dropped)];
+  if (names.length === 0) return result;
+  const detail = names.map((name) =>
+    `selected tool "${name}" has no usable call path because Codemode is not enabled in this session; it was not published.`);
+  const keptTools = countToolMembers(retained.result.tools) + countToolMembers(retained.result.mcp);
+  if (keptTools === 0 && result.skills.length === 0) {
+    const reason = names.length === 1
+      ? `capability discovery failed: the selected tool "${names[0]}" has no usable call path because Codemode is not enabled in this session.`
+      : `capability discovery failed: none of the ${names.length} selected tools has a usable call path because Codemode is not enabled in this session.`;
+    const failed = capabilityFailureResult(reason, [...result.warnings, ...detail], result.coverage);
+    return result.endReason === undefined ? failed : { ...failed, endReason: result.endReason };
+  }
+  const count = names.length;
+  return {
+    ...retained.result,
+    status: "partial",
+    warnings: [...result.warnings, ...detail,
+      `capability discovery is partial: ${count} selected tool${count === 1 ? " has" : "s have"} no usable call path in this session.`],
+  };
+}
+
+/** Count selected tool members across hits; a nameless identity does not count. */
+function countToolMembers(hits: readonly CapabilitySearchHit[]): number {
+  let total = 0;
+  for (const hit of hits) {
+    if (Array.isArray(hit.tools)) total += hit.tools.length;
+    else total += 1;
+  }
+  return total;
 }
 
 /** Interfaces the next request can supply without repeating them in this result. */

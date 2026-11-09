@@ -227,4 +227,5 @@ const SKIP_TEXT: Readonly<Record<ActivationSkipReason, string>> = {
   manual_only: 'manual, and only the user command may enable it',
   not_permitted: 'not permitted in this scope',
   not_activated: 'the session did not activate it',
+  unreachable: 'no usable call path: it needs an enabled Codemode entry in this session',
 };

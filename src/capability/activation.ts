@@ -30,7 +30,41 @@ export interface ActivationHost {
 }
 
 /** Why one requested name did not end up active. */
-export type ActivationSkipReason = 'not_registered' | 'hidden' | 'manual_only' | 'not_permitted' | 'not_activated';
+export type ActivationSkipReason =
+  | 'not_registered'
+  | 'hidden'
+  | 'manual_only'
+  | 'not_permitted'
+  | 'not_activated'
+  /** The session has no execution entry the model could use to call this tool. */
+  | 'unreachable';
+
+/** The live entries a reachability decision depends on. */
+export interface ReachabilityContext {
+  /** Whether the session has an enabled, eligible Codemode entry right now. */
+  readonly codemodeAvailable: boolean;
+}
+
+/**
+ * Whether activating a tool would give the model a way to call it.
+ *
+ * A `deferred` or `direct` tool is declared to the model once it is active, so
+ * it is reachable on its own; it does not need Codemode. A `codemode`-exposure
+ * tool can only be called from a script, so it is unreachable unless this
+ * session has a usable Codemode entry. `hidden` is handled before this check.
+ * Returns the rejection reason, or null when the tool is reachable.
+ */
+export function toolReachability(
+  exposure: string | undefined,
+  context: ReachabilityContext,
+): ActivationSkipReason | null {
+  return exposure === 'codemode' && !context.codemodeAvailable ? 'unreachable' : null;
+}
+
+/** Codemode is usable when it is both active and eligible in this session. */
+export function codemodeAvailable(host: ActivationHost): boolean {
+  return host.getActiveTools().includes('codemode') && createEligibleToolCatalog(host).names.has('codemode');
+}
 
 export interface ActivationSkip {
   readonly name: string;
@@ -50,6 +84,8 @@ export interface ActivationOutcome {
 /** Activation options: only the user command may enable manual tools. */
 export interface ActivationOptions {
   readonly includeManual?: boolean;
+  /** Reachability inputs to reuse; resolved from the host when omitted. */
+  readonly reachability?: ReachabilityContext;
 }
 
 /**
@@ -66,6 +102,7 @@ export function activateToolNames(
 ): ActivationOutcome {
   const eligible = createEligibleToolCatalog(host, options).byName;
   const rootOnly = options.includeManual === true ? null : capabilityRootOnlyPolicy(host);
+  const reachability = options.reachability ?? { codemodeAvailable: codemodeAvailable(host) };
   const registered = new Map(host.getAllTools().map((tool) => [tool.name, tool]));
   const active = new Set(host.getActiveTools());
   const requested: string[] = [];
@@ -90,6 +127,11 @@ export function activateToolNames(
     }
     if (!eligible.has(name)) {
       skipped.push({ name, reason: 'not_permitted' });
+      continue;
+    }
+    const unreachable = toolReachability(tool.exposure, reachability);
+    if (unreachable !== null) {
+      skipped.push({ name, reason: unreachable });
       continue;
     }
     if (active.has(name)) {
