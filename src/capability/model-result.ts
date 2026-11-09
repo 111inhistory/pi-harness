@@ -123,8 +123,18 @@ export function capabilityModelResult<T extends CapabilityProjectionResult>(
       namespace: _namespace,
       ...stable
     } = hit;
+    // When the interface is only reachable through Codemode's query path the
+    // declaration no longer names the members, so keep a names-only list. A
+    // group whose interface a native declaration already supplies keeps its
+    // names in that declaration and stays compact.
+    const memberNames = queried && Array.isArray(hit.tools)
+      ? hit.tools.flatMap((member) => typeof member.name === "string"
+        ? [{ name: member.name, ...(typeof member.ref === "string" ? { ref: member.ref } : {}) }]
+        : [])
+      : undefined;
     return {
       ...stable,
+      ...(memberNames === undefined ? {} : { tools: memberNames, toolCount: memberNames.length }),
       interface: declared
         ? "Declared through the session's current tool loadout; use the tool declaration for arguments."
         : "Query the current interface with codemode describeTool; describeNamespace lists the group's members.",

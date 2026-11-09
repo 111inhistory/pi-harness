@@ -160,7 +160,9 @@ test("compact only when a native declaration or Codemode query path supplies the
   assert.deepEqual(compact.tools[1], deferred, "a hit without a supplied interface stays fully expanded");
 
   const queried = capabilityModelResult(result, { declared: new Set(), queryable: new Set(["create", "list"]) });
-  assert.equal(queried.tools[0]!.tools, undefined);
+  assert.deepEqual(queried.tools[0]!.tools?.map((member) => member.name), ["create", "list"], "the member names survive the Codemode query-path compaction");
+  assert.equal(queried.tools[0]!.toolCount, 2, "the member count stays consistent with the retained names");
+  assert.equal(queried.tools[0]!.parameters, undefined, "schemas still move behind describeTool");
   assert.match(String(queried.tools[0]!.interface), /describeTool/);
   assert.deepEqual(queried.tools[1], deferred, "an inactive or undiscoverable member keeps its definition");
 

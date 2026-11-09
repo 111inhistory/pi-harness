@@ -509,3 +509,31 @@ test('a bad snapshot surfaces as a config error instead of silently returning de
   await writeJson(file, { subagent: { maxDepth: 2 } });
   assert.equal(provider(context(cwd, true)).subagent.maxDepth, 2);
 });
+
+test('capability.lazySchemas defaults to empty and replaces as a whole list across layers', async (t) => {
+  const { agentDir, cwd } = await tempRoots(t);
+  assert.deepEqual(DEFAULT_HARNESS_CONFIG.capability.lazySchemas, []);
+  assert.deepEqual(loadHarnessConfig({ cwd, agentDir, projectTrusted: true }).capability.lazySchemas, []);
+
+  await writeJson(path.join(agentDir, 'harness.json'), { capability: { lazySchemas: ['mcp://large-service'] } });
+  assert.deepEqual(
+    loadHarnessConfig({ cwd, agentDir, projectTrusted: true }).capability.lazySchemas,
+    ['mcp://large-service'],
+  );
+
+  await writeJson(path.join(cwd, '.pi', 'harness.json'), {
+    capability: { lazySchemas: ['namespace://large-extension', 'mcp://other'] },
+  });
+  const trusted = loadHarnessConfig({ cwd, agentDir, projectTrusted: true });
+  assert.deepEqual(trusted.capability.lazySchemas, ['namespace://large-extension', 'mcp://other'],
+    'the trusted project list replaces the global list rather than appending to it');
+  const untrusted = loadHarnessConfig({ cwd, agentDir, projectTrusted: false });
+  assert.deepEqual(untrusted.capability.lazySchemas, ['mcp://large-service'], 'an untrusted project list is ignored');
+});
+
+test('capability.lazySchemas rejects non-list and empty ref values', () => {
+  const bad = (value: unknown) => resolveError([{ source: 'global', value: { capability: { lazySchemas: value } } }]);
+  for (const value of ['mcp://x', [''], ['  '], [1], [null], { ref: 'mcp://x' }]) {
+    expectError(bad(value), 'global', 'capability.lazySchemas');
+  }
+});

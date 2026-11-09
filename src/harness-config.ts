@@ -40,6 +40,13 @@ export interface HarnessConfig {
      * a subagent session; explicit user authorization is required.
      */
     readonly manualTools: readonly string[];
+    /**
+     * Explicit `mcp://<server>` or `namespace://<name>` refs whose tool schemas
+     * are projected lazily only while Codemode is active in `only` mode. Member
+     * names stay visible; parameter and return schemas move behind Codemode's
+     * `describeTool`. Default `[]` keeps every native declaration unchanged.
+     */
+    readonly lazySchemas: readonly string[];
     readonly budget: BudgetProfile;
     readonly search: {
       readonly bm25: { readonly k: number; readonly b: number; readonly d: number };
@@ -91,6 +98,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
     noSelectionLimit: 3,
     pruneOnCompaction: true,
     manualTools: [],
+    lazySchemas: [],
     budget: { modelCalls: { soft: 16, hard: 20 }, activeTimeMs: { soft: 180_000, hard: 360_000 }, lifetimeMs: 600_000 },
     search: {
       bm25: { k: 0.9, b: 0.9, d: 0 },
@@ -203,6 +211,14 @@ function mergeNode(base: object, value: unknown, source: string, field: string, 
     } else if (child === 'capability.manualTools') {
       if (!Array.isArray(item) || item.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
         throw new HarnessConfigError(source, child, 'must be an array of non-empty tool name patterns.');
+      }
+      merged[key] = [...item];
+      origins.set(child, layer);
+    } else if (child === 'capability.lazySchemas') {
+      // Whole-list replacement: the project layer overrides, never appends to, the
+      // global list, so a group cannot stay lazy through a forgotten inherited ref.
+      if (!Array.isArray(item) || item.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
+        throw new HarnessConfigError(source, child, 'must be an array of non-empty MCP or namespace refs.');
       }
       merged[key] = [...item];
       origins.set(child, layer);
