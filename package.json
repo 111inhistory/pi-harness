@@ -13,7 +13,8 @@
       "./extensions/result-rendering.ts",
       "./extensions/subagent.ts",
       "./extensions/capability.ts",
-      "./extensions/btw.ts"
+      "./extensions/btw.ts",
+      "./extensions/preset.ts"
     ],
     "skills": [
       "./skills"
