@@ -25,7 +25,11 @@
 | [Capability 启用与缓存边界](capability-enable-cache.md) | 请求前缀稳定性、提供方转换分档与未解决限制 |
 | [Agent 发现与通信提案](agent-discovery-communication-proposal.md) | 有范围的 peer 可见性、通信后启用 `agent_list`、统一消息身份；尚未实施 |
 | [独立外部编排提案](session-orchestration-proposal.md) | 独立项目拥有管理与调度，轻量 Pi 负责决策；不在 Harness 内实现，不依赖 preset |
-| [Agent Preset 暂缓提案](agent-presets-proposal.md) | 预定义 role、配置组合与 Seed-fork 调研；明确暂缓，不进入本轮实现 |
+| [Capability 原生工具暴露行为提案](capability-native-exposure-proposal.md) | 保留原生 exposure 与 only 语义，清理 MCP 临时适配；已实现 |
+| [Capability 启用可达性提案](capability-activation-reachability-proposal.md) | 无调用入口时拒绝成员，向模型报告部分失败并向用户显示 warning；已实现 |
+| [Capability 延迟 schema 提案](capability-lazy-schemas-proposal.md) | 仅在启用 Codemode 的 only 模式按 MCP／namespace 延迟 schema；默认关闭，已实现 |
+| [模型 Preset 提案](model-presets-proposal.md) | 模型切换、模型专属指引与原生工具修饰符；已实现（codemode.mode 运行时切换受限，见文末边界） |
+| [Agent Preset 暂缓提案](agent-presets-proposal.md) | 预定义 role、配置组合与 Seed-fork 调研；继续暂缓，与模型 Preset 分开 |
 | [尾部文本工具接口与 fallback 提案](text-tool-interfaces-fallback-proposal.md) | 官方 DS 文本声明实验与网关转换证据；未实现，配置与 fallback 尚未明确想清楚 |
 
 ## 使用边界

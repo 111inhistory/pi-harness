@@ -59,6 +59,8 @@ Capability 应避免让 Main 接触与当前工作无关的资源目录和检索
 
 MCP 配置中的 `codemode`／`deferred` exposure 不表示工具在 Capability 激活后只能从脚本调用。入选并激活的工具可以直接声明和调用，也可在 Codemode 中组合执行。接口已有原生声明或当前启用的 Codemode 查询入口时，结果只保留引用、名称、数量和接口入口；两者都不存在时保留调用所需的参数结构。
 
+激活前会检查每个入选工具在当前会话是否有可用的调用入口：`direct`／`deferred` 工具在激活后直接声明，自带入口，不依赖 Codemode；仅能以 `codemode` exposure 从脚本调用的工具，若当前会话未启用、也不符合资格的 Codemode，则不可达，会被拒绝且不写入分支记录。部分入选工具不可达时返回 partial 并把原因按组告知模型、向用户显示汇总 warning；全部工具不可达且无成功 Skill 时失败。可达性检查不扩大为通用事务、自动回滚或历史授权撤销。
+
 `ALL_TOOLS` 只返回工具名和短描述，不展开 TypeScript 接口。完整参数与工具指导由 `describeTool` 按需提供；`describeNamespace` 保留 namespace 指引和成员名称。目录查询不等待所有 MCP 服务器，宿主不添加主动 MCP 重连。实际嵌套工具调用继续经过 Pi 原生管线。
 
 先调用 Capability 选好工具，再运行 Codemode 脚本。如果脚本运行期间才激活新工具，当前脚本不能立即调用；新工具从下一次 Codemode 调用起可用。
