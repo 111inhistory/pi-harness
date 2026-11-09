@@ -192,13 +192,13 @@ Capability 调用仍等待检索完成，再返回筛选后的资源。复用执
 
 `extensions/preset.ts`（随包默认加载）提供模型切换、思考级别、模型专属指引和工具选择。
 
-**配置。** 读取全局 agent 目录的 `presets.json` 与受信项目的 `.pi/presets.json`，项目同名项整体覆盖全局。每项可含 `model`（`provider`＋`id`）、`thinkingLevel`、`tools`、`codemode`（`mode`）与 `instructions`。`tools` 使用原生 `+name`／`-name`／裸名语义，始终基于配置的默认工具集计算，先应用 A 再应用 B 与直接应用 B 得到同一集合。
+**配置。** 读取全局 agent 目录的 `presets.json` 与受信项目的 `.pi/presets.json`，项目同名项整体覆盖全局。每项可含 `model`（`provider`＋`id`）、`thinkingLevel`、`tools`、`codemode`（`mode`）与 `instructions`。`tools` 使用原生 `+name`／`-name`／裸名语义，始终基于会话首次启动捕获的初始工具集（原生默认工具、CLI 修饰与默认启用扩展工具，如 `capability`）计算，并记录在分支上；先应用 A 再应用 B 与直接应用 B 得到同一集合，跨 reload 不被前一个 Preset 污染。
 
 **入口。** `/preset` 打开选择器，`/preset NAME` 应用指定项，`/preset clear`（`none`／`off`）停止管理，`--preset NAME` 在启动时应用；状态栏显示当前 Preset。Preset 只作用于当前 Main 会话，不静默改变 Fresh／Inherited Subagent 的路由或模型。
 
 **应用与失败。** 先校验模型存在于目录，再 `setModel`；模型不可用则整体不应用并报错，绝不报成功；thinking 与 tools 随后应用。`instructions` 作为独立 system 段落经 `prompt-section-journal` 增量投影并在 resume／tree／fork／reload 回放，不覆盖整份 system prompt。
 
-**分支与清除。** `preset-state` 记录保存应用时解析快照（model／thinking／tools／codemode／instructions），分支恢复按快照还原；`/preset clear` 写入 null 快照并停止管理，不回滚已有 model／thinking／tools。
+**分支与清除。** `preset-state` 记录保存应用时解析快照（model／thinking／tools／codemode／instructions），分支恢复按快照还原；首次启动的初始工具集另存为 `preset-base` 供修饰符计算；`/preset clear` 写入 null 快照并停止管理，不回滚已有 model／thinking／tools。
 
 **Codemode 模式。** 扩展无公开 `codemode.mode` 写入通道。Preset 以 `codemode-mode` 分支记录覆盖本会话的生效模式，原生 Codemode 工具与 `capability.lazySchemas` 均读取该生效模式，从下一次请求生效；它只改变声明投影，不改变启用集合、授权记录或工具 exposure。若宿主无法应用该覆盖，只记录并给出 warning，不把未生效报成成功。
 

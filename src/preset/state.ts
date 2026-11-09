@@ -27,6 +27,19 @@ import type { CodemodeMode, PresetModel, ThinkingLevelName } from './config.ts';
 export const PRESET_STATE_RECORD = 'preset-state';
 export const PRESET_STATE_VERSION = 1;
 
+/**
+ * `customType` of the captured base tool set.
+ *
+ * The base is the true initial active set of the session — native defaults, CLI
+ * `--tools` modifier results and default-active extension tools such as
+ * `capability` — captured once at first `session_start` and recorded on the
+ * branch. Preset tool modifiers always compute from this base, so a resume or
+ * reload that already reflects a prior preset cannot become the new base, while
+ * the base still contains the extension tools a settings-only view would miss.
+ */
+export const PRESET_BASE_RECORD = 'preset-base';
+export const PRESET_BASE_VERSION = 1;
+
 /** The fully resolved state a preset apply froze onto the branch. */
 export interface PresetSnapshot {
   readonly name: string;
@@ -140,4 +153,22 @@ export function restorePresetSnapshot(branch: readonly unknown[] | null | undefi
 /** Append one preset-state entry to the branch. */
 export function appendPresetState(writer: PresetStateWriter, record: PresetStateRecord): void {
   writer.appendEntry(PRESET_STATE_RECORD, record);
+}
+
+/** The captured base tool set on the branch, or undefined when not yet captured. */
+export function readPresetBase(branch: readonly unknown[] | null | undefined): readonly string[] | undefined {
+  let latest: readonly string[] | undefined;
+  for (const entry of branch ?? []) {
+    if (!isRecord(entry)) continue;
+    if (entry['type'] !== 'custom' || entry['customType'] !== PRESET_BASE_RECORD) continue;
+    const data = entry['data'];
+    if (!isRecord(data) || data['version'] !== PRESET_BASE_VERSION) continue;
+    if (isStringArray(data['tools'])) latest = [...data['tools']];
+  }
+  return latest;
+}
+
+/** Record the captured base tool set once per session branch. */
+export function appendPresetBase(writer: PresetStateWriter, tools: readonly string[]): void {
+  writer.appendEntry(PRESET_BASE_RECORD, { version: PRESET_BASE_VERSION, tools: [...tools] });
 }

@@ -192,7 +192,7 @@ Fresh 与 Inherited 直接子节点在同一 Subagent 树内使用独立的父�
 | --- | --- |
 | `model` | `{ provider, id }`，必须存在于当前模型目录，否则整体不应用并报错 |
 | `thinkingLevel` | 思考级别名称，交由 `setThinkingLevel` 应用 |
-| `tools` | 原生 `+name`／`-name`／裸名数组；始终基于配置的默认工具集计算，先 A 后 B 与直接应用 B 一致 |
+| `tools` | 原生 `+name`／`-name`／裸名数组；始终基于会话首次启动捕获的初始工具集（含默认启用扩展工具）计算，跨 reload 不被前一个 Preset 污染，先 A 后 B 与直接应用 B 一致 |
 | `codemode` | `{ mode: "on" | "only" }`；在会话分支记录生效模式，只改变声明投影，不写 Pi 设置 |
 | `instructions` | 模型专属指引正文，作为独立 system 段落经段落日志增量投影与回放 |
 

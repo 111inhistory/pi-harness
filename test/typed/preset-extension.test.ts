@@ -192,3 +192,19 @@ test('/preset clear clears the recorded codemode mode', async () => {
   const modes = h.calls.appended.filter((entry) => entry.customType === 'codemode-mode').map((entry) => (entry.data as { mode?: unknown }).mode);
   assert.equal(modes.at(-1), null, 'clear drops the override so Settings governs again');
 });
+
+test('the captured base keeps default-active extension tools when a preset adds codemode', async () => {
+  const h = setup({
+    presets: { only: { tools: ['+codemode'], codemode: { mode: 'only' } } },
+    activeTools: ['read', 'bash', 'edit', 'write', 'capability'],
+    allTools: ['read', 'bash', 'edit', 'write', 'capability', 'codemode'],
+  });
+  await h.fire('session_start', {});
+  await h.caps.commands['preset']!('only', h.ctx);
+  const base = h.calls.appended.find((entry) => entry.customType === 'preset-base');
+  assert.ok((base?.data as { tools?: string[] } | undefined)?.tools?.includes('capability'),
+    'the captured base records the default-active extension tool');
+  const last = h.calls.setActiveTools.at(-1)!;
+  assert.ok(last.includes('capability'), 'capability entry must survive a +codemode preset');
+  assert.ok(last.includes('codemode'), 'the added codemode is applied');
+});
