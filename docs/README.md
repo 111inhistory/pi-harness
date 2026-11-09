@@ -19,7 +19,7 @@
 | [已知问题与验收边界](known-issues.md) | 已知缺陷、未交付功能、待验收场景和设计限制 |
 | [文档写作约定](writing-guide.md) | 术语、事实分类和写作规则 |
 
-配置示例见 [harness.json](../config/harness.json) 和 [subagent-routing.json](../config/subagent-routing.json)。前者配置执行限额与指定提示词段落，后者配置角色、分类器和候选模型；Pi 模型认证与原生设置继续由 Pi 管理。
+配置示例见 [harness.json](../config/harness.json)、[subagent-routing.json](../config/subagent-routing.json) 和 [presets.json](../config/presets.json)。前二者配置执行限额、指定提示词段落与角色路由；`presets.json` 配置模型 Preset。Pi 模型认证与原生设置继续由 Pi 管理。
 
 ## 历史与实验
 

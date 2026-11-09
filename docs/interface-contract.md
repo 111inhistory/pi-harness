@@ -63,6 +63,8 @@ MCP 配置中的 `codemode`／`deferred` exposure 不表示工具在 Capability 
 
 `ALL_TOOLS` 只返回工具名和短描述，不展开 TypeScript 接口。完整参数与工具指导由 `describeTool` 按需提供；`describeNamespace` 保留 namespace 指引和成员名称。目录查询不等待所有 MCP 服务器，宿主不添加主动 MCP 重连。实际嵌套工具调用继续经过 Pi 原生管线。
 
+启用 `capability.lazySchemas`（默认空）后，仅在 Codemode 已启用且生效模式为 `only` 时，命中组的参数与返回值 schema 不进入原生工具声明，也不内联进 Codemode 目录；发现结果与 `describeNamespace` 保留成员名称，`describeTool` 返回完整接口后经 Codemode 执行。生效模式可由模型 Preset 记录在分支上覆盖 Pi 设置。命中组的内部继承检索同样不再向检索模型重发这些 schema；命中组中的 model-only 成员不能被延迟隐藏，应显式报告。
+
 先调用 Capability 选好工具，再运行 Codemode 脚本。如果脚本运行期间才激活新工具，当前脚本不能立即调用；新工具从下一次 Codemode 调用起可用。
 
 该边界不承诺让模型忘记此前已读的用户正文，也不构成文件系统沙箱。基础文件工具仍按当前权限工作。
@@ -185,6 +187,20 @@ Capability 的初始投影可按可见结果建立历史落点；之后即使嵌
 Capability 与 Subagent 分别通过 `extensions/capability.ts`、`extensions/subagent.ts` 注册，共用底层执行能力和同一会话的配置、资格状态，不创建两套执行环境。Capability 直接调用内部执行入口，不要求公开的 `subagent_create`、`subagent_list` 或 `subagent_stop` 工具已注册或已激活。
 
 Capability 调用仍等待检索完成，再返回筛选后的资源。复用执行代码不改变检索权限，不向内部检索 Agent 开放父 Agent 的执行权限。
+
+## 模型 Preset
+
+`extensions/preset.ts`（随包默认加载）提供模型切换、思考级别、模型专属指引和工具选择。
+
+**配置。** 读取全局 agent 目录的 `presets.json` 与受信项目的 `.pi/presets.json`，项目同名项整体覆盖全局。每项可含 `model`（`provider`＋`id`）、`thinkingLevel`、`tools`、`codemode`（`mode`）与 `instructions`。`tools` 使用原生 `+name`／`-name`／裸名语义，始终基于配置的默认工具集计算，先应用 A 再应用 B 与直接应用 B 得到同一集合。
+
+**入口。** `/preset` 打开选择器，`/preset NAME` 应用指定项，`/preset clear`（`none`／`off`）停止管理，`--preset NAME` 在启动时应用；状态栏显示当前 Preset。Preset 只作用于当前 Main 会话，不静默改变 Fresh／Inherited Subagent 的路由或模型。
+
+**应用与失败。** 先校验模型存在于目录，再 `setModel`；模型不可用则整体不应用并报错，绝不报成功；thinking 与 tools 随后应用。`instructions` 作为独立 system 段落经 `prompt-section-journal` 增量投影并在 resume／tree／fork／reload 回放，不覆盖整份 system prompt。
+
+**分支与清除。** `preset-state` 记录保存应用时解析快照（model／thinking／tools／codemode／instructions），分支恢复按快照还原；`/preset clear` 写入 null 快照并停止管理，不回滚已有 model／thinking／tools。
+
+**Codemode 模式。** 扩展无公开 `codemode.mode` 写入通道。Preset 以 `codemode-mode` 分支记录覆盖本会话的生效模式，原生 Codemode 工具与 `capability.lazySchemas` 均读取该生效模式，从下一次请求生效；它只改变声明投影，不改变启用集合、授权记录或工具 exposure。若宿主无法应用该覆盖，只记录并给出 warning，不把未生效报成成功。
 
 ## `/btw` 独立问答
 

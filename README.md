@@ -35,7 +35,8 @@ npm ci
 npx pi -e ./extensions/result-rendering.ts \
   -e ./extensions/subagent.ts \
   -e ./extensions/capability.ts \
-  -e ./extensions/btw.ts
+  -e ./extensions/btw.ts \
+  -e ./extensions/preset.ts
 ```
 
 先在 Pi 中配置可用模型与认证。Harness 使用 Pi 已有的模型配置，不单独管理凭据。
@@ -46,7 +47,8 @@ npx pi -e ./extensions/result-rendering.ts \
 pi -e /path/to/pi-harness/extensions/result-rendering.ts \
   -e /path/to/pi-harness/extensions/subagent.ts \
   -e /path/to/pi-harness/extensions/capability.ts \
-  -e /path/to/pi-harness/extensions/btw.ts
+  -e /path/to/pi-harness/extensions/btw.ts \
+  -e /path/to/pi-harness/extensions/preset.ts
 ```
 
 ### 持久注册
@@ -68,10 +70,11 @@ Pi 会在用户设置的 `packages` 中登记该目录。更新仓库后，重�
 | [subagent.ts](extensions/subagent.ts) | 子任务、会话通信与依附其生命周期的异步 Shell |
 | [capability.ts](extensions/capability.ts) | Capability 发现、启用、权限投影、MCP 装配与 Main 最终出站缓存标识观察 |
 | [btw.ts](extensions/btw.ts) | `/btw` 独立问答 |
+| [preset.ts](extensions/preset.ts) | 模型 Preset 切换、专属指引与工具修饰符 |
 | [result-rendering.ts](extensions/result-rendering.ts) | 工具结果与消息的折叠显示 |
 | [shell-preflight.ts](extensions/shell-preflight.ts) | 可选的 Shell 语法检查、权限模式与人工审批 |
 
-包配置默认加载前四项；Shell Preflight 单独启用。Subagent 与 Capability 通常一起加载，注册入口分开，底层继续共享执行能力、配置与权限状态。独立问答和结果渲染可按需选择。未加载 Capability 入口时，不安装 Main 最终出站缓存标识观察器。
+包配置默认加载结果渲染、Subagent、Capability、独立问答与模型 Preset；Shell Preflight 单独启用。Subagent 与 Capability 通常一起加载，注册入口分开，底层继续共享执行能力、配置与权限状态。独立问答、模型 Preset 和结果渲染可按需选择。未加载 Capability 入口时，不安装 Main 最终出站缓存标识观察器。
 
 已有配置若显式引用 `extensions/harness.ts`，请替换为所需的上述入口；该聚合入口已移除。
 
@@ -120,6 +123,19 @@ Pi 用户目录默认为 `~/.pi/agent/`；设置 `PI_CODING_AGENT_DIR` 时使用
 命令支持 Tab 补全。通过 Pi 原生 `/mcp` 命令重连后，新注册的工具可以直接浏览和启用，不需要重启 Harness。
 
 如需把某些工具保留给用户明确授权，可在 `capability.manualTools` 中配置。模型发现不会推荐这些工具，子会话也不会继承。详细配置见[Harness 参数配置](docs/harness-configuration.md)。
+
+### 切换模型 Preset
+
+在全局 agent 目录或受信项目 `.pi/` 放置 `presets.json`，每项可配置模型、thinking、工具 `+/-` 修饰符、专属指引和 Codemode 模式。命令：
+
+| 命令 | 用途 |
+| --- | --- |
+| `/preset` | 打开列表选择 Preset |
+| `/preset <名称>` | 应用指定 Preset |
+| `/preset clear` | 停止管理（不回滚当前 model／thinking／tools） |
+| `--preset <名称>` | 启动时应用 |
+
+Preset 只作用于当前会话，不改变子任务路由。`codemode.mode` 通过本会话分支记录生效，只改变工具声明投影；定义与边界见[接口契约](docs/interface-contract.md#模型-preset)和[Harness 参数配置](docs/harness-configuration.md#模型-preset)。
 
 ### 临时问个问题
 

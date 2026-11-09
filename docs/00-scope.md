@@ -34,6 +34,11 @@ Pi Harness 是基于 Pi SDK 构建的 Coding Agent Harness 扩展。项目核心
 - `/btw` 在终端底部提供继承当前背景的临时独立问答，阻断工具调用，不写入主对话。
 - 异步 Shell 通过 `pi-job` 运行终端任务，返回增量输出，并将完成结果交回发起调用的 Agent；POSIX 使用 tmux，Windows 使用 psmux。
 
+### 6. 模型 Preset（附加能力）
+
+- 通过 `presets.json` 预定义模型、思考级别、工具 `+/-` 修饰符、模型专属指引和 Codemode 模式；`/preset`、`--preset` 应用，`/preset clear` 停止管理。
+- 只作用于当前 Main 会话，不改变 Fresh／Inherited Subagent 路由；应用结果与快照写入当前分支以便恢复。
+
 ## 待交付与实验状态
 
 - **用户交互界面**：`/subagent` 已提供任务与会话查看、任务停止和显式会话连接。可视化／交互式任务管理界面，以及通过用户命令直接向子 Agent 发送消息，仍未交付。

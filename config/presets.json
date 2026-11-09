@@ -1,0 +1,16 @@
+{
+  "fast": {
+    "description": "日常模型配置（示例，使用合成占位数据）",
+    "model": { "provider": "fake-provider", "id": "fast-model" },
+    "thinkingLevel": "medium",
+    "tools": ["+codemode", "-bash"],
+    "codemode": { "mode": "only" },
+    "instructions": "该模型的专属调用指引（示例）。"
+  },
+  "deep": {
+    "description": "深度推理（示例）",
+    "model": { "provider": "fake-provider", "id": "deep-model" },
+    "thinkingLevel": "high",
+    "tools": ["+write", "+edit"]
+  }
+}

@@ -1,6 +1,6 @@
 # 提案：Capability 启用时检查调用入口并提示部分失败
 
-状态：已实现。与 [原生工具暴露行为修正](capability-native-exposure-proposal.md) 一起完成，为 [延迟 schema](capability-lazy-schemas-proposal.md) 提供统一检查。
+状态：已实现（已归档）。与 [原生工具暴露行为修正](capability-native-exposure-proposal.md) 一起完成，为 [延迟 schema](capability-lazy-schemas-proposal.md) 提供统一检查。
 
 ## 目标
 

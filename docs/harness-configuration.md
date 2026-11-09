@@ -145,7 +145,7 @@ Fresh 与 Inherited 直接子节点在同一 Subagent 树内使用独立的父�
 
 `capability.lazySchemas` 默认为空数组，列出需要延迟暴露 schema 的 MCP 服务器或 namespace。每项必须是明确的 `mcp://<server>` 或 `namespace://<name>` 引用（成员引用 `mcp://<server>/<tool>` 归并到其 server）；未知 scheme 被忽略，后一层配置整体替换前一层，不做合并。
 
-该配置仅在 Codemode 已启用且 `codemode.mode` 为 `only` 时生效；Codemode 未启用或为 `on` 模式时配置保留但不生效，沿用原生声明方式。命中组的成员仍以名称出现在发现结果与 `describeNamespace` 中，但参数与返回值 schema 不进入原生工具声明，也不内联进 Codemode 描述；模型通过 `describeTool` 读取完整接口后经 Codemode 执行。命中组中 model-only 工具不能经 Codemode 调用，配置命中时应显式报告而不能隐藏其声明。模式切换只改变声明投影，不改变启用集合、授权记录或工具 exposure。未生效的配置本身不是拒绝理由。
+该配置仅在 Codemode 已启用且生效模式为 `only` 时生效；Codemode 未启用或为 `on` 模式时配置保留但不生效，沿用原生声明方式。生效模式可以来自 Pi 设置，也可由模型 Preset 通过分支记录覆盖（见下节）。命中组的成员仍以名称出现在发现结果与 `describeNamespace` 中，但参数与返回值 schema 不进入原生工具声明，也不内联进 Codemode 描述；模型通过 `describeTool` 读取完整接口后经 Codemode 执行。命中组中 model-only 工具不能经 Codemode 调用，配置命中时应显式报告而不能隐藏其声明。命中组的内部继承检索同样不重发这些 schema。模式切换只改变声明投影，不改变启用集合、授权记录或工具 exposure。未生效的配置本身不是拒绝理由。
 
 ### 搜索
 
@@ -182,7 +182,21 @@ Fresh 与 Inherited 直接子节点在同一 Subagent 树内使用独立的父�
 | `codemode.memoryLimitBytes` | 268,435,456 | Harness 沙箱内存上限，单位为字节 |
 | `codemode.defaultMaxOutputTokens` | 10,000 | 未显式指定时的输出 token 上限 |
 
-脚本显式提供的 `max_output_tokens` 优先于插件默认值。宿主沿用每 token 4 字符的输出估算，超限时保存完整文件并返回路径。Pi 原生的 `codemode.mode` 和 `inlineBudget` 仍使用 Pi 设置，不在这里重复配置。
+脚本显式提供的 `max_output_tokens` 优先于插件默认值。宿主沿用每 token 4 字符的输出估算，超限时保存完整文件并返回路径。Pi 原生 `codemode.mode` 和 `inlineBudget` 的基准仍来自 Pi 设置，不在这里重复配置；模型 Preset 可在本会话分支上记录一个生效模式覆盖（见下节），只改变声明的 `on`／`only` 投影，不改写 Pi 设置或工具 exposure。
+
+## 模型 Preset
+
+模型 Preset 使用独立配置文件，不写在 `harness.json`：全局 agent 目录的 `presets.json`，以及受信项目的 `.pi/presets.json`；项目同名项整体覆盖全局。每项字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `model` | `{ provider, id }`，必须存在于当前模型目录，否则整体不应用并报错 |
+| `thinkingLevel` | 思考级别名称，交由 `setThinkingLevel` 应用 |
+| `tools` | 原生 `+name`／`-name`／裸名数组；始终基于配置的默认工具集计算，先 A 后 B 与直接应用 B 一致 |
+| `codemode` | `{ mode: "on" | "only" }`；在会话分支记录生效模式，只改变声明投影，不写 Pi 设置 |
+| `instructions` | 模型专属指引正文，作为独立 system 段落经段落日志增量投影与回放 |
+
+`/preset NAME`、`--preset NAME` 应用，`/preset clear` 停止管理（不回滚 model／thinking／tools），`/preset` 打开选择器。Preset 只作用于当前 Main 会话，不改 Fresh／Inherited Subagent 路由。分支快照与应用语义见[接口契约](interface-contract.md#模型-preset)。
 
 Worker 等待时间、Worker 数量环境变量、预览行数、`ALL_TOOLS` 的短描述格式和诊断正文上限保持现有行为，不作为本轮配置项。
 

@@ -4,7 +4,7 @@
 
 ## 插件注册
 
-`extensions/` 只保留公开注册入口：`subagent.ts`、`capability.ts`、`btw.ts`、`result-rendering.ts` 和可选的 `shell-preflight.ts`。包清单按结果渲染、Subagent、Capability、独立问答的顺序加载默认入口。Capability 的完整装配位于 `src/capability/extension.ts`；子会话直接复用它，不从公开入口重复装配根工具。
+`extensions/` 只保留公开注册入口：`subagent.ts`、`capability.ts`、`btw.ts`、`result-rendering.ts`、`preset.ts` 和可选的 `shell-preflight.ts`。包清单按结果渲染、Subagent、Capability、独立问答、模型 Preset 的顺序加载默认入口。Capability 的完整装配位于 `src/capability/extension.ts`；子会话直接复用它，不从公开入口重复装配根工具。模型 Preset 的装配位于 `src/preset/*` 与 `extensions/preset.ts`。
 
 入口分开，底层仍共享。Pi 给每个扩展不同的 API 对象；`harness-config.ts` 与 `capability/scope.ts` 通过同一 ResourceLoader 的原生事件总线取得共享配置提供者和资格状态，保留各自 API 的局部引用，不建立进程全局会话注册表。不同 ResourceLoader 的总线隔离；子会话继续通过显式父资格链和配置快照继承。异步 Shell 仍依附 Subagent 的资源生命周期。
 
@@ -21,8 +21,10 @@
 | `extension.ts`、`lifecycle.ts` | SDK 生命周期钩子、代次隔离、退役期限和资源隔离 | 伪造物理退出、重跑已结束任务 |
 | `surface.ts`、`message-write.ts` | 工具声明、调用方身份绑定、输入捕获、专用 `msg_write` 消息工具（`write` 为 SDK 原生文件工具完全保持不变） | 持有全局注册表或执行循环 |
 | `command.ts`、`status-view.ts` | `/subagent` 命令注册、参数解析、错误呈现与列表文本渲染 | Job 状态、准入或消息投递 |
-| `capability/command.ts`、`capability/catalog.ts`、`capability/enable.ts`、`capability/activation.ts` | `/capability` 目录浏览与用户启用、按实时注册表解析启用目标、激活的共享实现（发现、命令与跨会话回复工具加载） | 检索会话、路由、Subagent 状态 |
+| `capability/command.ts`、`capability/catalog.ts`、`capability/enable.ts`、`capability/activation.ts` | `/capability` 目录浏览与用户启用、按实时注册表解析启用目标、激活与可达性判定（发现、命令与跨会话回复工具加载共用） | 检索会话、路由、Subagent 状态 |
 | `capability/admission.ts` | 单次操作的工具准入视图：一次解析作用域链与分支记录，提供 `declares`（声明）、`admits`（执行）、`admitsManual` 与 `admitsServer` | 跨请求缓存、第二套权限服务、改写激活集 |
+| `capability/lazy-schemas.ts`、`capability/codemode-mode.ts` | lazySchemas ref 解析与组归属、生效 Codemode 模式（预设记录在分支上的覆盖，回退到 Pi 设置） | 改变启用集合、授权或工具 exposure；写入 Pi 原生设置 |
+| `src/preset/*`、`extensions/preset.ts` | 模型 Preset 配置加载与合并、解析、模型／thinking／工具应用、分支快照与 instructions 段落、`/preset` 与 `--preset` | Capability 检索、Subagent 路由、Pi 原生设置写入 |
 | `listeners.ts`、`ipc/` | 端点目录、监听、NDJSON 分帧、平台资源归属校验，以及“端点属于哪个 session 命名空间”的地址分类（Unix 为目录包含，Windows 为管道名前缀） | 用显示窗口决定可达性、另写广播状态机、用文件系统路径推断管道归属 |
 | `session-peers.ts`、`session-directory.ts` | 根持有的跨 session 操作对象、连接与目录名称同步；目录发布、存活校验与归属删除，受管 `Main` 寻址、复合发送者身份与单帧写入 | 根代次、压缩闸门、Runtime、认证协议或跨主机调度 |
 | `native-delivery.ts`、`delivery.ts` | 独立通知封装、检查原生交接结果、明确拒收后的保留会话追加 | 模型已读回执、自动重发或消息合并 |
@@ -135,7 +137,7 @@ v1 转换只存在于独立离线脚本。生产运行时不转换、不恢复�
 
 Capability 通过共享执行句柄创建内部 SDK 会话，不要求公开 Subagent 工具激活。公共会话与检索会话共用 ModelRuntime 桥和 Budget 截止计时，但保留不同业务规则：Subagent 交付任务结果，Capability 交付验证过的 refs。
 
-Capability 与 Subagent 共用 `provider-session.ts` 的能力判断。Responses、Anthropic 与 Chat Completions 的工具和消息编码使用 Pi 原生 provider；Chat Completions 只有在两个明确的 compat 位开启时采用新增工具协议，同名 schema 替换仍可能重建前缀。详情见[Provider 传输行为](provider-transports.md)。Capability 沿用捕获的 thinking level。检索会话保留非 manual 的继承声明，由 tool-call hook 和无父执行句柄的占位工具阻止执行。Main 与普通 Subagent 在成功压缩后淘汰本窗口未使用的发现成员，重建工具 checkpoint，并在 system 头部固定本次淘汰通知；内部检索与 `/btw` 不独立执行淘汰。
+Capability 与 Subagent 共用 `provider-session.ts` 的能力判断。Responses、Anthropic 与 Chat Completions 的工具和消息编码使用 Pi 原生 provider；Chat Completions 只有在两个明确的 compat 位开启时采用新增工具协议，同名 schema 替换仍可能重建前缀。详情见[Provider 传输行为](provider-transports.md)。Capability 沿用捕获的 thinking level。检索会话保留非 manual 的继承声明，由 tool-call hook 和无父执行句柄的占位工具阻止执行；同时按 `capability.lazySchemas` 将命中组的声明一并排除，避免内部检索重发大型 schema。生效 Codemode 模式由 `capability/codemode-mode.ts` 读取分支上的预设覆盖（回退到 Pi 设置），只改变声明投影，不改变启用集合或授权。Main 与普通 Subagent 在成功压缩后淘汰本窗口未使用的发现成员，重建工具 checkpoint，并在 system 头部固定本次淘汰通知；内部检索与 `/btw` 不独立执行淘汰。
 
 Inherited 与检索会话保留独立本地 Session ID，Responses 请求仅替换原生默认 `prompt_cache_key` 为继承标识；既有自定义 key 与最终 payload hook 优先。`harness-cache-identity` 原生 custom 条目保存分支缓存标识，支持嵌套继承、恢复和续跑。Fresh 默认沿用自己的标识。观察器仅将有效非空字符串 key 写入 lineage；请求暂时使用 `cacheRetention: none` 或最终 payload 缺少 key 不改变继承身份。仅显式记录或安装 `key: null` 才持续禁用，最终 payload hook 仍可覆盖当前请求。Main 通过共享 ModelRuntime 桥观察本会话所有 provider payload hooks 完成后的最终 key，并写入当前分支；会话导航、关闭与已中止请求的围栏阻止晚到写入。观察范围限定于所属会话，摘要和其他会话不计入 Main 请求。
 

@@ -29,6 +29,7 @@
   },
   "capability": {
     "manualTools": [],
+    "lazySchemas": [],
     "noSelectionLimit": 3,
     "pruneOnCompaction": true,
     "budget": {

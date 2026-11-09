@@ -1,6 +1,6 @@
 # 提案：only 模式按 MCP／namespace 延迟暴露 schema
 
-状态：已实现。依赖 [原生工具暴露行为修正](capability-native-exposure-proposal.md)。本文描述可选功能，不构成当前接口契约。
+状态：已实现（已归档）。依赖 [原生工具暴露行为修正](capability-native-exposure-proposal.md)。本文描述可选功能，不构成当前接口契约。
 
 ## 目标
 

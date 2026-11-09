@@ -11,6 +11,10 @@
 | [父 Subagent 等待保活设计](subagent-parent-hold-design.md) | parent-hold 已实现，使用[当前架构](../architecture.md) |
 | [Capability 与 MCP 现场排查](capability-mcp-registration-investigation.md) | 保存脱敏现象与被后续核对修正的推断，未修复项见[已知问题](../known-issues.md) |
 | [Subagent 状态命令提案](subagent-status-command-proposal.md) | `/subagent` 命令已实现，使用[接口契约](../interface-contract.md) |
+| [Capability 原生工具暴露行为提案](capability-native-exposure-proposal.md) | 保留原生 exposure 与 only 语义已实现，使用[接口契约](../interface-contract.md) |
+| [Capability 启用可达性提案](capability-activation-reachability-proposal.md) | 无调用入口时拒绝成员、partial 与用户 warning 已实现，使用[接口契约](../interface-contract.md) |
+| [Capability 延迟 schema 提案](capability-lazy-schemas-proposal.md) | `capability.lazySchemas` 已实现，默认关闭，使用[配置说明](../harness-configuration.md) |
+| [模型 Preset 提案](model-presets-proposal.md) | 模型切换、专属指引、工具修饰符与模式生效已实现；保留运行期边界，使用[接口契约](../interface-contract.md) |
 | [已修复问题记录](resolved-issues.md) | 保存修复时的证据和验证范围；当前缺陷见[已知问题](../known-issues.md) |
 
 ## 旧契约与候选设计

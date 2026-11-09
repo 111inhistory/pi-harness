@@ -1,12 +1,12 @@
 # 提案：模型 Preset 与模型专属指引
 
-状态：已实现（含边界，见文末）。先完成 Capability 的 [原生暴露行为](capability-native-exposure-proposal.md)、[启用可达性检查](capability-activation-reachability-proposal.md) 和 [可选延迟 schema](capability-lazy-schemas-proposal.md)。本文是本轮需求的设计草案，不构成当前接口契约。
+状态：已实现（已归档，运行期边界见文末）。应用于 Capability 的 [原生暴露行为](capability-native-exposure-proposal.md)、[启用可达性检查](capability-activation-reachability-proposal.md) 和 [可选延迟 schema](capability-lazy-schemas-proposal.md) 之上；原文保留设计背景，不构成当前接口契约。
 
 ## 范围
 
 Preset 用于模型切换、thinking 设置、模型专属指引和工具配置。plan／review 不做成 Preset；需要时通过独立 Skill 启用。
 
-本提案不重启此前暂缓的 [Agent Preset 与 Seed 会话提案](agent-presets-proposal.md)。旧提案中的预定义角色、Seed、外部编排和权限组合不属于本轮范围。
+本提案不重启此前暂缓的 [Agent Preset 与 Seed 会话提案](../reviews/agent-presets-proposal.md)。旧提案中的预定义角色、Seed、外部编排和权限组合不属于本轮范围。
 
 ## 已确定的配置方向
 

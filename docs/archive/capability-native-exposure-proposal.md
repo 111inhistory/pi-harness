@@ -1,6 +1,6 @@
 # 提案：Capability 遵循原生工具暴露行为
 
-状态：已实现。本文记录已讨论的改动边界，不构成当前接口契约。先完成 Capability，再实现 [模型 Preset](model-presets-proposal.md)。
+状态：已实现（已归档）。本文保留实现时的改动边界，不构成当前接口契约；当前行为见[接口契约](../interface-contract.md)。
 
 ## 目标
 
