@@ -101,6 +101,7 @@ import {
   capabilityModelResult, capabilityToolDelta, type CapabilityInterfaceSources,
 } from "./model-result.ts";
 import { retrievalToolLoadout } from "./retrieval-tools.ts";
+import { lazySchemasActive, matchesLazySchemaRef, parseLazySchemaRefs } from "./lazy-schemas.ts";
 
 const toolsPrompt = readToolsPrompt();
 const policyPrompt = readPolicyPrompt();
@@ -332,6 +333,7 @@ export default function capabilityExtension(
       } catch (error) {
         result = capabilityFailureResult(`capability discovery failed: ${errorMessage(error)}.`);
       }
+      result = appendLazyModelOnlyAdvisory(pi, configFor(ctx), result);
       const delta = capabilityToolDelta(result, previouslyActive);
       const withInterfaces = supplySelectedToolInterfaces(delta, pi);
       const projected = interfaceSources === null ? withInterfaces : capabilityModelResult(withInterfaces, interfaceSources);
@@ -553,6 +555,45 @@ function countToolMembers(hits: readonly CapabilitySearchHit[]): number {
     else total += 1;
   }
   return total;
+}
+
+/**
+ * Report lazySchemas groups whose selected member is model-only.
+ *
+ * A model-only tool is declared to the model and called directly, but it can
+ * never be nested through Codemode. Lazy projection must not hide its
+ * declaration, so the member keeps its native declaration and the detail record
+ * says the lazy interface does not apply. Advisory only: the result status and
+ * the published members are unchanged.
+ */
+function appendLazyModelOnlyAdvisory(
+  pi: ExtensionAPI,
+  config: HarnessConfig,
+  result: CapabilityDiscoveryResult,
+): CapabilityDiscoveryResult {
+  if (result.status === "failed") return result;
+  const refs = parseLazySchemaRefs(config.capability.lazySchemas);
+  if (refs.empty || !lazySchemasActive(pi)) return result;
+  const all = pi.getAllTools();
+  const names = new Set<string>();
+  for (const hit of [...result.tools, ...result.mcp]) {
+    if (Array.isArray(hit.tools)) {
+      for (const member of hit.tools) if (typeof member.name === "string") names.add(member.name);
+    } else if (typeof hit.name === "string") {
+      names.add(hit.name);
+    }
+  }
+  const blocked = [...names].filter((name) => {
+    const tool = all.find((entry) => entry.name === name);
+    if (tool === undefined) return false;
+    return tool.exposure === "model-only" && matchesLazySchemaRef(refs, name, tool.namespace);
+  });
+  if (blocked.length === 0) return result;
+  return {
+    ...result,
+    warnings: [...result.warnings,
+      `lazySchemas matches model-only tool(s) ${blocked.join(", ")} that cannot be called through Codemode; their declarations are kept.`],
+  };
 }
 
 /** Interfaces the next request can supply without repeating them in this result. */

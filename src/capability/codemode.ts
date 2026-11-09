@@ -324,9 +324,24 @@ export function installCapabilityCodemode(
     },
   });
   // An active codemode/deferred tool can still have a direct declaration.
-  // Reuse the native loadout's actual mask, not the global mode setting.
+  // Reuse the native loadout's actual mask, not the global mode setting. While
+  // lazy schemas are active a matched group is withheld from the declaration
+  // even before the next loadout is prepared, so its interface comes only from
+  // Codemode's describeTool; model-only members are excluded because they cannot
+  // be called from a script and hiding them would strand their entry.
   return () => {
     const active = pi.getActiveTools();
-    return new Set(active.filter((name) => !active.includes('codemode') || !hiddenDeclarations.has(name)));
+    const codemodeActive = active.includes('codemode');
+    const cfg = currentContext ? configFor(currentContext) : DEFAULT_HARNESS_CONFIG;
+    const refs = parseLazySchemaRefs(cfg.capability.lazySchemas);
+    const lazy = lazySchemasActive(pi) && !refs.empty
+      ? new Set(active.filter((name) => {
+          const tool = pi.getAllTools().find((entry) => entry.name === name);
+          return tool !== undefined && tool.exposure !== 'model-only'
+            && matchesLazySchemaRef(refs, name, tool.namespace);
+        }))
+      : new Set<string>();
+    return new Set(active.filter((name) =>
+      (!codemodeActive || !hiddenDeclarations.has(name)) && !lazy.has(name)));
   };
 }
