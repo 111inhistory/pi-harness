@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-const entries = ['result-rendering', 'subagent', 'capability', 'btw'];
+const entries = ['result-rendering', 'subagent', 'capability', 'btw', 'preset'];
 
 for (const registration of ['extensions', 'package'] as const) {
 test(`separate plugins load through Pi's ${registration} registration without a TypeScript preload`, async t => {
@@ -45,7 +45,7 @@ test(`separate plugins load through Pi's ${registration} registration without a 
   ], { env, encoding: 'utf8', timeout: 30_000 });
   assert.equal(child.status, 0, child.stderr || child.error?.message);
   const loaded = JSON.parse(child.stdout) as { path: string; tools: string[]; commands: string[] }[];
-  assert.equal(loaded.length, 4);
+  assert.equal(loaded.length, entries.length);
   const byName = new Map(loaded.map(entry => [path.basename(entry.path, '.ts'), entry]));
   assert.ok(byName.get('subagent')?.tools.includes('msg_write'));
   assert.ok(byName.get('subagent')?.commands.includes('subagent'));
@@ -53,6 +53,8 @@ test(`separate plugins load through Pi's ${registration} registration without a 
   assert.ok(byName.get('capability')?.commands.includes('mcp'));
   assert.deepEqual(byName.get('btw')?.tools, []);
   assert.deepEqual(byName.get('btw')?.commands, ['btw']);
+  assert.deepEqual(byName.get('preset')?.tools, []);
+  assert.ok(byName.get('preset')?.commands.includes('preset'));
   assert.deepEqual(byName.get('result-rendering')?.tools, []);
 });
 }

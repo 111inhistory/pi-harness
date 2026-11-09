@@ -9,11 +9,11 @@
  * the instruction text goes through `prompt-section-journal` so it survives
  * resume, tree navigation, fork and reload.
  *
- * Deliberately NOT registered in `package.json` yet: the load goes through the
- * harness integration step so this file cannot affect unrelated sessions until
- * it is wired in.
- *
- * Runtime limitation (documented): `codemode.mode` has no public extension write
+ * Registered in `package.json` `pi.extensions`. Model/thinking/tool selection go
+ * through the public SDK session API; the instruction text goes through
+ * `prompt-section-journal` so it survives resume, tree navigation, fork and
+ * reload.
+ * * Runtime limitation (documented): `codemode.mode` has no public extension write
  * path, so a preset records it for reproducibility but does not switch it live;
  * the apply warns instead of claiming success.
  */
