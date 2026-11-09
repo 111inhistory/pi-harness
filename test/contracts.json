@@ -235,6 +235,97 @@
         "test/typed/preset-extension.test.ts",
         "test/typed/preset-sdk.test.ts"
       ]
+    },
+    {
+      "id": "session-cache.identity",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/provider-transports.md",
+          "heading": "## 缓存标识"
+        }
+      ],
+      "tests": [
+        "test/typed/session-cache.test.ts",
+        "test/typed/session-cache-runtime.test.ts",
+        "test/typed/session-cache-persistence.test.ts",
+        "test/typed/main-session-cache.test.ts"
+      ]
+    },
+    {
+      "id": "provider.transport-tools",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/provider-transports.md",
+          "heading": "## 工具与指引更新"
+        }
+      ],
+      "tests": [
+        "test/typed/provider-session.test.ts",
+        "test/typed/provider-session-sdk.test.ts",
+        "test/typed/completions-tool-prefix.test.ts"
+      ]
+    },
+    {
+      "id": "config.resolve",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/harness-configuration.md",
+          "heading": "## 配置位置与生效时间"
+        }
+      ],
+      "tests": [
+        "test/typed/harness-config.test.ts",
+        "test/typed/harness-config-sdk.test.ts",
+        "test/typed/harness-config-deadline.test.ts"
+      ]
+    },
+    {
+      "id": "tool-guidance.journal",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/provider-transports.md",
+          "heading": "## 工具与指引更新"
+        }
+      ],
+      "tests": [
+        "test/typed/tool-guidance-record.test.ts",
+        "test/typed/tool-prompt-updates.test.ts",
+        "test/typed/tool-prompts.test.ts",
+        "test/typed/prompt-section-journal.test.ts"
+      ]
+    },
+    {
+      "id": "btw.panel",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "## `/btw` 独立问答"
+        }
+      ],
+      "tests": [
+        "test/typed/btw-command.test.ts",
+        "test/typed/btw-panel.test.ts",
+        "test/typed/btw-session.test.ts",
+        "test/typed/btw-tui.test.ts"
+      ]
+    },
+    {
+      "id": "result-rendering.folding",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 终端结果折叠"
+        }
+      ],
+      "tests": [
+        "test/typed/result-rendering.test.ts"
+      ]
     }
   ],
   "reviews": {
