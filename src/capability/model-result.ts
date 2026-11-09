@@ -75,6 +75,12 @@ export interface CapabilityInterfaceSources {
   readonly declared: ReadonlySet<string>;
   /** Active tools that Codemode's describeTool/describeNamespace can inspect. */
   readonly queryable?: ReadonlySet<string> | undefined;
+  /**
+   * Members of a lazily projected group. Hold their names in the compact result
+   * even when the interface is supplied only by Codemode's query path; a plain
+   * Codemode-only group keeps the pre-existing names-omitted shape.
+   */
+  readonly lazyNames?: ReadonlySet<string> | undefined;
 }
 
 export type CapabilityModelResult<T extends CapabilityProjectionResult> =
@@ -123,18 +129,19 @@ export function capabilityModelResult<T extends CapabilityProjectionResult>(
       namespace: _namespace,
       ...stable
     } = hit;
-    // When the interface is only reachable through Codemode's query path the
-    // declaration no longer names the members, so keep a names-only list. A
-    // group whose interface a native declaration already supplies keeps its
-    // names in that declaration and stays compact.
-    const memberNames = queried && Array.isArray(hit.tools)
-      ? hit.tools.flatMap((member) => typeof member.name === "string"
+    // A lazily projected group withholds schemas from every declaration, so the
+    // model needs the member names in the result to know what to query. A plain
+    // Codemode-only group keeps its names in the Codemode directory/declaration
+    // and stays compact (names omitted), matching the existing contract.
+    const lazy = sources.lazyNames;
+    const memberNames = queried && lazy !== undefined && Array.isArray(hit.tools)
+      ? hit.tools.flatMap((member) => typeof member.name === "string" && lazy.has(member.name)
         ? [{ name: member.name, ...(typeof member.ref === "string" ? { ref: member.ref } : {}) }]
         : [])
       : undefined;
     return {
       ...stable,
-      ...(memberNames === undefined ? {} : { tools: memberNames, toolCount: memberNames.length }),
+      ...(memberNames === undefined || memberNames.length === 0 ? {} : { tools: memberNames, toolCount: memberNames.length }),
       interface: declared
         ? "Declared through the session's current tool loadout; use the tool declaration for arguments."
         : "Query the current interface with codemode describeTool; describeNamespace lists the group's members.",

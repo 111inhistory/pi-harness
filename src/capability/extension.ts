@@ -322,7 +322,10 @@ export default function capabilityExtension(
             if (activation.warnings.length > 0) {
               result = withOuterWarnings(result, activation.warnings);
             }
-            interfaceSources = capabilityInterfaceSources(activation.active, declaredTools, eligible.has("codemode"));
+            interfaceSources = capabilityInterfaceSources(
+              activation.active, declaredTools, eligible.has("codemode"),
+              lazySelectedNames(pi, config, activation.active),
+            );
           } catch (error) {
             result = retainSelectedTools(pi, result, "activation", new Set(pi.getActiveTools()));
             result = withOuterWarnings(result, [`selected tools could not be activated: ${errorMessage(error)}`]);
@@ -601,13 +604,35 @@ function capabilityInterfaceSources(
   active: ReadonlySet<string>,
   declaredTools: () => ReadonlySet<string>,
   codemodeAllowed: boolean,
+  lazyNames?: ReadonlySet<string> | undefined,
 ): CapabilityInterfaceSources {
   return {
     declared: declaredTools(),
     ...(active.has("codemode") && codemodeAllowed
       ? { queryable: new Set([...active].filter((name) => name !== "codemode")) }
       : {}),
+    ...(lazyNames === undefined ? {} : { lazyNames }),
   };
+}
+
+/**
+ * Selected, active members of a configured lazy group while the lazy projection
+ * is live. Their names stay in the compact model result because the schemas are
+ * withheld from every declaration.
+ */
+function lazySelectedNames(
+  pi: ExtensionAPI,
+  config: HarnessConfig,
+  active: ReadonlySet<string>,
+): ReadonlySet<string> | undefined {
+  if (!lazySchemasActive(pi)) return undefined;
+  const refs = parseLazySchemaRefs(config.capability.lazySchemas);
+  if (refs.empty) return undefined;
+  const names = new Set<string>();
+  for (const tool of pi.getAllTools()) {
+    if (active.has(tool.name) && matchesLazySchemaRef(refs, tool.name, tool.namespace)) names.add(tool.name);
+  }
+  return names.size === 0 ? undefined : names;
 }
 
 /**
