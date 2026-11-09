@@ -90,6 +90,7 @@ import { activateToolNames, codemodeAvailable, toolReachability } from "./activa
 import { argumentCompletionProvider } from "../autocomplete.ts";
 import { installCapabilityCommand } from "./command.ts";
 import { manualToolMatcher } from "./manual-tools.ts";
+import { hasPresetBaseToolRemoval, restorePresetSnapshot } from "../preset/state.ts";
 import { createToolAdmission } from "./admission.ts";
 import { createCapabilityScopeView, setCapabilityRootOnlyPolicy } from "./scope.ts";
 import { providerSessionPolicy } from "../provider-session.ts";
@@ -242,12 +243,14 @@ export default function capabilityExtension(
   });
 
   pi.on('session_compact', (_event, ctx) => {
-    if (!configFor(ctx).capability.pruneOnCompaction) return;
     const branch = ctx.sessionManager.getBranch();
     // The active branch identifies the boundary even when summaries repeat.
     const checkpointId = branch.findLast(entry => entry.type === 'compaction')!.id;
-    // Let the SDK resolve configured +/- tool selectors, including custom defaults.
-    const protectedTools = new Set(SettingsManager.inMemory(pi.getSettings()).getDefaultTools()
+    if (!(configFor(ctx).capability.pruneOnCompaction || hasPresetBaseToolRemoval(branch, checkpointId))) return;
+    // A preset's stable selection replaces the Settings baseline. Dynamic
+    // Capability tools retained during a switch remain eligible for pruning.
+    const protectedTools = new Set(restorePresetSnapshot(branch)?.tools
+      ?? SettingsManager.inMemory(pi.getSettings()).getDefaultTools()
       ?? ['read', 'bash', 'edit', 'write']);
     // Keep discovery and its indirect execution path available for recovery.
     protectedTools.add('capability');

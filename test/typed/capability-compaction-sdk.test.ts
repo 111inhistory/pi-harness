@@ -9,6 +9,8 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import capabilityExtension from '../../src/capability/extension.ts';
 import { appendDiscoveryRecord, appendPruneRecord, latestPruneRecord } from '../../src/capability/discovery-record.ts';
 import { DEFAULT_HARNESS_CONFIG } from '../../src/harness-config.ts';
+import { appendPresetState } from '../../src/preset/state.ts';
+import { enableCapabilityTargets } from '../../src/capability/enable.ts';
 import { convertResponsesMessages } from '../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js';
 
 const USED = 'fixture_browser_open';
@@ -175,7 +177,7 @@ test(`real compaction prunes unused tools and rediscovery keeps the checkpoint p
 });
 }
 
-test("compaction skips pruning when capability.pruneOnCompaction is false", async (t) => {
+test("compaction prunes when enabled or a preset removed baseline tools", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-capability-pruning-off-"));
   let session: AgentSession | undefined;
   t.after(async () => { session?.dispose(); await rm(root, { recursive: true, force: true }); });
@@ -197,9 +199,11 @@ test("compaction skips pruning when capability.pruneOnCompaction is false", asyn
     defaultTools: ["read", "bash", "edit", "write", "capability", BASELINE], retry: { enabled: false },
     cacheWarming: "off", compaction: { enabled: false, keepRecentTokens: 0 } });
   const errors: unknown[] = [];
+  let fixtureApi: ExtensionAPI | undefined;
   const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
     noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
     extensionFactories: [{ name: "capability-pruning-fixture", factory(api) {
+      fixtureApi = api;
       capabilityExtension(api, {
         discovery: false,
         config: {
@@ -214,8 +218,9 @@ test("compaction skips pruning when capability.pruneOnCompaction is false", asyn
         parameters: { type: "object", properties: {} },
         execute: async () => ({ content: [{ type: "text", text: "Baseline" }], details: {} }),
       });
-      for (const name of [USED, UNUSED, "previously_pruned"]) api.registerTool({
+      for (const name of [USED, UNUSED, "previously_pruned", "fixture_manual"]) api.registerTool({
         name, label: name, description: name, defaultActive: false,
+        ...(name === "fixture_manual" ? { exposure: "deferred" as const } : {}),
         namespace: { name: "browser-fixture", instructions: "Use the browser fixture" },
         parameters: { type: "object", properties: {} },
         execute: async () => ({ content: [{ type: "text", text: "Executed" }], details: {} }),
@@ -249,6 +254,19 @@ test("compaction skips pruning when capability.pruneOnCompaction is false", asyn
   assert.ok(session.getActiveToolNames().includes(USED));
   assert.ok(!session.getActiveToolNames().includes("previously_pruned"));
 
+  assert.ok(fixtureApi);
+  assert.deepEqual(enableCapabilityTargets(fixtureApi, ["fixture_manual"], {
+    branch: session.sessionManager.getBranch(),
+  }).enabled, ["fixture_manual"]);
+
+  // Merely having a preset does not enable pruning. No previous preset base
+  // was reduced; this compaction must still honor the disabled global policy.
+  appendPresetState({ appendEntry: (kind, data) => session!.sessionManager.appendCustomEntry(kind, data) }, {
+    version: 1, snapshot: { name: 'fixture-preset', tools: [USED], instructions: null },
+  });
+  const pruneCount = session.sessionManager.getBranch().filter(entry =>
+    entry.type === 'custom' && entry.customType === 'capability-prune').length;
+
   await session.compact();
 
   // With pruneOnCompaction false:
@@ -261,5 +279,40 @@ test("compaction skips pruning when capability.pruneOnCompaction is false", asyn
   const latest = latestPruneRecord(session.sessionManager.getBranch());
   assert.equal(latest?.checkpointId, "prior-checkpoint");
   assert.deepEqual(latest?.removedTools, ["previously_pruned"]);
+  assert.equal(session.sessionManager.getBranch().filter(entry =>
+    entry.type === 'custom' && entry.customType === 'capability-prune').length, pruneCount,
+    'a preset baseline alone cannot cause a new prune record while pruning is disabled');
+
+  const writer = { appendEntry: (kind: string, data: unknown) => session!.sessionManager.appendCustomEntry(kind, data) };
+  appendPresetState(writer, {
+    version: 1, snapshot: { name: 'expanded', tools: [USED, UNUSED], instructions: null },
+  });
+  await session.prompt('A preset only added a baseline tool.');
+  await session.compact();
+  assert.ok(session.getActiveToolNames().includes(UNUSED), 'adding tools alone does not request pruning');
+  assert.equal(latestPruneRecord(session.sessionManager.getBranch())?.checkpointId, 'prior-checkpoint');
+
+  appendPresetState(writer, {
+    version: 1, snapshot: { name: 'reduced', tools: [USED], instructions: null },
+  });
+  await session.prompt('A preset removed a baseline tool.');
+  await session.compact();
+  assert.ok(!session.getActiveToolNames().includes(UNUSED),
+    'a baseline removal requests compaction pruning even when the global setting is false');
+  assert.ok(session.getActiveToolNames().includes(USED), 'the current preset baseline is protected');
+  assert.ok(session.getActiveToolNames().includes('fixture_manual'),
+    'the independent manual set survives pruning requested by a preset removal');
+  assert.ok(!latestPruneRecord(session.sessionManager.getBranch())?.removedTools.includes('fixture_manual'));
+  const removalCheckpoint = latestPruneRecord(session.sessionManager.getBranch())?.checkpointId;
+  assert.notEqual(removalCheckpoint, 'prior-checkpoint');
+
+  script = ['discover', 'done'];
+  await session.prompt('Rediscover tools after the requested pruning has completed.');
+  assert.ok(session.getActiveToolNames().includes(UNUSED));
+  await session.compact();
+  assert.ok(session.getActiveToolNames().includes(UNUSED),
+    'the baseline removal only requests pruning through the next successful compaction');
+  assert.equal(latestPruneRecord(session.sessionManager.getBranch())?.checkpointId, removalCheckpoint,
+    'an old preset removal does not keep overriding the disabled global setting');
   assert.deepEqual(errors, []);
 });

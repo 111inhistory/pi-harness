@@ -46,7 +46,7 @@ Capability 应避免让 Main 接触与当前工作无关的资源目录和检索
 
 ### 原生发现入口与 Codemode
 
-**Capability 是 Tool／MCP／Skill 的发现入口。Codemode 仍可启用，但只负责执行和组合调用。**
+**Capability 是 Tool／MCP／Skill 的发现入口。Codemode 仍可启用，但只负责执行和组合调用。** 已提供的 Skill 入口可直接读取，无需再次发现；模型不通过文件系统或网络搜索未知 Skill。
 
 `extensions/capability.ts` 注册 Capability 与 MCP 装配，并安装 Main 最终出站 payload 缓存标识观察器；未加载该入口时，不安装此观察器。该入口执行以下发现边界：
 
@@ -144,7 +144,7 @@ API 协调应同时保证资源指引、工具状态与供应商接口声明一�
 
 ### 压缩时收缩发现能力
 
-Main 与普通 Subagent 在成功 compaction 后移除上次压缩以来未使用的 Capability 工具成员；使用证据包括直接执行结果和 Codemode 的持久化嵌套调用记录。手动启用的工具、基础工具与发现恢复入口保留。MCP／namespace 按成员收缩，空组移除共同指引与记忆；Skill 不参与淘汰，不断开 MCP 连接。
+Main 与普通 Subagent 在成功 compaction 后，若 `capability.pruneOnCompaction` 开启，或上次压缩以来应用 Preset 移除过基线工具，则移除窗口内未使用的 Capability 工具成员；使用证据包括直接执行结果和 Codemode 的持久化嵌套调用记录。手动启用的工具与发现恢复入口保留。基础工具采用当前 Preset 快照中的工具选择；没有 Preset 工具选择时使用 Pi 设置的默认工具集。切换时保留的动态工具不纳入该基线，仍按窗口使用情况淘汰。MCP／namespace 按成员收缩，空组移除共同指引与记忆；Skill 不参与淘汰，不断开 MCP 连接。
 
 淘汰先写分支记录，再更新激活集。新 checkpoint 不再声明已撤下的成员；其首条 system message 包含固定的能力变更段，提示摘要中的相关描述属于历史信息，需要重新发现。该段不触发额外轮次，也不因后续重新启用而改写。重新发现通过尾部新声明恢复工具；恢复与分支切换遵守各自记录。压缩失败不淘汰；内部检索和 `/btw` 不独立运行这套机制。
 
@@ -192,13 +192,13 @@ Capability 调用仍等待检索完成，再返回筛选后的资源。复用执
 
 `extensions/preset.ts`（随包默认加载）提供模型切换、思考级别、模型专属指引和工具选择。
 
-**配置。** 读取全局 agent 目录的 `presets.json` 与受信项目的 `.pi/presets.json`，项目同名项整体覆盖全局。每项可含 `model`（`provider`＋`id`）、`thinkingLevel`、`tools`、`codemode`（`mode`）与 `instructions`。`tools` 使用原生 `+name`／`-name`／裸名语义，始终基于会话首次启动捕获的初始工具集（原生默认工具、CLI 修饰与默认启用扩展工具，如 `capability`）计算，并记录在分支上；先应用 A 再应用 B 与直接应用 B 得到同一集合，跨 reload 不被前一个 Preset 污染。
+**配置。** 读取全局 agent 目录的 `presets.json` 与受信项目的 `.pi/presets.json`，项目同名项整体覆盖全局。每项可含 `model`（`provider`＋`id`）、`thinkingLevel`、`tools`、`codemode`（`mode`）与 `instructions`。`tools` 使用原生 `+name`／`-name`／裸名语义，始终基于会话首次启动捕获的初始工具集（原生默认工具、CLI 修饰与默认启用扩展工具，如 `capability`）计算，并记录为 Preset 工具基线；先应用 A 再应用 B 与直接应用 B 得到同一基线，跨 reload 不被前一个 Preset 污染。只有增减修饰符时，另保留当前已激活且有 Capability 发现或手动授权记录的工具；显式减项仍移除对应工具，裸名列表仍完整替换工具选择。保留的动态工具不写入 Preset 基线，继续由压缩淘汰策略管理。前后 Preset 基线比较时，若旧集合有工具不在新集合中，则下一次成功压缩执行淘汰，即使 `capability.pruneOnCompaction` 为 `false`；首次应用与初始基线比较，仅增加工具不触发，不改变全局配置。
 
 **入口。** `/preset` 打开选择器，`/preset NAME` 应用指定项，`/preset clear`（`none`／`off`）停止管理，`--preset NAME` 在启动时应用；状态栏显示当前 Preset。Preset 只作用于当前 Main 会话，不静默改变 Fresh／Inherited Subagent 的路由或模型。
 
 **应用与失败。** 先校验模型存在于目录，再 `setModel`；模型不可用则整体不应用并报错，绝不报成功；thinking 与 tools 随后应用。`instructions` 作为独立 system 段落经 `prompt-section-journal` 增量投影并在 resume／tree／fork／reload 回放，不覆盖整份 system prompt。
 
-**分支与清除。** `preset-state` 记录保存应用时解析快照（model／thinking／tools／codemode／instructions），分支恢复按快照还原；首次启动的初始工具集另存为 `preset-base` 供修饰符计算；`/preset clear` 写入 null 快照并停止管理，不回滚已有 model／thinking／tools。
+**分支与清除。** `preset-state` 记录保存应用时解析快照（model／thinking／tools／codemode／instructions），快照用于恢复指令、状态标识及压缩保护基线，不在恢复时强制重放 model／thinking／tools；这些运行状态由 Pi 原生恢复。工具 loadout 随实际请求记录，应用 Preset 后尚未发起请求就退出，恢复时可能仍使用上一份工具集。首次启动的初始工具集另存为 `preset-base` 供修饰符计算；`/preset clear` 写入 null 快照并停止管理，不回滚已有 model／thinking／tools。
 
 **Codemode 模式。** 扩展无公开 `codemode.mode` 写入通道。Preset 以 `codemode-mode` 分支记录覆盖本会话的生效模式，原生 Codemode 工具与 `capability.lazySchemas` 均读取该生效模式，从下一次请求生效；它只改变声明投影，不改变启用集合、授权记录或工具 exposure。若宿主无法应用该覆盖，只记录并给出 warning，不把未生效报成成功。
 

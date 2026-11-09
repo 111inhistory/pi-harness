@@ -141,7 +141,8 @@
       ],
       "tests": [
         "test/typed/capability-compaction-prune.test.ts",
-        "test/typed/capability-compaction-sdk.test.ts"
+        "test/typed/capability-compaction-sdk.test.ts",
+        "test/typed/preset-sdk.test.ts"
       ]
     },
     {
@@ -909,6 +910,21 @@
       "docs": "7216b044f0e7d4aa77ed1e49a258ad02d6fade8d2beaeab7add3d62692d1720c",
       "tests": "779b03af3cf721ebc29011e186a33310d67f15443092c3dafca6bab4d48347a6",
       "reason": "Only a cross-reference anchor in the External Socket section changed after the heading rename; the socket contract is unchanged."
+    },
+    "capability.native-exposure": {
+      "docs": "ef49dbf8cad3dedd5e0c80e2ce810537fb5b64eeb1665fbac22952643113da63",
+      "tests": "a1ef4b0206f3f9b7245cf9a60986985fe2dc09e637fa3456d28eb42fc26c1f9e",
+      "reason": "Only clarifies that provided Skill entry paths may be read directly; native exposure, MCP admission and lazy schema behavior are unchanged. Existing exposure regressions remain applicable."
+    },
+    "capability.activation-reachability": {
+      "docs": "a648eefd6ca0b4f8b6244b99b586ada469011ad743524312f5ea5248d408362c",
+      "tests": "9ee675c6226cae6fa76e4b008deb04f043f6c1d55912b8c1a97ac2ac42533f23",
+      "reason": "Only clarifies direct reading of known Skill paths; no activation, reachability or authorization behavior changed. Existing activation regressions remain applicable."
+    },
+    "async-shell.platform": {
+      "docs": "3516091b2521b32ec1a313d086c2d213c075c002a2c8ddf183c4f111c5773fc1",
+      "tests": "07ac27b97a99da28e1d4da8a140c5058c7b809be512af91ec62776cb00d6c220",
+      "reason": "The existing SDK acceptance scenario now asserts the environment-variable root and relative Skill entry in outgoing Shell guidance. The assertions changed in test/typed/support/async-shell-sdk-scenario.ts; the parent test entrypoint and platform behavior remain unchanged."
     }
   }
 }

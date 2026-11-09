@@ -33,7 +33,7 @@ Capability 按实际激活集筛选公开结果，返回失败或部分成功。
 - **跨 session 消息**：目录发布、原生 session name、存活校验、单帧写入、未知 session 拒绝与远端错误码透传已有两平台离线回归。Windows 的双 SDK 进程已验证显式连接、双向消息、忙时交接、原生压缩、树导航、reload 后继续收发和退出清理；真实提供方多轮行为、长期互发与资源压力仍需实测。IPC 目录必须保持本机私有：记录里的 `pid` 只在本机解释，跨机共享 `socketRoot` 不在设计范围内；跨机共享 durable session 历史不受此限制。
 - **Manual 能力在线组合**：完整 SDK 会话（真实 `createAgentSession`、真实 stdio MCP 子进程、离线模型）覆盖未授权声明／执行／Codemode、`/capability enable` 授权后的 manual MCP 与资源读取资格、Main／子作用域隔离。真实提供方的缓存计费、真实资源读取、启用后 MCP 断连和长时间运行仍未验收。
 - **Capability lazy schema**：离线 SDK 用例验证命中组 schema 不进入独立声明也不进入 Codemode 目录、`describeTool` 可取完整接口且脚本可执行、后续内部继承检索不重发这些 schema。真实提供方缓存命中、多轮模型遵循和长期保持未验收。
-- **模型 Preset**：`/preset`、`--preset` 的模型切换、thinking、工具修饰符基于稳定基线、instructions 段落投影、分支快照恢复、`codemode.mode` 生效覆盖已有离线单测与离线 SDK 冒烟；真实 TUI 下的 `/preset` 选择器与 `--preset` 命令交互、真实提供方的模型切换与在线缓存仍未验收。
+- **模型 Preset**：`/preset`、`--preset` 的模型切换、thinking、工具修饰符基于稳定基线、instructions 段落投影、分支指令快照恢复、`codemode.mode` 生效覆盖已有离线单测与离线 SDK 冒烟；真实 TUI 下的 `/preset` 选择器与 `--preset` 命令交互、真实提供方的模型切换与在线缓存仍未验收。
 - **异步 Shell**：Linux tmux 与原生 Windows psmux 已通过真实 SDK 的离线回归，Windows 覆盖 Bash／PowerShell 入口、Main／Subagent 回调和取消清理。真实提供方多轮运行、长时压力与 Windows 进程查询不可用的故障注入仍未验收。Windows PowerShell SDK 用例曾报告一次未保留完整断言日志的偶发失败，尚未归因；最终基线通过不能证明该现象已修复，详见[平台验收记录](reviews/async-shell-platform-acceptance.md)。
 - **平台与用户边界**：Linux 与 Windows 的完整离线套件已运行；macOS 实机、多用户切换与管道权限隔离尚未验收。
 
@@ -54,7 +54,7 @@ ModelRuntime 桥依赖 SDK 的内部结构，升级 SDK 时应复核。子会话
 - **消息交接**：异常、断连或超时不证明消息未入队，不自动重发。普通消息和子节点通知可触发模型请求，本项目不合并不同事件。跨 session 消息的 session 记录与 `from` 都是同用户本机进程的声明，不是认证；进程异常退出可能留下已失效的 session 记录，读取时按 pid 存活过滤，pid 复用时可能短暂误报。同一 durable session 不支持多进程同时打开；目录记录按 session ID 归属，重复打开时较早退出的进程可能删除后者记录。
 - **异步 Shell 日志与恢复**：输出是终端转录。Windows ConPTY 可能折行和重绘，过滤文本可能含额外换行或重复字符。monitor 被外部强制杀死后没有自动恢复或通知补发；任务日志不自动按保留期清理，长期运行会持续增长。命令与增量读取说明见[异步 Shell](async-shell.md)。
 - **能力记忆**：发现记录按分支累计，角色排除仍优先；请求投影重新核对当前资格。记录能否恢复依赖规范条目仍在当前分支，激活成功性另受上面的已知缺陷限制。
-- **模型 Preset 与 Codemode 模式**：`codemode.mode` 无公开运行时写入通道，Preset 以分支记录覆盖本会话 Capability 的生效模式（原生 Codemode 工具与 lazySchemas 读取），从下一次请求生效；它只改变声明投影，不改变启用集合、授权或工具 exposure，也不影响其他读取 Pi `settings.codemode.mode` 的组件。`/preset clear` 只停止管理，不回滚 model／thinking／tools。
+- **模型 Preset 与 Codemode 模式**：`codemode.mode` 无公开运行时写入通道，Preset 以分支记录覆盖本会话 Capability 的生效模式（原生 Codemode 工具与 lazySchemas 读取），从下一次请求生效；它只改变声明投影，不改变启用集合、授权或工具 exposure，也不影响其他读取 Pi `settings.codemode.mode` 的组件。`/preset clear` 只停止管理，不回滚 model／thinking／tools。恢复时依赖 Pi 原生运行状态，不强制重放 Preset 快照；应用后尚未发起请求就退出，工具集可能恢复为上次请求记录的 loadout。
 - **MCP 发现与连接**：Capability 只搜索当前已注册工具，不等待全部后端，也不主动重连。注册或激活不表示服务持续在线；连接恢复沿用 Pi 原生行为和用户命令。
 - **刷新边界**：根服务使用配置快照，已有 Job 保留原 Budget。提示词正文受 ESM 缓存影响，重启 Pi 是明确生效方式，`/reload` 不保证刷新全部依赖。
 - **工具集变化与提示词缓存**：工具与 system 更新由 Pi 原生编码，并按模型 compat 选择追加路径。Chat Completions 的工具追加需要明确开启中途 system 消息与工具新增两个兼容位；标准端点仍重发顶层工具列表。同名 schema 更新在仅支持新增的路径可能重建前缀，未支持中途 system 消息的模型会折叠指引到头部。描述与共同指引变化使用增量段落，压缩则允许重建并收缩工具 checkpoint。详情见[Provider 传输行为](provider-transports.md)。前缀稳定和缓存标识相同不保证实际命中；不添加缓存断点或 TTL 策略。

@@ -9,13 +9,10 @@
  * the instruction text goes through `prompt-section-journal` so it survives
  * resume, tree navigation, fork and reload.
  *
- * Registered in `package.json` `pi.extensions`. Model/thinking/tool selection go
- * through the public SDK session API; the instruction text goes through
- * `prompt-section-journal` so it survives resume, tree navigation, fork and
- * reload.
- * * Runtime limitation (documented): `codemode.mode` has no public extension write
- * path, so a preset records it for reproducibility but does not switch it live;
- * the apply warns instead of claiming success.
+ * Registered in `package.json` `pi.extensions`. Codemode mode is applied through
+ * a `codemode-mode` branch record, which the harness loadout reads from the next
+ * request. Hosts without this override report a warning instead of claiming
+ * that the mode changed.
  */
 
 import {
@@ -32,6 +29,8 @@ import { appendPresetBase, readPresetBase, restorePresetSnapshot } from '../src/
 import { projectPresetInstruction } from '../src/preset/instruction.ts';
 import type { TranscriptMessageLike } from '../src/session-transcript.ts';
 import { appendCodemodeMode } from '../src/capability/codemode-mode.ts';
+import { branchToolSelection } from '../src/capability/admission.ts';
+import { applyToolModifiers, parseToolModifiers } from '../src/preset/modifiers.ts';
 
 /** `customType` of the applied-preset snapshot on the branch. */
 const PRESET_STATE_RECORD = 'preset-state';
@@ -59,13 +58,23 @@ export default function presetExtension(pi: ExtensionAPI): void {
     ctx.ui.setStatus('preset', currentName === undefined ? undefined : `preset:${currentName}`);
   };
 
-  const host = (ctx: ExtensionContext): PresetApplyHost => ({
+  const host = (ctx: ExtensionContext, modifiers: readonly string[] = []): PresetApplyHost => ({
     setModel: (provider, id) => {
       const model = ctx.modelRegistry.find(provider, id);
       return model === undefined ? Promise.resolve(false) : pi.setModel(model);
     },
     setThinkingLevel: (level) => pi.setThinkingLevel(level as unknown as Parameters<typeof pi.setThinkingLevel>[0]),
-    setActiveTools: (tools) => pi.setActiveTools([...tools]),
+    setActiveTools: (tools) => {
+      // Preserve active Capability selections without adding them to the preset
+      // snapshot: only the stable resolved selection is a compaction baseline.
+      const { selected } = branchToolSelection(ctx.sessionManager.getBranch());
+      const active = pi.getActiveTools().filter(name => selected.has(name));
+      // The same native modifiers honor explicit removals and bare-name
+      // replacements; intersecting with active never resurrects an old grant.
+      const retained = applyToolModifiers(active, parseToolModifiers(modifiers).tokens)
+        .filter(name => active.includes(name));
+      pi.setActiveTools([...new Set([...tools, ...retained])]);
+    },
     appendState: (record) => pi.appendEntry(PRESET_STATE_RECORD, { version: PRESET_STATE_VERSION, ...record }),
     notify: (message, level) => ctx.ui.notify(message, level),
     applyCodemodeMode: (mode) => appendCodemodeMode(pi, mode),
@@ -85,7 +94,7 @@ export default function presetExtension(pi: ExtensionAPI): void {
       ctx.ui.notify(`Preset "${name}" was not applied.`, 'error');
       return;
     }
-    const outcome = await applyPresetPlan(resolution.plan, resolution.issues, host(ctx));
+    const outcome = await applyPresetPlan(resolution.plan, resolution.issues, host(ctx, preset.tools));
     if (outcome.applied) {
       currentName = name;
       renderStatus(ctx);

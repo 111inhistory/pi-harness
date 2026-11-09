@@ -8,9 +8,9 @@
  *    provider is not authenticated), the apply stops before touching thinking,
  *    tools or the branch snapshot and reports failure. It never announces an
  *    activation that did not happen.
- * 2. Do not fake unsupported effects. `codemode.mode` has no public runtime
- *    write path in the extension API, so a preset that declares one is recorded
- *    for reproducibility but reported as not switched, never claimed applied.
+ * 2. Do not fake unsupported effects. The harness host applies `codemode.mode`
+ *    through a branch override for the next request. Hosts without that
+ *    capability record the mode but report that it was not switched.
  *
  * The host is a narrow interface so this logic is unit-testable without an SDK
  * session; the extension adapts the real `pi`/`ctx` surface to it.

@@ -1,10 +1,10 @@
 {
   "capability": {
-    "description": "Find local Skills, Tools, and MCP capabilities for the current conversation and return selected refs; no arguments. You must use capability to discover Skills. Do not search the filesystem or web for Skills. Use read to inspect the Skill entry paths.",
+    "description": "Find local Skills, Tools, and MCP capabilities for the current conversation and return selected refs; no arguments. Read provided Skill entry paths directly; use capability to discover other Skills. Do not search the filesystem or web for Skills. Use read to inspect the Skill entry paths.",
     "snippet": "Find task guidance and capabilities",
     "guidelines": [
       "Understand the task and project context first, then check whether you lack guidance, background info, or specialized tools (e.g. for tasks like PPT creation or complex workflows). If true, call capability; otherwise proceed directly.",
-      "Skills provide workflows, rules, and conventions. Discover them through capability (not filesystem or web searches), and use read to inspect the returned skill entry paths.",
+      "Skills provide workflows, rules, and conventions. Read provided Skill entry paths directly; discover other Skills through capability (not filesystem or web searches).",
       "Reuse discovered capabilities throughout the task; use capability whenever current tools do not cover the needs, or if you lose track of a Skill's path. For existing tools and MCP, use describeTool(name) in codemode to inspect parameters, or ALL_TOOLS to list what you have (filtering recommended)."
     ]
   },

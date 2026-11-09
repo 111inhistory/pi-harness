@@ -20,7 +20,7 @@ npm run install:async-shell
 
 安装命令构建 `dist/pi-job.mjs`。POSIX 在 Pi 用户目录的 `bin/pi-job` 创建指向构建产物的链接；Windows 将 bundle 安装到 `bin/pi-job.mjs`，并生成 PowerShell、cmd 和 Bash 启动入口。两者都会安装 [pi-job Skill](../skills/pi-job/SKILL.md) 到用户目录的 `skills/pi-job`（Windows 使用目录联接）。Pi 用户目录遵循 `PI_CODING_AGENT_DIR`，默认是 `~/.pi/agent`。Pi 内置 Shell 会将该目录加入 PATH。更新代码后重新执行安装命令，并重启 Pi 加载新版宿主与提示词；`/reload` 不保证刷新全部依赖。
 
-加载 Harness 后，Agent 通过原有 Bash／PowerShell 工具调用 CLI；无需启用额外的模型工具。Windows 后端明确调用 `psmux.exe`。psmux 的 winget 包还提供 `tmux` 别名，与其他 tmux 发行版并存时，安装或更新可能改写 `tmux.exe` 入口；Harness 的后端选择不受该别名影响。Skill 可通过 Capability 发现，也可显式使用 `/skill:pi-job`。以 Pi package 安装仓库时，manifest 同样声明了 Skill 资源。普通终端也可以执行构建产物，未设置宿主回调环境时以独立模式运行。
+加载 Harness 后，Agent 通过原有 Bash／PowerShell 工具调用 CLI；无需启用额外的模型工具。Windows 后端明确调用 `psmux.exe`。psmux 的 winget 包还提供 `tmux` 别名，与其他 tmux 发行版并存时，安装或更新可能改写 `tmux.exe` 入口；Harness 的后端选择不受该别名影响。Shell 工具指引直接提供 `PI_CODING_AGENT_DIR` 环境变量下的相对入口 `skills/pi-job/SKILL.md`，模型使用前按需读取；Shell 子进程始终提供解析后的 `PI_CODING_AGENT_DIR`，提示词不展开本机绝对路径。已提供的 Skill 入口可直接读取，无需先检索；Skill 仍可通过 Capability 发现，也可显式使用 `/skill:pi-job`。以 Pi package 安装仓库时，manifest 同样声明了 Skill 资源。普通终端也可以执行构建产物，未设置宿主回调环境时以独立模式运行。
 
 ## 创建与查询
 

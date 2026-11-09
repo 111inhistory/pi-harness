@@ -1,0 +1,3 @@
+{
+  "guideline": "For long-running or interactive terminal work, pi-job is available through the shell. Before using it, read its Skill at skills/pi-job/SKILL.md relative to the PI_CODING_AGENT_DIR environment variable."
+}

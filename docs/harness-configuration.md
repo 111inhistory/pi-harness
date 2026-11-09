@@ -131,7 +131,7 @@ Fresh 与 Inherited 直接子节点在同一 Subagent 树内使用独立的父�
 
 ### 压缩淘汰开关
 
-`capability.pruneOnCompaction` 默认为 `true`。为 `true` 时，原生会话压缩成功后会自动计算并淘汰窗口期内未使用的 Capability 工具（基线工具、手动授权工具、`capability` 和 `codemode` 保持保护）；为 `false` 时跳过未来 `session_compact` 自动淘汰，不向分支写入 `capability-prune` 记录，不改变当前激活工具集合，也不清除已持久化历史或自动恢复此前已被淘汰的工具。
+`capability.pruneOnCompaction` 默认为 `true`。工具保护基线优先取当前 Preset 快照的工具选择，没有该选择时取 Pi 默认工具集；切换时保留的动态工具不进入基线。原生会话压缩成功后，若该开关为 `true`，或自上次压缩以来应用 Preset 移除过基线工具，则计算并淘汰窗口期内未使用的 Capability 工具；基线工具、手动授权工具、`capability` 和 `codemode` 保持保护。基线移除由前后工具选择的差集判断，首次应用与初始基线比较，仅增加工具不触发；这一条件从分支历史推导，只影响下一次成功压缩，不改写该开关。两项条件均为 `false` 时，不写入新的 `capability-prune` 记录、不改变当前激活集合；历史记录不清除，已淘汰工具不自动恢复。
 
 ### 手动启用名单
 

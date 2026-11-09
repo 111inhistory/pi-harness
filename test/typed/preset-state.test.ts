@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  appendPresetBase,
   appendPresetState,
+  hasPresetBaseToolRemoval,
   PRESET_STATE_RECORD,
   PRESET_STATE_VERSION,
   readPresetState,
@@ -63,6 +65,29 @@ test('no entries yields null', () => {
 test('an entry with the wrong customType is ignored', () => {
   const branch = [{ type: 'custom', customType: 'something-else', data: { version: 1, snapshot: null } }];
   assert.equal(readPresetState(branch), null);
+});
+
+test('preset baseline removals request pruning only until the next compaction', () => {
+  const { branch, writer } = branchWriter();
+  appendPresetBase(writer, ['read', 'bash']);
+  appendPresetState(writer, { version: 1, snapshot: { name: 'added', tools: ['read', 'bash', 'grep'], instructions: null } });
+  assert.equal(hasPresetBaseToolRemoval(branch, 'next'), false, 'adding tools does not request pruning');
+  appendPresetState(writer, { version: 1, snapshot: { name: 'removed', tools: ['read', 'grep'], instructions: null } });
+  assert.equal(hasPresetBaseToolRemoval(branch, 'next'), true, 'the previous preset baseline lost bash');
+  appendPresetState(writer, { version: 1, snapshot: null });
+  assert.equal(hasPresetBaseToolRemoval(branch, 'next'), true, 'clear does not erase a pending removal');
+  branch.push({ type: 'compaction', id: 'checkpoint' });
+  assert.equal(hasPresetBaseToolRemoval(branch, 'checkpoint'), true, 'the current checkpoint can perform the requested pruning');
+  appendPresetState(writer, { version: 1, snapshot: { name: 'model-only', instructions: null } });
+  assert.equal(hasPresetBaseToolRemoval(branch, 'next'), false, 'an earlier compaction consumes the request');
+  appendPresetState(writer, { version: 1, snapshot: { name: 'same-tools', tools: ['read', 'grep'], instructions: null } });
+  assert.equal(hasPresetBaseToolRemoval(branch, 'next'), false, 'tool-less presets never replaced the live baseline');
+
+  const fresh = branchWriter();
+  appendPresetBase(fresh.writer, ['read', 'bash']);
+  appendPresetState(fresh.writer, { version: 1, snapshot: { name: 'first', tools: ['read'], instructions: null } });
+  assert.equal(hasPresetBaseToolRemoval(fresh.branch, 'next'), true, 'the first preset can remove an initial base tool');
+  assert.equal(hasPresetBaseToolRemoval(branch.slice(0, 2), 'next'), false, 'a branch before the removal has no request');
 });
 
 test('a malformed entry is a hard error, not a silent skip', () => {

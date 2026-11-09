@@ -3,10 +3,12 @@
  *
  * A preset application is written to the current branch as one append-only
  * `preset-state` entry carrying a *resolved snapshot*: the exact provider/id,
- * thinking level, final tool set, codemode mode and instruction text that were
- * applied. Resume, tree navigation, fork and reload read that snapshot back, so
- * they restore what was actually active even after the source presets.json is
- * edited. Re-running `/preset NAME` re-resolves against the current definition.
+ * thinking level, stable tool selection, codemode mode and instruction text
+ * resolved at apply time. The tool selection is the compaction baseline, not
+ * the dynamic Capability tools retained during application. Branch readers use
+ * the snapshot for instructions, status and that baseline; model/thinking/tools
+ * recovery belongs to Pi rather than replaying this snapshot. Re-running
+ * `/preset NAME` re-resolves against the current definition.
  *
  * Recording the snapshot rather than the preset name is deliberate: the same
  * reproducibility rule the subagent store uses for its sessions. A name alone
@@ -45,6 +47,7 @@ export interface PresetSnapshot {
   readonly name: string;
   readonly model?: PresetModel;
   readonly thinkingLevel?: ThinkingLevelName;
+  /** Stable preset selection; excludes dynamically retained Capability tools. */
   readonly tools?: readonly string[];
   readonly codemode?: { readonly mode: CodemodeMode };
   /** Resolved instruction text; null means the preset carried no instructions. */
@@ -148,6 +151,25 @@ export function readPresetState(branch: readonly unknown[] | null | undefined): 
 /** The snapshot that should be active now, or null when cleared/never set. */
 export function restorePresetSnapshot(branch: readonly unknown[] | null | undefined): PresetSnapshot | null {
   return readPresetState(branch)?.snapshot ?? null;
+}
+
+/** Whether a preset reduced its baseline since the preceding compaction. */
+export function hasPresetBaseToolRemoval(branch: readonly unknown[], checkpointId: string): boolean {
+  let previousTools = readPresetBase(branch);
+  let removed = false;
+  for (const entry of branch) {
+    if (!isRecord(entry)) continue;
+    // session_compact runs after its checkpoint has already been appended.
+    if (entry['id'] === checkpointId) break;
+    if (entry['type'] === 'compaction') removed = false;
+    if (entry['type'] !== 'custom' || entry['customType'] !== PRESET_STATE_RECORD) continue;
+    const tools = parseRecord(entry['data']).snapshot?.tools;
+    // Clear and instruction/model-only presets do not replace the live tools.
+    if (tools === undefined) continue;
+    if (previousTools?.some(name => !tools.includes(name))) removed = true;
+    previousTools = tools;
+  }
+  return removed;
 }
 
 /** Append one preset-state entry to the branch. */

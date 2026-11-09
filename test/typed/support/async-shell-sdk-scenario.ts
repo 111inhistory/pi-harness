@@ -29,6 +29,10 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
   let childTurns = 0;
   let mainCompleted = false;
   fixture.controls.chat = request => {
+    if (request.context.tools?.some(tool => tool.name === shellName)) {
+      assert.ok(request.text.includes('PI_CODING_AGENT_DIR'), 'Shell guidance names the Skill root environment variable');
+      assert.ok(request.text.includes('skills/pi-job/SKILL.md'), 'Shell guidance provides the relative Skill entry');
+    }
     if (request.options.sessionId === fixture.sessionManager.getSessionId()) {
       if (request.text.includes('MAIN_SHELL_RESULT')) mainCompleted = true;
       return fixture.textAnswer('Root received shell result.');
