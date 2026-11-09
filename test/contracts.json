@@ -509,6 +509,227 @@
         "test/typed/inherited-context.test.ts",
         "test/typed/inherited-declarations-prefix.test.ts"
       ]
+    },
+    {
+      "id": "subagent.lifecycle",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/architecture.md",
+          "heading": "## 创建、执行与恢复"
+        }
+      ],
+      "tests": [
+        "test/typed/subagent-lifecycle.test.ts",
+        "test/subagent-runtime.test.mjs",
+        "test/subagent-contract-redesign.test.mjs",
+        "test/typed/native-job-runner.test.ts",
+        "test/typed/native-session-factory.test.ts",
+        "test/typed/subagent-execution.test.ts",
+        "test/typed/actor-sessions.test.ts",
+        "test/typed/runtime-domain-contract.test.ts"
+      ]
+    },
+    {
+      "id": "subagent.command",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### `/subagent` 命令"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 用户查看入口"
+        }
+      ],
+      "tests": [
+        "test/typed/subagent-command.test.ts",
+        "test/typed/subagent-session-connect.test.ts",
+        "test/typed/root-service-list.test.ts"
+      ]
+    },
+    {
+      "id": "subagent.surface",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "## Subagent"
+        }
+      ],
+      "tests": [
+        "test/typed/subagent-surface.test.ts"
+      ]
+    },
+    {
+      "id": "subagent.routing",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/harness-configuration.md",
+          "heading": "## Subagent"
+        },
+        {
+          "path": "docs/harness-configuration.md",
+          "heading": "### 路由重试"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 思考强度"
+        }
+      ],
+      "tests": [
+        "test/subagent-routing.test.mjs",
+        "test/subagent-routing-retry.test.mjs",
+        "test/typed/subagent-routing-config.test.ts",
+        "test/typed/subagent-runtime-config.test.ts",
+        "test/typed/subagent-model-runtime.test.ts"
+      ]
+    },
+    {
+      "id": "subagent.delivery",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 本轮结果直接交付"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 自动完成通知"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 普通消息与终态通知独立投递"
+        }
+      ],
+      "tests": [
+        "test/typed/subagent-result.test.ts",
+        "test/typed/subagent-delivery.test.ts",
+        "test/typed/delivery-compaction.test.ts",
+        "test/typed/native-delivery.test.ts",
+        "test/typed/agent-listeners.test.ts"
+      ]
+    },
+    {
+      "id": "subagent.budget",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/harness-configuration.md",
+          "heading": "### Budget"
+        }
+      ],
+      "tests": [
+        "test/typed/job-budget.test.ts",
+        "test/typed/pi-job-budget.test.ts",
+        "test/typed/subagent-budget-watch.test.ts",
+        "test/typed/runtime-budget-watch.test.ts"
+      ]
+    },
+    {
+      "id": "subagent.parent-hold",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 等待子任务"
+        }
+      ],
+      "tests": [
+        "test/typed/runtime-parent-hold.test.ts",
+        "test/typed/parent-hold-sdk.test.ts"
+      ]
+    },
+    {
+      "id": "subagent.retirement",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/architecture.md",
+          "heading": "## 退役、树切换与写入权限"
+        }
+      ],
+      "tests": [
+        "test/typed/service-retirement-fence.test.ts",
+        "test/typed/root-service-boundary.test.ts",
+        "test/typed/root-service-ready.test.ts",
+        "test/typed/root-service-result.test.ts"
+      ]
+    },
+    {
+      "id": "subagent.storage",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/subagent-storage.md",
+          "heading": "## 4. 架构"
+        },
+        {
+          "path": "docs/subagent-storage.md",
+          "heading": "## 5. 关键流程"
+        }
+      ],
+      "tests": [
+        "test/subagent-storage.test.mjs",
+        "test/subagent-view.test.mjs",
+        "test/typed/review-lifecycle-storage.test.ts",
+        "test/typed/session-transcript.test.ts"
+      ]
+    },
+    {
+      "id": "subagent.tool-policy",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 通信指引"
+        }
+      ],
+      "tests": [
+        "test/typed/subagent-tool-policy.test.ts",
+        "test/typed/subagent-prompt.test.ts"
+      ]
+    },
+    {
+      "id": "subagent.integration",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "## Subagent"
+        }
+      ],
+      "tests": [
+        "test/subagent-integration-real.test.mjs"
+      ]
+    },
+    {
+      "id": "subagent.socket",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/architecture.md",
+          "heading": "### 外部 Socket"
+        }
+      ],
+      "tests": [
+        "test/subagent-socket.test.mjs"
+      ]
+    },
+    {
+      "id": "native.extension-loader",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/architecture.md",
+          "heading": "## 插件注册"
+        }
+      ],
+      "tests": [
+        "test/typed/native-extension-loader.test.ts"
+      ]
     }
   ],
   "reviews": {
