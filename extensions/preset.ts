@@ -20,6 +20,7 @@
 
 import {
   getAgentDir,
+  SettingsManager,
   type ExtensionAPI,
   type ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
@@ -31,6 +32,7 @@ import { parsePresetCommand } from '../src/preset/command.ts';
 import { restorePresetSnapshot } from '../src/preset/state.ts';
 import { projectPresetInstruction } from '../src/preset/instruction.ts';
 import type { TranscriptMessageLike } from '../src/session-transcript.ts';
+import { appendCodemodeMode } from '../src/capability/codemode-mode.ts';
 
 /** `customType` of the applied-preset snapshot on the branch. */
 const PRESET_STATE_RECORD = 'preset-state';
@@ -67,6 +69,8 @@ export default function presetExtension(pi: ExtensionAPI): void {
     setActiveTools: (tools) => pi.setActiveTools([...tools]),
     appendState: (record) => pi.appendEntry(PRESET_STATE_RECORD, { version: PRESET_STATE_VERSION, ...record }),
     notify: (message, level) => ctx.ui.notify(message, level),
+    applyCodemodeMode: (mode) => appendCodemodeMode(pi, mode),
+    clearCodemodeMode: () => appendCodemodeMode(pi, null),
   });
 
   const apply = async (ctx: ExtensionContext, name: string, preset: PresetConfig): Promise<void> => {
@@ -96,7 +100,13 @@ export default function presetExtension(pi: ExtensionAPI): void {
   };
 
   pi.on('session_start', async (_event, ctx) => {
-    baseTools = pi.getActiveTools();
+    // Stable base: the configured default tool set, never the live active set,
+    // which on resume/reload already reflects a previous preset. Modifiers then
+    // compute from the same base whether applied fresh or after a reload.
+    const settings = typeof pi.getSettings === 'function' ? pi.getSettings() : undefined;
+    baseTools = settings === undefined
+      ? ['read', 'bash', 'edit', 'write']
+      : SettingsManager.inMemory(settings).getDefaultTools() ?? ['read', 'bash', 'edit', 'write'];
     currentName = restorePresetSnapshot(ctx.sessionManager.getBranch())?.name;
     const presets = loaded(ctx);
     const flag = pi.getFlag('preset');

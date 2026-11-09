@@ -28,6 +28,10 @@ export interface PresetApplyHost {
   setActiveTools(tools: readonly string[]): void;
   appendState(record: { readonly snapshot: PresetSnapshot | null }): void;
   notify(message: string, level: 'info' | 'warning' | 'error'): void;
+  /** Apply a live Codemode mode on the harness loadout; omitted hosts cannot. */
+  applyCodemodeMode?(mode: 'on' | 'only'): void;
+  /** Clear a preset-applied Codemode mode back to Settings. */
+  clearCodemodeMode?(): void;
 }
 
 export interface PresetApplyOutcome {
@@ -61,12 +65,17 @@ export async function applyPresetPlan(
 
   let codemodeNotApplied = false;
   if (plan.codemode !== undefined) {
-    codemodeNotApplied = true;
-    host.notify(
-      `Preset "${plan.name}": codemode mode "${plan.codemode.mode}" is recorded but not switched at runtime; ` +
-        'set it in settings for this session.',
-      'warning',
-    );
+    if (host.applyCodemodeMode !== undefined) {
+      // The mode takes effect on the harness loadout from the next request, so a
+      // declared mode is genuinely applied rather than merely recorded.
+      host.applyCodemodeMode(plan.codemode.mode);
+    } else {
+      codemodeNotApplied = true;
+      host.notify(
+        `Preset "${plan.name}": codemode mode "${plan.codemode.mode}" cannot be applied in this session; it was recorded only.`,
+        'warning',
+      );
+    }
   }
 
   const snapshot: PresetSnapshot = {
@@ -78,7 +87,12 @@ export async function applyPresetPlan(
     instructions: plan.instructions,
   };
   host.appendState({ snapshot });
-  host.notify(`Preset "${plan.name}" applied.`, 'info');
+  host.notify(
+    codemodeNotApplied
+      ? `Preset "${plan.name}" applied; codemode mode was recorded but not switched.`
+      : `Preset "${plan.name}" applied.`,
+    codemodeNotApplied ? 'warning' : 'info',
+  );
   return { applied: true, snapshot, issues, codemodeNotApplied };
 }
 
@@ -91,5 +105,6 @@ export async function applyPresetPlan(
  */
 export function clearActivePreset(host: PresetApplyHost): void {
   host.appendState({ snapshot: null });
+  host.clearCodemodeMode?.();
   host.notify('Preset cleared; model, thinking and tools are unchanged.', 'info');
 }
