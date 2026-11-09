@@ -173,8 +173,8 @@ test("platform transports classify endpoints without claiming ownership", () => 
 });
 
 test("endpoint namespace membership is address classification, not ownership", () => {
-  const socketDir = String.raw`C:\Users\fixture\Temp\pi-subagents\abcdef`;
-  const otherDir = String.raw`C:\Users\fixture\Temp\pi-subagents\123456`;
+  const socketDir = String.raw`C:\Users\fixture\Temp\pi-session\abcdef`;
+  const otherDir = String.raw`C:\Users\fixture\Temp\pi-session\123456`;
   const main = windowsIpc.agentPath("Main", socketDir);
   assert.equal(windowsIpc.belongsToNamespace(main, socketDir), true);
   assert.equal(windowsIpc.belongsToNamespace(windowsIpc.broadcastPath("Main", socketDir), socketDir), true);
@@ -190,7 +190,7 @@ test("endpoint namespace membership is address classification, not ownership", (
   assert.equal(unixIpc.belongsToNamespace("/tmp/root/abcdef/notes.txt", "/tmp/root/abcdef"), false, "a plain file is not an endpoint");
 });
 
-const windowsRoot = String.raw`C:\Users\fixture\Temp\pi-subagents\abcdef`;
+const windowsRoot = String.raw`C:\Users\fixture\Temp\pi-session\abcdef`;
 test("Windows endpoints use a flat pipe namespace and distinct actor/broadcast names", () => {
   const main = windowsIpc.agentPath("Main", windowsRoot);
   const child = windowsIpc.agentPath("sub_01", windowsRoot);

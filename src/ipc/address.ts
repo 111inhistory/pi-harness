@@ -26,8 +26,8 @@ export function defaultSocketRoot({
 } = {}): string {
   const override = env.PI_SUBAGENT_SOCKET_DIR;
   if (typeof override === "string" && override !== "") return override;
-  if (platform === "win32") return path.join(tmpdir, "pi-subagents");
-  return path.join(tmpdir, `pi-subagents-${userId ?? 0}`);
+  if (platform === "win32") return path.join(tmpdir, "pi-session");
+  return path.join(tmpdir, `pi-session-${userId ?? 0}`);
 }
 
 /**

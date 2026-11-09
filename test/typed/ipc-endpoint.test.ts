@@ -252,7 +252,7 @@ test("insecure or foreign-owner directories are refused without repair", { skip:
 test("default roots are per effective user while explicit overrides are retained", () => {
   assert.equal(
     defaultSocketRoot({ platform: "linux", env: {}, tmpdir: "/tmp", userId: 1234 }),
-    path.join("/tmp", "pi-subagents-1234"),
+    path.join("/tmp", "pi-session-1234"),
   );
   assert.equal(
     defaultSocketRoot({ platform: "linux", env: { PI_SUBAGENT_SOCKET_DIR: "/custom/root" }, tmpdir: "/tmp", userId: 1234 }),
@@ -260,7 +260,7 @@ test("default roots are per effective user while explicit overrides are retained
   );
   assert.equal(
     defaultSocketRoot({ platform: "win32", env: {}, tmpdir: "C:\\Temp", userId: null }),
-    path.join("C:\\Temp", "pi-subagents"),
+    path.join("C:\\Temp", "pi-session"),
   );
 });
 
@@ -268,7 +268,7 @@ test("the managed namespace root itself is validated before any session director
   const parent = await fsp.mkdtemp(path.join(os.tmpdir(), "pi-ipc-root-"));
   t.after(() => fsp.rm(parent, { recursive: true, force: true }));
   const uid = effectiveUserId();
-  const root = path.join(parent, `pi-subagents-${uid ?? 0}`);
+  const root = path.join(parent, `pi-session-${uid ?? 0}`);
   const sessionDir = path.join(root, "session");
   const address = path.join(sessionDir, "agent.sock");
   const attacker = path.join(parent, "attacker");
