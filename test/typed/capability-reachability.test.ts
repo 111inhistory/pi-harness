@@ -168,3 +168,75 @@ test('the model-facing partial result keeps which members were not enabled', asy
   assert.match(String(published.unavailable?.[0]?.reason), /Codemode/);
   assert.equal(published.warnings, undefined, 'raw diagnostic warnings stay internal');
 });
+
+// Folded-in coverage from the former independent "acceptance" file: the model
+// discovery projection and the user enable operation must agree on reachability,
+// and a dropped member must never become a successful selection.
+
+const reachableUnder = (context: { codemodeAvailable: boolean }) =>
+  (tool: { exposure?: string | undefined }) => toolReachability(tool.exposure, context) === null;
+
+test('discovery and /capability enable agree: deferred/direct pass, codemode-only is refused while Codemode is off', () => {
+  const off = host(baseTools, []);
+  const context = { codemodeAvailable: codemodeAvailable(off.api) };
+  const selection = {
+    status: 'ok' as const,
+    tools: [
+      { ref: 'tool://deferred_tool', name: 'deferred_tool', kind: 'tool' },
+      { ref: 'tool://direct_tool', name: 'direct_tool', kind: 'tool' },
+      { ref: 'tool://codemode_only', name: 'codemode_only', kind: 'tool' },
+    ],
+    mcp: [],
+    skills: [],
+  };
+  const retained = retainReachableSelectedTools(selection, off.api, reachableUnder(context));
+  assert.deepEqual(retained.result.tools.map((hit) => hit.name), ['deferred_tool', 'direct_tool']);
+  assert.deepEqual(retained.dropped, ['codemode_only']);
+
+  const enabled = enableCapabilityTargets(off.api, ['deferred_tool', 'direct_tool', 'codemode_only']);
+  assert.deepEqual([...enabled.enabled].sort(), ['deferred_tool', 'direct_tool']);
+  assert.deepEqual(enabled.skipped, [{ name: 'codemode_only', reason: 'unreachable' }]);
+});
+
+test('a mixed selection records only the reachable member', () => {
+  const off = host(baseTools, []);
+  const result = enableCapabilityTargets(off.api, ['deferred_tool', 'codemode_only']);
+  assert.deepEqual(result.enabled, ['deferred_tool']);
+  assert.deepEqual(result.skipped, [{ name: 'codemode_only', reason: 'unreachable' }]);
+  assert.equal(off.entries().length, 1, 'only the reachable member is recorded');
+  const recorded = JSON.stringify(off.entries()[0]);
+  assert.match(recorded, /deferred_tool/);
+  assert.doesNotMatch(recorded, /codemode_only/);
+});
+
+test('a Skill survives losing its only tool to reachability', () => {
+  const off = host(baseTools, []);
+  const context = { codemodeAvailable: codemodeAvailable(off.api) };
+  const selection = {
+    status: 'ok' as const,
+    tools: [] as { ref: string; name: string; kind: string }[],
+    mcp: [{ ref: 'mcp://srv', name: 'srv', kind: 'mcp', tools: [
+      { ref: 'tool://codemode_only', name: 'codemode_only', kind: 'tool' },
+    ] }],
+    skills: [{ ref: 'skill://helpful', name: 'helpful', kind: 'skill' }],
+  };
+  const retained = retainReachableSelectedTools(selection, off.api, reachableUnder(context));
+  assert.deepEqual(retained.dropped, ['codemode_only']);
+  assert.equal(retained.result.mcp.length, 0, 'the empty MCP group is dropped');
+  assert.deepEqual(retained.result.skills.map((skill) => skill.name), ['helpful'], 'a Skill is independent of tool reachability');
+});
+
+test('with Codemode active, both discovery and enable paths accept a codemode-only member', () => {
+  const on = host(baseTools, ['codemode']);
+  const context = { codemodeAvailable: codemodeAvailable(on.api) };
+  const selection = {
+    status: 'ok' as const,
+    tools: [{ ref: 'tool://codemode_only', name: 'codemode_only', kind: 'tool' }],
+    mcp: [],
+    skills: [],
+  };
+  assert.deepEqual(retainReachableSelectedTools(selection, on.api, reachableUnder(context)).dropped, []);
+  const enabled = enableCapabilityTargets(on.api, ['codemode_only']);
+  assert.deepEqual(enabled.enabled, ['codemode_only']);
+  assert.deepEqual(enabled.skipped, []);
+});
