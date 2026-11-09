@@ -8,6 +8,7 @@ import type { ClassifierContext, ImagesContext, ModelType, Usage } from '@earend
 import { DEFAULT_HARNESS_CONFIG, type HarnessConfigProvider } from '../harness-config.ts';
 import { promptString } from '../prompt-text.ts';
 import { lazySchemasActive, matchesLazySchemaRef, parseLazySchemaRefs } from './lazy-schemas.ts';
+import { effectiveCodemodeMode } from './codemode-mode.ts';
 
 const codemodeScope = promptString('native-discovery.json', 'codemodeScope');
 
@@ -182,7 +183,21 @@ export function installCapabilityCodemode(
   let currentContext: ExtensionContext | undefined;
   pi.on('session_start', (_event, ctx) => { currentContext = ctx; });
   pi.on('before_agent_start', (_event, ctx) => { currentContext = ctx; });
-  createCodemodeExtension()({
+  const branchOf = (): readonly unknown[] | null => {
+    const manager = currentContext?.sessionManager;
+    return manager === undefined || typeof manager.getBranch !== 'function' ? null : manager.getBranch();
+  };
+  // The effective mode is the preset's recorded branch override when present,
+  // otherwise the Settings value. Passing it to the native Codemode tool makes
+  // `only` mode (and therefore the lazy projection) take effect from the next
+  // loadout after a preset applies one, without a public settings write.
+  const modeOptions = {
+    get mode(): 'on' | 'only' | undefined {
+      if (currentContext === undefined) return undefined;
+      return effectiveCodemodeMode(branchOf(), pi.getSettings?.()?.codemode?.mode);
+    },
+  };
+  createCodemodeExtension(modeOptions as unknown as Parameters<typeof createCodemodeExtension>[0])({
     ...pi,
     registerTool(definition) {
       // This factory registers one known tool; erase the API's unrelated generic
@@ -199,7 +214,7 @@ export function installCapabilityCodemode(
           // declaration. execute() still builds the full sandbox declarations, so
           // describeTool/executeTool keep working.
           const refs = parseLazySchemaRefs(currentContext ? configFor(currentContext).capability.lazySchemas : []);
-          const lazy = lazySchemasActive(pi) && !refs.empty
+          const lazy = lazySchemasActive(pi, branchOf()) && !refs.empty
             ? new Set(loadout.callable
                 .filter((tool) => active.has(tool.name) && matchesLazySchemaRef(refs, tool.name, loadout.getNamespace(tool.name)))
                 .map((tool) => tool.name))
@@ -334,7 +349,7 @@ export function installCapabilityCodemode(
     const codemodeActive = active.includes('codemode');
     const cfg = currentContext ? configFor(currentContext) : DEFAULT_HARNESS_CONFIG;
     const refs = parseLazySchemaRefs(cfg.capability.lazySchemas);
-    const lazy = lazySchemasActive(pi) && !refs.empty
+    const lazy = lazySchemasActive(pi, branchOf()) && !refs.empty
       ? new Set(active.filter((name) => {
           const tool = pi.getAllTools().find((entry) => entry.name === name);
           return tool !== undefined && tool.exposure !== 'model-only'

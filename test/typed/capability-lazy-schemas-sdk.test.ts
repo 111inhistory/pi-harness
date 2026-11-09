@@ -29,6 +29,7 @@ test('only mode + lazySchemas keeps matched group names but withholds its schema
   let pi: ExtensionAPI | undefined;
   const calls: string[] = [];
   const requests: { messages: { role: string }[] }[] = [];
+  const internalToolNames: string[][] = [];
   const errors: unknown[] = [];
   try {
     const runtime = await ModelRuntime.create({ authPath: path.join(cwd, 'auth.json'), modelsPath: null, refreshOnCreate: false });
@@ -58,6 +59,7 @@ test('only mode + lazySchemas keeps matched group names but withholds its schema
       const internal = getCurrentTools(context.messages).some((entry) => entry.name === CAPABILITY_STEP_TOOL_NAME);
       let message: AssistantMessage;
       if (internal) {
+        internalToolNames.push(getCurrentTools(context.messages).map((entry) => entry.name));
         childStep++;
         if (childStep === 1) {
           message = toolCall(CAPABILITY_STEP_TOOL_NAME, { queries: ['search'], refs: [] });
@@ -75,8 +77,8 @@ test('only mode + lazySchemas keeps matched group names but withholds its schema
       } else {
         requests.push(structuredClone(context));
         rootStep++;
-        if (rootStep === 1) message = toolCall('capability', {});
-        else if (rootStep === 2) message = toolCall('codemode', { code: `
+        if (rootStep % 3 === 1) message = toolCall('capability', {});
+        else if (rootStep % 3 === 2) message = toolCall('codemode', { code: `
           const d = await describeTool('mcp__big__search');
           if (typeof d !== 'string' || !d.includes('mcp__big__search')) throw Error('describeTool missing full interface');
           const ns = await describeNamespace('mcp__big');
@@ -191,6 +193,17 @@ test('only mode + lazySchemas keeps matched group names but withholds its schema
     assert.equal(executed.isError, false, JSON.stringify(executed.content));
     assert.match(JSON.stringify(executed.content), /LAZY_OK/);
     assert.deepEqual(calls, ['big'], 'the lazy member executes through the Codemode sandbox');
+
+    // A follow-up discovery must not re-send the lazy member's full schema to its
+    // internal retrieval model. The inherited declaration was hidden from the
+    // parent request, so the child must apply the same lazy mask.
+    await session.prompt('Discover again to confirm the lazy schema is not re-inherited');
+    assert.ok(internalToolNames.length >= 2, 'the second discovery ran an internal retrieval session');
+    for (const names of internalToolNames) {
+      assert.ok(!names.includes('mcp__big__search'),
+        'no Capability internal retrieval request may re-declare the lazy member');
+    }
+
     assert.deepEqual(errors, []);
   } finally {
     session?.dispose();

@@ -276,10 +276,11 @@ export default function capabilityExtension(
       try {
         service.projectTrusted = ctx.isProjectTrusted();
         const config = configFor(ctx);
+        const lazyNames = lazyGroupMemberNames(pi, config, ctx.sessionManager.getBranch());
         const snapshot = captureInheritedContext(pi, ctx, toolCallId);
         const engine = createCapabilityDiscovery({
           broker: createCapabilityBroker(createProviders(pi, service), config.capability.search),
-          openSession: (request) => openInternalSession(pi, service, ctx, request, snapshot),
+          openSession: (request) => openInternalSession(pi, service, ctx, request, snapshot, lazyNames),
           budget: config.capability.budget,
           noSelectionLimit: config.capability.noSelectionLimit,
         });
@@ -324,7 +325,7 @@ export default function capabilityExtension(
             }
             interfaceSources = capabilityInterfaceSources(
               activation.active, declaredTools, eligible.has("codemode"),
-              lazySelectedNames(pi, config, activation.active),
+              lazySelectedNames(pi, config, activation.active, ctx.sessionManager.getBranch()),
             );
           } catch (error) {
             result = retainSelectedTools(pi, result, "activation", new Set(pi.getActiveTools()));
@@ -336,7 +337,15 @@ export default function capabilityExtension(
       } catch (error) {
         result = capabilityFailureResult(`capability discovery failed: ${errorMessage(error)}.`);
       }
-      result = appendLazyModelOnlyAdvisory(pi, configFor(ctx), result);
+      result = appendLazyModelOnlyAdvisory(pi, configFor(ctx), result, ctx.sessionManager.getBranch());
+      if (result.unavailable !== undefined && result.unavailable.length > 0
+          && (result.status === "partial" || result.status === "failed")) {
+        const names = result.unavailable.map((entry) => entry.name);
+        ctx.ui.notify(
+          `Capability: ${names.length} selected tool${names.length === 1 ? "" : "s"} could not be enabled in this session: ${names.join(", ")}.`,
+          "warning",
+        );
+      }
       const delta = capabilityToolDelta(result, previouslyActive);
       const withInterfaces = supplySelectedToolInterfaces(delta, pi);
       const projected = interfaceSources === null ? withInterfaces : capabilityModelResult(withInterfaces, interfaceSources);
@@ -531,6 +540,7 @@ function retainReachableTools(pi: ExtensionAPI, result: CapabilityDiscoveryResul
   );
   const names = [...new Set(retained.dropped)];
   if (names.length === 0) return result;
+  const unavailable = names.map((name) => ({ name, reason: "it needs an enabled Codemode entry in this session, but Codemode is not enabled" }));
   const detail = names.map((name) =>
     `selected tool "${name}" has no usable call path because Codemode is not enabled in this session; it was not published.`);
   const keptTools = countToolMembers(retained.result.tools) + countToolMembers(retained.result.mcp);
@@ -539,7 +549,7 @@ function retainReachableTools(pi: ExtensionAPI, result: CapabilityDiscoveryResul
       ? `capability discovery failed: the selected tool "${names[0]}" has no usable call path because Codemode is not enabled in this session.`
       : `capability discovery failed: none of the ${names.length} selected tools has a usable call path because Codemode is not enabled in this session.`;
     const failed = capabilityFailureResult(reason, [...result.warnings, ...detail], result.coverage);
-    return result.endReason === undefined ? failed : { ...failed, endReason: result.endReason };
+    return result.endReason === undefined ? { ...failed, unavailable } : { ...failed, endReason: result.endReason, unavailable };
   }
   const count = names.length;
   return {
@@ -547,6 +557,7 @@ function retainReachableTools(pi: ExtensionAPI, result: CapabilityDiscoveryResul
     status: "partial",
     warnings: [...result.warnings, ...detail,
       `capability discovery is partial: ${count} selected tool${count === 1 ? " has" : "s have"} no usable call path in this session.`],
+    unavailable,
   };
 }
 
@@ -573,10 +584,11 @@ function appendLazyModelOnlyAdvisory(
   pi: ExtensionAPI,
   config: HarnessConfig,
   result: CapabilityDiscoveryResult,
+  branch: readonly unknown[] | null,
 ): CapabilityDiscoveryResult {
   if (result.status === "failed") return result;
   const refs = parseLazySchemaRefs(config.capability.lazySchemas);
-  if (refs.empty || !lazySchemasActive(pi)) return result;
+  if (refs.empty || !lazySchemasActive(pi, branch)) return result;
   const all = pi.getAllTools();
   const names = new Set<string>();
   for (const hit of [...result.tools, ...result.mcp]) {
@@ -624,8 +636,9 @@ function lazySelectedNames(
   pi: ExtensionAPI,
   config: HarnessConfig,
   active: ReadonlySet<string>,
+  branch: readonly unknown[] | null,
 ): ReadonlySet<string> | undefined {
-  if (!lazySchemasActive(pi)) return undefined;
+  if (!lazySchemasActive(pi, branch)) return undefined;
   const refs = parseLazySchemaRefs(config.capability.lazySchemas);
   if (refs.empty) return undefined;
   const names = new Set<string>();
@@ -633,6 +646,22 @@ function lazySelectedNames(
     if (active.has(tool.name) && matchesLazySchemaRef(refs, tool.name, tool.namespace)) names.add(tool.name);
   }
   return names.size === 0 ? undefined : names;
+}
+
+/** Every registered member of a configured lazy group while the projection is live. */
+function lazyGroupMemberNames(
+  pi: ExtensionAPI,
+  config: HarnessConfig,
+  branch: readonly unknown[] | null,
+): ReadonlySet<string> {
+  if (!lazySchemasActive(pi, branch)) return new Set();
+  const refs = parseLazySchemaRefs(config.capability.lazySchemas);
+  if (refs.empty) return new Set();
+  const names = new Set<string>();
+  for (const tool of pi.getAllTools()) {
+    if (matchesLazySchemaRef(refs, tool.name, tool.namespace)) names.add(tool.name);
+  }
+  return names;
 }
 
 /**
@@ -650,6 +679,7 @@ async function openInternalSession(
   ctx: ExtensionToolContext,
   request: CapabilityOpenSessionRequest,
   snapshot: InheritedSnapshot,
+  lazyNames: ReadonlySet<string>,
 ): Promise<CapabilityRunSession> {
   const cwd = ctx.cwd;
   const settings = internalSettings(pi, ctx.isProjectTrusted());
@@ -680,15 +710,18 @@ async function openInternalSession(
   await resourceLoader.reload();
   const model = snapshot.model;
   const rootOnly = createCapabilityScopeView(pi).rootOnly;
-  // Manual tool interfaces cannot travel to a child, even as blocked placeholders.
-  // Keep other inherited declarations so supported transports can reuse their prefix.
+  // Manual tools and lazily-projected members must not travel to the retrieval
+  // model: the former cannot be inherited, the latter would re-send the large
+  // schema the lazy projection deliberately withheld from the parent request.
+  const keepInherited = (name: string): boolean => !lazyNames.has(name) && (rootOnly === null || !rootOnly(name));
   const inheritedEntries = snapshot.entries.map(entry => {
-    if (entry.type !== "message" || entry.message.role !== "system" || rootOnly === null) return entry;
+    if (entry.type !== "message" || entry.message.role !== "system") return entry;
     const message = entry.message;
+    if (message.toolsAdded === undefined && message.toolsRemoved === undefined) return entry;
     return { ...entry, message: {
       ...message,
-      ...(message.toolsAdded === undefined ? {} : { toolsAdded: message.toolsAdded.filter(tool => !rootOnly(tool.name)) }),
-      ...(message.toolsRemoved === undefined ? {} : { toolsRemoved: message.toolsRemoved.filter(tool => !rootOnly(tool.name)) }),
+      ...(message.toolsAdded === undefined ? {} : { toolsAdded: message.toolsAdded.filter(tool => keepInherited(tool.name)) }),
+      ...(message.toolsRemoved === undefined ? {} : { toolsRemoved: message.toolsRemoved.filter(tool => keepInherited(tool.name)) }),
     } };
   });
   const policy = providerSessionPolicy(model);
@@ -730,9 +763,9 @@ async function openInternalSession(
       const admission = createToolAdmission(pi, branch, catalog);
       const historical = projectPrunedToolHistory(transformed, branch);
       const declarations = projectDiscoveryDeclarations(historical,
-        name => retrievalNames.has(name) || admission.declares(name),
+        name => (retrievalNames.has(name) || admission.declares(name)) && !lazyNames.has(name),
         () => pi.getAllTools().find(tool => tool.name === "codemode")?.description);
-      const callable = new Set(pi.getActiveTools().filter(admission.admits));
+      const callable = new Set(pi.getActiveTools().filter((name) => admission.admits(name) && !lazyNames.has(name)));
       const updates = projectToolPromptUpdates({
         messages: declarations, tools: catalog.tools, active: callable, branch,
         appendEntry: (kind, data) => { session.sessionManager.appendCustomEntry(kind, data); },

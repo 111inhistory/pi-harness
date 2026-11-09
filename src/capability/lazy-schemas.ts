@@ -14,6 +14,8 @@
  * load-time rule that only rejects empty entries.
  */
 
+import { effectiveCodemodeMode } from './codemode-mode.ts';
+
 /** The namespace metadata a tool carries, as group matching needs it. */
 export interface LazySchemaNamespace {
   readonly name: string;
@@ -96,15 +98,18 @@ export interface LazySchemaHost {
 }
 
 /**
- * Lazy projection applies only while Codemode is the active tool and its mode is
- * `only`. Any other state (Codemode off, mode `on`, a settings read failure)
- * leaves the configured refs inert and keeps native declarations.
+ * Lazy projection applies only while Codemode is the active tool and the effective
+ * mode is `only`. The effective mode is a preset's recorded override on the
+ * branch when present, otherwise the Settings value. Any other state (Codemode
+ * off, effective `on`, missing branch/settings) leaves the refs inert.
  */
-export function lazySchemasActive(host: LazySchemaHost): boolean {
+export function lazySchemasActive(host: LazySchemaHost, branch?: readonly unknown[] | null): boolean {
   if (!host.getActiveTools().includes('codemode')) return false;
+  let settingsMode: string | undefined;
   try {
-    return host.getSettings?.()?.codemode?.mode === 'only';
+    settingsMode = host.getSettings?.()?.codemode?.mode;
   } catch {
     return false;
   }
+  return effectiveCodemodeMode(branch, settingsMode) === 'only';
 }

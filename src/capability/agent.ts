@@ -34,6 +34,8 @@ export type CapabilityEndReason = 'finished' | 'no_selection_limit' | 'budget' |
 export interface CapabilityDiscoveryResult extends CapabilitySearchResult {
   coverage: CapabilitySearchCoverage;
   endReason?: CapabilityEndReason;
+  /** Selected members dropped because the session has no usable call path. */
+  unavailable?: readonly { readonly name: string; readonly reason: string }[];
 }
 export interface CapabilityBrokerPort {
   search(input: { query: string; src: 'local'; cwd: string; signal?: AbortSignal }): CapabilitySearchResult | Promise<CapabilitySearchResult>;

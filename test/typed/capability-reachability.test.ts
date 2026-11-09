@@ -150,3 +150,21 @@ test('/capability enable records a script-only tool once Codemode is active', ()
 test('the refusal text names the missing Codemode entry', () => {
   assert.match(describeEnableSkip({ name: 'codemode_only', reason: 'unreachable' }), /Codemode/);
 });
+
+test('the model-facing partial result keeps which members were not enabled', async () => {
+  const { capabilityPublicResult } = await import('../../src/capability/result.ts');
+  const result = {
+    status: 'partial',
+    tools: [] as unknown[],
+    mcp: [] as unknown[],
+    skills: [] as unknown[],
+    remote: [] as unknown[],
+    missingCapabilities: [] as string[],
+    warnings: ['capability discovery is partial: 1 selected tool has no usable call path in this session.'],
+    unavailable: [{ name: 'mcp__svc__run', reason: 'it needs an enabled Codemode entry in this session, but Codemode is not enabled' }],
+  };
+  const published = capabilityPublicResult(result) as { unavailable?: { name: string; reason: string }[]; warnings?: unknown };
+  assert.deepEqual(published.unavailable?.map((entry) => entry.name), ['mcp__svc__run']);
+  assert.match(String(published.unavailable?.[0]?.reason), /Codemode/);
+  assert.equal(published.warnings, undefined, 'raw diagnostic warnings stay internal');
+});
