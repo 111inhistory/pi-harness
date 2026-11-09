@@ -6,7 +6,7 @@ compatibility: Requires the installed pi-job CLI, tmux on POSIX or psmux 3.4.0+ 
 
 # Async terminal tasks with pi-job
 
-Use the existing shell tool to call `pi-job`. Commands run in a real terminal and return one JSON result per call.
+Use the existing shell tool to call `pi-job`. Commands run in a real terminal and return the result and output per call.
 
 ## Create a task
 
@@ -14,10 +14,9 @@ Use the existing shell tool to call `pi-job`. Commands run in a real terminal an
 pi-job create --wait <duration> --timeout <duration> -- npm run build
 ```
 
-- `--wait <duration>` is optional and limits how long this call waits. Choose the duration for the task; if it is still running, retain its returned `id` and continue independent work.
+- `--wait <duration>` is optional and limits how long this call waits. Choose the duration for the task; if it is still running, retain its returned `id` and continue independent work. Defaults to 5s for fast-fail on startup.
 - `--timeout <duration>` is optional and limits the task's runtime. Choose a suitable limit for bounded work such as builds and tests.
-- Both duration values use a non-negative integer followed by an optional lowercase unit: `s` (seconds), or `m` (minutes). A value without a unit means milliseconds; fractions and negative values are rejected.
-- With no `--wait`, return after startup without waiting for completion.
+- Both duration values use a non-negative integer followed by an optional unit: `ms`, `s`, or `m` (minutes), defaults to ms. Fractions and negative values are rejected.
 - Put the executable and its arguments after `--`. Shell syntax requires an explicit shell:
 
 ```bash
@@ -26,7 +25,7 @@ pi-job create -- bash -c 'npm run build && npm test'
 
 Windows `.cmd` and `.bat` launchers, including `npm`, are resolved using PATH and PATHEXT. Their arguments are escaped for cmd.exe; literal CR/LF inside an argument is refused. Use an executable or stdin for multiline payloads.
 
-Completion is delivered automatically to the Agent that created the task. When nothing else can advance, end the current turn and wait for that event. A Subagent remains in its current assignment while its terminal tasks are running; provide the final handoff after consuming and verifying their results.
+Completion is delivered automatically to you. When nothing else can advance, conclude the turn to wait for that event. A Subagent remains in its current assignment while its terminal tasks are running; provide the final handoff after consuming and verifying their results.
 
 ## Read incremental output
 
@@ -34,7 +33,7 @@ Completion is delivered automatically to the Agent that created the task. When n
 pi-job poll TASK_ID
 ```
 
-Task IDs use `job_<8 lowercase hex digits>`, for example `job_3f8a1c2d`. Use the exact ID returned by `create`. The host supplies a stable task root, so changing a command's temporary directory does not change task lookup.
+Task IDs use `job_<8 lowercase hex digits>`, for example `job_1234cdef`. Use the exact ID returned by `create`.
 
 `poll` returns immediately with new output and current status. Use it when a progress check will inform your next action; wait for the completion event otherwise.
 

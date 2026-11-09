@@ -503,13 +503,13 @@ export async function createTask(options: CreateTaskOptions): Promise<ShellResul
     fs.writeFileSync(paths.delivery, `${JSON.stringify({ mode })}\n`, { mode: 0o600 });
     return result;
   };
-  // An explicit --wait is honoured exactly; only the default (no wait) uses the
-  // startup bound, so a running reply never hides the completion behind a floor.
+  // An explicit --wait is honoured exactly; `--wait 0` is the only value that
+  // uses the startup bound, so a zero-wait reply never hides a completion.
   const waitDeadline = createdAt + (task.waitMs === 0 ? STARTUP_WAIT_MS : task.waitMs);
   for (;;) {
     const state = readStateFile(paths, task);
     if (state.finalizedAt !== null) return decide("sync", state);
-    // Without a requested wait, `create` returns once the command actually runs.
+    // A zero wait returns `create` once the command actually runs.
     if (task.waitMs === 0 && exists(paths.childPid)) return decide("async", state);
     if (Date.now() >= waitDeadline) return decide("async", state);
     await sleep(MONITOR_TICK_MS / 2);

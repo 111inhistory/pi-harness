@@ -16,3 +16,16 @@ export interface CliSettings {
 }
 
 export declare function runCli(bundle: string, args: readonly string[], settings?: CliSettings): Promise<CliResult>;
+
+/** A parsed plain-text CLI result: the metadata line and the text it carried. */
+export interface ParsedJobResult {
+  readonly id: string;
+  readonly status: string;
+  readonly exitCode: number | null;
+  readonly cursor: number;
+  readonly truncated: boolean;
+  readonly output: string;
+  readonly logPath: string;
+}
+
+export declare function parseJobOutput(stdout: string): ParsedJobResult;

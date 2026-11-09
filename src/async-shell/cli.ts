@@ -1,14 +1,15 @@
 /**
  * `pi-job`: the async-shell CLI.
  *
- * One invoke, one JSON object on stdout. The tool is deliberately stateless: a
+ * One invoke, one result: one metadata line, then the text this call carried.
+ * The tool is deliberately stateless: a
  * task id addresses files under the user's private state root, and the detached
  * monitor that owns those files is the only writer of the task's final state.
  *
  * The CLI also runs standalone without any host callback environment, which is
  * what the integration tests use. With `PI_AGENT_SOCKET` and
  * `PI_ASYNC_SHELL_TOKEN` set it reports `register` and `complete` frames to the
- * Harness host over the existing managed IPC endpoint.
+ * Harness host over the existing managed IPC endpoint; those frames stay JSON.
  */
 
 import fs from "node:fs";
@@ -29,6 +30,7 @@ import {
   sendKey,
   taskDirectory,
 } from "./tmux.ts";
+import { formatError, formatResult } from "./render.ts";
 import type { ShellResult } from "./protocol.ts";
 
 const USAGE = [
@@ -43,6 +45,9 @@ const USAGE = [
 const USAGE_ERRORS: ReadonlySet<string> = new Set([
   "invalid_command_args", "invalid_duration", "invalid_cursor", "invalid_id", "input_too_large", "invalid_key",
 ]);
+
+/** How long a reply waits for the command by default, so a short command finishes inside the call. */
+export const DEFAULT_WAIT_MS = 5000;
 
 /** `250ms`, `5s`, `10m`, `1h`; a bare number is milliseconds. */
 export function parseDuration(value: string | undefined): number {
@@ -92,7 +97,7 @@ interface CreateArgs {
 
 /** Options end at `--` or at the first token that is not an option. */
 export function parseCreateArgs(tokens: readonly string[]): CreateArgs {
-  let waitMs = 0;
+  let waitMs = DEFAULT_WAIT_MS;
   let timeoutMs: number | null = null;
   let cwd = process.cwd();
   let index = 0;
@@ -123,12 +128,8 @@ export function parseCreateArgs(tokens: readonly string[]): CreateArgs {
   return { argv, cwd, waitMs, timeoutMs };
 }
 
-function emit(value: unknown): void {
-  process.stdout.write(`${JSON.stringify(value)}\n`);
-}
-
-function emitResult(result: ShellResult): void {
-  emit(result);
+function report(result: ShellResult): void {
+  process.stdout.write(formatResult(result));
 }
 
 async function run(argv: readonly string[]): Promise<void> {
@@ -136,19 +137,19 @@ async function run(argv: readonly string[]): Promise<void> {
   switch (verb) {
     case "create": {
       const parsed = parseCreateArgs(rest);
-      emitResult(await createTask({ ...parsed, callback: callbackFromEnv(process.env) }));
+      report(await createTask({ ...parsed, callback: callbackFromEnv(process.env) }));
       return;
     }
     case "poll": {
       const [id, ...options] = rest;
       const cursor = readCursorOption(options);
-      emitResult(pollTask(taskDirectory(requireId(id, "poll")), cursor));
+      report(pollTask(taskDirectory(requireId(id, "poll")), cursor));
       return;
     }
     case "read": {
       const [id, ...options] = rest;
       const cursor = readCursorOption(options);
-      emitResult(readTask(taskDirectory(requireId(id, "read")), cursor));
+      report(readTask(taskDirectory(requireId(id, "read")), cursor));
       return;
     }
     case "send": {
@@ -160,7 +161,7 @@ async function run(argv: readonly string[]): Promise<void> {
       const dir = taskDirectory(requireId(positional[0], "send"));
       const input = await readStdin(MAX_SEND_BYTES);
       sendInput(dir, input, enter);
-      emitResult(pollTask(dir, null));
+      report(pollTask(dir, null));
       return;
     }
     case "key": {
@@ -169,7 +170,7 @@ async function run(argv: readonly string[]): Promise<void> {
       const dir = taskDirectory(requireId(id, "key"));
       if (key === undefined) throw new AsyncShellError("invalid_command_args", "key requires a key name.");
       sendKey(dir, key);
-      emitResult(pollTask(dir, null));
+      report(pollTask(dir, null));
       return;
     }
     case "cancel": {
@@ -177,7 +178,7 @@ async function run(argv: readonly string[]): Promise<void> {
       if (extra.length !== 0) throw new AsyncShellError("invalid_command_args", "cancel takes one task id.");
       const dir = taskDirectory(requireId(id, "cancel"));
       await cancelTask(dir);
-      emitResult(pollTask(dir, null));
+      report(pollTask(dir, null));
       return;
     }
     case "__run":
@@ -217,10 +218,8 @@ async function main(): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     if (internal) {
       process.stderr.write(`pi-job: ${message}\n`);
-    } else if (USAGE_ERRORS.has(code)) {
-      emit({ error: { code, message, usage: USAGE } });
     } else {
-      emit({ error: { code, message } });
+      process.stderr.write(formatError(message, USAGE_ERRORS.has(code) ? USAGE : null));
     }
     process.exitCode = 1;
   }

@@ -23,7 +23,7 @@ import { AsyncShellHost } from '../../src/async-shell/host.ts';
 import { pipePath } from '../../src/ipc/address.ts';
 import { validateAsyncShellFrame, type AsyncShellFrame, type ShellResult } from '../../src/async-shell/protocol.ts';
 import { waitFor } from '../../test-support/async.ts';
-import { runCli } from '../../test-support/test-environment.mjs';
+import { parseJobOutput, runCli } from '../../test-support/test-environment.mjs';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const posix = process.platform !== 'win32';
@@ -69,7 +69,7 @@ function cli(args: readonly string[], settings: { input?: string; env?: NodeJS.P
 async function job(args: readonly string[], settings: { input?: string; env?: NodeJS.ProcessEnv } = {}): Promise<ShellResult> {
   const result = await cli(args, settings);
   assert.equal(result.code, 0, `pi-job ${args[0] ?? ''} failed: ${result.stdout}${result.stderr}`);
-  return JSON.parse(result.stdout) as ShellResult;
+  return parseJobOutput(result.stdout) as ShellResult;
 }
 
 function taskDirOf(result: ShellResult): string {
@@ -100,8 +100,16 @@ test('create runs the command with literal argv and reports the exit status', op
   assert.deepEqual(JSON.parse(result.output.trim()), literal, 'argv reaches the command byte for byte');
 });
 
+test('create waits five seconds by default, so a short command finishes inside the call', options, async (t) => {
+  const result = await job(['create', '--', ...nodeScript('setTimeout(()=>process.stdout.write("done\\n"), 300)')]);
+  t.after(() => cleanup(taskDirOf(result)));
+  assert.equal(result.status, 'completed', 'the default window covers a command that ends in a few hundred milliseconds');
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.output, 'done\n');
+});
+
 test('poll returns only new output and read replays the transcript from a cursor', options, async (t) => {
-  const started = await job(['create', '--', ...nodeScript(
+  const started = await job(['create', '--wait', '0', '--', ...nodeScript(
     'const w=(s)=>process.stdout.write(s);'
     + 'w("one\\n"); setTimeout(()=>{ w("two\\n"); setTimeout(()=>{ w("three\\n"); }, 300); }, 300);',
   )]);
@@ -144,7 +152,7 @@ test('send preserves literal bytes, and Enter is a separate key', options, async
     'process.stdin.on("data",(chunk)=>{ acc += chunk.toString();',
     '  if (acc.includes("\\n") || acc.includes("\\r")) { out("got:"+JSON.stringify(acc)+"\\n"); acc=""; } });',
   ].join('\n');
-  const started = await job(['create', '--', process.execPath, '-e', script]);
+  const started = await job(['create', '--wait', '0', '--', process.execPath, '-e', script]);
   t.after(() => cleanup(taskDirOf(started)));
   await sendWhenReady(started.id, 'ready\n');
 
@@ -173,12 +181,12 @@ test('send preserves literal bytes, and Enter is a separate key', options, async
 });
 
 test('an oversized send is refused while reading stdin, before anything is typed', options, async (t) => {
-  const started = await job(['create', '--', ...nodeScript('process.stdin.resume(); setInterval(()=>{}, 1000);')]);
+  const started = await job(['create', '--wait', '0', '--', ...nodeScript('process.stdin.resume(); setInterval(()=>{}, 1000);')]);
   t.after(() => cleanup(taskDirOf(started)));
 
   const result = await cli(['send', started.id], { input: 'x'.repeat(70_000) });
   assert.equal(result.code, 1);
-  assert.equal(JSON.parse(result.stdout).error.code, 'input_too_large');
+  assert.match(result.stderr, /^pi-job: Input must not exceed \d+ bytes\.$/m, 'the refusal is one plain line');
   assert.equal((await job(['poll', started.id, '--cursor', '0'])).output, '', 'no byte reached the pane');
 });
 
@@ -225,7 +233,7 @@ test('a nonzero exit, a timeout and a cancel each finalize the task and leave no
   // before Node runs its first stdout write.
   assert.equal(serverStopped(taskDirOf(timedOut)), true, 'the timed-out server is gone');
 
-  const running = await job(['create', '--', ...nodeScript('process.stdout.write("begin\\n"); setTimeout(()=>process.exit(0), 30000);')]);
+  const running = await job(['create', '--wait', '0', '--', ...nodeScript('process.stdout.write("begin\\n"); setTimeout(()=>process.exit(0), 30000);')]);
   const dir = taskDirOf(running);
   t.after(() => cleanup(dir));
   await waitFor(async () => (await job(['poll', running.id])).output.includes('begin') || null, { label: 'started output' });
@@ -283,7 +291,7 @@ test('a task that outlives the wait window is notified once when it completes', 
 
 test('a running --wait 0 reply is completed by a notification, never dropped', options, async (t) => {
   const host = await callbackHost(t);
-  const started = await job(['create', '--', ...nodeScript(
+  const started = await job(['create', '--wait', '0', '--', ...nodeScript(
     'process.stdout.write("short\\n"); setTimeout(()=>process.exit(0), 1500);',
   )], { env: { PI_AGENT_SOCKET: host.socket, PI_ASYNC_SHELL_TOKEN: 'token-short' } });
   t.after(() => cleanup(taskDirOf(started)));
@@ -314,11 +322,9 @@ test('an ambiguous registration keeps the task directory and never replays it', 
     env: { PI_AGENT_SOCKET: missing, PI_ASYNC_SHELL_TOKEN: 'token-absent' },
   });
   assert.equal(result.code, 1);
-  const error = JSON.parse(result.stdout).error as { code: string; message: string };
-  assert.equal(error.code, 'register_failed');
-  // The error names the task whose directory was kept for the host to release.
-  const id = /task (job_[0-9a-f]{8})/.exec(error.message)?.[1];
-  assert.ok(id, error.message);
+  // The refusal names the task whose directory was kept for the host to release.
+  const id = /task (job_[0-9a-f]{8})/.exec(result.stderr)?.[1];
+  assert.ok(id, result.stderr);
   const dir = path.join(stateRoot(), id!);
   t.after(() => rm(dir, { recursive: true, force: true }));
   assert.equal(JSON.parse(await readFile(path.join(dir, 'state.json'), 'utf8')).status, 'failed');
@@ -390,7 +396,7 @@ test('a task never touches another tmux server on the same host', { ...options, 
     void rm(dir, { recursive: true, force: true });
   });
 
-  const started = await job(['create', '--', ...nodeScript('setTimeout(()=>process.exit(0), 30000)')]);
+  const started = await job(['create', '--wait', '0', '--', ...nodeScript('setTimeout(()=>process.exit(0), 30000)')]);
   t.after(() => cleanup(taskDirOf(started)));
   await job(['cancel', started.id]);
 
@@ -425,7 +431,7 @@ test('a large literal send reaches the pane byte for byte', options, async (t) =
     'process.stdin.resume();',
     'writeFileSync(out + ".ready", "");',
   ].join('\n'));
-  const started = await job(['create', '--', process.execPath, sink, out]);
+  const started = await job(['create', '--wait', '0', '--', process.execPath, sink, out]);
   t.after(() => cleanup(taskDirOf(started)));
   await waitFor(() => existsSync(`${out}.ready`), { label: 'the sink is reading', timeoutMs: 30_000 });
 
@@ -502,8 +508,8 @@ test('a state root with spaces and non-ASCII characters works end to end', optio
 });
 
 test('two tasks own separate servers, and cancelling one leaves the other running', options, async (t) => {
-  const first = await job(['create', '--', ...nodeScript('process.stdout.write("first\\n"); setTimeout(()=>process.exit(0), 30000);')]);
-  const second = await job(['create', '--', ...nodeScript('process.stdout.write("second\\n"); setTimeout(()=>process.exit(0), 30000);')]);
+  const first = await job(['create', '--wait', '0', '--', ...nodeScript('process.stdout.write("first\\n"); setTimeout(()=>process.exit(0), 30000);')]);
+  const second = await job(['create', '--wait', '0', '--', ...nodeScript('process.stdout.write("second\\n"); setTimeout(()=>process.exit(0), 30000);')]);
   t.after(() => cleanup(taskDirOf(first)));
   t.after(() => cleanup(taskDirOf(second)));
 
@@ -535,7 +541,7 @@ test('the task inherits the caller environment, including the callback contract'
 test('a long transcript is complete while it is read concurrently', options, async (t) => {
   const lines = 200;
   const script = `let i=0; const t=setInterval(()=>{ process.stdout.write("line-"+(++i)+"\\n"); if(i===${String(lines)}){ clearInterval(t); process.exit(0); } }, 5);`;
-  const started = await job(['create', '--', ...nodeScript(script)]);
+  const started = await job(['create', '--wait', '0', '--', ...nodeScript(script)]);
   t.after(() => cleanup(taskDirOf(started)));
 
   let text = '';

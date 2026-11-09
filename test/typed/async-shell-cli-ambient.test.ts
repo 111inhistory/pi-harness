@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { cancelTask, stateRoot } from '../../src/async-shell/tmux.ts';
 import type { ShellResult } from '../../src/async-shell/protocol.ts';
 import { pipePath } from '../../src/ipc/address.ts';
-import { runCli } from '../../test-support/test-environment.mjs';
+import { parseJobOutput, runCli } from '../../test-support/test-environment.mjs';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const posix = process.platform !== 'win32';
@@ -103,7 +103,7 @@ test('an ambient callback endpoint receives no frames from a standalone CLI task
   const script = 'const e=process.env; process.stdout.write([e.PI_AGENT_ID,e.PI_AGENT_SOCKET,e.PI_ASYNC_SHELL_TOKEN,e.PI_ASYNC_SHELL_ROOT].some(Boolean)?"leaked\\n":"standalone\\n")';
   const result = await runCli(bundle, ['create', '--wait', '10s', '--', process.execPath, '-e', script]);
   assert.equal(result.code, 0, `pi-job create failed: ${result.stdout}${result.stderr}`);
-  const task = JSON.parse(result.stdout) as ShellResult;
+  const task = parseJobOutput(result.stdout) as ShellResult;
   const dir = path.dirname(task.logPath);
   t.after(async () => {
     await cancelTask(dir, taskRoot).catch(() => {});

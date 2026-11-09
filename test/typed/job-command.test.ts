@@ -34,6 +34,8 @@ test("quotes and spaces in arguments", async (t) => {
   assert.equal(action.isJob, true);
   assert.deepEqual(action.argv, ["echo", "hello world", "arg with space"]);
   assert.equal(action.cwd, "/workspace");
+  assert.equal(action.jobOptions?.waitMs, 5000, "an omitted --wait records the default window");
+  assert.equal(action.jobOptions?.timeoutMs, null);
 });
 
 test("executable paths with spaces", async (t) => {
