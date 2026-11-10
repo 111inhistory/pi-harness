@@ -1052,6 +1052,11 @@
       "docs": "5bf2efc378b5fbc58416a1e7d5e355364c4da48587f5a8b2ec1cc4656d8ac4b6",
       "tests": "cefd97f779b75aa0c2171dc3cb98ff575053ac08514a53e7fee5d12d9e77e9d7",
       "reason": "The preset test now keys its injected file reader by native path.join paths because the loader correctly asks the platform filesystem; preset parsing, whole-entry replacement, trust and warning contracts are unchanged and still asserted."
+    },
+    "shell.job-command": {
+      "docs": "a9eb0b176830fe17f593e9901dd5ce9ceca87108aaeb604a8038394095868ef9",
+      "tests": "06dbe87d0e07c357cdc8bcf6626c0e644ea5c90192e296e03f8b9212a1a6c116",
+      "reason": "Bash cases now state platform posix because a POSIX shell resolves POSIX paths regardless of host OS; pi-job extraction, Windows wrapper resolution and fail-closed fallback contracts are unchanged and still asserted."
     }
   }
 }

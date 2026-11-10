@@ -17,11 +17,14 @@ function requireSubmodule(t: TestContext): boolean {
   return true;
 }
 
+// Bash cases are POSIX parser tests: the shell resolves POSIX paths regardless
+// of the host OS, so they state the platform instead of inheriting the host's.
 test("quotes and spaces in arguments", async (t) => {
   if (!requireSubmodule(t)) return;
 
   const result = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: 'pi-job create -- echo "hello world" "arg with space"',
     cwd: "/workspace",
   });
@@ -43,6 +46,7 @@ test("executable paths with spaces", async (t) => {
 
   const result = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: 'pi-job create -- "/opt/my tool/bin" "data file.txt"',
     cwd: "/workspace",
   });
@@ -63,17 +67,19 @@ test("--cwd resolution: relative, absolute, omitted, and ignoring --cwd after --
   // Relative --cwd
   const resRel = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: "pi-job create --cwd subdir/nested -- ls -la",
     cwd: "/workspace/project",
   });
   assert.equal(resRel.kind, "extracted");
   if (resRel.kind !== "extracted") return;
   assert.equal(resRel.containsPiJob, true);
-  assert.equal(resRel.actions[0]!.cwd, path.resolve("/workspace/project", "subdir/nested"));
+  assert.equal(resRel.actions[0]!.cwd, path.posix.resolve("/workspace/project", "subdir/nested"));
 
   // Absolute --cwd
   const resAbs = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: "pi-job create --cwd /tmp/scratch -- ls",
     cwd: "/workspace/project",
   });
@@ -84,6 +90,7 @@ test("--cwd resolution: relative, absolute, omitted, and ignoring --cwd after --
   // Omitted --cwd
   const resOmitted = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: "pi-job create -- ls",
     cwd: "/workspace/project",
   });
@@ -94,6 +101,7 @@ test("--cwd resolution: relative, absolute, omitted, and ignoring --cwd after --
   // --cwd appearing after -- in child command arguments is not a pi-job create option
   const resAfterDash = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: "pi-job create -- my-tool --cwd other",
     cwd: "/workspace/project",
   });
@@ -139,6 +147,7 @@ test("compound command preserves unrelated dangerous sibling commands", async (t
 
   const result = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: "rm -rf /dangerous && pi-job create --wait 2s -- echo safe",
     cwd: "/workspace",
   });
@@ -164,6 +173,7 @@ test("send, key, and poll invocations are excluded from inspection and mark cont
 
   const result = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: 'pi-job create -- npm test && pi-job send job_1 "line" && pi-job key job_1 Enter && pi-job poll job_1',
     cwd: "/workspace",
   });
@@ -181,6 +191,7 @@ test("send-only pi-job command returns empty actions with containsPiJob: true", 
 
   const result = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: 'pi-job send job_1 "line"',
     cwd: "/workspace",
   });
@@ -196,6 +207,7 @@ test("non-pi-job commands return containsPiJob: false", async (t) => {
 
   const result = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: "git status && npm test",
     cwd: "/workspace",
   });
@@ -211,6 +223,7 @@ test("unknown pi-job subcommand falls back to original review", async (t) => {
 
   const result = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: "pi-job unrecognized_command foo",
     cwd: "/workspace",
   });
@@ -224,6 +237,7 @@ test("pi-job send with quoted heredoc skips opaque body and extracts cleanly", a
   const command = "pi-job send job_deadbeef --enter <<'EOF'\nrm -rf /somewhere\nEOF";
   const result = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command,
     cwd: "/workspace",
   });
@@ -240,6 +254,7 @@ test("pi-job send with unquoted heredoc falls back to original review", async (t
   const command = "pi-job send job_deadbeef --enter <<EOF\nrm -rf /somewhere\nEOF";
   const result = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command,
     cwd: "/workspace",
   });
@@ -253,6 +268,7 @@ test("non-pi-job command with heredoc falls back to original review", async (t) 
   const command = "cat <<'EOF'\nhello\nEOF";
   const result = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command,
     cwd: "/workspace",
   });
@@ -265,6 +281,7 @@ test("argv shell wrappers (bash -lc) are preserved intact", async (t) => {
 
   const result = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: 'pi-job create -- bash -lc "echo 1 && rm -rf /foo"',
     cwd: "/workspace",
   });
@@ -283,6 +300,7 @@ test("dynamic expansions or unknown tokens fall back to original review", async 
 
   const result = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: "pi-job create -- echo $(cat file)",
     cwd: "/workspace",
   });
@@ -295,6 +313,7 @@ test("malformed pi-job options fall back to original review", async (t) => {
 
   const result = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: "pi-job create --unknown-flag -- echo 1",
     cwd: "/workspace",
   });
@@ -307,6 +326,7 @@ test("compound command with cd side effect falls back to original review", async
 
   const result = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: "cd /other && pi-job create -- rm -rf relative",
     cwd: "/workspace",
   });
@@ -319,6 +339,7 @@ test("compound command with export side effect falls back to original review", a
 
   const result = await extractJobCommands({
     shell: "bash",
+    platform: "posix",
     command: "export TARGET=/other && pi-job create -- rm -rf relative",
     cwd: "/workspace",
   });
