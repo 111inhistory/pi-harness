@@ -965,8 +965,8 @@
     },
     "capability.native-exposure": {
       "docs": "ef49dbf8cad3dedd5e0c80e2ce810537fb5b64eeb1665fbac22952643113da63",
-      "tests": "cbb1783f95be29e51b2a8a7b1c0ce771235ab1248a0c66c1d1e63a743006cf54",
-      "reason": "The MCP reconnect test now asserts the group permission record instead of a manual record. Native discovery, exposure and qualification semantics are unchanged; the documented section still describes them."
+      "tests": "b6af674ad44f7bd4226a91f27caaaeb4db273688a86a91cc8c80921ea2e02246",
+      "reason": "Added a focused Codemode usage-ownership case: accumulation owns a fixed-shape copy and the published result takes its own snapshot, while the injected registry usage object is unchanged. The documented native exposure and Codemode interface behavior is unchanged."
     },
     "capability.activation-reachability": {
       "docs": "a648eefd6ca0b4f8b6244b99b586ada469011ad743524312f5ea5248d408362c",

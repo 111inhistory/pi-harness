@@ -12,6 +12,14 @@ import { effectiveCodemodeMode } from './codemode-mode.ts';
 
 const codemodeScope = promptString('native-discovery.json', 'codemodeScope');
 
+/**
+ * A fixed-shape usage snapshot. Accumulation mutates its numeric fields, so the
+ * accumulator owns this copy instead of the producer's result object.
+ */
+function ownUsage(value: Usage): Usage {
+  return { ...value, cost: { ...value.cost } };
+}
+
 const STORE = 'codemode-store';
 let workers = 0;
 const workerWaiters: (() => void)[] = [];
@@ -252,7 +260,7 @@ export function installCapabilityCodemode(
           let usage: Usage | undefined;
           const addUsage = (next: Usage | undefined) => {
             if (!next) return;
-            if (!usage) { usage = structuredClone(next); return; }
+            if (!usage) { usage = ownUsage(next); return; }
             for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'] as const) usage[key] += next[key];
             for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'total'] as const) usage.cost[key] += next.cost[key];
           };
@@ -328,7 +336,9 @@ export function installCapabilityCodemode(
                 ...result.output.filter((item) => item.type === 'image').map(({ type, data, mimeType }) => ({ type, data, mimeType })),
               ],
               details: { calls: calls.map((call) => ({ ...call, status: call.status === 'running' ? 'cancelled' : call.status })), ...(fullOutputPath ? { fullOutputPath } : {}) },
-              ...(usage ? { usage: structuredClone(usage) } : {}),
+              // The published result takes its own fixed-shape snapshot: a model
+              // call that settles after the script cannot keep adding into it.
+              ...(usage ? { usage: ownUsage(usage) } : {}),
               ...(result.ok ? {} : { isError: true }),
             };
           } finally {

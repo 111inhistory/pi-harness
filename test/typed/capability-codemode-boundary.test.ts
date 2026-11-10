@@ -191,6 +191,42 @@ test('configured Codemode memory and output defaults apply per call while script
   assert.match(scriptOutput(exhausted), /out of memory/i);
 });
 
+test('Codemode owns accumulated model usage without mutating the producer', { timeout: 20000 }, async () => {
+  const { pi, definitions } = registrationFixture();
+  installCapabilityCodemode(pi, () => () => true, () => () => true);
+  const classifier = { provider: 'fake-provider', id: 'fake-classifier', api: 'fake-api', name: 'Fake classifier' };
+  // The injected registry owns this object; accumulation must not add into it.
+  const producerUsage = {
+    input: 2, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 3,
+    cost: { input: 0.002, output: 0.001, cacheRead: 0, cacheWrite: 0, total: 0.003 },
+  };
+  let classifications = 0;
+  const modelRegistry = {
+    getModelsOfType: (type: string) => type === 'classifier' ? [classifier] : [],
+    getModelOfType: (type: string) => type === 'classifier' ? classifier : undefined,
+    classify: async () => {
+      classifications += 1;
+      return { ...classifier, answers: { ready: { type: 'bool', probability: 1 } }, stopReason: 'stop',
+        timestamp: Date.now(), usage: producerUsage };
+    },
+  };
+  const ctx = {
+    tools: [], sessionManager: { getBranch: () => [] }, modelRegistry,
+  } as unknown as ExtensionToolContext;
+  const question = "{ state: {}, questions: { ready: { type: 'bool', instructions: 'Ready?', criteria: { true: 'yes', false: 'no' } } } }";
+  const result = await definitions.get('codemode')!.execute('usage', { code: `
+    const classifier = (await models.getModelsOfType('classifier'))[0];
+    await models.classify(classifier, ${question});
+    await models.classify(classifier, ${question});
+    return 'classified';` }, undefined, undefined, ctx);
+  assert.equal(classifications, 2);
+  assert.equal(result.usage?.input, 4);
+  assert.equal(result.usage?.totalTokens, 6);
+  assert.equal(result.usage?.cost.total, 0.006);
+  assert.equal(producerUsage.input, 2, 'accumulation must not mutate the registry usage object');
+  assert.equal(producerUsage.cost.total, 0.003);
+});
+
 const BIG_PARAMETER_GUIDANCE = `BIG_PARAMETER_GUIDANCE ${'describe the query in detail. '.repeat(40)}`;
 const BIG_PROMPT_GUIDELINE = `BIG_PROMPT_GUIDELINE ${'prefer short queries. '.repeat(40)}`;
 
