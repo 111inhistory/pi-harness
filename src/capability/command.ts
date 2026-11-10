@@ -19,7 +19,7 @@ import {
   parsePermissionQuery,
   queryToolPermissions,
   resetToolPermission,
-  resolveToolPermission,
+  createToolPermissionResolver,
   setToolPermission,
   ToolPermissionQueryError,
   type ToolPermissionInfo,
@@ -151,13 +151,14 @@ async function pickTarget(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promi
     return null;
   }
   const branch = ctx.sessionManager.getBranch();
-  const active = pi.getActiveTools();
+  const active = new Set(pi.getActiveTools());
+  const permission = createToolPermissionResolver(pi, pi.getAllTools(), branch);
   const eligible = new Set(view.entries.map((entry) => entry.name));
   const groups = enableGroups(pi, new Set(), eligible);
   const targets = [...groups.map((group) => group.label), ...view.entries.map((entry) => entry.name)];
   const labels = [
     ...groups.map((group) => `${group.label}  (${group.description})`),
-    ...view.entries.map((entry) => pickerLabel(entry, resolveToolPermission(pi, branch, entry.name, active))),
+    ...view.entries.map((entry) => pickerLabel(entry, permission.resolve(entry.name, active.has(entry.name)))),
   ];
   let choice: string | undefined;
   try {

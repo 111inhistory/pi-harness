@@ -202,9 +202,16 @@ test('the picker enables the chosen group and cancellation changes nothing', asy
   assert.ok(!offered.some((label) => label.startsWith('namespace://mcp__git')), 'the MCP group is not repeated as a namespace');
   assert.ok(offered.some((label) => label.startsWith('namespace://subagent')), 'non-MCP namespaces keep namespace://');
 
-  const cancelled = host(tools, []);
-  const noChoice = command(cancelled, () => undefined);
+  const cancelled = host(Array.from({ length: 500 }, (_, index) => ({ name: `fixture_${index}`, exposure: 'direct' })), []);
+  let catalogReads = 0;
+  const allTools = cancelled.api.getAllTools;
+  cancelled.api.getAllTools = () => { catalogReads++; return allTools(); };
+  const noChoice = command(cancelled, labels => {
+    assert.equal(labels.length, 500, 'every eligible tool is offered');
+    return undefined;
+  });
   await noChoice.run('enable');
+  assert.ok(catalogReads <= 4, `picker catalog work must be independent of member count; saw ${catalogReads}`);
   assert.match(noChoice.notifications.at(-1)?.text ?? '', /Enable cancelled/);
   assert.deepEqual(cancelled.activeNames(), []);
   assert.deepEqual(cancelled.entries(), []);

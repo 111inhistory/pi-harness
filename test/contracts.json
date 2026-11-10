@@ -983,9 +983,9 @@
       "reason": "Added a focused Codemode usage-ownership case: accumulation owns a fixed-shape copy and the published result takes its own snapshot, while the injected registry usage object is unchanged. The documented native exposure and Codemode interface behavior is unchanged."
     },
     "capability.activation-reachability": {
-      "docs": "a648eefd6ca0b4f8b6244b99b586ada469011ad743524312f5ea5248d408362c",
-      "tests": "9ee675c6226cae6fa76e4b008deb04f043f6c1d55912b8c1a97ac2ac42533f23",
-      "reason": "Only clarifies direct reading of known Skill paths; no activation, reachability or authorization behavior changed. Existing activation regressions remain applicable."
+      "docs": "a048b5c237c48f51ac8dcdd1fce40a5c2612cfa92e1b6f128c81e44f609e561d",
+      "tests": "b8029db78b79c10831850f01e3891ef6ed61f4035324dc55e1b7b2f86ba83c6b",
+      "reason": "The enable picker reuses an operation-local permission snapshot. Browsing remains read-only and cancellation writes nothing; the existing picker scenario now bounds catalog reads for 500 tools. Current activation and permission contracts are unchanged."
     },
     "async-shell.platform": {
       "docs": "3516091b2521b32ec1a313d086c2d213c075c002a2c8ddf183c4f111c5773fc1",
@@ -1048,9 +1048,9 @@
       "reason": "test seed switched from legacy capability-discovery manual to a canonical enabled permission record; the authorized-tool visibility contract is unchanged"
     },
     "capability.tool-permission": {
-      "docs": "8212ad2e80db376be9ca22c1a38a601eb8a2a95de4d920921898479abc21b446",
-      "tests": "852e2fc7c290bd7f1526b817e2989ad4df99726ad62a3a200bb022286699576a",
-      "reason": "One operation-local catalog and canonical replay now serve query and bulk filters through one winner algorithm; existing precedence and permission contract unchanged. The 500-tool work-count regression covers the measured repeated replay."
+      "docs": "0654a9a2c59dc9cdbbaddd112fd63733d7becb422b0fa8114b7a5ebc719cf660",
+      "tests": "daa64e4c661cbc32b3148482b91beed59cc4cc76e6f3c65ef84fde62867fa375",
+      "reason": "The enable picker reuses an operation-local permission snapshot. Browsing remains read-only and cancellation writes nothing; the existing picker scenario now bounds catalog reads for 500 tools. Current activation and permission contracts are unchanged."
     },
     "capability.manual-enable": {
       "docs": "e4e5e4b4c213f9d9dd36e9cee79a0643aaea294f9710e790c9bba83820105bc4",
