@@ -12,7 +12,7 @@ import { capabilityHost as host, capabilityCommand as command, type CapabilityTe
 
 import { createToolAdmission } from '../../src/capability/admission.ts';
 import {
-  capabilityArgumentCompletions, parseCapabilityCommand,
+  capabilityArgumentCompletions,
 } from '../../src/capability/command.ts';
 import { enableCapabilityTargets, resolveEnableTargets } from '../../src/capability/enable.ts';
 import { setCapabilityParent, setCapabilityPermissionDefaults } from '../../src/capability/scope.ts';
@@ -27,14 +27,6 @@ const tools: readonly FakeTool[] = [
   { name: 'mcp__git__log', description: 'Show commit log', exposure: 'deferred', namespace: { name: 'mcp__git', aliases: ['git'] } },
   { name: 'msg_write', description: 'Send a message', exposure: 'deferred', namespace: { name: 'subagent' } },
 ];
-
-test('the command line parses the permission verbs', () => {
-  assert.deepEqual(parseCapabilityCommand('enable'), { verb: 'enable', targets: [] });
-  assert.deepEqual(parseCapabilityCommand('enable deck_pages read'), { verb: 'enable', targets: ['deck_pages', 'read'] });
-  assert.deepEqual(parseCapabilityCommand('disable read'), { verb: 'disable', targets: ['read'] });
-  assert.deepEqual(parseCapabilityCommand('reset read'), { verb: 'reset', targets: ['read'] });
-  assert.deepEqual(parseCapabilityCommand('list active'), { verb: 'list', expr: 'active' });
-});
 
 test('targets resolve against the live registry: names, servers and namespaces', () => {
   const fixture = host(tools);

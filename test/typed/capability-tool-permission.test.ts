@@ -436,48 +436,29 @@ test('retired capability-discovery manual records do not admit MCP tools, while 
   assert.equal(admValid.declares(ordinaryTool.name), true, 'ordinary discovered tool is declared');
 });
 
-test('overlapping group disable does not remove an exact enabled member from active set', () => {
-  const codemodeTool: ToolPermissionTool = {
-    name: 'mcp__prod__deploy',
-    exposure: 'codemode',
-    namespace: { name: 'mcp__prod', aliases: ['prod'] },
-  };
-  const f = host([codemodeTool], [codemodeTool.name]);
+for (const scenario of [
+  { name: 'overlapping group disable does not remove an exact enabled member from active set', exact: 'enabled', group: 'disabled', active: true },
+  { name: 'overlapping group enable does not activate an exact disabled member', exact: 'disabled', group: 'enabled', active: false },
+] as const) {
+  test(scenario.name, () => {
+    const tool: ToolPermissionTool = {
+      name: 'mcp__prod__deploy', exposure: 'codemode',
+      namespace: { name: 'mcp__prod', aliases: ['prod'] },
+    };
+    const f = scenario.active
+      ? host([tool], [tool.name])
+      : host([{ name: 'codemode', exposure: 'direct' }, tool], ['codemode']);
+    setToolPermission(f.api, f.api, f.branch(), [tool.name], scenario.exact);
+    assert.equal(f.activeNames().includes(tool.name), scenario.active);
+    assert.equal(resolveToolPermission(f.api, f.branch(), tool.name, f.activeNames()).state, scenario.exact);
 
-  // 1. Exact enable tool
-  setToolPermission(f.api, f.api, f.branch(), [codemodeTool.name], 'enabled');
-  assert.equal(f.activeNames().includes(codemodeTool.name), true);
-  assert.equal(resolveToolPermission(f.api, f.branch(), codemodeTool.name, f.activeNames()).state, 'enabled');
-
-  // 2. Broad group disable
-  const groupDisable = setToolPermission(f.api, f.api, f.branch(), ['mcp://prod'], 'disabled');
-  assert.deepEqual(groupDisable.removedActive, [], 'exact enabled member is not removed by group disable');
-  assert.equal(f.activeNames().includes(codemodeTool.name), true, 'tool remains active');
-  assert.equal(resolveToolPermission(f.api, f.branch(), codemodeTool.name, f.activeNames()).state, 'enabled',
-    'exact rule wins over group rule');
-});
-
-test('overlapping group enable does not activate an exact disabled member', () => {
-  const codemodeTool: ToolPermissionTool = {
-    name: 'mcp__prod__deploy',
-    exposure: 'codemode',
-    namespace: { name: 'mcp__prod', aliases: ['prod'] },
-  };
-  const cm: ToolPermissionTool = { name: 'codemode', exposure: 'direct' };
-  const f = host([cm, codemodeTool], ['codemode']);
-
-  // 1. Exact disable tool
-  setToolPermission(f.api, f.api, f.branch(), [codemodeTool.name], 'disabled');
-  assert.equal(f.activeNames().includes(codemodeTool.name), false);
-  assert.equal(resolveToolPermission(f.api, f.branch(), codemodeTool.name, f.activeNames()).state, 'disabled');
-
-  // 2. Broad group enable
-  const groupEnable = setToolPermission(f.api, f.api, f.branch(), ['mcp://prod'], 'enabled');
-  assert.deepEqual(groupEnable.activated, [], 'exact disabled member is not activated by group enable');
-  assert.equal(f.activeNames().includes(codemodeTool.name), false, 'tool remains inactive');
-  assert.equal(resolveToolPermission(f.api, f.branch(), codemodeTool.name, f.activeNames()).state, 'disabled',
-    'exact rule wins over group rule');
-});
+    const result = setToolPermission(f.api, f.api, f.branch(), ['mcp://prod'], scenario.group);
+    assert.deepEqual(scenario.group === 'disabled' ? result.removedActive : result.activated, []);
+    assert.equal(f.activeNames().includes(tool.name), scenario.active, 'the group mutation preserves membership');
+    assert.equal(resolveToolPermission(f.api, f.branch(), tool.name, f.activeNames()).state, scenario.exact,
+      'the exact rule still wins');
+  });
+}
 
 for (const branchKind of ['live', 'snapshot'] as const) {
   test(`permission effects and reset use committed precedence with a ${branchKind} branch`, () => {

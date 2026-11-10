@@ -56,6 +56,7 @@ function install(tools: FakeTool[], active: string[] = []) {
 test('the command line parses list and the permission verbs', () => {
   assert.deepEqual(parseCapabilityCommand(''), { verb: 'list', expr: '' });
   assert.deepEqual(parseCapabilityCommand('list'), { verb: 'list', expr: '' });
+  assert.deepEqual(parseCapabilityCommand('list active'), { verb: 'list', expr: 'active' });
   assert.deepEqual(parseCapabilityCommand('list enabled+active'), { verb: 'list', expr: 'enabled+active' });
   assert.deepEqual(parseCapabilityCommand('enable'), { verb: 'enable', targets: [] });
   assert.deepEqual(parseCapabilityCommand('enable deck_pages read'), { verb: 'enable', targets: ['deck_pages', 'read'] });
