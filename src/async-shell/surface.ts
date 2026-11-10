@@ -21,9 +21,22 @@ export function installAsyncShellSurface(
       ...definition,
       promptGuidelines: [...(definition.promptGuidelines ?? []), promptString('async-shell.json', 'guideline')],
       async execute(id, input, signal, onUpdate, context) {
-        const host = await current(context);
-        bound = host;
-        const environment = host.environment(actorId);
+        // Native shell execution does not depend on callback IPC. Revoke inherited
+        // leases first so a degraded root cannot route work into an older context.
+        const environment: NodeJS.ProcessEnv = {
+          PI_AGENT_ID: undefined, PI_AGENT_SOCKET: undefined,
+          PI_ASYNC_SHELL_TOKEN: undefined, PI_ASYNC_SHELL_ROOT: undefined,
+          PI_ASYNC_SHELL_HOST_ERROR: undefined,
+        };
+        try {
+          const host = await current(context);
+          Object.assign(environment, host.environment(actorId));
+          bound = host;
+        } catch (error) {
+          environment.PI_ASYNC_SHELL_HOST_ERROR = error instanceof Error
+            ? error.message || 'The async-shell callback host is unavailable.'
+            : String(error) || 'The async-shell callback host is unavailable.';
+        }
         const settings = SettingsManager.create(context.cwd, getAgentDir(), { projectTrusted: context.isProjectTrusted() });
         const shellPath = settings.getShellPath();
         const commandPrefix = settings.getShellCommandPrefix();

@@ -957,6 +957,11 @@
       "tests": "cfd49a2ec98c4657cc70c925a20e16637feda48d106bd405d5f234d71959bd00",
       "reason": "Restore diagnostic ranking fields on the shared namespace input so the original recursive public-result stripping assertion still detects outer-group leakage. All ten projection and memory scenarios remain; the documented behavior is unchanged."
     },
+    "async-shell.tasks": {
+      "docs": "a79679278808e0384b27c839cdcc6cf11ce8f1bcf92a9278dec13ab2d11c9f7a",
+      "tests": "868047b9a92d56222eb63250a740bf0945989f0638f2de15221101d959db3f8f",
+      "reason": "The new CLI case verifies callback-host unavailability before task allocation; create argv, terminal lifecycle, output, timeout and cancellation contracts remain unchanged. Degraded Harness behavior is documented under Harness integration, paired with the host-surface regression."
+    },
     "capability.provider-prefix": {
       "docs": "08743e2b55aa3beece61d6456f52e1db5a79180169cebb0df5a9d95a36772a36",
       "tests": "15d9ebd5cf1ef1c27cc569855bca555fc9b488b2ed34e4c75dedaf29de7f87a3",

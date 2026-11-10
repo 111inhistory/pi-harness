@@ -12,6 +12,7 @@ export const CALLBACK_ENV_KEYS = [
   'PI_AGENT_SOCKET',
   'PI_ASYNC_SHELL_TOKEN',
   'PI_ASYNC_SHELL_ROOT',
+  'PI_ASYNC_SHELL_HOST_ERROR',
 ];
 const callbackKeys = new Set(CALLBACK_ENV_KEYS);
 

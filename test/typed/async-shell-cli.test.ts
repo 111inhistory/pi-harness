@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -85,6 +85,25 @@ async function cleanup(dir: string, root = stateRoot()): Promise<void> {
 function nodeScript(script: string): readonly string[] {
   return [process.execPath, '-e', script];
 }
+
+test('an unavailable Harness callback refuses create before allocating a task', options, async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'async-shell-unavailable-'));
+  t.after(async () => {
+    for (const name of await readdir(root)) {
+      if (name.startsWith('job_')) await cleanup(path.join(root, name), root);
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+  const answer = await cli(['create', '--', process.execPath, '-e', 'process.exit(0)'], {
+    env: {
+      PI_ASYNC_SHELL_ROOT: root, PI_AGENT_SOCKET: path.join(root, 'old.sock'),
+      PI_ASYNC_SHELL_TOKEN: 'fixture-token', PI_ASYNC_SHELL_HOST_ERROR: 'fixture IPC endpoint unavailable',
+    },
+  });
+  assert.notEqual(answer.code, 0);
+  assert.match(answer.stderr, /callback host is unavailable: fixture IPC endpoint unavailable/);
+  assert.deepEqual(await readdir(root), [], 'no task, pane or monitor was allocated');
+});
 
 test('create runs the command with literal argv and reports the exit status', options, async (t) => {
   const cwd = await mkdtemp(path.join(tmpdir(), 'async-shell-argv-'));

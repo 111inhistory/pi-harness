@@ -385,6 +385,8 @@ async function sendFrame(target: CallbackTarget, frame: AsyncShellFrame): Promis
 
 /** Read the callback target from the environment; null keeps the CLI standalone. */
 export function callbackFromEnv(env: NodeJS.ProcessEnv): CallbackTarget | null {
+  const unavailable = env['PI_ASYNC_SHELL_HOST_ERROR'];
+  if (unavailable) throw new AsyncShellError('host_unavailable', `The async-shell callback host is unavailable: ${unavailable}`);
   const socket = env["PI_AGENT_SOCKET"];
   const token = env["PI_ASYNC_SHELL_TOKEN"];
   if (typeof socket !== "string" || socket === "" || typeof token !== "string" || token === "") return null;
