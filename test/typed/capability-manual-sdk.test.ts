@@ -38,7 +38,7 @@ import subagentEntry from '../../extensions/subagent.ts';
 import capabilityEntry from '../../extensions/capability.ts';
 import resultRenderingEntry from '../../extensions/result-rendering.ts';
 import btwEntry from '../../extensions/btw.ts';
-import { explicitlyEnabled } from '../../src/capability/tool-permission.ts';
+import { explicitlyEnabled, resetToolPermission, setToolPermission } from '../../src/capability/tool-permission.ts';
 import { installCapabilityMcp } from '../../src/capability/native-discovery.ts';
 import { setCapabilityParent } from '../../src/capability/scope.ts';
 import { harnessConfigFor } from '../../src/harness-config.ts';
@@ -404,6 +404,158 @@ test('full SDK: manual tools stay unreachable until the user records them, then 
     else process.env['PI_CODING_AGENT_DIR'] = previousAgentDir;
     if (previousSocketDir === undefined) delete process.env['PI_SUBAGENT_SOCKET_DIR'];
     else process.env['PI_SUBAGENT_SOCKET_DIR'] = previousSocketDir;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+
+test('full SDK: a retired manual-only discovery record grants no MCP execution authority', { timeout: 60_000 }, async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), 'pi-capability-retired-manual-'));
+  const agentDir = path.join(cwd, 'agent');
+  await mkdir(agentDir);
+  const sessions: AgentSession[] = [];
+  const errors: unknown[] = [];
+  const toolName = 'mcp__retired_fixture__deploy';
+  const scripts = {
+    denied: `
+      let refused = 0;
+      try { await tools.${toolName}({}); } catch { refused += 1; }
+      if (refused !== 1) throw Error('retired manual record authorized MCP execution');
+      return 'RETIRED_MANUAL_DENIED';
+    `,
+    allowed: `
+      const result = await tools.${toolName}({});
+      if (!JSON.stringify(result).includes('RETIRED_MCP_EXECUTED')) throw Error('canonical enable did not execute');
+      return 'RETIRED_MANUAL_ALLOWED';
+    `,
+  };
+  try {
+    const faux = fauxProvider({ models: [{ id: 'retired-manual-fixture', contextWindow: 1_048_576 }] });
+    const runtime = await ModelRuntime.create({
+      credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,
+    });
+    runtime.registerNativeProvider(faux.provider);
+    runtime.getAuth = async () => ({ auth: { apiKey: 'offline-fixture' }, env: {} });
+    runtime.hasConfiguredAuth = () => true;
+    const model = faux.models[0]!;
+
+    let phase: 'retired' | 'enabled' | 'reset' = 'retired';
+    let executions = 0;
+    const message = (content: AssistantMessage['content'], stopReason: AssistantMessage['stopReason']): AssistantMessage => ({
+      role: 'assistant', api: model.api, provider: model.provider, model: model.id,
+      content, stopReason, timestamp: Date.now(),
+      usage: {
+        input: 1, output: 1, totalTokens: 2, cacheRead: 0, cacheWrite: 0,
+        cost: { input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0 },
+      },
+    });
+    runtime.streamSimple = (_model, context) => {
+      const last = context.messages.at(-1);
+      const reply = last?.role === 'toolResult'
+        ? message([{ type: 'text', text: 'turn done' }], 'stop')
+        : message([{ type: 'toolCall', id: `call-${phase}`, name: 'codemode', arguments: { code: scripts[phase === 'enabled' ? 'allowed' : 'denied'] } }], 'toolUse');
+      const stream = new AssistantMessageEventStream();
+      stream.push({ type: 'done', reason: reply.stopReason as 'stop' | 'toolUse', message: reply });
+      stream.end();
+      return stream;
+    };
+
+    const settingsManager = SettingsManager.inMemory({
+      compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: 'off',
+    });
+    let capabilityApi: ExtensionAPI | undefined;
+    const loader = new DefaultResourceLoader({
+      cwd, agentDir, settingsManager,
+      noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+      extensionFactories: [
+        {
+          name: 'retired-manual-mcp-fixture',
+          factory(api: ExtensionAPI): void {
+            api.registerTool({
+              name: toolName,
+              label: 'Retired manual MCP fixture',
+              description: 'An MCP-shaped deferred tool used to prove retired manual records grant no authority.',
+              exposure: 'deferred',
+              namespace: { name: 'mcp__retired_fixture', aliases: ['retired_fixture'] },
+              defaultActive: true,
+              parameters: { type: 'object', properties: {} },
+              async execute() {
+                executions += 1;
+                return { content: [{ type: 'text' as const, text: 'RETIRED_MCP_EXECUTED' }], details: {} };
+              },
+            });
+          },
+        },
+        {
+          name: 'capability',
+          factory: (api: ExtensionAPI) => {
+            capabilityApi = api;
+            capabilityExtension(api);
+          },
+        },
+      ],
+    });
+    await loader.reload();
+    assert.deepEqual(loader.getExtensions().errors, []);
+
+    const session = (await createAgentSession({
+      cwd, agentDir, modelRuntime: runtime, model, settingsManager, resourceLoader: loader,
+      sessionManager: SessionManager.inMemory(cwd),
+    })).session;
+    sessions.push(session);
+    await session.bindExtensions({ onError: (error) => errors.push(error) });
+    assert.ok(capabilityApi, 'the Capability entrypoint ran');
+
+    // Raw retired format: only the old discovery manual category names this MCP
+    // tool. Runtime code must not treat it as selection or authorization.
+    session.sessionManager.appendCustomEntry('capability-discovery', {
+      version: 1,
+      result: {
+        status: 'ok',
+        tools: [],
+        mcp: [],
+        skills: [],
+        manual: [{
+          ref: 'mcp://retired_fixture', name: 'retired_fixture', kind: 'mcp',
+          tools: [{ ref: `tool://${toolName}`, name: toolName, kind: 'tool' }],
+        }],
+        coverage: { local: 'not_searched', remote: 'not_searched' },
+      },
+    });
+    session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), 'codemode', toolName])]);
+    assert.ok(session.getActiveToolNames().includes(toolName), 'the fixture starts active');
+
+    const lastCodemodeText = (): string => {
+      const result = results(session.messages, 'codemode').at(-1);
+      assert.ok(result);
+      return textOf(result);
+    };
+
+    // 1. Retired manual-only record: the actual Codemode execution surface denies it.
+    await session.prompt('Try the retired manual MCP tool.');
+    assert.equal(executions, 0, 'retired manual record must not execute the MCP tool');
+    assert.match(lastCodemodeText(), /RETIRED_MANUAL_DENIED/);
+
+    // 2. Canonical enable is the only current authority.
+    setToolPermission(capabilityApi, capabilityApi, session.sessionManager.getBranch(), [toolName], 'enabled');
+    assert.ok(session.getActiveToolNames().includes(toolName), 'canonical enable activates the tool');
+    phase = 'enabled';
+    await session.prompt('Use the canonically enabled MCP tool.');
+    assert.equal(executions, 1, 'canonical enable allows the actual MCP execution');
+    assert.match(lastCodemodeText(), /RETIRED_MANUAL_ALLOWED/);
+
+    // 3. Reset removes canonical authority; the retired record still grants nothing.
+    resetToolPermission(capabilityApi, capabilityApi, session.sessionManager.getBranch(), [toolName]);
+    phase = 'reset';
+    await session.prompt('Try the MCP tool after reset.');
+    assert.equal(executions, 1, 'reset must deny the MCP tool without legitimate discovery');
+    assert.match(lastCodemodeText(), /RETIRED_MANUAL_DENIED/);
+    assert.deepEqual(errors, []);
+  } finally {
+    for (const session of sessions) {
+      try { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); } catch { /* already stale */ }
+      session.dispose();
+    }
     await rm(cwd, { recursive: true, force: true });
   }
 });

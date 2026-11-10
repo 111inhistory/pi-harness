@@ -1040,8 +1040,8 @@
     },
     "capability.manual-enable": {
       "docs": "e4e5e4b4c213f9d9dd36e9cee79a0643aaea294f9710e790c9bba83820105bc4",
-      "tests": "a9a8ab1f0cdd78659e8c49c291d07b9d99414e9377fc353c7a926e27c9ef36da",
-      "reason": "Switched migration import to offline scripts tooling without changing runtime contract."
+      "tests": "6a83b697f98e9e681be375c609f735bd215a1a6a061255bdeef23420a072f549",
+      "reason": "Adds a real-SDK Codemode execution regression proving retired discovery.manual records grant no MCP authority; the documented canonical-only runtime behavior is unchanged."
     },
     "capability.compaction-prune": {
       "docs": "1dbe56d105a2ad54efa5d461f74a151112e5dd00b5dbb50236217bad2779f442",
