@@ -9,6 +9,7 @@ import {
 import { fauxProvider, InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
+import { Type } from 'typebox';
 import subagentExtension from '../../src/subagent/extension.ts';
 
 function deferred() {
@@ -17,7 +18,8 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function runBoundary(rejectWrite: boolean, unlistedModel = false, children = 1): Promise<void> {
+async function runBoundary(rejectWrite: boolean, unlistedModel = false, children = 1,
+  catalogSize = 0, historyTurns = 0, managedTools = false): Promise<number> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'root-boundary-'));
   const agentDir = path.join(cwd, 'agent');
   await mkdir(agentDir);
@@ -40,6 +42,7 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
   const started = deferred();
   const finish = deferred();
   let dispatchedCalls = 0;
+  let childActiveNames: string[] = [];
   runtime.streamSimple = () => {
     dispatchedCalls += 1;
     const stream = new AssistantMessageEventStream();
@@ -59,6 +62,7 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
   let rejectTerminal = false;
   let terminalAttempts = 0;
   let sentTerminalNotices = 0;
+  let catalogReads = 0;
   const settingsManager = SettingsManager.inMemory({
     retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: 'off',
   });
@@ -66,6 +70,15 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
     cwd, agentDir, settingsManager,
     noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
     extensionFactories: [{ name: 'real-subagent-boundary', factory(api) {
+      const getAllTools = api.getAllTools.bind(api);
+      api.getAllTools = () => { catalogReads += 1; return getAllTools(); };
+      for (let index = 0; index < catalogSize; index += 1) {
+        api.registerTool({
+          name: `fixture_${index}`, label: `Fixture ${index}`, description: 'Synthetic parent tool',
+          parameters: Type.Object({}),
+          async execute() { return { content: [{ type: 'text', text: 'fixture' }], details: null }; },
+        });
+      }
       const send = api.sendMessage.bind(api);
       api.sendMessage = (message, options) => {
         if (message.customType === 'agent-delivery') sentTerminalNotices += 1;
@@ -86,8 +99,18 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
   try {
     await resourceLoader.reload();
     assert.deepEqual(resourceLoader.getExtensions().errors, []);
+    const manager = SessionManager.create(cwd, path.join(cwd, 'sessions'));
+    for (let index = 0; index < historyTurns; index += 1) {
+      manager.appendMessage({ role: 'user', content: `Synthetic turn ${index}`, timestamp: index });
+      manager.appendMessage({
+        role: 'assistant', api: model.api, provider: model.provider, model: model.id,
+        content: [{ type: 'text', text: `Synthetic answer ${index}` }], stopReason: 'stop', timestamp: index,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      });
+    }
     ({ session } = await createAgentSession({
-      cwd, agentDir, modelRuntime: runtime, model, sessionManager: SessionManager.create(cwd, path.join(cwd, 'sessions')),
+      cwd, agentDir, modelRuntime: runtime, model, sessionManager: manager,
       settingsManager, resourceLoader,
     }));
     const extensionErrors: unknown[] = [];
@@ -95,19 +118,30 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
     const create = session.getToolDefinition('subagent_create');
     assert.ok(create);
     const context = session.extensionRunner.createToolContext('create', undefined);
+    if (managedTools) {
+      assert.ok(session.getActiveToolNames().includes('read'));
+      assert.ok(session.getActiveToolNames().includes('write'));
+      assert.ok(session.getActiveToolNames().includes('edit'));
+      manager.appendCustomEntry('capability-tool-permission', {
+        version: 1,
+        set: [{ target: 'read', state: 'enabled' }, { target: 'write', state: 'disabled' }],
+      });
+    }
     // A programmatic SDK model need not be discoverable in the registry. The
     // original captured chat model is still valid for this initial Inherited Job.
     if (unlistedModel) context.modelRegistry.find = () => undefined;
-    if (children > 1) {
+    if (children > 1 || managedTools) {
       let childPrompts = 0;
       AgentSession.prototype.prompt = async function(this: AgentSession, ...args: Parameters<AgentSession['prompt']>) {
-        if (++childPrompts === 2) {
+        childActiveNames = this.getActiveToolNames();
+        if (++childPrompts === 2 && children > 1) {
           secondPromptRequested.resolve();
           await releaseSecondPrompt.promise;
         }
         return originalPrompt.apply(this, args);
       };
     }
+    const readsBeforeCreation = catalogReads;
     let returned = false;
     const creation = create.execute('create', { tasks: Array.from({ length: children }, () => ({ task: 'Wait for navigation', inheritContext: true })) },
       undefined, undefined, context);
@@ -121,12 +155,18 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
       releaseSecondPrompt.resolve();
     }
     const created = await creation;
+    const creationCatalogReads = catalogReads - readsBeforeCreation;
     assert.ok(dispatchedCalls <= children);
     const registration = created.details as { items: Record<string, unknown>[] };
     assert.ok(registration.items[0]);
     assert.equal(registration.items[0].model, model.id);
     assert.equal(registration.items[0].role, null);
     await started.promise;
+    if (managedTools) {
+      assert.equal(childActiveNames.includes('read'), false, 'root explicit enable is root-only');
+      assert.equal(childActiveNames.includes('write'), false, 'root disable excludes the child tool');
+      assert.equal(childActiveNames.includes('edit'), true, 'unmanaged native tools remain available');
+    }
     rejectTerminal = rejectWrite;
     const navigation = session.extensionRunner.emit({
       type: 'session_before_switch', reason: 'resume', targetSessionFile: path.join(cwd, 'other.jsonl'),
@@ -146,6 +186,7 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
       assert.equal(terminal.length, children, 'the old root owns terminal appends until its before-hook settles');
       assert.equal(sentTerminalNotices, children, 'the quiescing root still retains terminal notices');
     }
+    return creationCatalogReads;
   } finally {
     releaseSecondPrompt.resolve();
     AgentSession.prototype.prompt = originalPrompt;
@@ -174,4 +215,15 @@ test('initial Inherited Job retains SDK custom model even when absent from catal
 
 test('batch create waits for local readiness without waiting for every provider dispatch', { timeout: 15000 }, async () => {
   await runBoundary(false, false, 2);
+});
+
+test('actual root excludes explicitly enabled and disabled tools from an Inherited child loadout', { timeout: 15000 }, async () => {
+  await runBoundary(false, false, 1, 0, 0, true);
+});
+
+test('Inherited creation reads the root catalog per operation with a long parent history', { timeout: 15000 }, async () => {
+  const reads = await runBoundary(false, false, 1, 250, 500);
+  // Exercise the actual tool, RootService and child SDK initialization. A broad
+  // count bound catches per-tool registry reconstruction without timing the host.
+  assert.ok(reads < 100, `creation read the root catalog ${reads} times for 250 tools`);
 });

@@ -23,7 +23,7 @@ import type { LiveSession } from './session-directory.ts';
 import { SessionPeers, type SessionConnect } from './session-peers.ts';
 import { ensurePrivateSocketRoot } from '../ipc/platform.ts';
 import { activateToolNames } from '../capability/activation.ts';
-import { explicitlyDisabled, explicitlyEnabled } from '../capability/tool-permission.ts';
+import { createToolPermissionResolver, explicitlyDisabled } from '../capability/tool-permission.ts';
 import { setCapabilityParent, type CapabilityToolCatalog } from '../capability/scope.ts';
 import { ActorSessionStore } from './actor-sessions.ts';
 import { AgentListeners } from './listeners.ts';
@@ -660,8 +660,10 @@ export class RootService implements ManagedWriteHost {
   #childDeniedNames(): string[] {
     const api = this.#options.api;
     const branch = this.#options.context.sessionManager.getBranch();
-    return api.getAllTools()
-      .filter((tool) => explicitlyDisabled(api, branch, tool.name) || explicitlyEnabled(api, branch, tool.name))
+    const tools = api.getAllTools();
+    const permissions = createToolPermissionResolver(api, tools, branch);
+    return tools
+      .filter((tool) => permissions.disabled(tool.name) || permissions.enabled(tool.name))
       .map((tool) => tool.name);
   }
 
