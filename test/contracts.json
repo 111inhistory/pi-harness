@@ -1009,9 +1009,9 @@
       "reason": "The codemode-mode test now covers the real loadout declaration mask (hiddenDeclarations + lazySchemas) used by disable; the lazy-schema contract itself is unchanged."
     },
     "subagent.lifecycle": {
-      "docs": "d63397a49b04cf3af4498f3ee5e61e144c258ade0b261e1c238312da88ecd5d9",
-      "tests": "b905491262da2bc449e98cf02b632634ab40e377b99cab4f9073c86b90804ce7",
-      "reason": "The file change only extends the live snapshot test with the focused end-boundary read; lifecycle behavior and its documented contract are unchanged."
+      "docs": "ad06acca1072ec145dd6a12207c1a5094ff39206f23a7e27d3ac9b44380a3d70",
+      "tests": "060359b7e6e6b2ffffd55931e7dee5affa2a2fbea9266ac47b18f71e24259d46",
+      "reason": "Payloads now detach explicitly: unsupported adapter results fail through the existing terminal lifecycle, unsupported diagnostic detail is omitted, and projection-only changes preserve lifecycle semantics."
     },
     "subagent.delivery": {
       "docs": "3b8cc6a2e08fea413d06c642fb553d75e5591c5352989b1389df1c0b9ef8f456",

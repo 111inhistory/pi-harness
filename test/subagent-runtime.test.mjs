@@ -584,7 +584,11 @@ test("keeps agent state and job state in separate snapshots", async () => {
 
 test("serves isolated Job records and sealed bounds without owning transcripts", async () => {
   const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob });
+  const ends = [];
+  const runtime = createSubagentRuntime({
+    startJob: adapter.startJob,
+    onEvent: (event) => { if (event.type === "job-end") ends.push(event); },
+  });
   const item = runtime.create({ tasks: [{ name: "reader", task: "read things" }] }).items[0];
   const handle = adapter.handleFor(item.id);
   handle.job.recordStart("e0");
@@ -604,6 +608,31 @@ test("serves isolated Job records and sealed bounds without owning transcripts",
   assert.equal("messages" in first, false);
   assert.equal(runtime.jobRecord("file:///etc/passwd"), null);
   assert.throws(() => runtime.jobDone("job_missing-7"), (error) => error.code === "unknown_job");
+
+  // A result the runtime cannot detach follows the normal failed-Job path: the
+  // terminal event is published, the handle and slot are released, and no
+  // shared mutable payload survives.
+  const uncloneable = runtime.create({ tasks: [{ name: "uncloneable", task: "return a live handle" }] }).items[0];
+  adapter.handleFor(uncloneable.id).resolve({ result: () => "live" });
+  const failed = await runtime.jobDone(uncloneable.id);
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.error.code, "invalid_result");
+  assert.equal(runtime.jobRecord(uncloneable.id).result, null);
+  const end = ends.find((event) => event.jobId === uncloneable.id);
+  assert.equal(end.status, "failed");
+  assert.equal(end.error.code, "invalid_result");
+  assert.equal(end.result, null);
+  assert.equal(runtime.list().agents.find((agent) => agent.agentId === uncloneable.id).status, "idle");
+
+  // Unsupported optional error detail is omitted instead of sharing the thrown
+  // object's mutable graph with the served error record.
+  const throwing = runtime.create({ tasks: [spec("throwing")] }).items[0];
+  adapter.handleFor(throwing.id).reject({ message: "adapter failed", detail: { live: () => "handle" } });
+  const failedError = await runtime.jobDone(throwing.id);
+  assert.equal(failedError.status, "failed");
+  assert.equal(failedError.error.code, "job_failed");
+  assert.equal(failedError.error.message, "adapter failed");
+  assert.equal("detail" in failedError.error, false);
 });
 
 test("enforces four active children per parent and two nesting levels atomically", async () => {

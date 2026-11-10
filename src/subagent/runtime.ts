@@ -485,27 +485,32 @@ function errorCode(error: unknown): string | null {
 }
 
 function errorInfo(error: unknown, fallbackCode: string): LifecycleError {
-  if (isPlainObject(error)) {
-    const code = typeof error.code === "string" ? error.code : fallbackCode;
-    const message = typeof error.message === "string" ? error.message : errorMessage(error);
-    const info: LifecycleError = { code, message };
-    if (isPlainObject(error.detail)) info.detail = cloneValue(error.detail);
-    return info;
-  }
+  const record = isPlainObject(error);
   const code = errorCode(error) ?? fallbackCode;
-  const info: LifecycleError = { code, message: errorMessage(error) };
-  if (isPlainObject(error) && isPlainObject(error.detail)) info.detail = cloneValue(error.detail);
+  const message = record && typeof error.message === "string" ? error.message : errorMessage(error);
+  const info: LifecycleError = { code, message };
+  if (record) {
+    const detail = detachedDetail(error.detail);
+    if (detail !== null) info.detail = detail;
+  }
   return info;
 }
 
-// Stored payloads are cloned so callers can never mutate registry state and
-// repeated reads never hand out shared references.
-function cloneValue<T>(value: T): T {
-  if (value === null || typeof value !== "object") return value;
+/**
+ * A detached copy of optional diagnostic detail.
+ *
+ * Lifecycle errors travel with persisted Job events, so the accepted detail is
+ * structured-cloneable JSON-like data. Unsupported detail (a live SDK object,
+ * function or class instance) is omitted rather than sharing the thrown
+ * object's mutable graph with registry state; the error code and message still
+ * describe the failure.
+ */
+function detachedDetail(value: unknown): Record<string, unknown> | null {
+  if (!isPlainObject(value)) return null;
   try {
     return structuredClone(value);
   } catch {
-    return value;
+    return null;
   }
 }
 
@@ -646,7 +651,7 @@ function restoredBudgetTerminal(value: unknown, jobId: string): BudgetTerminal |
     error = {
       code: value.error.code,
       ...(typeof value.error.message === "string" ? { message: value.error.message } : {}),
-      ...(value.error.detail === undefined ? {} : { detail: cloneValue(value.error.detail) }),
+      ...(value.error.detail === undefined ? {} : { detail: structuredClone(value.error.detail) }),
     };
   }
   return { status, termination: value.termination, truncated: value.truncated, error };
@@ -780,7 +785,7 @@ function planRestore(state: unknown): { actors: Agent[]; jobs: Array<Job & { int
           task: typeof rawSpec.task === "string" ? rawSpec.task : "",
           context: typeof rawSpec.context === "string" ? rawSpec.context : null,
           inheritContext: rawSpec.inheritContext === true,
-          inheritedContext: isPlainObject(rawSpec.inheritedContext) ? cloneValue(rawSpec.inheritedContext) : null,
+          inheritedContext: isPlainObject(rawSpec.inheritedContext) ? structuredClone(rawSpec.inheritedContext) : null,
         };
     const historyState = end === null ? undefined : restoredHistoryState(end.historyState, jobId);
     const historyError = end === null ? undefined : restoredHistoryError(end.historyError, jobId);
@@ -1039,7 +1044,7 @@ export class SubagentRuntime {
       createdBy,
       continuedFromJobId,
       spec: persistedSpec(spec),
-      origin: cloneValue(origin),
+      origin,
     });
     this.#watchBudget(job);
     this.#refreshAgent(agent.agentId);
@@ -1365,8 +1370,8 @@ export class SubagentRuntime {
       round: Math.max(1, (agent?.jobIds.indexOf(job.jobId) ?? 0) + 1),
       task: job.spec.kind === "continuation" ? null : job.spec.task,
       status: job.status,
-      error: cloneValue(job.error),
-      result: cloneValue(job.result),
+      error: structuredClone(job.error),
+      result: structuredClone(job.result),
       history: job.history === null ? null : { ...job.history },
       budget: this.#budgetView(job),
       previousJobId: job.continuedFromJobId,
@@ -1392,7 +1397,7 @@ export class SubagentRuntime {
       round: Math.max(1, (agent?.jobIds.indexOf(job.jobId) ?? 0) + 1),
       status: job.status,
       history: job.history === null ? null : { ...job.history },
-      error: cloneValue(job.error),
+      error: structuredClone(job.error),
       previousJobId: job.continuedFromJobId,
     };
   }
@@ -1670,7 +1675,22 @@ export class SubagentRuntime {
     this.#clearBudgetWatch(job.jobId);
 
     const payload = isPlainObject(execution) ? execution : {};
-    if (payload.result !== undefined && payload.result !== null) job.result = cloneValue(payload.result);
+    // The runtime owns a detached result: views and terminal events hand out
+    // copies, so the accepted payload is a structured-cloneable value (the
+    // native adapter yields a string). A result that cannot be detached fails
+    // the Job through the normal terminal path instead of retaining a shared
+    // mutable payload.
+    let resultError: LifecycleError | null = null;
+    if (payload.result !== undefined && payload.result !== null) {
+      try {
+        job.result = structuredClone(payload.result);
+      } catch {
+        resultError = {
+          code: "invalid_result",
+          message: "The adapter returned a Job result that cannot be detached; the result was discarded and the Job failed.",
+        };
+      }
+    }
     const bounds = historyBounds(payload.history);
     if (bounds !== null) job.history = bounds;
 
@@ -1678,7 +1698,7 @@ export class SubagentRuntime {
     const decision = adjudicateTerminal({
       stopping: job.stopping,
       budgetError: budgetTerminal?.status === "failed" ? publicBudgetError(budgetTerminal.error) : null,
-      executionError: payload.error ? errorInfo(payload.error, "job_failed") : null,
+      executionError: payload.error ? errorInfo(payload.error, "job_failed") : resultError,
       executionStatus: typeof payload.status === "string" ? payload.status : null,
     });
     const { status, error } = decision;
@@ -1866,7 +1886,7 @@ export class SubagentRuntime {
       type: "job-end",
       jobId: job.jobId,
       status: terminalStatus(job.status, job.jobId),
-      error: cloneValue(job.error),
+      error: structuredClone(job.error),
       result: job.result,
       history: job.history === null ? null : { ...job.history },
       budget: this.#budgetView(job),
@@ -2289,7 +2309,7 @@ export class SubagentRuntime {
 
   #budgetView(job: Job): BudgetSnapshot | null {
     if (job.budget !== null) return publicBudgetSnapshot(job.budget);
-    return job.budgetSnapshot === null ? null : cloneValue(job.budgetSnapshot);
+    return job.budgetSnapshot === null ? null : structuredClone(job.budgetSnapshot);
   }
 
   #jobView(job: Job): JobView {
@@ -2307,7 +2327,7 @@ export class SubagentRuntime {
       if (job.historyState !== undefined) view.historyState = job.historyState;
       if (job.historyError !== undefined && job.historyError !== null) view.historyError = job.historyError;
     }
-    if (job.error !== null) view.error = cloneValue(job.error);
+    if (job.error !== null) view.error = structuredClone(job.error);
     const budget = this.#budgetView(job);
     if (budget !== null) view.budget = budget;
     const warnings = inheritedWarnings(job.spec);
