@@ -9,7 +9,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { capabilityHost, capabilityCommand, type CapabilityTestTool as FakeTool } from './support/capability-host.ts';
 import { CombinedAutocompleteProvider, type AutocompleteProvider } from '@earendil-works/pi-tui';
 
 import {
@@ -19,7 +20,7 @@ import {
 import { CAPABILITY_SECTION, capabilityPromptTranscript } from '../../src/capability/prompt.ts';
 import { createToolAdmission } from '../../src/capability/admission.ts';
 import {
-  capabilityArgumentCompletions, installCapabilityCommand, parseCapabilityCommand,
+  capabilityArgumentCompletions, parseCapabilityCommand,
 } from '../../src/capability/command.ts';
 import { argumentCompletionProvider } from '../../src/autocomplete.ts';
 import { createCapabilityCatalog } from '../../src/capability/catalog.ts';
@@ -29,45 +30,9 @@ import { activateToolNames } from '../../src/capability/activation.ts';
 import { explicitlyDisabled, explicitlyEnabled, setToolPermission } from '../../src/capability/tool-permission.ts';
 import { resolveHarnessConfig } from '../../src/harness-config.ts';
 
-interface FakeTool {
-  readonly name: string;
-  readonly description?: string;
-  readonly exposure?: string;
-  readonly namespace?: { readonly name: string; readonly aliases?: readonly string[] };
-}
+const host = (tools: readonly FakeTool[], active: string[] = []) => capabilityHost(tools, active).api;
 
-interface ManualHost {
-  readonly entries: { type: string; customType: string; data?: unknown }[];
-  getAllTools(): readonly FakeTool[];
-  getActiveTools(): string[];
-  setActiveTools(names: string[]): void;
-  appendEntry(customType: string, data?: unknown): void;
-  activeNames(): string[];
-}
-
-/** A host that behaves like the SDK's registry: unknown and hidden names are ignored. */
-function host(tools: FakeTool[], active: string[] = [], mask: readonly string[] = []): ManualHost {
-  const state = { tools: [...tools], active: new Set(active), entries: [] as { type: string; customType: string; data?: unknown }[] };
-  const api: ManualHost = {
-    entries: state.entries,
-    getAllTools: () => state.tools,
-    getActiveTools: () => [...state.active],
-    setActiveTools(names: string[]) {
-      state.active = new Set(names.filter((name) => {
-        const tool = state.tools.find((candidate) => candidate.name === name);
-        return tool !== undefined && tool.exposure !== 'hidden';
-      }));
-    },
-    appendEntry(customType: string, data?: unknown) {
-      state.entries.push({ type: 'custom', customType, data });
-    },
-    activeNames: () => [...state.active],
-  };
-  if (mask.length > 0) setCapabilityParent(api, null, mask);
-  return api;
-}
-
-function branchOf(entries: readonly { customType: string; data?: unknown }[]): unknown[] {
+function branchOf(entries: readonly { customType?: string; data?: unknown }[]): unknown[] {
   return entries.map((entry) => ({ type: 'custom', customType: entry.customType, data: entry.data }));
 }
 
@@ -80,40 +45,11 @@ const tools: FakeTool[] = [
   { name: 'msg_write', description: 'Send a message to a child', exposure: 'deferred', namespace: { name: 'subagent' } },
 ];
 
-type Notification = { text: string; type: string };
-
 function install(tools: FakeTool[], active: string[] = []) {
-  const notifications: Notification[] = [];
-  const entries: { customType: string; data?: unknown }[] = [];
-  let registered: RegisteredCommand | undefined;
-  let activeNames = new Set(active);
-  const registry = [...tools];
-  const pi = {
-    registerCommand: (name: string, options: Omit<RegisteredCommand, 'name' | 'sourceInfo'>) => {
-      registered = { name, ...options } as RegisteredCommand;
-    },
-    getAllTools: () => registry,
-    getActiveTools: () => [...activeNames],
-    setActiveTools: (names: string[]) => { activeNames = new Set(names); },
-    appendEntry: (customType: string, data?: unknown) => { entries.push({ customType, data }); },
-  } as unknown as ExtensionAPI;
-  installCapabilityCommand(pi);
-  const ctx = {
-    ui: {
-      notify: (text: string, type: string = 'info') => { notifications.push({ text, type }); },
-      select: async () => undefined,
-    },
-    sessionManager: { getBranch: () => branchOf(entries) },
-  } as unknown as ExtensionCommandContext;
-  assert.ok(registered);
-  const command = registered;
+  const fixture = capabilityHost(tools, active, 'all');
   return {
-    pi,
-    notifications,
-    entries,
-    activeNames: () => [...activeNames],
-    completions: async (prefix: string) => (await command.getArgumentCompletions?.(prefix)) ?? null,
-    run: async (raw: string) => { await command.handler(raw, ctx); },
+    pi: fixture.api, entries: fixture.branch(), activeNames: fixture.activeNames,
+    ...capabilityCommand(fixture, undefined, () => branchOf(fixture.branch())),
   };
 }
 

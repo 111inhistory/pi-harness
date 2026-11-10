@@ -984,8 +984,8 @@
     },
     "capability.activation-reachability": {
       "docs": "a048b5c237c48f51ac8dcdd1fce40a5c2612cfa92e1b6f128c81e44f609e561d",
-      "tests": "b8029db78b79c10831850f01e3891ef6ed61f4035324dc55e1b7b2f86ba83c6b",
-      "reason": "The enable picker reuses an operation-local permission snapshot. Browsing remains read-only and cancellation writes nothing; the existing picker scenario now bounds catalog reads for 500 tools. Current activation and permission contracts are unchanged."
+      "tests": "a4256b0bd726e9b686315e5516eeac41d27d05a224e01a499d766b0ada787891",
+      "reason": "Extracted duplicated registry, persistence and command capture plumbing. All 49 named cases and their assertions remain. Live versus detached readers, visible/registered/unfiltered activation, separate failing writers and WeakMap host identity are preserved explicitly; no behavior contract changed."
     },
     "async-shell.platform": {
       "docs": "3516091b2521b32ec1a313d086c2d213c075c002a2c8ddf183c4f111c5773fc1",
@@ -1049,13 +1049,13 @@
     },
     "capability.tool-permission": {
       "docs": "0654a9a2c59dc9cdbbaddd112fd63733d7becb422b0fa8114b7a5ebc719cf660",
-      "tests": "daa64e4c661cbc32b3148482b91beed59cc4cc76e6f3c65ef84fde62867fa375",
-      "reason": "The enable picker reuses an operation-local permission snapshot. Browsing remains read-only and cancellation writes nothing; the existing picker scenario now bounds catalog reads for 500 tools. Current activation and permission contracts are unchanged."
+      "tests": "123e73325cf23d8d8598e6d051f40d2511565c02a2658e3c8308c6c646793615",
+      "reason": "Extracted duplicated registry, persistence and command capture plumbing. All 49 named cases and their assertions remain. Live versus detached readers, visible/registered/unfiltered activation, separate failing writers and WeakMap host identity are preserved explicitly; no behavior contract changed."
     },
     "capability.manual-enable": {
       "docs": "e4e5e4b4c213f9d9dd36e9cee79a0643aaea294f9710e790c9bba83820105bc4",
-      "tests": "42f8e65f39f4b455bdd2400f23b33e795ad12230c654ea7d145e621081bbbd9d",
-      "reason": "Removed the obsolete append-marker migration fixture; production manual enable, root-only admission and command behavior remain unchanged. Closed-file migration, checkpoint and byte preservation now have a dedicated offline suite under the permission contract."
+      "tests": "e3f749e3835dbbb30efd4f2388757e3dbca012dea84cb80c956e4869b5f12d87",
+      "reason": "Extracted duplicated registry, persistence and command capture plumbing. All 49 named cases and their assertions remain. Live versus detached readers, visible/registered/unfiltered activation, separate failing writers and WeakMap host identity are preserved explicitly; no behavior contract changed."
     },
     "capability.compaction-prune": {
       "docs": "1dbe56d105a2ad54efa5d461f74a151112e5dd00b5dbb50236217bad2779f442",

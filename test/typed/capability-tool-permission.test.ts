@@ -4,6 +4,7 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { capabilityHost } from './support/capability-host.ts';
 
 import {
   activeToolsAfterDisabled,
@@ -25,8 +26,6 @@ import { createToolAdmission } from '../../src/capability/admission.ts';
 import { setIndependentDeclarations } from '../../src/capability/declaration-visibility.ts';
 import { setCapabilityPermissionDefaults } from '../../src/capability/scope.ts';
 
-type Entry = { type: string; customType?: string; data?: unknown; message?: unknown };
-
 const registry: readonly ToolPermissionTool[] = [
   { name: 'read', exposure: 'direct' },
   { name: 'write', exposure: 'direct' },
@@ -36,26 +35,14 @@ const registry: readonly ToolPermissionTool[] = [
 ];
 
 function host(tools: readonly ToolPermissionTool[] = registry, active: readonly string[] = []) {
-  const state = { tools: [...tools], active: new Set(active), entries: [] as Entry[] };
-  const api = {
-    getAllTools: () => state.tools,
-    getActiveTools: () => [...state.active],
-    setActiveTools(names: string[]) {
-      state.active = new Set(names.filter((name) => state.tools.some((tool) => tool.name === name)));
-    },
-    appendEntry(customType: string, data?: unknown) {
-      state.entries.push({ type: 'custom', customType, data });
-    },
-  };
+  const fixture = capabilityHost(tools, active, 'registered');
   return {
-    api,
-    branch: () => state.entries,
-    activeNames: () => [...state.active],
+    ...fixture,
     seedUsed(name: string) {
-      state.entries.push({ type: 'message', message: { role: 'toolResult', toolName: name, isError: false, content: [] } });
+      fixture.branch().push({ type: 'message', message: { role: 'toolResult', toolName: name, isError: false, content: [] } });
     },
     seedBlacklist(name: string) {
-      state.entries.push({
+      fixture.branch().push({
         type: 'custom', customType: 'capability-blacklist', data: {
           version: 1,
           added: [{ id: `tool:${name}`, kind: 'tool', name, target: name, scope: 'branch' }],

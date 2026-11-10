@@ -8,61 +8,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand } from '@earendil-works/pi-coding-agent';
+import { capabilityHost as host, capabilityCommand as command, type CapabilityTestTool as FakeTool } from './support/capability-host.ts';
 
 import { createToolAdmission } from '../../src/capability/admission.ts';
 import {
-  capabilityArgumentCompletions, installCapabilityCommand, parseCapabilityCommand,
+  capabilityArgumentCompletions, parseCapabilityCommand,
 } from '../../src/capability/command.ts';
 import { enableCapabilityTargets, resolveEnableTargets } from '../../src/capability/enable.ts';
 import { setCapabilityParent, setCapabilityPermissionDefaults } from '../../src/capability/scope.ts';
 import { explicitlyEnabled, explicitlyDisabled } from '../../src/capability/tool-permission.ts';
 import { queryToolPermissions } from '../../src/capability/tool-permission.ts';
-
-interface FakeTool {
-  name: string;
-  description?: string;
-  exposure?: string;
-  namespace?: { name: string; aliases?: readonly string[] };
-}
-
-type Entry = { type: string; customType: string; timestamp?: string; data?: unknown };
-
-function host(initial: readonly FakeTool[], active: readonly string[] = []) {
-  const state = {
-    tools: initial.map((tool) => ({ ...tool })),
-    active: new Set(active),
-    entries: [] as Entry[],
-    failAppend: false,
-  };
-  const api = {
-    getAllTools: () => state.tools,
-    getActiveTools: () => [...state.active],
-    setActiveTools(names: string[]) {
-      state.active = new Set(names.filter((name) => state.tools.some(
-        (tool) => tool.name === name && tool.exposure !== 'hidden')));
-    },
-    appendEntry(customType: string, data?: unknown) {
-      if (state.failAppend) throw new Error('the session branch is read-only');
-      state.entries.push({ type: 'custom', customType, timestamp: new Date().toISOString(), data });
-    },
-  };
-  return {
-    api: api as unknown as ExtensionAPI,
-    register(tool: FakeTool) {
-      const index = state.tools.findIndex((candidate) => candidate.name === tool.name);
-      if (index < 0) state.tools.push({ ...tool });
-      else state.tools[index] = { ...tool };
-    },
-    unregister(name: string) {
-      state.tools = state.tools.filter((tool) => tool.name !== name);
-    },
-    branch: () => state.entries,
-    entries: () => state.entries,
-    activeNames: () => [...state.active],
-    failAppend(value: boolean) { state.failAppend = value; },
-  };
-}
 
 const tools: readonly FakeTool[] = [
   { name: 'read', description: 'Read a file', exposure: 'direct' },
@@ -72,31 +27,6 @@ const tools: readonly FakeTool[] = [
   { name: 'mcp__git__log', description: 'Show commit log', exposure: 'deferred', namespace: { name: 'mcp__git', aliases: ['git'] } },
   { name: 'msg_write', description: 'Send a message', exposure: 'deferred', namespace: { name: 'subagent' } },
 ];
-
-function command(fixture: ReturnType<typeof host>, select?: (labels: readonly string[]) => string | undefined) {
-  const notifications: { text: string; type: string }[] = [];
-  let registered: RegisteredCommand | undefined;
-  Object.assign(fixture.api as object, {
-    registerCommand: (name: string, options: Omit<RegisteredCommand, 'name' | 'sourceInfo'>) => {
-      registered = { name, ...options } as RegisteredCommand;
-    },
-  });
-  installCapabilityCommand(fixture.api);
-  assert.ok(registered);
-  const command = registered;
-  const ctx = {
-    ui: {
-      notify: (text: string, type: string = 'info') => { notifications.push({ text, type }); },
-      select: async (title: string, labels: string[]) => select === undefined ? undefined : select(labels),
-    },
-    sessionManager: { getBranch: () => fixture.branch() },
-  } as unknown as ExtensionCommandContext;
-  return {
-    notifications,
-    completions: async (prefix: string) => (await command.getArgumentCompletions?.(prefix)) ?? null,
-    run: async (raw: string) => { await command.handler(raw, ctx); },
-  };
-}
 
 test('the command line parses the permission verbs', () => {
   assert.deepEqual(parseCapabilityCommand('enable'), { verb: 'enable', targets: [] });
