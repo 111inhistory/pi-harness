@@ -903,6 +903,29 @@
         "test/typed/capability-enable.test.ts",
         "test/typed/declaration-visibility.test.ts"
       ]
+    },
+    {
+      "id": "harness.rpc-interface",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "## Harness RPC 独立接口"
+        },
+        {
+          "path": "docs/architecture.md",
+          "heading": "## Harness RPC 独立接口"
+        }
+      ],
+      "tests": [
+        "test/typed/harness-rpc-transport.test.ts",
+        "test/typed/harness-rpc-mode-gate.test.ts",
+        "test/typed/harness-rpc-tool-info.test.ts",
+        "test/typed/harness-rpc-subagent.test.ts",
+        "test/typed/harness-rpc-history.test.ts",
+        "test/typed/harness-rpc-stream.test.ts",
+        "test/typed/harness-rpc-subprocess.test.ts"
+      ]
     }
   ],
   "reviews": {
@@ -1002,9 +1025,9 @@
       "reason": "test seed switched from legacy capability-discovery manual to a canonical enabled permission record; the authorized-tool visibility contract is unchanged"
     },
     "capability.tool-permission": {
-      "docs": "dff00fb33725db588ee1c5448d9e8572dfb7bab8684e190a61e5aa25e34bea6f",
+      "docs": "b2749d2f47c6ed6bdd25ade075f52fd137deb0f447dbd786bee8bb704e9d451c",
       "tests": "b4c413cd873e0e2b06f2c748c1128009e95f98594d76d3098ba5f70a2b62ede2",
-      "reason": "The ownership table adds the native runner live event/snapshot read surface; canonical permission resolution and its existing domain/propagation tests are unchanged."
+      "reason": "The ownership table identifies the RPC adapter; existing tool-permission state, execution and propagation contracts remain covered by unchanged domain tests. RPC tool-port tests cover the new transport entry points."
     }
   }
 }

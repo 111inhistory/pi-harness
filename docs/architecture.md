@@ -24,6 +24,7 @@
 | `capability/command.ts`、`capability/catalog.ts`、`capability/enable.ts`、`capability/activation.ts` | `/capability` 目录浏览与用户启用、按实时注册表解析启用目标、激活与可达性判定（发现、命令与跨会话回复工具加载共用） | 检索会话、路由、Subagent 状态 |
 | `capability/admission.ts` | 单次操作的工具准入视图：一次解析作用域链与分支记录，提供 `declares`（声明）、`admits`（执行）、`disabled`（显式禁用）、`enabled`（显式启用）与 `admitsServer`；复用已解析的工具目录，不重复读取 catalog | 跨请求缓存、第二套权限服务、改写激活集 |
 | `capability/tool-permission.ts`、`capability/permission-migration.ts` | 三态工具权限的 canonical 分支重放、config 默认条目、精确／组／prefix 匹配、派生四态查询与 enable／disable／reset；`permission-migration.ts` 仅供显式离线脚本 `scripts/migrate-tool-permissions.mjs` 使用，runtime 不调用 | 工具准入与执行本身、SDK 限制合成、跨作用域传播的存储 |
+| `harness-rpc/*` | 独立 RPC 端点的协议、传输、发现、方法分派与工具／子任务／历史适配；仅在根宿主运行模式为 `rpc` 时装配，复用受管 IPC 的归属与清理 | Pi 原生 RPC 命令、Capability 内部规则、第二套 Job 状态机 |
 | `capability/lazy-schemas.ts`、`capability/codemode-mode.ts` | lazySchemas ref 解析与组归属、生效 Codemode 模式（预设记录在分支上的覆盖，回退到 Pi 设置） | 改变启用集合、授权或工具 exposure；写入 Pi 原生设置 |
 | `src/preset/*`、`extensions/preset.ts` | 模型 Preset 配置加载与合并、解析、模型／thinking／工具应用、分支快照与 instructions 段落、`/preset` 与 `--preset` | Capability 检索、Subagent 路由、Pi 原生设置写入 |
 | `listeners.ts`、`ipc/` | 端点目录、监听、NDJSON 分帧、平台资源归属校验，以及“端点属于哪个 session 命名空间”的地址分类（Unix 为目录包含，Windows 为管道名前缀） | 用显示窗口决定可达性、另写广播状态机、用文件系统路径推断管道归属 |
@@ -173,6 +174,10 @@ Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返�
 工具资格按设计只增不减，角色排除仍优先。每次同步目录投影只解析一次资格视图；不把快照跨请求或工具调用缓存。资格、注册和激活是三件不同的事。
 
 发现记录按当前分支保存，不重复存储参数 schema；请求投影依据当前声明提供接口。严格工具 allowlist 可能拒绝不匹配的 MCP 成员。当前先写记录、再激活的顺序会让未激活成员残留在规范记忆中，后续投影可能再次展示它们。这是与成功获得能力才应累积的要求不一致的已知缺陷，详见[已知问题](known-issues.md#严格工具-allowlist-下的激活记忆不一致)。
+
+## Harness RPC 独立接口
+
+独立端点由 `src/harness-rpc/*` 实现，只在根宿主运行模式为 `rpc` 时由 `src/subagent/extension.ts` 装配；TUI、print、JSON 与内部 SDK 子会话不装配。`transport.ts` 复用 `createOwnedServer` 与平台适配，负责 NDJSON 分帧、保序响应、订阅推送与有界积压；`discovery.ts` 在会话私有目录发布 `harness-rpc.json`；`router.ts` 分派到 `ports/*`，各 port 调用现有领域 API（Capability 目录、RootService、Runtime、`capability/tool-permission.ts`），不解析 Slash 输出。执行流订阅由 `native-runner.ts` 按 `jobId` 转发原生事件，`ports/stream.ts` 投影并携带归属；观察失败不影响 Job。端点失败向接入方报告，不阻止宿主启动；切根先关闭旧端点再装配新端点。
 
 ## Shell 执行前检查
 

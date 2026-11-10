@@ -1,0 +1,117 @@
+/**
+ * Child execution-stream port for the Harness RPC endpoint.
+ *
+ * `stream.subscribe` attaches to a live Job's full native event stream and
+ * returns a real read boundary in the same response. The boundary is taken from
+ * the native live snapshot: the recorded start/end of what the Job produced so
+ * far plus the cumulative assistant partial the provider is streaming right
+ * now. The subscription is attached before the snapshot is read (both
+ * synchronous), so a client can render `boundary.messages`/`boundary.partial`
+ * and then apply `message_update` deltas without a gap.
+ *
+ * The Runtime's Job terminal state is a different boundary from `agent_end` /
+ * `agent_settled`; the stream reports it as a separate `job` event from the
+ * Runtime's own `jobDone` promise. Observation never affects the Job.
+ */
+
+import type { RootService } from '../../subagent/root-service.ts';
+import type { RpcConnection } from '../transport.ts';
+import { RPC_ERROR } from '../protocol.ts';
+import { RpcRequestError } from '../error.ts';
+import { projectSessionEvent } from '../stream-projection.ts';
+import { asRecord, requireString } from '../util.ts';
+
+const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+
+export interface StreamBoundary {
+  readonly status: string;
+  readonly round: number;
+  readonly history: { readonly startEntryId: string | null; readonly endEntryId: string | null } | null;
+  /** Completed native messages produced since the Job started. */
+  readonly messages: readonly unknown[];
+  /** The cumulative assistant partial being streamed at snapshot time, if any. */
+  readonly partial: unknown | null;
+}
+
+export interface StreamPort {
+  subscribe(params: unknown, connection: RpcConnection): Promise<unknown>;
+  unsubscribe(params: unknown, connection: RpcConnection): unknown;
+}
+
+export function buildStreamPort(root: RootService): StreamPort {
+  return {
+    async subscribe(params: unknown, connection: RpcConnection): Promise<unknown> {
+      const jobId = requireString(asRecord(params).jobId, 'jobId');
+      // Works for a running Job too; `jobRecord` is intentionally terminal-only.
+      const snapshot = root.runtime.jobSnapshot(jobId);
+      if (snapshot === null) throw new RpcRequestError(RPC_ERROR.notFound, `No Job with id "${jobId}".`);
+
+      let active = true;
+      let liveUnsubscribe: (() => void) | null = null;
+      // Assign the subscription id before registering the listener. The
+      // transport writes the response only after this async handler resolves,
+      // so a native event can be pushed first; it must already carry the id the
+      // client will use to correlate it with the response boundary.
+      const subscriptionId = connection.addSubscription(() => {
+        active = false;
+        liveUnsubscribe?.();
+      });
+      // Attach before reading the live snapshot. Both calls are synchronous and
+      // the runner only registers the listener (it does not replay), so no
+      // native event can interleave between this registration and the snapshot.
+      liveUnsubscribe = root.subscribeJobEvents(jobId, (event) => {
+        if (!active) return;
+        connection.pushEvent(subscriptionId, {
+          kind: 'session',
+          rootSessionId: root.sessionId,
+          jobId,
+          agentId: snapshot.agentId,
+          event: projectSessionEvent(event),
+        });
+      });
+      const live = root.liveSnapshot(jobId);
+
+      const start = snapshot.history?.startEntryId ?? null;
+      const end = live?.endEntryId ?? snapshot.history?.endEntryId ?? null;
+      const boundary: StreamBoundary = {
+        status: snapshot.status,
+        round: snapshot.round,
+        history: start === null && end === null ? null : { startEntryId: start, endEntryId: end },
+        messages: live?.messages ?? [],
+        partial: live?.partial ?? null,
+      };
+
+      // A live Job's Runtime terminal state is reported separately from the
+      // native agent_end/agent_settled events. A Job that is already terminal
+      // has no future transition; its state is in the response boundary.
+      if (!TERMINAL.has(snapshot.status)) {
+        void root.runtime.jobDone(jobId).then((view) => {
+          if (!active) return;
+          connection.pushEvent(subscriptionId, {
+            kind: 'job',
+            rootSessionId: root.sessionId,
+            jobId,
+            agentId: view.agentId,
+            status: view.status,
+          });
+        }).catch(() => {
+          /* A settled Job's boundary already belongs to the runtime. */
+        });
+      }
+
+      return {
+        subscription: subscriptionId,
+        jobId,
+        agentId: snapshot.agentId,
+        rootSessionId: root.sessionId,
+        live: liveUnsubscribe !== null,
+        boundary,
+      };
+    },
+
+    unsubscribe(params: unknown, connection: RpcConnection): unknown {
+      const subscription = requireString(asRecord(params).subscription, 'subscription');
+      return { removed: connection.removeSubscription(subscription) };
+    },
+  };
+}

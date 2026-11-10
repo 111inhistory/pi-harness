@@ -7,6 +7,7 @@ import { argumentCompletionProvider } from '../autocomplete.ts';
 import { installSubagentCommand } from './command.ts';
 import { installSessionSurface } from './surface.ts';
 import { SubagentError } from './runtime.ts';
+import { installHarnessRpc, harnessRpcEnabled, type HarnessRpcHandle } from '../harness-rpc/index.ts';
 
 /** Composition and SDK lifecycle hooks only; no Job loop or transport logic. */
 export default function subagentExtension(api: ExtensionAPI): void {
@@ -22,6 +23,27 @@ export default function subagentExtension(api: ExtensionAPI): void {
   const report = (ctx: ExtensionContext, error: unknown): void => {
     try { ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error'); }
     catch { /* UI failure must never turn a rejected transition into approval. */ }
+  };
+
+  // The Harness RPC endpoint lives beside the root service: it is installed only
+  // when the root host actually runs in RPC mode, torn down before the root
+  // retires, and re-installed against the new service after a root switch.
+  let rpcHandle: HarnessRpcHandle | null = null;
+  let rpcService: RootService | null = null;
+  const closeRpc = async (ctx: ExtensionContext): Promise<void> => {
+    const handle = rpcHandle;
+    rpcHandle = null;
+    rpcService = null;
+    if (handle === null) return;
+    try { await handle.close(); } catch (error) { report(ctx, error); }
+  };
+  const armRpc = async (ctx: ExtensionContext, service: RootService): Promise<void> => {
+    if (!harnessRpcEnabled(ctx.mode)) { await closeRpc(ctx); return; }
+    if (rpcHandle !== null && rpcService === service) return;
+    await closeRpc(ctx);
+    rpcHandle = installHarnessRpc(api, ctx, service);
+    rpcService = service;
+    await rpcHandle.ready();
   };
 
   const activate = async (ctx: ExtensionContext): Promise<RootService> => {
@@ -52,6 +74,8 @@ export default function subagentExtension(api: ExtensionAPI): void {
   const beforeTransition = async (ctx: ExtensionContext) => {
     transitionPending = true;
     try {
+      // Stop serving the old root's Harness RPC endpoint before its resources retire.
+      await closeRpc(ctx);
       // BEFORE hooks still own the original branch. New commands are blocked,
       // but canceled Jobs must finish their one terminal append before moving.
       await lifecycle.retire();
@@ -72,9 +96,10 @@ export default function subagentExtension(api: ExtensionAPI): void {
       autocompleteInstalled = true;
       ctx.ui.addAutocompleteProvider((base) => argumentCompletionProvider(base, 'subagent'));
     }
-    await activate(ctx);
+    const service = await activate(ctx);
+    await armRpc(ctx, service);
   });
-  api.on('session_tree', async (_event, ctx) => { epoch += 1; await activate(ctx); });
+  api.on('session_tree', async (_event, ctx) => { epoch += 1; const service = await activate(ctx); await armRpc(ctx, service); });
   api.on('session_before_compact', () => { lifecycle.service?.beginCompaction(); });
   api.on('session_compact', () => { lifecycle.service?.endCompaction(); });
   api.on('session_compact_failed', () => { lifecycle.service?.endCompaction(); });
@@ -95,7 +120,7 @@ export default function subagentExtension(api: ExtensionAPI): void {
   api.on('session_before_fork', async (_event, ctx) => beforeTransition(ctx));
   api.on('session_shutdown', async (_event, ctx) => {
     transitionPending = true;
-    try { await lifecycle.retire(); }
+    try { await closeRpc(ctx); await lifecycle.retire(); }
     catch (error) { report(ctx, error); }
     finally {
       // Shutdown cannot be canceled. Late completion must never append through
@@ -106,7 +131,7 @@ export default function subagentExtension(api: ExtensionAPI): void {
   api.on('agent_start', async (_event, ctx) => {
     // A later extension may cancel a navigation after our BEFORE hook. The
     // next real root run safely reopens the stopped registry, never old Jobs.
-    if (transitionPending && !lifecycle.retiring) await activate(ctx);
+    if (transitionPending && !lifecycle.retiring) { const service = await activate(ctx); await armRpc(ctx, service); }
   });
   // The root surface is depth 0, below every valid configured maximum depth, so
   // its own create/stop registration does not depend on the resolved value.

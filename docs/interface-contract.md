@@ -226,6 +226,10 @@ Capability 调用仍等待检索完成，再返回筛选后的资源。复用执
 - 子会话不得自行解除祖先限制。根会话把当前 `explicitlyDisabled` 与 `explicitlyEnabled` 都作为 **live denial** 沿作用域父链传播：禁用向子会话生效；显式启用是 root-only，子会话同样不能继承。denial 在每次资格解析时生效，已开始的执行不自动取消。
 - 已学到的名字不会从子会话记忆中物理删除；denial 在每次解析时覆盖它，所以不能把“已学到”当作仍可使用。
 
+### 程序接口
+
+Harness RPC 独立接口提供权限查询与用户管理适配，与用户命令共用同一份领域操作和记录，不解析命令、通知或状态栏文本。状态、记录与传播语义由本节定义，程序接口只做结构化传输与结果适配，见 [Harness RPC 独立接口](#harness-rpc-独立接口)。
+
 ## 模型 Preset
 
 `extensions/preset.ts`（随包默认加载）提供模型切换、思考级别、模型专属指引和工具选择。
@@ -425,6 +429,63 @@ Harness 为没有专用结果渲染器的工具提供统一预览，包括 Capab
 用户已可通过 `/subagent` 命令查看任务树、状态与会话，并停止指定任务或全部任务，命令见 [`/subagent` 命令](#subagent-命令)。`subagent_list` 是供模型使用的独立查询接口。
 
 可视化／交互式任务管理界面，以及通过用户命令直接向子 Agent 发送消息，仍处于延期设计状态。
+
+## Harness RPC 独立接口
+
+Harness 为 Pi 原生 RPC 未覆盖的工具信息、子 Agent 控制、消息历史与子会话执行流提供独立的结构化端点。客户端继续通过 Pi 原生 RPC 控制和读取 Main 会话，不应执行 Slash 命令后解析面向人的文本。
+
+### 双通道边界
+
+- Pi 原生 RPC（stdin／stdout）负责 Main 输入、执行流、模型设置、会话操作与原生查询；Harness 独立端点（Unix Socket／Windows Named Pipe）负责工具目录、子 Agent 控制、执行记录与子会话事件。
+- 两个通道不承诺跨通道的全局消息顺序。订阅事件与 `stream.subscribe` 响应携带根会话与执行归属；`jobs.*`、`agents.tree` 响应带 Agent／Job 执行身份，但不重复携带根 `sessionId`（仅 `harness.info` 提供）；`tools.*` 等查询响应不携带归属。客户端不能仅按接收先后推断操作因果。
+- `get_commands` 是 Slash 命令、Skill 与模板目录，不是工具目录；`get_tree` 是 Main 的 entry 树，不是 Subagent 树。Main 的原生消息查询与事件流不覆盖独立子会话。
+
+### 启用条件与生命周期
+
+- 端点仅在根宿主实际运行模式为 `rpc` 时创建。运行模式取自 Pi 的扩展运行模式，不扫描命令行，也不用 `hasUI` 推断。TUI、print 与 JSON 模式不创建、不监听、不发布该端点；内部 SDK 子会话不因父进程处于 RPC 模式而再次开启。
+- 一个 RPC 根宿主提供一个端点。客户端通过 Agent 与 Job 标识访问子任务，不为每个子 Agent 新建监控端点。
+- 端点使用独立地址，不与 `Main.sock`、Agent 端点或广播端点共用，复用受管 IPC 的创建、归属校验与清理。
+- 端点创建失败时不发布发现记录，并通过宿主通知与状态报告原因；客户端此时只能观察到无记录或连接失败。该失败不阻止 RPC 宿主启动。
+- 根会话切换、fork、reload 或退役期间，接口拒绝访问旧服务，旧订阅终止，不自动改指向新根；新根就绪后由客户端明确查询或订阅。客户端断开只解除观察，不取消子任务、不关闭 Pi。
+
+### 地址与发现
+
+- 端点地址为 `<socketRoot>/<session-uid>/harness-rpc.sock`；Windows 使用由同一目录派生的 Named Pipe。
+- 同一私有目录的 `harness-rpc.json` 是机器可读发现记录，包含协议版本、地址、`sessionId`、`pid` 与起始时间；会话关闭时删除本会话目录下的发现记录（按路径，容忍缺失）。发现不依赖 Slash 命令，也不向 Pi 原生 stdout 注入记录。
+
+### 协议
+
+- 帧为换行分隔的 JSON。请求为 `{id, method, params?}`；响应为 `{id, ok: true, result}` 或 `{id, ok: false, error: {code, message, detail?}}`；订阅事件为 `{event: {subscription, seq, payload}}`。
+- 每连接请求按顺序处理并保序响应。慢客户端的有界积压（默认 4 MiB，实现可调）超过上限时断开并释放订阅，不阻塞模型执行，也不静默丢弃事件后假装完整。
+- 客户端不能自动重放结果未知的控制输入。异常、超时与断连不证明输入尚未入队。
+
+### 方法
+
+| 方法 | 职责 |
+| --- | --- |
+| `harness.info` | 协议版本、会话标识与进程标识 |
+| `tools.catalog`、`tools.detail` | 工具目录与详情；报告 `registered`、`eligible`、`active`、`managed` 与 `permission`（`enabled`／`disabled`／`active`／`inactive`）；`catalog` 默认排除 `disabled`，`detail` 可显示 |
+| `tools.enable` | 用户显式启用工具或分组，与 `/capability enable` 共用同一份领域操作；不作为模型可调用的通用授权工具 |
+| `tools.permission.query` | 查询派生权限视图；`{expr?}` 返回 `scope`、`expression`、`entries` 与 `managed`；不返回来源或命中规则 |
+| `tools.permission.enable`、`tools.permission.disable` | 显式启用或禁用目标；返回逐项结果、受影响工具，以及 `disable` 立即移出 active 的无独立声明成员与延迟到 compaction 的声明成员 |
+| `tools.permission.reset` | 解除显式规则；返回 `reset`、`notManaged` 与仍然生效的 `stillManaged` |
+| `agents.tree` | 当前根 Agent 树 |
+| `jobs.list`、`jobs.get`、`jobs.result` | Job 列表、详情与单次结果；未就绪、不存在与读取失败分别表达 |
+| `subagent.create` | 创建子任务；宿主绑定父身份、根会话、工作目录、继承快照与容量限制，返回已登记项与失败项 |
+| `subagent.stop` | 请求取消指定子任务，区分请求取消与最终退出 |
+| `message.send` | 按受管 IPC 地址（Unix Socket／Windows Named Pipe，不接受裸 Actor ID）投递、续跑或广播，返回领域回执与逐接收者结果；广播只允许父 Main 写广播端点，跨会话只允许 Main-to-Main，其他来源拒绝 |
+| `history.read` | 读取指定 Job 的原生历史区间；running Job 返回已产生区间与 live 端，首个 Job 的 `null` start 是合法边界（按分支开头读取），memory-only 会话明确报告历史不可用 |
+| `stream.subscribe`、`stream.unsubscribe` | 订阅或解除指定 Job 的子会话执行流；订阅响应携带读取边界（状态、轮次、历史区间、已产生消息与当前 `partial`），事件携带订阅、根会话、Agent 与 Job 归属 |
+
+- 控制操作本身的业务输入与副作用保留；控制响应、查询结果与观察事件不写入 Main 的对话、分支条目或 TUI。
+- 所有子任务操作使用装配时绑定的当前根服务；切根先关闭旧端点再装配新端点，旧代次服务在退役前其端点已关闭，晚到请求无法绕过代次与准入围栏。
+
+### 执行流
+
+- 实时数据源是子会话自己的原生事件订阅，保留完整原生事件类型与 Pi RPC 的 JSON 投影语义：不重复发送累计 `partial`，工具调用保留 `toolCallId` 与存在时的 `parentToolCallId`，推理只提供供应商实际返回的内容。
+- 历史与实时流有明确衔接边界：订阅建立先于响应，响应返回当前 Job 的读取边界，包含 `status`、`round`、`history{startEntryId,endEntryId}`、已产生的 `messages` 与当前的 `partial`；客户端据边界补齐已产生内容后消费实时事件，不需要读取文件猜测增量起点。`live` 表示是否挂上实时源；running 与已终态 Job 都返回真实快照，订阅时 Job 已终态则不再补发终态事件，其状态只在边界中给出。
+- `agent_end`、`agent_settled` 与 Harness Job 最终结束不是同一边界。订阅单独报告 Runtime 的 Job 终态；Job 可能继续消费停放输入或等待子任务，最终状态以 Runtime 为准。
+- 订阅者异常或断连不影响任务执行；观察失败不改变任务结果。
 
 ## 异步 Shell
 
