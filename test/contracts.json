@@ -989,7 +989,7 @@
     "async-shell.platform": {
       "docs": "3516091b2521b32ec1a313d086c2d213c075c002a2c8ddf183c4f111c5773fc1",
       "tests": "07ac27b97a99da28e1d4da8a140c5058c7b809be512af91ec62776cb00d6c220",
-      "reason": "The existing SDK acceptance scenario now asserts the environment-variable root and relative Skill entry in outgoing Shell guidance. The assertions changed in test/typed/support/async-shell-sdk-scenario.ts; the parent test entrypoint and platform behavior remain unchanged."
+      "reason": "The SDK acceptance scenario now resolves each child yield from the actual scripted model turn that carries the Shell result instead of a 3s poll; docs/async-shell.md and the test/async-shell-sdk.test.mjs entrypoint are unchanged, and the same argv, environment, once-delivery and Shell-failure assertions remain. The unproven single ENOENT registration refusal is recorded in known-issues and the acceptance review, not repaired."
     },
     "preset.runtime": {
       "docs": "3506e321740cc567495d8e98d652ff86ee380063e2d64670ad4c6bb142d6e328",

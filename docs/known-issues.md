@@ -45,8 +45,8 @@ Capability 按实际激活集筛选公开结果，返回失败或部分成功。
 - **Manual 能力在线组合**：完整 SDK 会话（真实 `createAgentSession`、真实 stdio MCP 子进程、离线模型）覆盖未授权声明／执行／Codemode、`/capability enable` 授权后的 manual MCP 与资源读取资格、Main／子作用域隔离。真实提供方的缓存计费、真实资源读取、启用后 MCP 断连和长时间运行仍未验收。
 - **Capability lazy schema**：离线 SDK 用例验证命中组 schema 不进入独立声明也不进入 Codemode 目录、`describeTool` 可取完整接口且脚本可执行、后续内部继承检索不重发这些 schema。真实提供方缓存命中、多轮模型遵循和长期保持未验收。
 - **模型 Preset**：`/preset`、`--preset` 的模型切换、thinking、工具修饰符基于稳定基线、instructions 段落投影、分支指令快照恢复、`codemode.mode` 生效覆盖已有离线单测与离线 SDK 冒烟；真实 TUI 下的 `/preset` 选择器与 `--preset` 命令交互、真实提供方的模型切换与在线缓存仍未验收。
-- **异步 Shell**：Linux tmux 与原生 Windows psmux 已通过真实 SDK 的离线回归，Windows 覆盖 Bash／PowerShell 入口、Main／Subagent 回调和取消清理。真实提供方多轮运行、长时压力与 Windows 进程查询不可用的故障注入仍未验收。Windows PowerShell SDK 用例曾报告一次未保留完整断言日志的偶发失败，尚未归因；最终基线通过不能证明该现象已修复，详见[平台验收记录](reviews/async-shell-platform-acceptance.md)。
-- **平台与用户边界**：Linux 与 Windows 曾运行完整离线套件；本轮 Windows VM 对当前基线及 RPC 测试调整的首轮结果为 1,162 项、1,130 通过、14 失败、18 跳过，失败集中在 preset 路径夹具与 Shell 解析／审批用例，尚未修复。该结果不支持当前版本 Windows 全套通过的结论。macOS 实机、多用户切换与管道权限隔离尚未验收。
+- **异步 Shell**：Linux tmux 与原生 Windows psmux 已通过真实 SDK 的离线回归，Windows 覆盖 Bash／PowerShell 入口、Main／Subagent 回调和取消清理。真实提供方多轮运行、长时压力与 Windows 进程查询不可用的故障注入仍未验收。Windows SDK 用例曾出现未完成首轮让出的偶发失败：固定 3 秒轮询把子会话启动、Shell 启动与 CLI 延迟混在一起，而产品契约并未承诺 3 秒；场景现以实际模型回调的 Shell 结果轮次作为让出信号，外层测试、子进程与命令期限保持不变。同一次全量中的 Bash 用例还留下一次 `connect ENOENT` 注册拒绝记录，其管道可用性原因尚未证明，也不因场景同步改动而修复。历史记录见[平台验收记录](reviews/async-shell-platform-acceptance.md)。
+- **平台与用户边界**：Linux 完整离线门禁已通过；本轮 Windows 的 14 个 preset／Shell 夹具失败已修正并通过定向原生验证，包含全部改写的最终整合门禁尚待完成。macOS 实机、多用户切换与管道权限隔离尚未验收。
 
 现有在线样本只证明记录中的具体场景，不替代当前调用链的完整验收。
 

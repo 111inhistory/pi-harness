@@ -33,6 +33,25 @@ Windows 验收执行者曾报告一次 PowerShell SDK 用例失败。该次命�
 
 这些记录不能确定失败断言或根因，也不能将该失败归因于 Main 命令的固定延时假设。最终基线的定向 SDK 与全量检查均通过；该结果不证明此前的偶发失败已修复。再次出现时应保留完整 stdout、stderr 和相关任务状态后定位。
 
+## 2026-11-11 复查：Windows Bash SDK 首轮让出超时
+
+集成基线 `b4cdbd9` 的 Windows 全量检查为 1,167 项、1,148 通过、1 失败、18 跳过。唯一失败是 `test/async-shell-sdk.test.mjs` 的 Bash 用例，报错 `Timed out waiting for child model yielding after create`（耗时 6.5 秒，场景内固定轮询 3 秒）。PowerShell 用例随后通过。
+
+保留的失败任务 `job_6abdcba8`（任务根 `%TEMP%/pi-async-shell-0`）在测试临时目录下创建后 11 毫秒进入 failed 终态，`output.log` 记录 `async-shell: The async-shell host did not accept a frame: connect ENOENT \\.\pipe\pi-harness-d1fc24ed-sub_01.sock`。
+
+复查结论：
+
+- 超时的直接原因是场景内固定 3 秒的 `waitForCondition`：它把子会话启动、模型首轮、Shell 启动和 `pi-job` 启动都算进同一预算，而产品没有承诺 3 秒期限。空闲重复中子会话创建到让出约 1.72 秒，冷启动并行时余量不足。
+- 强制不存在的回调管道只能证明该注册拒绝会作为错误工具结果送达模型并触发 `Shell failed` 断言（约 4.1 秒），不能证明 `b4cdbd9` 那次 `ENOENT` 的因果顺序。用临时环境开关把实际 Shell 命令延迟 4 秒（未提交）后，旧轮询在 3 秒预算处超时（用例总耗时 5.5–5.8 秒）；延迟命令的落地标记未出现，说明测试运行器在子进程退出时结束了它还存活的 Shell，未观察到“晚到注册”建立任务目录，因此“旧轮询超时→关闭监听→晚到注册被拒”的假设未能复现。
+- 因此 `ENOENT` 的管道可用性原因仍未证明；保留证据，不改动生产注册或重试路径。
+
+同步修复（仅测试生命周期）：
+
+- `test/typed/support/async-shell-sdk-scenario.ts` 用脚本模型回调实际产生的 Shell 结果轮次解析每个子会话的让出信号（成功让出与 `shell.isError` 都解析），`assert.equal(shellFailure, null, ...)` 仍紧接在等待之后，错误会以 `Shell failed` 暴露而不是变成有效让出；Main 完成与第二个子会话使用同类信号。
+- 外层测试 30 秒、子进程 25 秒与命令 `--timeout 20s` 期限不变；没有管道预检、预热、重跑或重试；执行、argv、环境与单次投递断言不变。
+- 确定性验证：同一环境开关下把实际 Shell 命令延迟 4 秒，新信号等待真实回调后通过（17.5 秒），证明信号可越过旧 3 秒且无提前拆除。
+- 运行结果：Linux 文件 1/1；Windows VM 完整文件 2/2（Bash 9.0 秒、PowerShell 11.0 秒）；8 文件冷并行突发 67 项、63 通过、4 跳过。
+
 ## 验证边界
 
 本次结果不覆盖真实提供方的多轮在线行为、长时压力、macOS 实机、多用户隔离，以及 Windows 进程查询不可用的故障注入。ConPTY 的输出是终端渲染流，折行和单元格重绘可能产生额外换行或重复字符；验收没有把它当成程序原始 stdout 的逐字节副本。

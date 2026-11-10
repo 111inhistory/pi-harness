@@ -6,6 +6,19 @@ import { lastToolResult, waitForCondition, type ScenarioFixture } from './subage
 const posixQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 const powerShellQuote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
+/**
+ * One model turn the scripted provider has actually produced. Resolving it from
+ * the callback that carries the shell result makes readiness the observed turn
+ * itself, not a timeout budget: a slow child start, shell spawn or CLI cannot
+ * make it expire, while a turn that never arrives still fails through the
+ * unchanged outer test and subprocess deadlines.
+ */
+function observedTurn(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>(settle => { resolve = settle; });
+  return { promise, resolve };
+}
+
 /** Real SDK + Harness + native terminal: completion resumes the same Subagent Job. */
 export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName: 'bash' | 'powershell' = 'bash'): Promise<void> {
   const executable = process.env.PI_ASYNC_SHELL_CLI;
@@ -24,17 +37,17 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
     'const timer = setInterval(() => { if (fs.existsSync(release)) { console.log(marker); clearInterval(timer); } }, 10);',
   ].join('\n'));
   const childCommand = [process.execPath, probe, started, release].map(value => value.replaceAll('\\', '/'));
-  let waiting = false;
+  let shellResult = observedTurn();
   let shellFailure: string | null = null;
   let childTurns = 0;
-  let mainCompleted = false;
+  const mainCompletion = observedTurn();
   fixture.controls.chat = request => {
     if (request.context.tools?.some(tool => tool.name === shellName)) {
       assert.ok(request.text.includes('PI_CODING_AGENT_DIR'), 'Shell guidance names the Skill root environment variable');
       assert.ok(request.text.includes('skills/pi-job/SKILL.md'), 'Shell guidance provides the relative Skill entry');
     }
     if (request.options.sessionId === fixture.sessionManager.getSessionId()) {
-      if (request.text.includes('MAIN_SHELL_RESULT')) mainCompleted = true;
+      if (request.text.includes('MAIN_SHELL_RESULT')) mainCompletion.resolve();
       return fixture.textAnswer('Root received shell result.');
     }
     childTurns++;
@@ -44,15 +57,15 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
     });
     if (shell.isError) {
       shellFailure = JSON.stringify(shell.content);
-      waiting = true;
+      shellResult.resolve();
       return fixture.textAnswer('Shell failed.');
     }
     if (request.text.includes(marker)) return fixture.textAnswer('Verified asynchronous command result.');
-    waiting = true;
+    shellResult.resolve();
     return fixture.textAnswer('Waiting for the command completion.');
   };
   const actor = await fixture.create('ASYNC_SHELL_CHILD execute and verify the asynchronous command');
-  await waitForCondition(() => waiting, 'child model yielding after create');
+  await shellResult.promise;
   assert.equal(shellFailure, null, shellFailure ?? undefined);
   await new Promise<void>(resolve => setImmediate(resolve));
   await waitForCondition(async () => {
@@ -80,13 +93,13 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
   });
   assert.notEqual(mainResult.isError, true, JSON.stringify(mainResult.content));
   await fsp.writeFile(mainRelease, 'release');
-  await waitForCondition(() => mainCompleted, 'Main shell completion turn');
+  await mainCompletion.promise;
 
   // Cancellation of a held Subagent also stops its outstanding shell resources.
-  waiting = false;
+  shellResult = observedTurn();
   await fsp.rm(release);
   const second = await fixture.create('ASYNC_SHELL_CHILD cancellation while awaiting a command');
-  await waitForCondition(() => waiting, 'second child awaiting completion');
+  await shellResult.promise;
   await fixture.call('subagent_stop', { id: second.id });
   await fixture.stopped(second.id);
 }
