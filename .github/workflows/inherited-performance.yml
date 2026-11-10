@@ -1,0 +1,37 @@
+name: Inherited creation performance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: benchmark (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.22.2'
+          cache: npm
+      - run: npm ci
+      - run: npm run bench:inherited -- --output "$RUNNER_TEMP/inherited-performance.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: inherited-performance-${{ matrix.os }}-${{ github.sha }}
+          if-no-files-found: error
+          path: ${{ runner.temp }}/inherited-performance.json

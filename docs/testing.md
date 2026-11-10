@@ -110,6 +110,20 @@ node scripts/check-test-contracts.mjs --all
 
 `--all` 额外检查暂存版本中的全部测试是否登记。它不会自动生成映射，也不执行测试。单独运行关联检查可使用 `npm run check:test-contracts`。
 
+## Inherited 创建性能
+
+性能基准独立于 `npm run check`，按需运行：
+
+```sh
+npm run bench:inherited -- --output /tmp/inherited-performance.json
+```
+
+[Inherited creation performance 工作流](../.github/workflows/inherited-performance.yml) 仅由 `workflow_dispatch` 手动触发，在 Ubuntu 与 Windows 上运行并上传 JSON 结果。每个样本使用独立 Node 进程、真实 SDK 的 `subagent_create` 入口和 durable 合成历史，覆盖 100／500 轮对话、不同消息体积与工具数量，每种场景重复三次；不调用在线模型或外部 MCP。可用 `--project <checkout>` 对另一份已安装依赖的检出运行相同基准。
+
+结果记录创建完成时间、首次 prompt 时间、用户／系统 CPU 时间、根目录读取次数，以及 1 ms 定时器观察到的最长事件循环间隔。内存包含创建前、创建后、显式 GC 后子会话仍存活时的 RSS／堆／external，并记录各阶段的进程峰值 RSS；峰值包含 SDK 初始化，不能把峰值或单次 RSS 增长直接当作泄漏。GC 后指标不包含销毁子会话后的回收情况。
+
+比较时核对 Node 版本、操作系统、场景和提交；CPU、墙钟与内存数据用于分析，不设跨 runner 的绝对耗时门禁。默认回归只对已确认的重复工作设宽松读取次数上限，并走真实创建入口；不得用放宽耗时阈值掩盖行为或资源退化。
+
 ## 迁移与验证边界
 
 测试整理应先建立行为与文档的对应关系，再合并重复覆盖和移除没有独立依据的断言。未迁移测试应如实报告，不批量标记成已完成。

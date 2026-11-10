@@ -36,7 +36,8 @@
     "test:shell-preflight": "node --import tsx --test test/shell-preflight.test.mjs test/shell-preflight-extension.test.mjs",
     "migrate:tool-permissions": "node --import tsx scripts/migrate-tool-permissions.mjs",
     "check:rpc-schema": "node --import tsx scripts/check-rpc-schema.mjs",
-    "schema:rpc": "node --import tsx scripts/check-rpc-schema.mjs --write"
+    "schema:rpc": "node --import tsx scripts/check-rpc-schema.mjs --write",
+    "bench:inherited": "node scripts/inherited-creation-bench.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-codemode": "1.5.0",
