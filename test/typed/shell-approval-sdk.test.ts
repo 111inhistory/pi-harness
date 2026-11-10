@@ -246,6 +246,27 @@ function markerCommand(markerPath: string): string {
   return `node -e '${script}'`;
 }
 
+/**
+ * Quote one literal argument for the shell that executes the command. This is
+ * shell quoting, not JSON escaping: PowerShell doubles an embedded single quote,
+ * POSIX closes the quote, emits an escaped quote and reopens it.
+ */
+function shellQuote(value: string): string {
+  return process.platform === "win32"
+    ? `'${value.replaceAll("'", "''")}'`
+    : `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * The pinned policy parser lowers only a literal PowerShell subset and keeps a
+ * bare `--` opaque, while PowerShell passes a quoted `'--'` as the same
+ * argument. This quotes the separator only where the parser needs it; a native
+ * bare `--` still falls back to whole-command review.
+ */
+function createSeparator(): string {
+  return process.platform === "win32" ? "'--'" : "--";
+}
+
 function invalidCommand(): string {
   return process.platform === "win32" ? "if ($true) {" : "if true; then";
 }
@@ -432,7 +453,7 @@ test("real parser sends pi-job create actual argv and cwd to policy before denia
   const markerPath = path.join(jobCwd, "executed-marker.txt");
   const recordPath = path.join(root, "policy-records.jsonl");
   const script = `require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "executed")`;
-  const command = `pi-job create --cwd ${JSON.stringify(jobCwd)} -- node -e '${script}'`;
+  const command = `pi-job create --cwd ${shellQuote(jobCwd)} ${createSeparator()} node -e ${shellQuote(script)}`;
 
   const result = await runRecordedApproval(root, command, ["deny", recordPath]);
   session = result.session;
@@ -448,6 +469,37 @@ test("real parser sends pi-job create actual argv and cwd to policy before denia
   assert.doesNotMatch(JSON.stringify(record.argv), /pi-job/);
 });
 
+test("real parser keeps a native bare -- PowerShell command opaque and denies the whole command", {
+  skip: process.platform === "win32" ? parserSkip : "PowerShell policy parser semantics are Windows-only",
+  timeout: 30_000,
+}, async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-shell-extract-bare-separator-"));
+  let session: AgentSession | undefined;
+  t.after(async () => { session?.dispose(); await rm(root, { recursive: true, force: true }); });
+  const jobCwd = path.join(root, "job-cwd");
+  await mkdir(jobCwd, { recursive: true });
+  const markerPath = path.join(jobCwd, "executed-marker.txt");
+  const recordPath = path.join(root, "policy-records.jsonl");
+  const script = `require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "executed")`;
+  // Native PowerShell spelling: an unquoted `--` separator, which the pinned
+  // parser cannot lower. The harness must review the original command instead
+  // of inventing an argv it never proved.
+  const command = `pi-job create --cwd ${shellQuote(jobCwd)} -- node -e ${shellQuote(script)}`;
+
+  const result = await runRecordedApproval(root, command, ["deny", recordPath]);
+  session = result.session;
+
+  assert.deepEqual(result.errors, []);
+  assert.equal(existsSync(markerPath), false, "the denied command must not start");
+  assert.equal(result.records.length, 1);
+  const [record] = result.records;
+  assert.ok(record !== undefined);
+  assert.deepEqual(record.argv, []);
+  assert.equal(record.cwd, root);
+  assert.equal(record.command, command);
+  assert.equal(record.decision, "deny");
+});
+
 test("real parser reviews every compound candidate and any denial blocks execution", {
   skip: parserSkip,
   timeout: 30_000,
@@ -460,7 +512,7 @@ test("real parser reviews every compound candidate and any denial blocks executi
   const markerPath = path.join(jobCwd, "dangerous-executed.txt");
   const recordPath = path.join(root, "policy-records.jsonl");
   const script = `require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "executed"); // dangerous`;
-  const command = `echo sibling && pi-job create --cwd ${JSON.stringify(jobCwd)} -- node -e '${script}'`;
+  const command = `echo sibling && pi-job create --cwd ${shellQuote(jobCwd)} ${createSeparator()} node -e ${shellQuote(script)}`;
 
   const result = await runRecordedApproval(root, command, ["allow", recordPath, "dangerous"]);
   session = result.session;

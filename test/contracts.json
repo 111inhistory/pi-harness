@@ -1057,6 +1057,11 @@
       "docs": "a9eb0b176830fe17f593e9901dd5ce9ceca87108aaeb604a8038394095868ef9",
       "tests": "06dbe87d0e07c357cdc8bcf6626c0e644ea5c90192e296e03f8b9212a1a6c116",
       "reason": "Bash cases now state platform posix because a POSIX shell resolves POSIX paths regardless of host OS; pi-job extraction, Windows wrapper resolution and fail-closed fallback contracts are unchanged and still asserted."
+    },
+    "shell.approval": {
+      "docs": "53478ad36772f5375a1a883d2f3c6b82aa2cdb4d33a405fca171975a9dccedf7",
+      "tests": "d14d344767bc7f608796e8c4c3d2fd0d7ebccb58288d120189b430721507610b",
+      "reason": "The pi-job fixtures now shell-quote literal arguments instead of relying on JSON escaping, and a Windows-only real-parser case asserts that a native bare -- PowerShell command stays opaque and is denied as the whole command; the approval ordering, extraction and fail-closed contracts are unchanged."
     }
   }
 }
