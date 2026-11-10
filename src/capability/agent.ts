@@ -160,6 +160,9 @@ function recordHits(run: Run, result: CapabilitySearchResult): { total: number; 
     for (const hit of result[group]) {
       total += 1;
       if (!run.hits.has(hit.ref)) fresh.add(hit.ref);
+      // The run keeps its own hit snapshot: the injected search port may hand
+      // out borrowed or mutable objects, and selection reads the entries several
+      // steps later while the same search result is published as step details.
       run.hits.set(hit.ref, { group, hit: structuredClone(hit) });
     }
   }
@@ -294,7 +297,9 @@ function settle(run: Run, thrown: unknown, budget: CapabilityBudget): Capability
     missingCapabilities: run.selected.size === 0 ? run.emptyQueries.slice(0, MISSING_QUERIES) : [], warnings: [...run.warnings] };
   for (const ref of run.selected) {
     const entry = run.hits.get(ref)!;
-    const hit = structuredClone(entry.hit);
+    // The run ends with this publication, so its owned snapshot transfers to
+    // the result instead of being copied again.
+    const hit = entry.hit;
     if (entry.group === 'skills') {
       if (hit.filePath !== undefined) result.skills.push({ ...hit, filePath: hit.filePath });
     } else result[entry.group].push(hit);
