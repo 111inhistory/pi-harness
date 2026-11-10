@@ -23,6 +23,8 @@
 | [Capability 启用重写交接计划](capability-enable-rewrite-plan.md) | 重写范围、实现步骤与验收要求 |
 | [共享 Provider 与继承上下文设计](shared-provider-context-design.md) | Capability／Subagent 共用适配、独立缓存标识、工具追加与伪移除的设计和边界 |
 | [Capability 启用与缓存边界](capability-enable-cache.md) | 请求前缀稳定性、提供方转换分档与未解决限制 |
+| [工具权限管理提案](tool-permission-management-proposal.md) | 将 manual 与 blacklist 收敛为 not managed、显式启用、显式禁用三态，共用管理数据与领域接口；不依赖 RPC 模式 |
+| [Harness RPC 独立接口提案](harness-rpc-interface-proposal.md) | Pi 原生 RPC 与 Harness 独立结构化端点分工；新增端点仅在 RPC 模式开启，覆盖工具、子任务和执行流；尚未实施 |
 | [Agent 发现与通信提案](agent-discovery-communication-proposal.md) | 有范围的 peer 可见性、通信后启用 `agent_list`、统一消息身份；尚未实施 |
 | [独立外部编排提案](session-orchestration-proposal.md) | 独立项目拥有管理与调度，轻量 Pi 负责决策；不在 Harness 内实现，不依赖 preset |
 | [Agent Preset 暂缓提案](agent-presets-proposal.md) | 预定义 role、配置组合与 Seed-fork 调研；继续暂缓，与模型 Preset 分开 |
