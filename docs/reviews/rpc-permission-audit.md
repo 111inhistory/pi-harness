@@ -2,7 +2,7 @@
 
 ## Scope and evidence
 
-This review covers the permission, child-scope and observation changes introduced after `af3494b`, including the RPC/schema commits subsequently split into the current history. It examines production call paths and the behavioral evidence used to approve them. It is not a claim that every repository module has been audited.
+This review covers the permission, child-scope and observation changes introduced after `af3494b`, including the RPC/schema commits subsequently split into the current history. It examines production call paths and the behavioral evidence used to approve them. It is not a claim that every repository module has been audited. The findings describe the inspected baseline; the implementation ledger below records later fixes and remaining acceptance gaps.
 
 The reviewer used synthetic histories and tools, real Pi SDK sessions for creation, and the actual permission domain and Runtime for focused reproductions. No online provider or external MCP service was involved. Windows verification is tracked separately: the first native VM run reported 1,162 tests, 1,130 passes, 14 failures and 18 skips. Those failures remain unresolved at this review point.
 
@@ -97,7 +97,7 @@ This is unnecessary work and transient allocation in an observation path, introd
 
 ## Current disposition
 
-The audit does not approve the current change set as complete. Only the Inherited catalog-reconstruction fix has been locally applied and validated at this point. Other findings above remain open.
+The audit does not yet approve the rewrite as complete. Several fixes have been integrated and independently checked; the ledger below separates those results from pending permission integration, actual-data migration and final platform acceptance. The original findings remain as the failed-before evidence.
 
 The new optional creation benchmark is deliberately narrow. It records CPU, memory and event-loop data for synthetic creation through the real SDK; it is outside the default gate. It does not cover repeated subscriptions, compaction, tool-management queries, external MCP startup, concurrent batches, revival, or post-disposal memory recovery. Passing it is not a substitute for addressing those paths or for resolving the Windows failures.
 
@@ -113,11 +113,39 @@ node --import tsx --test test/typed/capability-tool-permission.test.ts test/type
 
 Result: 48 passed, 0 failed, 0 skipped in the executor worktree. The admission regression now covers retired record rejection, canonical enable, production reset and a current-discovery positive control. The pruning test includes both protected and unprotected tools in the actual candidate source and verifies the unprotected control before asserting protection.
 
-Disposition: scoped source/admission changes reviewed; this is not execution-hook acceptance, whole-Stage-1 completion or integrated-tree acceptance. The commit remains in the isolated executor branch pending integration. Offline migration still resides in production until Unit 2; winner/query duplication and post-mutation effects remain open until Units 3/4. Full gates and Windows verification remain outstanding. The executor's before/after admission outputs support the known defect; the main independent rerun above verifies the revised tests after the fix.
+Disposition: integrated as `1332132`, with offline migration isolation corrected in `e1d0931`. This remains admission-level evidence, not execution-hook acceptance or whole-Stage-1 completion. Winner/query consolidation and mutation effects are still under main review. Full integrated and platform gates are tracked separately.
 
 ### Stage 1, Unit 2: offline migration isolation
 
-Executor candidate `9504c7d` moves the implementation to `scripts/lib/permission-migration.ts` and removes the migration-only production export. Main review confirmed those ownership changes, but reproduced a changed persisted-input behavior in the new private canonical-id parser: a `set` item with an invalid state now suppresses conversion of a legacy disabled rule. Previously runtime `parseRecord` ignored that malformed assignment, so migration emitted the canonical denial; the candidate emits only the migration marker. The executor has been asked to validate accepted assignment states in offline tooling and add an independent expected-record regression. Unit 2 is not yet accepted; Unit 3 implementation may continue independently of this correction.
+Executor candidate `9504c7d` moved migration to `scripts/lib/permission-migration.ts` and removed the production-only export. Main reproduced a persisted-input regression: an invalid canonical assignment suppressed conversion of a legacy denial. Corrected `1500ef2`, integrated as `e1d0931`, validates assignment state in offline code and retains the denial. No migration-only module remains under production `src/`.
+
+Actual-data readiness exposed a separate boundary: child sessions are reopened at root-recorded `anchor` / `seedLeafId`, so canonical records appended only at the file tail are not visible after restore to those checkpoints. The append-only leaf traversal is insufficient for full migration. The current offline conversion work must preserve native IDs/checkpoint semantics and unrelated discovery content; it will first run on verified backup copies. No production fallback or auto-migration is authorized.
+
+### Inherited creation, ownership and propagation
+
+Main integrated the operation-local root resolver as `6b49686`, replacing the simulated RootService propagation file with actual SDK child-loadout coverage. The real child excludes root-enabled `read` and root-disabled `write`, while unmanaged `edit` stays active. Existing scope-view tests still cover learned qualification and newly applied denials. Main ran the six real-root boundary tests plus seven scope-view tests: 13 passed. Actual live-parent-to-grandchild coverage is being added separately; scope-unit coverage is not a substitute for that wiring.
+
+`8092ede` shares immutable inherited entries/message bodies while keeping independent arrays, header IDs, indexes and leaves; `4564f36` removes the internal typed-options recheck. The real SessionManager sibling test covers independent append/branch/compaction and the effective compaction interval, including a retained pre-checkpoint tool call/result and a later context edit. No compaction materialization or durable format change was introduced. `9cfac59` removes the clone-failure fallback: undetachable adapter results fail through terminal cleanup, while unsupported optional diagnostic detail is omitted and code/message survive. Native result production remains string-based.
+
+### Observation and transport
+
+`cca5b02` splits the narrow live end-boundary read from the stream projection and removes unused entries arrays. `c65f09a` adds detachable Runtime terminal observation and releases it together with native observation. The isolated real-Runtime GC reproduction goes from 500/500 connections retained before settlement to 0/500 after unsubscribe; deterministic tests separately verify event suppression and observer teardown.
+
+Actual socket integration found an additional FIN lifecycle gap. `b4cdbd9` handles input end, drains ordered handlers, releases observers and ends the writable socket so queued responses flush. Main rejected an intermediate immediate-destroy version because it lost a 4 MiB response; the paused-reader real socket test fails with that version and passes with normal `socket.end()`. `6d55bcf` preserves explicit server retirement's ability to destroy a half-closed socket still flushing. Wire/schema bytes and methods remain unchanged. Main independently ran transport + stream: 16 passed before the last small retirement correction; final gates will include it.
+
+### Discovery replay and retired diagnostic tooling
+
+`84564de` replaces per-prune full replay filtering with reverse suffix removals: each record sees only later removals and is projected once. A new independent chronology test failed before the change because two separate member prunes left the exhausted old group's guidance alive; it passes after, and rediscovery keeps only new metadata. Main ran the complete pruning file: 14 passed. `96cf198` deletes the broken benchmark tied to removed manual APIs, without restoring compatibility exports.
+
+### Verification milestones and actual-data preparation
+
+- Initial concurrent Linux full run: 1,164 tests, 1,151 pass, 4 SDK subprocess timeouts, 9 skips. The affected integration file then passed all 35 tests without competing full gates. No timeout threshold changed.
+- Integrated Linux midpoint gate: 1,163 tests, 1,153 pass, 0 fail, 10 skips; type and schema checks passed. This is a milestone, not the final revision's acceptance.
+- Native Windows baseline had 14 failures in preset paths, POSIX parser fixtures and real PowerShell argv extraction. Integrated fixture fixes preserve exact expectations and add a native bare-`--` opaque-command denial test. Focused VM run: 36 tests, 35 pass, 0 fail, 1 prerequisite skip. Natural PowerShell bare `--` remains a pinned-parser limitation handled by whole-command review.
+- Integrated Windows gate at `b4cdbd9`: 1,167 tests, 1,148 pass, 1 fail, 18 skips. The remaining failure is an async-shell SDK scenario waiting for a child to yield after create; investigation continues, not declared fixed by a retry.
+- Inventory: 540 native session files, 37 containing 51 retired manual records; no retired blacklist or mixed discovery/manual records in this inventory. Backups cover 25 closed files (216,544,876 bytes). Twelve files belonging to active roots remain excluded from external writes. Backups/manifests containing private local paths remain outside Git.
+
+The opt-in creation benchmark runs nine isolated samples on each checkout using the same installed SDK and workload. The current post-ownership-change large case has median 174.5 ms creation / 204.9 ms CPU / 176.1 ms longest timer gap / 20 catalog reads; the regressed committed baseline has median 1,539.2 ms / 9,236 catalog reads. These runs are not all simultaneous, portable limits or a full memory-recovery study. Retained heap with a live child is intentional data plus child state; no leak claim follows from RSS or that retained-heap delta. Raw reports stay outside Git; final measurements will identify their exact revision.
 
 ## Rewrite plan and feature freeze
 
