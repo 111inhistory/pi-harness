@@ -23,6 +23,7 @@ import type { LiveSession } from './session-directory.ts';
 import { SessionPeers, type SessionConnect } from './session-peers.ts';
 import { ensurePrivateSocketRoot } from '../ipc/platform.ts';
 import { activateToolNames } from '../capability/activation.ts';
+import { explicitlyDisabled, explicitlyEnabled } from '../capability/tool-permission.ts';
 import { setCapabilityParent, type CapabilityToolCatalog } from '../capability/scope.ts';
 import { ActorSessionStore } from './actor-sessions.ts';
 import { AgentListeners } from './listeners.ts';
@@ -105,7 +106,17 @@ export class RootService implements ManagedWriteHost {
   #temporaryResults: string | null = null;
   readonly #pendingEvents: RuntimeEvent[] = [];
   #creation: { gate: Promise<void>; ready: Promise<void>[] } | null = null;
-  readonly #retainedScopes = new Map<string, CapabilityToolCatalog>();
+  readonly #retainedScopes = new Map<string, { proxy: CapabilityToolCatalog; excluded: readonly string[] }>();
+  /**
+   * The root catalog as a child's parent chain sees it, with explicitly
+   * managed tools (disabled or root-only enabled) removed. Stable per root because the capability scope keys on
+   * the catalog object; `getAllTools` reads the current root branch so a rule
+   * added later is filtered for views built afterwards. The authoritative
+   * prohibition is the live denial applied by {@link #parentScope}: a learned
+   * catalog is append-only, so filtering alone cannot revoke a name an earlier
+   * view already learned.
+   */
+  #rootScopeCache: CapabilityToolCatalog | null = null;
   #registry: ModelRegistry;
   #phase: RootPhase = 'initializing';
   #failure: Error | null = null;
@@ -432,7 +443,11 @@ export class RootService implements ManagedWriteHost {
     // false failure. Only an inactive tool goes through the normal activation
     // path, which keeps manual tools closed without an explicit grant.
     if (this.#options.api.getActiveTools().includes('msg_write')) return;
-    const outcome = activateToolNames(this.#options.api, ['msg_write']);
+    const api = this.#options.api;
+    const branch = this.#options.context.sessionManager.getBranch();
+    const outcome = activateToolNames(api, ['msg_write'], {
+      disabled: (name) => explicitlyDisabled(api, branch, name),
+    });
     if (outcome.activated.length > 0 || outcome.alreadyActive.length > 0) return;
     const reason = outcome.skipped.find((skip) => skip.name === 'msg_write')?.reason ?? 'not_activated';
     this.#report(new Error(`The cross-session reply tool is unavailable: ${reason}.`));
@@ -608,20 +623,58 @@ export class RootService implements ManagedWriteHost {
     return true;
   }
 
+  /**
+   * The root catalog a child's ancestor chain starts from.
+   *
+   * Current prohibitions are re-applied as denials on every resolution, so a
+   * direct root child, a live parent and a retained proxy all see a rule added
+   * after the first child. The learned set is append-only, so filtering
+   * `getAllTools` alone cannot revoke an earlier grant; a denial is applied
+   * whenever a view is built. Explicit enable is root-only and is not
+   * propagated.
+   */
+  #rootScope(): CapabilityToolCatalog {
+    const catalog = this.#rootScopeCache ??= {
+      getAllTools: () => this.#options.api.getAllTools(),
+    };
+    setCapabilityParent(catalog, null, this.#childDeniedNames());
+    return catalog;
+  }
+
+  /**
+   * Tools a child must not inherit right now: explicitly disabled names and
+   * explicitly enabled names, because an enable is root-only.
+   */
+  #childDeniedNames(): string[] {
+    const api = this.#options.api;
+    const branch = this.#options.context.sessionManager.getBranch();
+    return api.getAllTools()
+      .filter((tool) => explicitlyDisabled(api, branch, tool.name) || explicitlyEnabled(api, branch, tool.name))
+      .map((tool) => tool.name);
+  }
+
   #parentScope(agentId: string | null): CapabilityToolCatalog {
-    if (agentId === null) return this.#options.api;
+    if (agentId === null) return this.#rootScope();
     const live = this.runner.childScope(agentId);
     if (live !== null) return live;
-    let proxy = this.#retainedScopes.get(agentId);
-    if (proxy !== undefined) return proxy;
+    // Prohibitions are expressed as scope denials, not only by filtering the
+    // stable catalog: a denial is applied when a view is built, so a new child
+    // of a retained parent learns the current rule even though the parent
+    // catalog object itself never changes.
+    const disabled = this.#childDeniedNames();
+    const retained = this.#retainedScopes.get(agentId);
+    if (retained !== undefined) {
+      setCapabilityParent(retained.proxy, this.#rootScope(), [...retained.excluded, ...disabled]);
+      return retained.proxy;
+    }
     const scope = this.actors.toolScope(agentId);
     if (scope === null) throw new SubagentError('unknown_agent', `Missing parent capability scope for ${agentId}.`);
-    proxy = { getAllTools: () => {
+    const proxy: CapabilityToolCatalog = { getAllTools: () => {
       const current = new Set(this.actors.toolScope(agentId)?.tools ?? []);
       return this.#options.api.getAllTools().filter((tool) => current.has(tool.name));
     } };
-    setCapabilityParent(proxy, this.#options.api, scope.excludedTools);
-    this.#retainedScopes.set(agentId, proxy);
+    setCapabilityParent(proxy, this.#rootScope(), [...scope.excludedTools, ...disabled]);
+    this.#retainedScopes.set(agentId, { proxy, excluded: scope.excludedTools });
     return proxy;
   }
 

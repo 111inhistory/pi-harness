@@ -29,7 +29,7 @@ import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-s
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
-import { discoveryRecords, manualEnabledTools } from "../../src/capability/discovery-record.ts";
+import { discoveryRecords } from "../../src/capability/discovery-record.ts";
 
 function deferred() {
   let resolve!: () => void;
@@ -174,7 +174,6 @@ test("an external Main message activates msg_write for that turn only", { timeou
 
     // A receipt is not a user authorization: no capability record is written.
     assert.deepEqual(discoveryRecords(session.sessionManager.getBranch()), []);
-    assert.deepEqual([...manualEnabledTools(session.sessionManager.getBranch())], []);
 
     // A second receipt changes nothing: same active set, no second declaration,
     // no record and no "unavailable" notice.

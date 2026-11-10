@@ -38,7 +38,7 @@ import subagentEntry from '../../extensions/subagent.ts';
 import capabilityEntry from '../../extensions/capability.ts';
 import resultRenderingEntry from '../../extensions/result-rendering.ts';
 import btwEntry from '../../extensions/btw.ts';
-import { manualEnabledTools } from '../../src/capability/discovery-record.ts';
+import { explicitlyEnabled } from '../../src/capability/tool-permission.ts';
 import { installCapabilityMcp } from '../../src/capability/native-discovery.ts';
 import { setCapabilityParent } from '../../src/capability/scope.ts';
 import { harnessConfigFor } from '../../src/harness-config.ts';
@@ -261,10 +261,10 @@ test('full SDK: manual tools stay unreachable until the user records them, then 
     const mcpNamespace = session.getAllTools().find(tool => tool.name === MCP_TOOL)?.namespace?.name;
     assert.ok(mcpNamespace, 'the real SDK registers an MCP namespace');
     await enableCommand.handler(`enable manual_fixture namespace://${mcpNamespace} read_mcp_resource`, enableContext);
-    assert.match(enableNotices.at(-1)?.text ?? '', /Enabled/);
+    assert.match(enableNotices.at(-1)?.text ?? '', /Capability · enable|Changed/);
     for (const name of MANUAL_TOOLS) {
       assert.ok(session.getActiveToolNames().includes(name), `${name} is active`);
-      assert.ok(manualEnabledTools(session.sessionManager.getBranch()).has(name), `${name} is authorized`);
+      assert.ok(explicitlyEnabled(capabilityApi!, session.sessionManager.getBranch(), name), `${name} is enabled`);
     }
 
     // Phase 2: authorized by the user's record.
@@ -292,7 +292,7 @@ test('full SDK: manual tools stay unreachable until the user records them, then 
     assert.equal(afterScript.isError, false, textOf(afterScript));
     assert.match(textOf(afterScript), /MANUAL_ACCESS_OK/);
 
-    // The real SDK catalog through the user-facing list, grouped by category.
+    // The real SDK view through the user-facing list, with the four-state labels.
     const command = session.extensionRunner.getRegisteredCommands().find((entry) => entry.name === 'capability');
     assert.ok(command, 'the harness registers /capability on the real SDK session');
     const listNotices: { text: string; type: string }[] = [];
@@ -300,24 +300,25 @@ test('full SDK: manual tools stay unreachable until the user records them, then 
     Object.defineProperty(listContext, 'ui', {
       value: { notify: (text: string, type: string = 'info') => { listNotices.push({ text, type }); } },
     });
-    await command.handler('list mcp', listContext);
-    const mcpList = listNotices.at(-1)?.text ?? '';
-    assert.match(mcpList, /MCP servers · manual_fixture/);
-    assert.match(mcpList, /✔ deploy/);
-    assert.doesNotMatch(mcpList, /Tools ·|Namespaces ·/);
+    await command.handler('list', listContext);
+    const defaultList = listNotices.at(-1)?.text ?? '';
+    assert.match(defaultList, /manual_fixture/);
+    assert.match(defaultList, /\[enabled\]/);
+    await command.handler('list namespace', listContext);
+    const namespaceList = listNotices.at(-1)?.text ?? '';
+    assert.ok(namespaceList.includes(`${MCP_TOOL}  [`), 'the enabled MCP member is listed under its namespace');
+    assert.ok(!namespaceList.includes('manual_fixture  ['), 'a plain tool is not a namespace entry');
     await command.handler('list tool', listContext);
     const toolList = listNotices.at(-1)?.text ?? '';
-    assert.match(toolList, /manual_fixture  \[active, manual\]/);
-    assert.doesNotMatch(toolList, /MCP servers ·/);
-    await command.handler('list deploy', listContext);
-    assert.match(listNotices.at(-1)?.text ?? '', /1 matches for "deploy"/);
-    await command.handler('list namespace', listContext);
-    assert.match(listNotices.at(-1)?.text ?? '', /Namespaces · subagent/);
+    assert.match(toolList, /manual_fixture/);
+    assert.ok(!toolList.includes(`${MCP_TOOL}  [`), 'a namespace member is not a plain tool entry');
+    await command.handler('list disabled', listContext);
+    assert.match(listNotices.at(-1)?.text ?? '', /No tools match/);
 
     // Phase 3: the same branch memory, the same registered tools, a real child scope.
     const rootBranch = session.sessionManager.getEntries();
-    assert.ok(rootBranch.some((entry) => entry.type === 'custom' && entry.customType === 'capability-discovery'),
-      "the fixture's manual authorization is on the branch");
+    assert.ok(rootBranch.some((entry) => entry.type === 'custom' && entry.customType === 'capability-tool-permission'),
+      "the user's permission record is on the branch");
     // The child gets its own agent directory only so its MCP child process records
     // a separate pid; the manual policy is identical.
     const childAgentDir = path.join(cwd, 'agent-child');
@@ -367,10 +368,10 @@ test('full SDK: manual tools stay unreachable until the user records them, then 
     assert.ok(childTools.includes('manual_fixture'), 'the child registers the same manual fixture');
     assert.ok(childTools.includes(MCP_TOOL), 'the child registers the same MCP tool');
     assert.ok(child.sessionManager.getBranch().some((entry) => {
-      const data = (entry as { data?: { result?: { manual?: unknown[] } } }).data;
-      return entry.type === 'custom' && entry.customType === 'capability-discovery'
-        && Array.isArray(data?.result?.manual) && data.result.manual.length > 0;
-    }), 'the child branch carries the root manual record');
+      const data = (entry as { data?: { set?: { target?: string; state?: string }[] } }).data;
+      return entry.type === 'custom' && entry.customType === 'capability-tool-permission'
+        && Array.isArray(data?.set) && data.set.some((item) => item.state === 'enabled');
+    }), 'the child branch carries the root permission record');
     phase = 'child';
     step = 0;
     const childBaseline = child.messages.length;

@@ -23,7 +23,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import capabilityExtension from "../../src/capability/extension.ts";
-import { appendManualRecord, CAPABILITY_DISCOVERY_RECORD } from "../../src/capability/discovery-record.ts";
+import { CAPABILITY_TOOL_PERMISSION_RECORD } from "../../src/capability/tool-permission.ts";
 import { CAPABILITY_SECTION } from "../../src/capability/prompt.ts";
 import { resolveHarnessConfig } from "../../src/harness-config.ts";
 import { setCapabilityParent } from "../../src/capability/scope.ts";
@@ -91,12 +91,13 @@ function assemble(tools: FakeTool[], active: string[]) {
   };
 }
 
-/** The branch shape the handlers read: one canonical manual record. */
+/** The branch shape the handlers read: canonical enabled entries. */
 function manualBranch(names: readonly string[]): unknown[] {
-  const entries: { customType: string; data?: unknown }[] = [];
-  appendManualRecord({ appendEntry: (customType, data) => { entries.push({ customType, data }); } },
-    names.map((name) => ({ ref: `tool://${encodeURIComponent(name)}`, name, kind: "tool", status: "available" })));
-  return entries.map((entry) => ({ type: "custom", customType: CAPABILITY_DISCOVERY_RECORD, data: entry.data }));
+  return [{
+    type: "custom",
+    customType: CAPABILITY_TOOL_PERMISSION_RECORD,
+    data: { version: 1, set: names.map((name) => ({ target: name, state: "enabled" })) },
+  }];
 }
 
 function context(branch: readonly unknown[]): ExtensionContext {

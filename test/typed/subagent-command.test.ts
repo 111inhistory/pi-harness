@@ -261,7 +261,7 @@ test("connect reports the peer session and the msg_write grant", async () => {
       targets.push(target);
       return {
         session, address: "/tmp/sockets/bbbbbb/Main.sock",
-        enabled: ["msg_write"], alreadyEnabled: [], recordError: null,
+        enabled: ["msg_write"], alreadyEnabled: [],
       };
     },
   } as unknown as RootService;
@@ -271,26 +271,6 @@ test("connect reports the peer session and the msg_write grant", async () => {
   assert.match(notifications[0]?.text ?? "", /^Connected bbbbbb \(parser work\) at \/tmp\/project-b$/m);
   assert.match(notifications[0]?.text ?? "", /^main: \/tmp\/sockets\/bbbbbb\/Main\.sock$/m);
   assert.match(notifications[0]?.text ?? "", /^msg_write: enabled$/m);
-});
-
-test("connect reports a partial failure instead of claiming success", async () => {
-  const notifications: Array<{ text: string; type: string }> = [];
-  const service = {
-    connectSession: async () => ({
-      session: { sessionId: "other", uid: "bbbbbb", socketDir: "/tmp/s", pid: 1, cwd: "/tmp/p", name: null, startedAt: 1 },
-      address: "/tmp/s/Main.sock", enabled: ["msg_write"], alreadyEnabled: [],
-      recordError: "the session branch is read-only",
-    }),
-  } as unknown as RootService;
-  await install(service).handler("sessions connect bbbbbb", context(notifications));
-  assert.equal(notifications[0]?.type, "error");
-  const text = notifications[0]?.text ?? "";
-  assert.doesNotMatch(text, /^Connected/, "a partial failure is not reported as a successful connect");
-  assert.match(text, /^Appended the contact information for bbbbbb at \/tmp\/p$/m);
-  assert.match(text, /^main: \/tmp\/s\/Main\.sock$/m);
-  assert.match(text, /^msg_write: activated, but the user grant was not recorded: the session branch is read-only$/m);
-  assert.match(text, /A manual msg_write is not declared on the next request without that record/);
-  assert.doesNotMatch(text, /msg_write: (already )?enabled/);
 });
 
 test("a connect lookup failure is reported with its code and appends nothing", async () => {

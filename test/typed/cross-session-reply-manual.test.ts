@@ -21,7 +21,8 @@ import { fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 
-import { appendManualRecord, CAPABILITY_DISCOVERY_RECORD } from "../../src/capability/discovery-record.ts";
+import { CAPABILITY_DISCOVERY_RECORD } from "../../src/capability/discovery-record.ts";
+import { CAPABILITY_TOOL_PERMISSION_RECORD } from "../../src/capability/tool-permission.ts";
 
 const cwd = await mkdtemp(path.join(tmpdir(), "reply-manual-"));
 const agentDir = path.join(cwd, "agent");
@@ -132,12 +133,11 @@ test("an authorized manual reply tool is not reported unavailable", { timeout: 2
   const { session } = started;
   try {
     assert.ok(!session.getActiveToolNames().includes("msg_write"), "manual tool starts inactive");
-    // Test fixture, not a production path: seed the active tool and the branch's
-    // `manual` record that the retired user command used to write.
-    appendManualRecord(
-      { appendEntry: (customType, data) => { session.sessionManager.appendCustomEntry(customType, data); } },
-      [{ ref: "tool://msg_write", name: "msg_write", kind: "tool", status: "available" }],
-    );
+    // Test fixture, not a production path: seed the active tool and the
+    // canonical enabled entry the user command writes.
+    session.sessionManager.appendCustomEntry(CAPABILITY_TOOL_PERMISSION_RECORD, {
+      version: 1, set: [{ target: "msg_write", state: "enabled" }],
+    });
     session.setActiveToolsByName([...session.getActiveToolNames(), "msg_write"]);
     assert.ok(session.getActiveToolNames().includes("msg_write"), "the reply tool is authorized and active");
     started.notices.length = 0;
@@ -160,7 +160,7 @@ test("an ungranted manual reply tool is not activated by receipt", { timeout: 20
     await deliver(session, "peer ping", started.turnStarted);
     assert.ok(!started.activeAtTurn().includes("msg_write"), "receipt does not activate the manual tool");
     assert.ok(!session.getActiveToolNames().includes("msg_write"));
-    assert.deepEqual(started.notices, ["The cross-session reply tool is unavailable: manual_only."]);
+    assert.deepEqual(started.notices, ["The cross-session reply tool is unavailable: disabled."]);
     assert.deepEqual(started.errors, []);
     const records = session.sessionManager.getBranch()
       .filter((entry) => entry.type === "custom" && entry.customType === CAPABILITY_DISCOVERY_RECORD);

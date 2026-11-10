@@ -1,13 +1,9 @@
 /**
- * `/capability enable`: the user's own path to a registered tool.
+ * `/capability enable` (three-state model): the user's path to enable a tool.
  *
- * These cases drive the command surface and the enable operation directly, with
- * a registry that can change between calls. The registry is deliberately
- * mutable: Pi's MCP extension re-registers a server's tools after `/mcp
- * reconnect`, and a re-registration can be hidden. The operation must therefore
- * resolve every target against the registry at execution time and refuse a
- * registration that is gone, instead of trusting a snapshot from a picker or a
- * session start.
+ * The enable operation records an `enabled` permission and activates the
+ * concrete members; it never relies on a separate manual record. Targets are
+ * resolved against the live registry at execution time.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -15,16 +11,13 @@ import test from 'node:test';
 import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand } from '@earendil-works/pi-coding-agent';
 
 import { createToolAdmission } from '../../src/capability/admission.ts';
-import { createCapabilityCatalog } from '../../src/capability/catalog.ts';
 import {
   capabilityArgumentCompletions, installCapabilityCommand, parseCapabilityCommand,
 } from '../../src/capability/command.ts';
-import {
-  CAPABILITY_DISCOVERY_RECORD, discoveryRecords, manualEnabledTools,
-} from '../../src/capability/discovery-record.ts';
 import { enableCapabilityTargets, resolveEnableTargets } from '../../src/capability/enable.ts';
-import { manualToolMatcher } from '../../src/capability/manual-tools.ts';
-import { setCapabilityParent, setCapabilityRootOnlyPolicy } from '../../src/capability/scope.ts';
+import { setCapabilityParent, setCapabilityPermissionDefaults } from '../../src/capability/scope.ts';
+import { explicitlyEnabled, explicitlyDisabled } from '../../src/capability/tool-permission.ts';
+import { queryToolPermissions } from '../../src/capability/tool-permission.ts';
 
 interface FakeTool {
   name: string;
@@ -35,11 +28,6 @@ interface FakeTool {
 
 type Entry = { type: string; customType: string; timestamp?: string; data?: unknown };
 
-/**
- * A host that behaves like the SDK's registry: `registerTool` replaces a
- * definition by name, hidden tools are never activated, and the branch keeps
- * the custom entries the command appends.
- */
 function host(initial: readonly FakeTool[], active: readonly string[] = []) {
   const state = {
     tools: initial.map((tool) => ({ ...tool })),
@@ -85,360 +73,161 @@ const tools: readonly FakeTool[] = [
   { name: 'msg_write', description: 'Send a message', exposure: 'deferred', namespace: { name: 'subagent' } },
 ];
 
-function manualHost(initial: readonly FakeTool[] = tools, active: readonly string[] = []) {
-  const fixture = host(initial, active);
-  setCapabilityRootOnlyPolicy(fixture.api, manualToolMatcher(['deck_pages', 'secret']));
-  return fixture;
-}
-
-test('the command line parses browsing and enabling without touching state', () => {
-  assert.deepEqual(parseCapabilityCommand(''), { verb: 'list', filter: '' });
-  assert.deepEqual(parseCapabilityCommand('  list '), { verb: 'list', filter: '' });
-  assert.deepEqual(parseCapabilityCommand('list mcp'), { verb: 'list', category: 'mcp', filter: '' });
-  assert.deepEqual(parseCapabilityCommand('list tool git status'), { verb: 'list', category: 'tool', filter: 'git status' });
-  assert.deepEqual(parseCapabilityCommand('list git status'), { verb: 'list', filter: 'git status' });
-  assert.deepEqual(parseCapabilityCommand('enable'), { verb: 'enable', targets: [] });
-  assert.deepEqual(parseCapabilityCommand(' enable  deck_pages   read '), { verb: 'enable', targets: ['deck_pages', 'read'] });
-  assert.throws(() => parseCapabilityCommand('search git'), /Unknown subcommand: search/);
-  assert.throws(() => parseCapabilityCommand('disable read'), /Unknown subcommand: disable/);
-});
-
-test('targets resolve against the live registry: names, servers and namespaces', () => {
-  const fixture = manualHost();
-  assert.deepEqual(resolveEnableTargets(fixture.api, ['deck_pages']),
-    { names: ['deck_pages'], expansions: [], unresolved: [] });
-  assert.deepEqual(resolveEnableTargets(fixture.api, ['mcp://git']), {
-    names: ['mcp__git__status', 'mcp__git__log'],
-    expansions: [{ target: 'mcp://git', tools: ['mcp__git__status', 'mcp__git__log'] }],
-    unresolved: [],
-  });
-  assert.deepEqual(resolveEnableTargets(fixture.api, ['namespace://subagent']), {
-    names: ['msg_write'],
-    expansions: [{ target: 'namespace://subagent', tools: ['msg_write'] }],
-    unresolved: [],
-  });
-  assert.deepEqual(resolveEnableTargets(fixture.api, ['subagent']).names, ['msg_write'],
-    'a bare name that is no tool but a non-MCP namespace expands to its members');
-  assert.deepEqual(resolveEnableTargets(fixture.api, ['nope', 'also_nope']),
-    { names: [], expansions: [], unresolved: ['nope', 'also_nope'] });
-  assert.deepEqual(resolveEnableTargets(fixture.api, ['read', 'read']).names, ['read'], 'a repeated target activates once');
-});
-
-test('enable activates, then records, and only records what the SDK activated', () => {
-  const fixture = manualHost();
-  const result = enableCapabilityTargets(fixture.api, ['deck_pages', 'secret']);
-  assert.deepEqual(result.enabled, ['deck_pages']);
-  assert.deepEqual(result.skipped, [{ name: 'secret', reason: 'hidden' }]);
-  assert.equal(result.recordError, null);
-  assert.deepEqual(fixture.activeNames(), ['deck_pages'], 'the hidden tool is not activated');
-  assert.equal(fixture.entries().length, 1, 'one record for the operation');
-  assert.equal(fixture.entries()[0]?.customType, CAPABILITY_DISCOVERY_RECORD);
-  const branch = fixture.branch();
-  assert.deepEqual([...manualEnabledTools(branch)], ['deck_pages'], 'the record is the authority');
-  assert.equal(createToolAdmission(fixture.api, branch).admits('deck_pages'), true);
-  const hit = discoveryRecords(branch)[0]?.result.manual?.[0];
-  assert.equal(hit?.ref, 'tool://deck_pages');
-  assert.equal(hit?.status, 'available');
-});
-
-test('a repeated enable is idempotent and writes no second record', () => {
-  const fixture = manualHost();
-  enableCapabilityTargets(fixture.api, ['deck_pages']);
-  const again = enableCapabilityTargets(fixture.api, ['deck_pages'], { branch: fixture.branch() });
-  assert.deepEqual(again.enabled, []);
-  assert.deepEqual(again.alreadyEnabled, ['deck_pages']);
-  assert.deepEqual(again.skipped, []);
-  assert.equal(fixture.entries().length, 1, 'the branch memory does not grow on a repeat');
-});
-
-test('an already active but unrecorded manual tool is authorized, not re-activated', () => {
-  // `defaultActive`, a restored transcript or another extension can leave a
-  // manual tool active without the user's record; activation is not authority.
-  const fixture = manualHost(tools, ['deck_pages']);
-  assert.equal(createToolAdmission(fixture.api, []).admits('deck_pages'), false);
-  const result = enableCapabilityTargets(fixture.api, ['deck_pages']);
-  assert.deepEqual(result.enabled, ['deck_pages']);
-  assert.equal(createToolAdmission(fixture.api, fixture.branch()).admits('deck_pages'), true);
-});
-
-test('a discovery selection is not user authorization', () => {
-  // The model discovered the tool before the user classified it as manual. The
-  // discovery record selects it for the model; it says nothing about the user's
-  // decision, so the command still owes the tool its own authorization record.
-  const fixture = manualHost();
-  const discovery = {
-    type: 'custom', customType: CAPABILITY_DISCOVERY_RECORD,
-    data: {
-      version: 1, toolCallId: 'call-1', result: {
-        status: 'ok', mcp: [], skills: [],
-        tools: [{ ref: 'tool://deck_pages', name: 'deck_pages', kind: 'tool', status: 'available' }],
-        coverage: { local: 'searched', remote: 'not_searched' },
-      },
-    },
-  };
-  const branch = [discovery];
-  assert.equal(createToolAdmission(fixture.api, branch).admitsManual('deck_pages'), false,
-    'the discovery record does not authorize the manual tool');
-  assert.equal(createToolAdmission(fixture.api, branch).admits('deck_pages'), false);
-
-  const result = enableCapabilityTargets(fixture.api, ['deck_pages'], { branch });
-  assert.deepEqual(result.enabled, ['deck_pages'], 'the enable is not mistaken for a repeat');
-  assert.deepEqual(result.alreadyEnabled, []);
-  assert.equal(fixture.entries().length, 1, 'the user authorization record is written');
-  const authorized = [...branch, ...fixture.branch()];
-  assert.deepEqual([...manualEnabledTools(authorized)], ['deck_pages']);
-  assert.equal(createToolAdmission(fixture.api, authorized).admits('deck_pages'), true,
-    'the next request admits the tool instead of pruning it again');
-});
-
-test('a record write failure is reported and leaves no durable authorization', () => {
-  const fixture = manualHost();
-  fixture.failAppend(true);
-  const result = enableCapabilityTargets(fixture.api, ['deck_pages']);
-  assert.match(result.recordError ?? '', /read-only/);
-  assert.deepEqual(result.enabled, ['deck_pages'], 'the activation itself is reported honestly');
-  assert.deepEqual([...manualEnabledTools(fixture.branch())], [], 'nothing was remembered');
-  assert.equal(createToolAdmission(fixture.api, fixture.branch()).admits('deck_pages'), false,
-    'without the record the next request prunes the declaration');
-});
-
-test('a tool registered after the fact is enableable without a restart', () => {
-  const fixture = manualHost([{ name: 'read', description: 'Read a file', exposure: 'direct' }]);
-  // The equivalent of Pi's MCP extension registering a tool after `/mcp reconnect`.
-  fixture.register({ name: 'mcp__late__deploy', description: 'Deploy late', exposure: 'deferred', namespace: { name: 'mcp__late', aliases: ['late'] } });
-  assert.ok(createCapabilityCatalog(fixture.api).entries.some((entry) => entry.name === 'mcp__late__deploy'),
-    'browsing reads the live registry');
-  const result = enableCapabilityTargets(fixture.api, ['mcp://late']);
-  assert.deepEqual(result.enabled, ['mcp__late__deploy']);
-  assert.equal(createToolAdmission(fixture.api, fixture.branch()).admits('mcp__late__deploy'), true);
-});
-
-test('a registration withdrawn by a reconnect cannot be activated from a stale choice', () => {
-  const fixture = manualHost();
-  // A picker captured the tool before the reconnect; Pi then re-registers it hidden.
-  const chosen = createCapabilityCatalog(fixture.api).entries.map((entry) => entry.name);
-  assert.ok(chosen.includes('mcp__git__status'));
-  fixture.register({ name: 'mcp__git__status', description: 'Show repository status', exposure: 'hidden', namespace: { name: 'mcp__git', aliases: ['git'] } });
-  const result = enableCapabilityTargets(fixture.api, ['mcp__git__status']);
-  assert.deepEqual(result.enabled, []);
-  assert.deepEqual(result.skipped, [{ name: 'mcp__git__status', reason: 'hidden' }]);
-  assert.deepEqual(fixture.entries(), [], 'a refused registration writes no record');
-  fixture.unregister('mcp__git__status');
-  assert.deepEqual(enableCapabilityTargets(fixture.api, ['mcp__git__status']).unresolved, ['mcp__git__status'],
-    'an unregistered tool is an unknown target, not a silent success');
-});
-
-test('a child scope cannot enable a manual tool', () => {
-  const root = manualHost();
-  const childApi = {
-    getAllTools: () => tools,
-    getActiveTools: () => [] as string[],
-    setActiveTools: () => undefined,
-    appendEntry: () => undefined,
-  };
-  setCapabilityParent(childApi, root.api);
-  const result = enableCapabilityTargets(childApi as unknown as ExtensionAPI, ['deck_pages']);
-  assert.deepEqual(result.enabled, []);
-  assert.deepEqual(result.skipped, [{ name: 'deck_pages', reason: 'not_permitted' }]);
-});
-
-type Notice = { text: string; type: string };
-
-function command(tools: readonly FakeTool[], active: readonly string[] = []) {
-  const fixture = manualHost(tools, active);
-  const notifications: Notice[] = [];
+function command(fixture: ReturnType<typeof host>, select?: (labels: readonly string[]) => string | undefined) {
+  const notifications: { text: string; type: string }[] = [];
   let registered: RegisteredCommand | undefined;
-  // The scope policy is stored per catalog object, so the command must run on
-  // the same object the fixture configured, not on a copy.
-  Object.assign(fixture.api as unknown as Record<string, unknown>, {
+  Object.assign(fixture.api as object, {
     registerCommand: (name: string, options: Omit<RegisteredCommand, 'name' | 'sourceInfo'>) => {
       registered = { name, ...options } as RegisteredCommand;
     },
   });
-  const pi = fixture.api;
-  installCapabilityCommand(pi);
+  installCapabilityCommand(fixture.api);
   assert.ok(registered);
-  const branch = fixture.branch();
-  const make = (select?: (title: string, options: readonly string[]) => Promise<string | undefined>): ExtensionCommandContext => ({
+  const command = registered;
+  const ctx = {
     ui: {
       notify: (text: string, type: string = 'info') => { notifications.push({ text, type }); },
-      ...(select === undefined ? {} : { select }),
+      select: async (title: string, labels: string[]) => select === undefined ? undefined : select(labels),
     },
-    sessionManager: { getBranch: () => branch },
-  }) as unknown as ExtensionCommandContext;
+    sessionManager: { getBranch: () => fixture.branch() },
+  } as unknown as ExtensionCommandContext;
   return {
-    fixture,
     notifications,
-    run: async (raw: string, select?: (title: string, options: readonly string[]) => Promise<string | undefined>) => {
-      await registered!.handler(raw, make(select));
-    },
-    completions: async (prefix: string) => (await registered!.getArgumentCompletions?.(prefix)) ?? null,
+    completions: async (prefix: string) => (await command.getArgumentCompletions?.(prefix)) ?? null,
+    run: async (raw: string) => { await command.handler(raw, ctx); },
   };
 }
 
-test('enable reports per-target outcomes and keeps browsing read-only', async () => {
-  const fixture = command(tools);
-  await fixture.run('enable deck_pages secret ghost');
-  const text = fixture.notifications[0]?.text ?? '';
-  assert.match(text, /Capability · enable deck_pages secret ghost/);
-  assert.match(text, /Enabled\n {2}✔ deck_pages/);
-  assert.match(text, /Refused\n {2}✖ secret \(hidden by its registration\)/);
-  assert.match(text, /Unknown targets\n {2}\? ghost/);
-  assert.equal(fixture.notifications[0]?.type, 'warning', 'a partial result is a warning, not a success');
-  assert.deepEqual(fixture.fixture.activeNames(), ['deck_pages']);
-
-  await fixture.run('list deck');
-  assert.equal(fixture.notifications[1]?.type, 'info');
-  assert.match(fixture.notifications[1]?.text ?? '', /✔ deck_pages {2}\[active, manual\]/);
-  assert.equal(fixture.fixture.entries().length, 1, 'list writes nothing');
+test('the command line parses the permission verbs', () => {
+  assert.deepEqual(parseCapabilityCommand('enable'), { verb: 'enable', targets: [] });
+  assert.deepEqual(parseCapabilityCommand('enable deck_pages read'), { verb: 'enable', targets: ['deck_pages', 'read'] });
+  assert.deepEqual(parseCapabilityCommand('disable read'), { verb: 'disable', targets: ['read'] });
+  assert.deepEqual(parseCapabilityCommand('reset read'), { verb: 'reset', targets: ['read'] });
+  assert.deepEqual(parseCapabilityCommand('list active'), { verb: 'list', expr: 'active' });
 });
 
-test('a failed record is an error, and a repeat is reported as already enabled', async () => {
-  const fixture = command(tools);
-  fixture.fixture.failAppend(true);
-  await fixture.run('enable deck_pages');
-  assert.equal(fixture.notifications[0]?.type, 'error');
-  assert.match(fixture.notifications[0]?.text ?? '', /could not be written/);
-  fixture.fixture.failAppend(false);
-  await fixture.run('enable deck_pages');
-  assert.match(fixture.notifications[1]?.text ?? '', /Enabled\n {2}✔ deck_pages/);
-  await fixture.run('enable deck_pages');
-  assert.match(fixture.notifications[2]?.text ?? '', /Already enabled\n {2}· deck_pages/);
-  assert.equal(fixture.fixture.entries().length, 1);
+test('targets resolve against the live registry: names, servers and namespaces', () => {
+  const fixture = host(tools);
+  const resolved = resolveEnableTargets(fixture.api, ['deck_pages', 'mcp://git', 'namespace://subagent', 'missing']);
+  assert.deepEqual(resolved.names, ['deck_pages', 'mcp__git__status', 'mcp__git__log', 'msg_write']);
+  assert.deepEqual(resolved.unresolved, ['missing']);
+  assert.deepEqual(resolved.expansions.map((entry) => entry.target).sort(), ['mcp://git', 'namespace://subagent']);
+  assert.equal(resolveEnableTargets(fixture.api, ['secret']).names.includes('secret'), true,
+    'an exact hidden target is reported instead of pretending it does not exist');
 });
 
-test('the picker enables exactly the chosen tool and cancelling changes nothing', async () => {
-  const fixture = command(tools, ['read']);
-  let offered: readonly string[] = [];
-  await fixture.run('enable', async (_title, options) => {
-    offered = options;
-    return options.find((option) => option.includes('deck_pages'));
+test('enable records an enabled permission and activates the members', () => {
+  const fixture = host(tools, ['read']);
+  setCapabilityPermissionDefaults(fixture.api, ['deck_pages']);
+  const result = enableCapabilityTargets(fixture.api, ['deck_pages', 'mcp://git'], { branch: fixture.branch() });
+  assert.deepEqual([...result.enabled].sort(), ['deck_pages', 'mcp__git__log', 'mcp__git__status']);
+  assert.equal(explicitlyEnabled(fixture.api, fixture.branch(), 'deck_pages'), true);
+  assert.equal(explicitlyDisabled(fixture.api, fixture.branch(), 'deck_pages'), false, 'the explicit enable overrides the seed');
+  assert.ok(fixture.activeNames().includes('deck_pages'));
+  assert.ok(fixture.activeNames().includes('mcp__git__status'));
+  assert.equal(createToolAdmission(fixture.api, fixture.branch()).admits('deck_pages'), true);
+});
+
+test('a group target persists as a group rule and covers later members', () => {
+  const fixture = host(tools);
+  const result = enableCapabilityTargets(fixture.api, ['namespace://mcp__git'], { branch: fixture.branch() });
+  assert.deepEqual([...result.enabled].sort(), ['mcp__git__log', 'mcp__git__status']);
+  const record = fixture.entries()[0]!.data as { set: Array<{ target: string }> };
+  assert.deepEqual(record.set.map((item) => item.target), ['namespace://mcp__git'],
+    'the group target is recorded, not its current members');
+
+  fixture.register({ name: 'mcp__git__push', exposure: 'deferred', namespace: { name: 'mcp__git' } });
+  assert.equal(explicitlyEnabled(fixture.api, fixture.branch(), 'mcp__git__push'), true,
+    'a member registered later is covered by the same group rule');
+  const plain = queryToolPermissions(fixture.api, fixture.branch(), fixture.activeNames(), 'tool');
+  assert.ok(!plain.entries.some((entry) => entry.name === 'mcp__git__push'),
+    'a namespace member is not a plain tool entry');
+  const namespaced = queryToolPermissions(fixture.api, fixture.branch(), fixture.activeNames(), 'namespace+enabled');
+  assert.ok(namespaced.entries.some((entry) => entry.name === 'mcp__git__push'));
+});
+
+test('a repeated enable is idempotent and writes no second record', () => {
+  const fixture = host(tools, []);
+  const first = enableCapabilityTargets(fixture.api, ['read'], { branch: fixture.branch() });
+  assert.equal(first.enabled.length, 1);
+  const records = fixture.entries().length;
+  const second = enableCapabilityTargets(fixture.api, ['read'], { branch: fixture.branch() });
+  assert.deepEqual(second.enabled, []);
+  assert.deepEqual(second.alreadyEnabled, ['read']);
+  assert.equal(fixture.entries().length, records);
+});
+
+test('a record write failure leaves the tool disabled', () => {
+  const fixture = host(tools, []);
+  setCapabilityPermissionDefaults(fixture.api, ['deck_pages']);
+  fixture.failAppend(true);
+  const result = enableCapabilityTargets(fixture.api, ['deck_pages'], { branch: fixture.branch() });
+  assert.equal(result.recordError, 'the session branch is read-only');
+  assert.deepEqual(result.enabled, []);
+  assert.equal(explicitlyEnabled(fixture.api, fixture.branch(), 'deck_pages'), false);
+  assert.equal(fixture.activeNames().includes('deck_pages'), false);
+});
+
+test('a tool registered after startup is enableable; a withdrawn registration is not', () => {
+  const fixture = host(tools, []);
+  fixture.register({ name: 'late_tool', exposure: 'deferred' });
+  assert.deepEqual(enableCapabilityTargets(fixture.api, ['late_tool'], { branch: fixture.branch() }).enabled, ['late_tool']);
+  fixture.unregister('late_tool');
+  assert.deepEqual(enableCapabilityTargets(fixture.api, ['late_tool'], { branch: fixture.branch() }).unresolved, ['late_tool']);
+});
+
+test('the enable command activates and reports; browsing stays read-only', async () => {
+  const fixture = host(tools, ['read']);
+  setCapabilityPermissionDefaults(fixture.api, ['deck_pages']);
+  const ui = command(fixture);
+  await ui.run('list');
+  assert.deepEqual(fixture.activeNames(), ['read']);
+  assert.deepEqual(fixture.entries(), []);
+  await ui.run('enable deck_pages');
+  assert.match(ui.notifications.at(-1)?.text ?? '', /Capability · enable deck_pages/);
+  assert.deepEqual(fixture.activeNames(), ['read', 'deck_pages']);
+});
+
+test('the picker enables the chosen group and cancellation changes nothing', async () => {
+  const chosen = host(tools, []);
+  const offered: string[] = [];
+  const picker = command(chosen, (labels) => {
+    offered.push(...labels);
+    return labels.find((label) => label.startsWith('mcp://git')) ?? labels[0];
   });
-  assert.ok(offered.some((option) => option.includes('deck_pages  (Tools')), 'the picker lists the manual tool');
-  assert.ok(!offered.some((option) => option.includes('secret')), 'hidden tools are never offered');
-  assert.match(fixture.notifications.at(-1)?.text ?? '', /Enabled\n {2}✔ deck_pages/);
-  assert.deepEqual(fixture.fixture.activeNames(), ['read', 'deck_pages']);
+  await picker.run('enable');
+  assert.match(picker.notifications.at(-1)?.text ?? '', /Capability · enable mcp:\/\/git/);
+  assert.ok(chosen.activeNames().includes('mcp__git__status'));
+  assert.ok(offered.some((label) => label.startsWith('mcp://git')), 'the MCP group is offered once');
+  assert.ok(!offered.some((label) => label.startsWith('namespace://mcp__git')), 'the MCP group is not repeated as a namespace');
+  assert.ok(offered.some((label) => label.startsWith('namespace://subagent')), 'non-MCP namespaces keep namespace://');
 
-  await fixture.run('enable', async () => undefined);
-  assert.match(fixture.notifications.at(-1)?.text ?? '', /cancelled; no tool was activated/);
-  assert.equal(fixture.fixture.entries().length, 1, 'cancellation writes no record');
-  assert.deepEqual(fixture.fixture.activeNames(), ['read', 'deck_pages']);
+  const cancelled = host(tools, []);
+  const noChoice = command(cancelled, () => undefined);
+  await noChoice.run('enable');
+  assert.match(noChoice.notifications.at(-1)?.text ?? '', /Enable cancelled/);
+  assert.deepEqual(cancelled.activeNames(), []);
+  assert.deepEqual(cancelled.entries(), []);
 });
 
-test('the picker falls back to a named target when the mode has no terminal UI', async () => {
-  const fixture = command(tools);
-  await fixture.run('enable', async () => { throw new Error('no tui'); });
-  assert.match(fixture.notifications.at(-1)?.text ?? '', /Use \/capability enable <name>/);
-  assert.deepEqual(fixture.fixture.activeNames(), []);
-  assert.deepEqual(fixture.fixture.entries(), []);
+test('a child scope never admits a tool enabled at the root', () => {
+  const root = host(tools, []);
+  setCapabilityPermissionDefaults(root.api, ['deck_pages']);
+  enableCapabilityTargets(root.api, ['deck_pages'], { branch: root.branch() });
+  const child = host(tools, []);
+  setCapabilityParent(child.api, root.api);
+  assert.equal(createToolAdmission(child.api, root.branch()).admits('deck_pages'), false, 'enabled is root-only');
 });
 
-test('completion covers both verbs, list categories and live enable targets', async () => {
-  const fixture = command(tools);
-  const values = async (prefix: string) => (await fixture.completions(prefix))?.map((item) => item.value) ?? null;
-  assert.deepEqual(await values(''), ['list ', 'enable ']);
-  assert.deepEqual(await values('en'), ['enable ']);
-  assert.deepEqual(await values('list '), ['list tool ', 'list mcp ', 'list namespace ']);
-  assert.deepEqual(await values('list to'), ['list tool ']);
-  assert.equal(await fixture.completions('list tool '), null, 'the rest of a category line is a free filter');
-  const enable = await fixture.completions('enable ');
-  assert.ok(enable?.some((item) => item.value === 'enable deck_pages '), 'a manual tool is offered to the user');
-  assert.ok(enable?.some((item) => item.value === 'enable mcp://git '), 'a server ref is offered');
-  assert.ok(enable?.some((item) => item.value === 'enable namespace://subagent '), 'a namespace ref is offered');
-  assert.ok(!enable?.some((item) => item.value.includes('secret')), 'hidden tools are never offered');
-  const partial = await fixture.completions('enable deck_pages ');
-  assert.ok(partial?.some((item) => item.value === 'enable deck_pages read '), 'the chosen tool is dropped from the next argument');
-  assert.ok(!partial?.some((item) => item.value === 'enable deck_pages deck_pages '));
-});
-
-test('completion sees a tool registered after the session started', async () => {
-  const fixture = command([{ name: 'read', description: 'Read a file', exposure: 'direct' }]);
-  assert.equal(await fixture.completions('enable deploy'), null);
-  fixture.fixture.register({ name: 'mcp__late__deploy', description: 'Deploy late', exposure: 'deferred', namespace: { name: 'mcp__late', aliases: ['late'] } });
-  const items = await fixture.completions('enable deploy');
-  assert.ok(items?.some((item) => item.value === 'enable mcp__late__deploy '), 'the member completes by its display name');
-  const groups = await fixture.completions('enable late');
-  assert.ok(groups?.some((item) => item.value === 'enable mcp://late '), 'the server ref completes by its alias');
-});
-
-test('an unknown subcommand is refused without touching tools or the branch', async () => {
-  const fixture = command(tools, ['read']);
-  await fixture.run('disable read');
-  assert.equal(fixture.notifications[0]?.type, 'error');
-  assert.match(fixture.notifications[0]?.text ?? '', /invalid_command_args/);
-  assert.deepEqual(fixture.fixture.activeNames(), ['read']);
-  assert.deepEqual(fixture.fixture.entries(), []);
-});
-
-const browserTools: readonly FakeTool[] = [
-  { name: 'open_page', exposure: 'deferred', namespace: { name: 'browser', aliases: ['web'] } },
-  { name: 'get_tabs', exposure: 'deferred', namespace: { name: 'browser', aliases: ['web'] } },
-  { name: 'browser_internal', exposure: 'hidden', namespace: { name: 'browser', aliases: ['web'] } },
-];
-
-test('enable resolves arbitrary namespaces and aliases without including hidden members', () => {
-  for (const target of ['browser', 'namespace://browser', 'web', 'namespace://web']) {
-    const fixture = manualHost(browserTools);
-    const result = enableCapabilityTargets(fixture.api, [target]);
-    assert.deepEqual(result.enabled, ['open_page', 'get_tabs'], target);
-    assert.deepEqual(result.unresolved, [], target);
-    assert.deepEqual([...manualEnabledTools(fixture.branch())], ['open_page', 'get_tabs'], target);
-  }
-});
-
-test('enable accepts SDK MCP namespace names and aliases as well as server refs', () => {
-  for (const target of ['mcp://git', 'namespace://mcp__git', 'mcp__git', 'namespace://git', 'git']) {
-    const fixture = manualHost();
-    const result = enableCapabilityTargets(fixture.api, [target]);
-    assert.deepEqual(result.enabled, ['mcp__git__status', 'mcp__git__log'], target);
-    assert.deepEqual(result.unresolved, [], target);
-  }
-});
-
-test('an exact tool name wins over a namespace alias while an explicit namespace still expands', () => {
-  const fixture = manualHost([...browserTools, { name: 'web', exposure: 'deferred' }]);
-  assert.deepEqual(resolveEnableTargets(fixture.api, ['web']).names, ['web']);
-  assert.deepEqual(resolveEnableTargets(fixture.api, ['namespace://web']).names, ['open_page', 'get_tabs']);
-});
-
-test('the picker offers generic and MCP namespace groups and records only the chosen members', async () => {
-  for (const [target, expected] of [
-    ['namespace://browser', ['open_page', 'get_tabs']],
-    ['namespace://mcp__git', ['mcp__git__status', 'mcp__git__log']],
-    ['mcp://git', ['mcp__git__status', 'mcp__git__log']],
-  ] as const) {
-    const fixture = command([...tools, ...browserTools]);
-    await fixture.run('enable', async (_title, options) => {
-      assert.ok(!options.some(option => option.includes('browser_internal')));
-      const group = options.find(option => option.startsWith(`${target}  (`));
-      assert.ok(group, `${target} is available without typing a target`);
-      return group;
-    });
-    assert.deepEqual(fixture.fixture.activeNames(), expected, target);
-    assert.deepEqual([...manualEnabledTools(fixture.fixture.branch())], expected, target);
-    assert.equal(fixture.notifications.at(-1)?.type, 'info');
-  }
-});
-
-test('group completions survive the tool limit and resolve namespace aliases', async () => {
-  const many: FakeTool[] = Array.from({ length: 60 }, (_, i) => ({ name: `tool_${i}`, exposure: 'deferred' }));
-  const fixture = command([...many, ...tools, ...browserTools]);
-  const all = await fixture.completions('enable ');
-  assert.equal(all?.length, 50);
-  for (const target of ['namespace://browser', 'namespace://mcp__git', 'namespace://subagent', 'mcp://git']) {
-    assert.ok(all?.some(item => item.value === `enable ${target} `), target);
-  }
-  for (const prefix of ['enable web', 'enable namespace://web']) {
-    const items = await fixture.completions(prefix);
-    assert.ok(items?.some(item => item.value === 'enable namespace://browser '), prefix);
-  }
-  const mcp = await fixture.completions('enable namespace://mcp__g');
-  assert.deepEqual(mcp?.map(item => item.value), ['enable namespace://mcp__git ']);
-});
-
-test('argument completion keeps the same shape for the editor wrapper', () => {
-  const fixture = manualHost();
-  const items = capabilityArgumentCompletions('enable ', fixture.api);
-  assert.ok(items?.length);
-  assert.ok(items?.every((item) => typeof item.value === 'string' && typeof item.label === 'string'));
+test('completions cover verbs and target names/groups', async () => {
+  const fixture = host(tools, []);
+  const ui = command(fixture);
+  assert.deepEqual((await ui.completions(''))?.map((item) => item.value), ['list ', 'enable ', 'disable ', 'reset ']);
+  assert.deepEqual((await ui.completions('en'))?.map((item) => item.value), ['enable ']);
+  assert.ok((await ui.completions('enable '))?.some((item) => item.value === 'enable deck_pages '));
+  const enableValues = (await ui.completions('enable '))?.map((item) => item.value) ?? [];
+  assert.ok(enableValues.some((value) => value.startsWith('enable mcp://git ')));
+  assert.ok(!enableValues.some((value) => value.startsWith('enable namespace://mcp__git ')), 'the MCP group is not repeated as a namespace');
+  assert.ok(enableValues.some((value) => value.startsWith('enable namespace://subagent ')), 'non-MCP namespaces keep namespace://');
+  assert.ok(!(await ui.completions('enable '))?.some((item) => item.value === 'enable secret '), 'hidden tools are never offered');
 });

@@ -4,13 +4,15 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
-import { fauxProvider, InMemoryCredentialStore, normalizeContext, type AssistantMessage, type Message, type Model, type Api } from '@earendil-works/pi-ai';
+import { fauxProvider, getCurrentTools, InMemoryCredentialStore, normalizeContext, type AssistantMessage, type Message, type Model, type Api } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type AgentSession, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import capabilityExtension from '../../src/capability/extension.ts';
 import { appendDiscoveryRecord, appendPruneRecord, latestPruneRecord } from '../../src/capability/discovery-record.ts';
 import { DEFAULT_HARNESS_CONFIG } from '../../src/harness-config.ts';
 import { appendPresetState } from '../../src/preset/state.ts';
 import { enableCapabilityTargets } from '../../src/capability/enable.ts';
+import { createToolAdmission } from '../../src/capability/admission.ts';
+import { appendToolPermissionNotice, setToolPermission } from '../../src/capability/tool-permission.ts';
 import { convertResponsesMessages } from '../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js';
 
 const USED = 'fixture_browser_open';
@@ -315,4 +317,202 @@ test("compaction prunes when enabled or a preset removed baseline tools", async 
   assert.equal(latestPruneRecord(session.sessionManager.getBranch())?.checkpointId, removalCheckpoint,
     'an old preset removal does not keep overriding the disabled global setting');
   assert.deepEqual(errors, []);
+});
+
+test('an explicitly disabled discovered tool is excluded from compaction pruning', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'pi-capability-pruning-disabled-'));
+  let session: AgentSession | undefined;
+  t.after(async () => { session?.dispose(); await rm(root, { recursive: true, force: true }); });
+  const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+  const faux = fauxProvider({ models: [{ id: 'pruning-disabled-fixture' }] });
+  const requests: Message[][] = [];
+  let script = ['discover'];
+  faux.provider.streamSimple = (model, context) => {
+    requests.push(structuredClone(context.messages));
+    const message = answer(model, script.shift() ?? 'done', false);
+    const stream = new AssistantMessageEventStream();
+    stream.push({ type: 'done', reason: message.stopReason as 'stop' | 'toolUse', message });
+    stream.end();
+    return stream;
+  };
+  runtime.registerNativeProvider(faux.provider);
+  const model = { ...faux.models[0]!, api: 'openai-responses', compat: {
+    supportsMidConvoSystemMessages: true, supportsAdditionalTools: true,
+  } } as Model<Api>;
+  const settings = SettingsManager.inMemory({ packages: [], extensions: [],
+    defaultTools: ['read', 'capability'], retry: { enabled: false },
+    cacheWarming: 'off', compaction: { enabled: false, keepRecentTokens: 0 } });
+  const errors: unknown[] = [];
+  let fixtureApi: ExtensionAPI | undefined;
+  const disabled = 'fixture_probe_disabled';
+  const prunable = 'fixture_probe_prunable';
+  const enabledProbe = 'fixture_probe_enabled';
+  const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
+    noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
+    extensionFactories: [{ name: 'capability-pruning-disabled-fixture', factory(api) {
+      fixtureApi = api;
+      capabilityExtension(api, {
+        discovery: false,
+        config: {
+          ...DEFAULT_HARNESS_CONFIG,
+          capability: { ...DEFAULT_HARNESS_CONFIG.capability, pruneOnCompaction: true },
+        },
+      });
+      for (const name of [disabled, prunable, enabledProbe]) api.registerTool({
+        name, label: name, description: name, defaultActive: false,
+        parameters: { type: 'object', properties: {} },
+        execute: async () => ({ content: [{ type: 'text', text: 'Executed' }], details: {} }),
+      });
+      api.registerTool({ name: 'capability', label: 'Discover', description: 'Offline discovery',
+        parameters: { type: 'object', properties: {} }, async execute(toolCallId) {
+          appendDiscoveryRecord(api, toolCallId, { status: 'ok', skills: [], mcp: [],
+            tools: [disabled, prunable, enabledProbe].map(name => ({ ref: `tool://${name}`, name })) }, coverage);
+          api.setActiveTools([...new Set([...api.getActiveTools(), disabled, prunable, enabledProbe])]);
+          return { content: [{ type: 'text', text: 'Selected all probes' }], details: {} };
+        } });
+      api.on('session_before_compact', event => ({ compaction: {
+        summary: `Historical probes: ${disabled}, ${prunable}, ${enabledProbe}`,
+        firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore,
+      } }));
+    } }],
+  });
+  await loader.reload();
+  assert.deepEqual(loader.getExtensions().errors, []);
+  session = (await createAgentSession({ cwd: root, agentDir: root, modelRuntime: runtime, model,
+    settingsManager: settings, resourceLoader: loader, sessionManager: SessionManager.inMemory(root) })).session;
+  await session.bindExtensions({ onError: error => { errors.push(error); } });
+
+  await session.prompt('Discover all probes without using them.');
+  assert.ok(session.getActiveToolNames().includes(disabled));
+  assert.ok(session.getActiveToolNames().includes(prunable));
+  assert.ok(session.getActiveToolNames().includes(enabledProbe));
+  assert.ok(fixtureApi);
+  const writer = { appendEntry: (kind: string, data?: unknown) => session!.sessionManager.appendCustomEntry(kind, data) };
+  setToolPermission(fixtureApi, writer, session.sessionManager.getBranch(), [disabled], 'disabled');
+  appendToolPermissionNotice(writer, [disabled]);
+  assert.deepEqual([...enableCapabilityTargets(fixtureApi, [enabledProbe], {
+    branch: session.sessionManager.getBranch(),
+  }).enabled], [enabledProbe]);
+
+  await session.compact();
+  const prune = latestPruneRecord(session.sessionManager.getBranch());
+  assert.deepEqual(prune?.removedTools, [prunable],
+    'the disabled probe keeps its prohibition and the enabled probe is protected');
+  assert.ok(!session.getActiveToolNames().includes(disabled));
+  assert.ok(!session.getActiveToolNames().includes(prunable));
+  assert.ok(session.getActiveToolNames().includes(enabledProbe),
+    'an explicitly enabled probe survives the unused-window prune');
+
+  // An old prune record must not outrank an explicit enable for admission.
+  const oldPruneBranch: unknown[] = [...session.sessionManager.getBranch()];
+  appendPruneRecord({ appendEntry: (kind, data) => oldPruneBranch.push({ type: 'custom', customType: kind, data }) },
+    'synthetic-old-prune', [enabledProbe], []);
+  const admission = createToolAdmission(fixtureApi, oldPruneBranch);
+  assert.equal(admission.declares(enabledProbe), true, 'enabled wins over a stale prune record');
+  assert.equal(admission.admits(enabledProbe), true);
+
+  // A repeated enable reactivates a tool that lost its active slot.
+  fixtureApi.setActiveTools(session.getActiveToolNames().filter(name => name !== enabledProbe));
+  assert.ok(!session.getActiveToolNames().includes(enabledProbe));
+  const again = enableCapabilityTargets(fixtureApi, [enabledProbe], {
+    branch: session.sessionManager.getBranch(),
+  });
+  assert.deepEqual([...again.alreadyEnabled], [enabledProbe]);
+  assert.deepEqual([...again.enabled], []);
+  assert.ok(session.getActiveToolNames().includes(enabledProbe), 'a repeated enable restores activation');
+
+  script = ['done'];
+  await session.prompt('After the compaction.');
+  const systemText = requests.at(-1)!.filter(message => message.role === 'system')
+    .map(message => JSON.stringify({ content: message.content, sections: message.sections })).join('\n');
+  assert.match(systemText, /The user has disabled these tools/);
+  assert.ok(systemText.includes(disabled), 'the disabled guidance keeps naming the tool');
+  assert.match(systemText, /unused capabilities were removed/);
+  assert.deepEqual(errors, []);
+});
+
+test('disable removes a lazy-hidden deferred tool immediately in only mode', { timeout: 60_000 }, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'pi-capability-only-disable-'));
+  let session: AgentSession | undefined;
+  t.after(async () => { session?.dispose(); await rm(root, { recursive: true, force: true }); });
+  const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+  const faux = fauxProvider({ models: [{ id: 'only-mode-fixture' }] });
+  const declared: string[][] = [];
+  faux.provider.streamSimple = (model, context) => {
+    declared.push(getCurrentTools(context.messages).map(tool => tool.name));
+    const message = answer(model, 'done', false);
+    const stream = new AssistantMessageEventStream();
+    stream.push({ type: 'done', reason: 'stop', message });
+    stream.end();
+    return stream;
+  };
+  runtime.registerNativeProvider(faux.provider);
+  const model = { ...faux.models[0]!, api: 'openai-responses', compat: {
+    supportsMidConvoSystemMessages: true, supportsAdditionalTools: true,
+  } } as Model<Api>;
+  const probe = 'fixture_probe_deferred';
+  const rpcProbe = 'fixture_probe_rpc';
+  const settings = SettingsManager.inMemory({ packages: [], extensions: [],
+    codemode: { mode: 'only' }, defaultTools: ['read', 'codemode', probe, rpcProbe],
+    retry: { enabled: false }, cacheWarming: 'off', compaction: { enabled: false } });
+  let fixtureApi: ExtensionAPI | undefined;
+  let rpcApi: ExtensionAPI | undefined;
+  const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
+    noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
+    extensionFactories: [{ name: 'only-mode-fixture', factory(api) {
+      fixtureApi = api;
+      capabilityExtension(api, {
+        discovery: false,
+        config: {
+          ...DEFAULT_HARNESS_CONFIG,
+          capability: { ...DEFAULT_HARNESS_CONFIG.capability, lazySchemas: ['namespace://probe_tools'] },
+        },
+      });
+      api.registerTool({ name: probe, label: probe, description: probe, defaultActive: true,
+        exposure: 'deferred', namespace: { name: 'probe_tools' },
+        parameters: { type: 'object', properties: {} },
+        execute: async () => ({ content: [{ type: 'text', text: 'Executed' }], details: {} }) });
+    } }, { name: 'rpc-tool-port-fixture', factory(api) {
+      rpcApi = api;
+      api.registerTool({ name: rpcProbe, label: rpcProbe, description: rpcProbe, defaultActive: true,
+        exposure: 'deferred', namespace: { name: 'probe_tools' },
+        parameters: { type: 'object', properties: {} },
+        execute: async () => ({ content: [{ type: 'text', text: 'Executed' }], details: {} }) });
+    } }],
+  });
+  await loader.reload();
+  assert.deepEqual(loader.getExtensions().errors, []);
+  session = (await createAgentSession({ cwd: root, agentDir: root, modelRuntime: runtime, model,
+    settingsManager: settings, resourceLoader: loader, sessionManager: SessionManager.inMemory(root) })).session;
+  await session.bindExtensions({ onError: error => { throw error; } });
+  assert.ok(fixtureApi);
+  assert.ok(rpcApi);
+  assert.notEqual(rpcApi, fixtureApi, 'Pi gives each extension its own API object');
+  assert.ok(session.getActiveToolNames().includes('codemode'));
+  assert.ok(session.getActiveToolNames().includes(probe));
+  assert.ok(session.getActiveToolNames().includes(rpcProbe));
+
+  await session.prompt('Show the current declaration loadout.');
+  assert.deepEqual(declared.at(-1), ['codemode'], 'only+lazy leaves no independent declaration for the probes');
+
+  const branch = session.sessionManager.getBranch();
+  const result = setToolPermission(fixtureApi, fixtureApi, branch, [probe], 'disabled');
+  assert.deepEqual(result.removedActive, [probe], 'a lazy-hidden deferred tool loses its active slot immediately');
+  assert.deepEqual(result.pendingCompaction, []);
+  assert.ok(!session.getActiveToolNames().includes(probe));
+  assert.equal(createToolAdmission(fixtureApi, session.sessionManager.getBranch()).admits(probe), false);
+
+  // The RPC/subagent extension has its own API object; it must read the same
+  // declaration reader through the shared extension bus, not fall back to
+  // exposure and defer removal to compaction.
+  const rpcResult = setToolPermission(rpcApi, rpcApi, session.sessionManager.getBranch(), [rpcProbe], 'disabled');
+  assert.deepEqual(rpcResult.removedActive, [rpcProbe], 'the second extension reads the shared declaration reader');
+  assert.deepEqual(rpcResult.pendingCompaction, []);
+  assert.ok(!session.getActiveToolNames().includes(rpcProbe));
+  assert.equal(createToolAdmission(rpcApi, session.sessionManager.getBranch()).admits(rpcProbe), false);
+
+  await session.prompt('After disabling the lazy-hidden probes.');
+  assert.deepEqual(declared.at(-1), ['codemode'], 'the next request still declares only Codemode');
+  assert.ok(!session.getActiveToolNames().includes(probe));
+  assert.ok(!session.getActiveToolNames().includes(rpcProbe));
 });

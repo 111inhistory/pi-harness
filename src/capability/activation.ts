@@ -13,7 +13,6 @@
  * publish a tool the session cannot call.
  */
 
-import { capabilityRootOnlyPolicy } from './scope.ts';
 import { createEligibleToolCatalog } from './tool-catalog.ts';
 
 /** The registered tool shape activation needs. */
@@ -33,7 +32,7 @@ export interface ActivationHost {
 export type ActivationSkipReason =
   | 'not_registered'
   | 'hidden'
-  | 'manual_only'
+  | 'disabled'
   | 'not_permitted'
   | 'not_activated'
   /** The session has no execution entry the model could use to call this tool. */
@@ -81,9 +80,10 @@ export interface ActivationOutcome {
   readonly active: ReadonlySet<string>;
 }
 
-/** Activation options: only the user command may enable manual tools. */
+/** Activation options. */
 export interface ActivationOptions {
-  readonly includeManual?: boolean;
+  /** Names prohibited by an effective permission; never activated. */
+  readonly disabled?: (name: string) => boolean;
   /** Reachability inputs to reuse; resolved from the host when omitted. */
   readonly reachability?: ReachabilityContext;
 }
@@ -91,7 +91,7 @@ export interface ActivationOptions {
 /**
  * Activate the named tools in one synchronous step.
  *
- * Duplicate names are ignored. A name that is unregistered, hidden, manual-only
+ * Duplicate names are ignored. A name that is unregistered, hidden, disabled
  * or outside the current qualification is skipped with its reason; the
  * remaining names are activated in a single call that keeps the current set.
  */
@@ -101,7 +101,6 @@ export function activateToolNames(
   options: ActivationOptions = {},
 ): ActivationOutcome {
   const eligible = createEligibleToolCatalog(host, options).byName;
-  const rootOnly = options.includeManual === true ? null : capabilityRootOnlyPolicy(host);
   const reachability = options.reachability ?? { codemodeAvailable: codemodeAvailable(host) };
   const registered = new Map(host.getAllTools().map((tool) => [tool.name, tool]));
   const active = new Set(host.getActiveTools());
@@ -121,8 +120,8 @@ export function activateToolNames(
       skipped.push({ name, reason: 'hidden' });
       continue;
     }
-    if (rootOnly !== null && rootOnly(name)) {
-      skipped.push({ name, reason: 'manual_only' });
+    if (options.disabled?.(name) === true) {
+      skipped.push({ name, reason: 'disabled' });
       continue;
     }
     if (!eligible.has(name)) {

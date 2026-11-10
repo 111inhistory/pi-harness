@@ -33,7 +33,8 @@
     "check:test-contracts": "node scripts/check-test-contracts.mjs --staged",
     "prepare": "git config core.hooksPath .githooks || true",
     "test:subagent": "node --import tsx --test test/subagent-runtime.test.mjs",
-    "test:shell-preflight": "node --import tsx --test test/shell-preflight.test.mjs test/shell-preflight-extension.test.mjs"
+    "test:shell-preflight": "node --import tsx --test test/shell-preflight.test.mjs test/shell-preflight-extension.test.mjs",
+    "migrate:tool-permissions": "node --import tsx scripts/migrate-tool-permissions.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-codemode": "1.5.0",

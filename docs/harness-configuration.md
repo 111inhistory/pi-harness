@@ -131,15 +131,15 @@ Fresh 与 Inherited 直接子节点在同一 Subagent 树内使用独立的父�
 
 ### 压缩淘汰开关
 
-`capability.pruneOnCompaction` 默认为 `true`。工具保护基线优先取当前 Preset 快照的工具选择，没有该选择时取 Pi 默认工具集；切换时保留的动态工具不进入基线。原生会话压缩成功后，若该开关为 `true`，或自上次压缩以来应用 Preset 移除过基线工具，则计算并淘汰窗口期内未使用的 Capability 工具；基线工具、手动授权工具、`capability` 和 `codemode` 保持保护。基线移除由前后工具选择的差集判断，首次应用与初始基线比较，仅增加工具不触发；这一条件从分支历史推导，只影响下一次成功压缩，不改写该开关。两项条件均为 `false` 时，不写入新的 `capability-prune` 记录、不改变当前激活集合；历史记录不清除，已淘汰工具不自动恢复。
+`capability.pruneOnCompaction` 默认为 `true`。工具保护基线优先取当前 Preset 快照的工具选择，没有该选择时取 Pi 默认工具集；切换时保留的动态工具不进入基线。原生会话压缩成功后，若该开关为 `true`，或自上次压缩以来应用 Preset 移除过基线工具，则计算并淘汰窗口期内未使用的 Capability 工具；基线工具、显式禁用工具、`capability` 和 `codemode` 保持保护。基线移除由前后工具选择的差集判断，首次应用与初始基线比较，仅增加工具不触发；这一条件从分支历史推导，只影响下一次成功压缩，不改写该开关。两项条件均为 `false` 时，不写入新的 `capability-prune` 记录、不改变当前激活集合；历史记录不清除，已淘汰工具不自动恢复。
 
-### 手动启用名单
+### 默认禁用种子
 
-`capability.manualTools` 默认为空数组，列出只能由用户启用的工具名。每项是精确工具名，或以 `*` 结尾的名字前缀（如 `mcp__prod__*`）。后一层配置整体替换前一层，不做合并。
+`capability.manualTools` 默认为空数组，列出默认禁用（`disabled`）的工具名。每项是精确工具名，或以 `*` 结尾的名字前缀（如 `mcp__prod__*`）。后一层配置整体替换前一层，不做合并。
 
-名单内的工具对模型侧发现完全不可见：不进入检索候选，发现路径不能激活（拒绝原因 `manual_only`），子会话也不继承，即使 Main 已授权。用户通过 `/capability enable` 授权（无参数打开终端原生选择列表，也可直接给出目标）；`/subagent sessions connect` 同样通过用户启用路径为 `msg_write` 授权。授权写入 `manual` 分类记录，执行权仍按每次请求的当前资格过滤。
+名单归一为同一 target/state 结构的默认 `disabled` 条目（精确名或 `prefix`），不是独立 matcher 或 rootOnly 策略；`reset` 可将它解除为 `not managed`。模型侧发现与准入按 `disabled` 条目排除，不进入检索候选、不能激活；子会话通过 denial 阻止继承，显式启用本身也是 root-only。用户通过 `/capability enable` 显式启用（无参数打开终端原生选择列表，也可直接给出目标），`/subagent sessions connect` 同样通过用户启用路径为 `msg_write` 授权。启用写入同一份 `capability-tool-permission` 记录，执行权仍按每次请求的当前资格过滤。
 
-授权看记录，不看激活状态：名单内工具因 `defaultActive`、历史恢复或其他扩展而激活时，`before_agent_start` 仍会把它从声明中移除，`tool_call` 与 Codemode 准入也会拒绝，直到用户启用。已启用的 manual MCP 工具参与原生 MCP 准入与资源读取资格。名单解析只按名字匹配，不读取工具描述、来源或 MCP 服务器名。
+显式状态看记录，不看激活状态：名单内工具因 `defaultActive`、历史恢复或其他扩展而激活时，`before_agent_start` 仍会把它从声明中移除，`tool_call` 与 Codemode 准入也会拒绝，直到用户显式启用。已启用的 MCP 工具参与原生 MCP 准入与资源读取资格。名单解析只按名字匹配（精确或 prefix），不读取工具描述、来源或 MCP 服务器名。
 
 ### 延迟 schema
 

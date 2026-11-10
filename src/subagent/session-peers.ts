@@ -26,8 +26,6 @@ export interface SessionConnect {
   /** Tools this connect made usable through the shared enable path. */
   readonly enabled: readonly string[];
   readonly alreadyEnabled: readonly string[];
-  /** Set when the branch record failed: the grant is not durable. */
-  readonly recordError: string | null;
 }
 
 export interface SessionPeersOptions {
@@ -147,8 +145,12 @@ export class SessionPeers {
     });
     const usable = [...activation.enabled, ...activation.alreadyEnabled];
     if (!usable.includes('msg_write')) {
-      const reason = activation.skipped.find((skip) => skip.name === 'msg_write')?.reason
-        ?? (activation.unresolved.includes('msg_write') ? 'not_registered' : 'not_activated');
+      // A record write failure is fail-closed: nothing was activated, so the
+      // contact must not carry an address the model cannot use.
+      const reason = activation.recordError !== null
+        ? `the permission record could not be written: ${activation.recordError}`
+        : activation.skipped.find((skip) => skip.name === 'msg_write')?.reason
+          ?? (activation.unresolved.includes('msg_write') ? 'not_registered' : 'not_activated');
       throw new SubagentError('msg_write_unavailable', `msg_write cannot be enabled for this session: ${reason}.`);
     }
     const address = sessionMainAddress(session);
@@ -162,7 +164,6 @@ export class SessionPeers {
       address,
       enabled: activation.enabled,
       alreadyEnabled: activation.alreadyEnabled,
-      recordError: activation.recordError,
     };
   }
 

@@ -14,7 +14,6 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 import { isNativeDiscoveryTool } from './admission.ts';
-import { capabilityRootOnlyPolicy } from './scope.ts';
 import { createEligibleToolCatalog } from './tool-catalog.ts';
 
 export type CapabilityCategory = 'tool' | 'mcp' | 'namespace';
@@ -37,8 +36,6 @@ export interface CapabilityCatalogEntry {
   /** MCP server or namespace the tool belongs to; `Tools` for plain tools. */
   readonly group: string;
   readonly active: boolean;
-  /** Listed as manual-only: browsable, but only the user command may enable it. */
-  readonly manual: boolean;
 }
 
 export interface CapabilityCatalogGroup {
@@ -62,6 +59,8 @@ export interface CapabilityCatalogOptions {
   readonly category?: CapabilityCategory;
   /** Case-insensitive text over name, description and group. */
   readonly filter?: string;
+  /** Names prohibited by an effective permission; excluded from the catalog. */
+  readonly disabled?: (name: string) => boolean;
 }
 
 const NATIVE_MCP_TOOLS = new Set(['read_mcp_resource', 'list_mcp_resources', 'list_mcp_resource_templates']);
@@ -98,8 +97,7 @@ export function createCapabilityCatalog(
   pi: ExtensionAPI,
   options: CapabilityCatalogOptions = {},
 ): CapabilityCatalogView {
-  const catalog = createEligibleToolCatalog(pi, { includeManual: true });
-  const rootOnly = capabilityRootOnlyPolicy(pi);
+  const catalog = createEligibleToolCatalog(pi, options.disabled === undefined ? {} : { disabled: options.disabled });
   const active = new Set(pi.getActiveTools());
   const needle = (options.filter ?? '').trim().toLowerCase();
   const entries = catalog.tools
@@ -120,7 +118,6 @@ export function createCapabilityCatalog(
         category,
         group,
         active: active.has(tool.name),
-        manual: rootOnly?.(tool.name) === true,
       };
     })
     .filter((entry) => options.category === undefined || entry.category === options.category)

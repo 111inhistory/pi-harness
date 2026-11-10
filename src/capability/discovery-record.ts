@@ -350,13 +350,12 @@ export function latestPruneRecord(branch: readonly unknown[] | null | undefined)
 /**
  * Return the set of currently pruned tool names derived from branch history.
  *
- * Removed tools accumulate chronologically across prune records, but later
- * discoveries or explicit manual authorizations clear them from the pruned set.
- * Manual grants are never included.
+ * Removed tools accumulate chronologically across prune records; a later
+ * discovery clears them from the pruned set. An explicit enable is not a
+ * discovery and is handled by admission, which lets it win over a prune.
  */
 export function prunedToolNames(branch: readonly unknown[] | null | undefined): ReadonlySet<string> {
   const pruned = new Set<string>();
-  const manual = new Set<string>();
 
   for (const entry of branch ?? []) {
     if (!isRecord(entry)) continue;
@@ -365,23 +364,11 @@ export function prunedToolNames(branch: readonly unknown[] | null | undefined): 
     if (entry["customType"] === CAPABILITY_PRUNE_RECORD) {
       const record = parsePruneRecord(entry["data"]);
       if (record !== null) {
-        for (const name of record.removedTools) {
-          if (!manual.has(name)) pruned.add(name);
-        }
+        for (const name of record.removedTools) pruned.add(name);
       }
     } else if (entry["customType"] === CAPABILITY_DISCOVERY_RECORD) {
       const discovery = parseRecord(entry["data"]);
       if (discovery !== null) {
-        for (const hit of discovery.result.manual ?? []) {
-          if (hit.status && hit.status !== "available") continue;
-          for (const member of hit.tools ?? [hit]) {
-            if (member.status && member.status !== "available") continue;
-            if (typeof member.name === "string" && member.name !== "") {
-              manual.add(member.name);
-              pruned.delete(member.name);
-            }
-          }
-        }
         for (const category of ["tools", "mcp"] as const) {
           for (const hit of discovery.result[category] ?? []) {
             if (hit.status && hit.status !== "available") continue;
@@ -425,23 +412,10 @@ export function appendDiscoveryRecord(
 /**
  * Tool names with explicit user authorization on this branch.
  *
- * This is the only authority that makes a manual tool usable. The command writes
- * the record after activation, so a tool that is active only because it is
- * `defaultActive`, restored from the transcript or enabled by another extension
+ * Legacy read helper retained only for migration tests; runtime permission
+ * resolution reads canonical `capability-tool-permission` records instead.
  * stays unauthorized until the user enables it here.
  */
-export function manualEnabledTools(branch: readonly unknown[] | null | undefined): Set<string> {
-  const names = new Set<string>();
-  for (const record of discoveryRecords(branch)) {
-    for (const hit of record.result.manual ?? []) {
-      for (const member of hit.tools ?? [hit]) {
-        if (typeof member.name === "string" && member.name !== "") names.add(member.name);
-      }
-    }
-  }
-  return names;
-}
-
 /**
  * Persist resources the user enabled directly. No retrieval ran, so the record
  * carries no tool call anchor: the projection folds it into the leading

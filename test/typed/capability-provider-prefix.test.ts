@@ -38,7 +38,15 @@ import {
 
 import harnessExtension from '../../test-support/harness-extension.ts';
 import { capabilityPromptTranscript, type ProjectionMessage } from '../../src/capability/prompt.ts';
-import { discoveryRecords } from '../../src/capability/discovery-record.ts';
+
+const PERMISSION_RECORD = 'capability-tool-permission';
+
+function permissionRecordCount(branch: readonly unknown[]): number {
+  return branch.filter((entry) => {
+    const record = entry as { type?: string; customType?: string };
+    return record.type === 'custom' && record.customType === PERMISSION_RECORD;
+  }).length;
+}
 
 const TOOL = 'deck_pages';
 
@@ -172,13 +180,14 @@ async function scenario(options: {
       value: { notify: (text: string, type: string = 'info') => { notices.push({ text, type }); } },
     });
     await command.handler(`enable ${TOOL}`, commandContext);
-    assert.match(notices.at(-1)?.text ?? '', new RegExp(`Enabled\\n {2}✔ ${TOOL}`));
+    assert.match(notices.at(-1)?.text ?? '', new RegExp(`Capability · enable ${TOOL}`));
+    assert.match(notices.at(-1)?.text ?? '', new RegExp(`✔ ${TOOL}`));
     assert.ok(session.getActiveToolNames().includes(TOOL), 'the user command activated it');
 
     await session.prompt('Second turn, after enablement.');
     const after = requests.at(-1)!;
     const branch = session.sessionManager.getBranch();
-    assert.equal(discoveryRecords(branch).length, 1, 'the branch carries the user authorization');
+    assert.equal(permissionRecordCount(branch), 1, 'the branch carries the user authorization');
 
     await command.handler(`enable ${TOOL}`, commandContext);
     assert.match(notices.at(-1)?.text ?? '', new RegExp(`Already enabled\\n {2}· ${TOOL}`));
@@ -237,7 +246,7 @@ test('enabling a tool appends to the request and never rewrites the head', { tim
 
   // 7) A repeated enable appends nothing.
   assert.deepEqual(third.slice(0, after.length), after, 'a repeated enable appends nothing');
-  assert.equal(discoveryRecords(branch).length, 1, 'and records nothing');
+  assert.equal(permissionRecordCount(branch), 1, 'and records nothing');
 });
 
 test('a measured limitation: a tool with a prompt snippet patches Pi\'s prompt sections', { timeout: 60_000 }, async () => {

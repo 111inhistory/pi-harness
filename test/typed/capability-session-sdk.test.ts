@@ -27,8 +27,8 @@ import {
 import capabilityExtension from '../../src/capability/extension.ts';
 import { CAPABILITY_STEP_TOOL_NAME } from '../../src/capability/contracts.ts';
 import {
-  CAPABILITY_DISCOVERY_RECORD, CAPABILITY_DISCOVERY_RECORD_VERSION,
-} from '../../src/capability/discovery-record.ts';
+  CAPABILITY_TOOL_PERMISSION_RECORD, CAPABILITY_TOOL_PERMISSION_VERSION,
+} from '../../src/capability/tool-permission.ts';
 import { providerSessionPolicy } from '../../src/provider-session.ts';
 
 type ToolResult = Extract<Message, { role: 'toolResult' }>;
@@ -218,13 +218,9 @@ async function runScenario(api: 'openai-responses' | 'anthropic-messages'): Prom
     assert.deepEqual(resourceLoader.getExtensions().errors, []);
 
     const sessionManager = SessionManager.inMemory(cwd);
-    sessionManager.appendCustomEntry(CAPABILITY_DISCOVERY_RECORD, {
-      version: CAPABILITY_DISCOVERY_RECORD_VERSION,
-      result: {
-        status: 'ok', tools: [], mcp: [], skills: [],
-        manual: [{ ref: 'tool://manual_parent', name: 'manual_parent', kind: 'tool' }],
-        coverage: { local: 'not_searched', remote: 'not_searched' },
-      },
+    sessionManager.appendCustomEntry(CAPABILITY_TOOL_PERMISSION_RECORD, {
+      version: CAPABILITY_TOOL_PERMISSION_VERSION,
+      set: [{ target: 'manual_parent', state: 'enabled' }],
     });
     session = (await createAgentSession({
       cwd, agentDir, modelRuntime: runtime, model, settingsManager, resourceLoader, sessionManager,

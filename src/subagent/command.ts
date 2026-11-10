@@ -178,17 +178,6 @@ function renderConnect(result: SessionConnect): string {
     ? result.session.uid
     : `${result.session.uid} (${result.session.name})`;
   const grant = result.alreadyEnabled.includes("msg_write") ? "already enabled" : "enabled";
-  // A failed branch record is a partial result: the contact is appended and the
-  // tool is active now, but the user grant is not durable, so only a manual
-  // `msg_write` is guaranteed to be pruned from the next request's declarations.
-  if (result.recordError !== null) {
-    return [
-      `Appended the contact information for ${label} at ${result.session.cwd}`,
-      `main: ${result.address}`,
-      `msg_write: activated, but the user grant was not recorded: ${result.recordError}`,
-      "A manual msg_write is not declared on the next request without that record; run connect again to record it.",
-    ].join("\n");
-  }
   return [
     `Connected ${label} at ${result.session.cwd}`,
     `main: ${result.address}`,
@@ -228,7 +217,7 @@ async function run(raw: string, ctx: ExtensionContext, current: (ctx: ExtensionC
     }
     if (command.verb === "sessionsConnect") {
       const result = await service.connectSession(command.target);
-      ctx.ui.notify(renderConnect(result), result.recordError === null ? "info" : "error");
+      ctx.ui.notify(renderConnect(result), "info");
       return;
     }
     ctx.ui.notify(stopAll(service), "info");

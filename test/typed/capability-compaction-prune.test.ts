@@ -24,7 +24,6 @@ import {
   appendPruneRecord,
   discoveryRecords,
   latestPruneRecord,
-  manualEnabledTools,
   prunedToolNames,
 } from "../../src/capability/discovery-record.ts";
 import {
@@ -350,7 +349,7 @@ test("discoveryRecords folds prune records chronologically and preserves skills/
   // skills and manual are preserved
   assert.equal(disc.result.skills.length, 1);
   assert.equal(disc.result.skills[0]?.filePath, "/skills/test/SKILL.md");
-  assert.deepEqual([...manualEnabledTools(branch)], ["manual_tool"]);
+  assert.deepEqual(folded.flatMap((record) => record.result.manual?.map((hit) => hit.name) ?? []), ["manual_tool"]);
 
   // Pruned set check
   const pruned = prunedToolNames(branch);

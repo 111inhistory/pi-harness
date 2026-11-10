@@ -1,30 +1,23 @@
 /**
  * User-only enablement of registered capability tools.
  *
- * The model reaches tools through `capability` discovery. The user has one
+ * The model reaches tools through `capability` discovery. The user has a
  * separate entry: `/capability enable`, which names a registered tool, an MCP
- * server or a namespace. Both paths converge on the same append-only branch
- * memory; a record written here marks resources as user-enabled instead of
- * model-discovered.
+ * server or a namespace. Both forms resolve every target against the live
+ * registry at execution time, then record the three-state permission as
+ * `enabled` and activate the concrete members. There is no separate manual
+ * authorization record: `enabled` is the user's own decision.
  *
- * Order is activate, then record. The user is present, and only the tools the
- * SDK reports active after the call enter memory. Recording first would let the
- * branch advertise a member that activation silently masked.
+ * Order is record, then activate: the permission record is the durability
+ * contract, and only tools the SDK reports active after the call are reported
+ * as enabled.
  *
- * Every target is resolved against the *live* registry at execution time, never
- * against a snapshot taken when a picker opened or when a session started. Pi's
- * MCP extension re-registers a server's tools through `pi.registerTool` after a
- * reconnect, so a tool that did not exist at startup is resolvable here, and a
- * registration that was withdrawn (re-registered as `hidden`) is refused instead
- * of being activated from a stale capture.
- *
- * There is no disable path. Capability memory only grows on a branch, and a
- * later request projection still re-checks the live tool permissions.
+ * There is no disable path here: `/capability disable` and `reset` live in the
+ * permission module and command.
  */
 
-import { activateToolNames, type ActivationHost, type ActivationSkip, type ActivationSkipReason } from './activation.ts';
-import { appendManualRecord, manualEnabledTools, type CapabilityHit } from './discovery-record.ts';
-import { toolRef } from './refs.ts';
+import type { ActivationSkip, ActivationSkipReason } from './activation.ts';
+import { explicitlyEnabled, setToolPermission } from './tool-permission.ts';
 
 /** A registered tool as enablement needs to see it. */
 export interface EnableTool {
@@ -34,9 +27,11 @@ export interface EnableTool {
   readonly namespace?: { readonly name: string; readonly aliases?: readonly string[] } | undefined;
 }
 
-/** Activation plus branch persistence; an ExtensionAPI satisfies it. */
-export interface EnableHost extends ActivationHost {
+/** Permission record plus activation; an ExtensionAPI satisfies it. */
+export interface EnableHost {
   getAllTools(): readonly EnableTool[];
+  getActiveTools(): readonly string[];
+  setActiveTools(toolNames: string[]): void;
   appendEntry(customType: string, data?: unknown): void;
 }
 
@@ -44,9 +39,9 @@ export interface EnableHost extends ActivationHost {
 export type EnableSkip = ActivationSkip;
 
 export interface EnableResult {
-  /** Tools this call made usable: newly activated, or active but not yet recorded. */
+  /** Tools this call made usable: newly recorded enabled. */
   readonly enabled: readonly string[];
-  /** Requested tools that were already active and already recorded. */
+  /** Requested tools that were already explicitly enabled. */
   readonly alreadyEnabled: readonly string[];
   /** Requested names that were not activated, with their reason. */
   readonly skipped: readonly EnableSkip[];
@@ -54,7 +49,7 @@ export interface EnableResult {
   readonly unresolved: readonly string[];
   /** Expanded namespace/MCP targets, with the members they contributed. */
   readonly expanded: readonly EnableExpansion[];
-  /** Set when the branch record failed after activation. */
+  /** Set when the permission record failed after activation. */
   readonly recordError: string | null;
 }
 
@@ -63,15 +58,7 @@ export interface EnableExpansion {
   readonly tools: readonly string[];
 }
 
-/**
- * The branch this operation authorizes on.
- *
- * Only the branch's `manual` records count as existing user authorization. A
- * discovery record selects a tool for the model; it is not a user decision, so
- * it must not suppress the authorization this command owes the tool. Passing the
- * branch rather than a precomputed name set keeps the two apart by construction:
- * a tool discovered first and classified as manual later still gets its record.
- */
+/** The branch this operation authorizes on. */
 export interface EnableOptions {
   readonly branch?: readonly unknown[] | null;
 }
@@ -107,9 +94,8 @@ function serverMatches(tool: EnableTool, server: string): boolean {
  * An exact registered tool name always wins, including a hidden one, so the
  * refusal names the real reason instead of pretending the tool does not exist.
  * `mcp://<server>` and `namespace://<name>` expand explicitly; a bare name that
- * matches no tool but a namespace name or alias expands too. This includes
- * the SDK's MCP namespaces; `mcp://` also accepts their server aliases.
- * Hidden members are left out of a group expansion.
+ * matches no tool but a namespace name or alias expands too. Hidden members are
+ * left out of a group expansion.
  */
 function expandTarget(host: EnableHost, target: string): TargetExpansion | null {
   const tools = host.getAllTools();
@@ -161,25 +147,13 @@ export function resolveEnableTargets(host: EnableHost, targets: readonly string[
   return { names, expansions, unresolved };
 }
 
-function enableHit(tool: EnableTool): CapabilityHit {
-  return {
-    ref: toolRef(tool.name),
-    name: tool.name,
-    ...(tool.description === undefined ? {} : { description: tool.description }),
-    ...(tool.exposure === undefined ? {} : { exposure: tool.exposure }),
-    kind: 'tool',
-    status: 'available',
-  };
-}
-
 /**
- * Enable the named targets in this session and remember them on the branch.
+ * Enable the named targets in this session.
  *
- * Unknown, hidden and unqualified names are reported per name; they never fail
- * the whole request. A record write failure does not undo activation, so the
- * result reports it separately instead of claiming durable memory: without the
- * record a manual tool fails the admission check on the next request and is
- * pruned from the declarations, which is the fail-closed direction.
+ * The user's raw targets are recorded, so `namespace://x` and `mcp://server`
+ * persist as group rules that also cover members registered later. Resolution
+ * is only for activation and per-target reporting: unresolved and exact-hidden
+ * targets are refused without writing a rule.
  */
 export function enableCapabilityTargets(
   host: EnableHost,
@@ -187,32 +161,32 @@ export function enableCapabilityTargets(
   options: EnableOptions = {},
 ): EnableResult {
   const resolved = resolveEnableTargets(host, targets);
-  // The user command is the one path allowed to enable a manual tool.
-  const outcome = activateToolNames(host, resolved.names, { includeManual: true });
-  const authorized = manualEnabledTools(options.branch ?? []);
-  const registered = new Map(host.getAllTools().map((tool) => [tool.name, tool]));
-  const usable = [...new Set([...outcome.activated, ...outcome.alreadyActive])];
-  const alreadyEnabled = usable.filter((name) => authorized.has(name));
-  const enabled = usable.filter((name) => !authorized.has(name));
-  const hits = enabled.flatMap((name) => {
-    const tool = registered.get(name);
-    return tool === undefined ? [] : [enableHit(tool)];
-  });
-  let recordError: string | null = null;
-  if (hits.length > 0) {
-    try {
-      appendManualRecord(host, hits);
-    } catch (error) {
-      recordError = error instanceof Error ? error.message : String(error);
-    }
-  }
+  const hidden = new Set(host.getAllTools()
+    .filter((tool) => tool.exposure === 'hidden')
+    .map((tool) => tool.name));
+  const unresolved = new Set(resolved.unresolved);
+  const recordable = [...new Set(targets
+    .map((target) => target.trim())
+    .filter((target) => target !== '' && !hidden.has(target) && !unresolved.has(target)))];
+  const already = new Set(resolved.names.filter((name) => explicitlyEnabled(host, options.branch, name)));
+  const set = setToolPermission(host, host, options.branch ?? [], recordable, 'enabled');
+  const recorded = new Set(set.changed.flatMap((change) => change.affectedTools));
+  const refusedHidden: EnableSkip[] = resolved.names
+    .filter((name) => hidden.has(name))
+    .map((name) => ({ name, reason: 'hidden' }));
   return {
-    enabled,
-    alreadyEnabled,
-    skipped: outcome.skipped,
-    unresolved: resolved.unresolved,
+    enabled: resolved.names.filter((name) => recorded.has(name) && !already.has(name)),
+    alreadyEnabled: resolved.names.filter((name) => already.has(name)),
+    skipped: [
+      ...refusedHidden,
+      ...set.skipped
+        .filter((skip): skip is { target: string; reason: ActivationSkipReason } =>
+          isActivationSkipReason(skip.reason))
+        .map((skip) => ({ name: skip.target, reason: skip.reason })),
+    ],
+    unresolved: set.unresolved.length > 0 ? set.unresolved : resolved.unresolved,
     expanded: resolved.expansions,
-    recordError,
+    recordError: set.recordError,
   };
 }
 
@@ -224,8 +198,12 @@ export function describeEnableSkip(skip: EnableSkip): string {
 const SKIP_TEXT: Readonly<Record<ActivationSkipReason, string>> = {
   not_registered: 'not registered',
   hidden: 'hidden by its registration',
-  manual_only: 'manual, and only the user command may enable it',
+  disabled: 'disabled by the tool permission',
   not_permitted: 'not permitted in this scope',
   not_activated: 'the session did not activate it',
   unreachable: 'no usable call path: it needs an enabled Codemode entry in this session',
 };
+
+function isActivationSkipReason(reason: string): reason is ActivationSkipReason {
+  return reason in SKIP_TEXT;
+}

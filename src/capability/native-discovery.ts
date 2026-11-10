@@ -7,6 +7,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import { createToolAdmission, isMcpExecutionTool, isNativeDiscoveryTool } from './admission.ts';
 import { installCapabilityCodemode } from './codemode.ts';
+import { setIndependentDeclarations } from './declaration-visibility.ts';
 import { projectDiscoveryDeclarations } from './declarations.ts';
 import { projectPrunedToolHistory } from './compaction-context.ts';
 import { DEFAULT_HARNESS_CONFIG, type HarnessConfigProvider } from '../harness-config.ts';
@@ -50,6 +51,10 @@ export function installNativeDiscoveryBoundary(
       : admissionFor(currentContext).admits,
     configFor,
   );
+  // The native loadout owns the real declaration mask (hidden declarations plus
+  // lazy schemas). Publish it so permission changes can remove a tool at once
+  // when it has no independent declaration left.
+  setIndependentDeclarations(pi, declaredTools);
 
   pi.on('tool_call', (event, ctx) => {
     if (isNativeDiscoveryTool(event.toolName)) {

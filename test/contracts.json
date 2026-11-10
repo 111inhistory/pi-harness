@@ -71,7 +71,7 @@
       "docs": [
         {
           "path": "docs/harness-configuration.md",
-          "heading": "### 手动启用名单"
+          "heading": "### 默认禁用种子"
         },
         {
           "path": "docs/interface-contract.md",
@@ -883,18 +883,38 @@
         "test/typed/async-shell-host.test.ts",
         "test/typed/async-shell-ipc.test.ts"
       ]
+    },
+    {
+      "id": "capability.tool-permission",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "## 工具权限管理"
+        },
+        {
+          "path": "docs/architecture.md",
+          "heading": "## 所有权"
+        }
+      ],
+      "tests": [
+        "test/typed/capability-tool-permission.test.ts",
+        "test/typed/capability-tool-permission-propagation.test.ts",
+        "test/typed/capability-enable.test.ts",
+        "test/typed/declaration-visibility.test.ts"
+      ]
     }
   ],
   "reviews": {
     "capability.provider-prefix": {
       "docs": "08743e2b55aa3beece61d6456f52e1db5a79180169cebb0df5a9d95a36772a36",
-      "tests": "3aa3803b47130b84cc40976cc60eaacca14c05e069411a8801fb2f644b77aac3",
-      "reason": "Removed redundant same-input self-comparison; the remaining wire(projected)==wire(after) assertions guard the documented provider-prefix behavior."
+      "tests": "15d9ebd5cf1ef1c27cc569855bca555fc9b488b2ed34e4c75dedaf29de7f87a3",
+      "reason": "The enable test now observes a capability-tool-permission append instead of a manual discovery entry. The append-only provider-prefix contract is unchanged; the remaining wire-prefix assertions still guard it."
     },
     "ipc.transport": {
-      "docs": "457594b0e83ae9b216876f9c7995997d9879bf6bb44417cd3b9c0d54790a4516",
+      "docs": "6b60e899e5418c0b483e48f0f73fcad0c7ae582a5b50fc88b3fffe2d1283d906",
       "tests": "f556b74bbe9e04475b48f148b356deb4905253bed88867b9b37ea102a6a79835",
-      "reason": "Only a cross-reference anchor in the External Socket section changed after the heading rename; the transport contract is unchanged."
+      "reason": "The shared interface-contract file changed in the Capability and permission sections; the External Socket and cross-session transport contract is unchanged and still covered by the IPC tests."
     },
     "subagent.surface": {
       "docs": "29c0de3af370c86b37a44de5e55cc78046552ac4891211157c47cd3788c2e77c",
@@ -902,9 +922,9 @@
       "reason": "Precise call-surface section renamed and mapping refined; the surface behavior and tests are unchanged."
     },
     "subagent.integration": {
-      "docs": "36a9a1390d8992c7152636a237326dcf788aaf57f7c19fb66b18439460b0d5c9",
+      "docs": "37c9ffe581f5e21e7c28557d60470a1e7e4ae6875a7fdb61f61f5e9b2f835856",
       "tests": "724704d451155986cb1f315723ecb47afccff0c23888f66d1474b9761ca92d0a",
-      "reason": "Mapped the offline SDK scenario file to the concrete sections it exercises; scenarios are unchanged."
+      "reason": "The shared architecture and interface files changed in the Capability and permission sections; subagent integration behavior is unchanged and still covered by the real integration test."
     },
     "subagent.socket": {
       "docs": "7216b044f0e7d4aa77ed1e49a258ad02d6fade8d2beaeab7add3d62692d1720c",
@@ -913,8 +933,8 @@
     },
     "capability.native-exposure": {
       "docs": "ef49dbf8cad3dedd5e0c80e2ce810537fb5b64eeb1665fbac22952643113da63",
-      "tests": "a1ef4b0206f3f9b7245cf9a60986985fe2dc09e637fa3456d28eb42fc26c1f9e",
-      "reason": "Only clarifies that provided Skill entry paths may be read directly; native exposure, MCP admission and lazy schema behavior are unchanged. Existing exposure regressions remain applicable."
+      "tests": "cbb1783f95be29e51b2a8a7b1c0ce771235ab1248a0c66c1d1e63a743006cf54",
+      "reason": "The MCP reconnect test now asserts the group permission record instead of a manual record. Native discovery, exposure and qualification semantics are unchanged; the documented section still describes them."
     },
     "capability.activation-reachability": {
       "docs": "a648eefd6ca0b4f8b6244b99b586ada469011ad743524312f5ea5248d408362c",
@@ -925,6 +945,61 @@
       "docs": "3516091b2521b32ec1a313d086c2d213c075c002a2c8ddf183c4f111c5773fc1",
       "tests": "07ac27b97a99da28e1d4da8a140c5058c7b809be512af91ec62776cb00d6c220",
       "reason": "The existing SDK acceptance scenario now asserts the environment-variable root and relative Skill entry in outgoing Shell guidance. The assertions changed in test/typed/support/async-shell-sdk-scenario.ts; the parent test entrypoint and platform behavior remain unchanged."
+    },
+    "preset.runtime": {
+      "docs": "3506e321740cc567495d8e98d652ff86ee380063e2d64670ad4c6bb142d6e328",
+      "tests": "95c64fddd7ad37865d20328b7f5b8e833583d03ce9c2ba1a695d097a83b6a411",
+      "reason": "Preset documentation only replaced the manual authorization record with the explicit enable record; retention behavior is unchanged and still covered by the preset tests."
+    },
+    "tool-guidance.journal": {
+      "docs": "789152f240039328e0d6c5ca2a38e190a27f2688dc415c55264ed914b36700cb",
+      "tests": "258c17221b3edea4ac8cdc5dbf6e416ab31016586b8ab7039a3e05f8baf8a6d1",
+      "reason": "The capability memory document now describes the permission record instead of a manual record; guidance and section-journal replay behavior is unchanged and still covered by the journal tests."
+    },
+    "cross-session.messaging": {
+      "docs": "83e7881f348ed7f7d7a10c7f369faca6bbbc1dcdad2eb0ab338994dd143e9b22",
+      "tests": "713be207117c9b64b4180821fc87816030001421b3d23174588348e828d40c49",
+      "reason": "The receive path still activates msg_write without writing a user grant; only permission terminology in the Capability and connect sections changed. Messaging behavior is unchanged."
+    },
+    "subagent.command": {
+      "docs": "c04e6585460fae93d20046cadbea8d65872a276605f26bf96ff5235160ea5680",
+      "tests": "72231c396b8d4d76b9d3577f152e1e24fd1a8e94d03d8a2b6e5f58117fdcb2e9",
+      "reason": "The command and connect tests now assert the fail-closed three-state grant without a recordError field. The command surface and successful connect output are unchanged."
+    },
+    "inherited.declarations": {
+      "docs": "bf2defe882fe848bdfe68eea636720d6fcb725e61e2b3be93b20461d1aa2ae91",
+      "tests": "a83b7cd98703855286bcdaa50779012ac67c7ccc32ae30fada3c57c69b67d6a1",
+      "reason": "The capability memory document only updated permission terminology; inherited declaration behavior is unchanged and still covered by the prefix test."
+    },
+    "capability.lazy-schemas": {
+      "docs": "31dde3f095b94d54a1e62269119eefb18b00c5ed22df53e12eba40cdc872b638",
+      "tests": "91f23b1811d66168987dab384aa96c73a29f0444d026c8a67728bf1cbcd9ae32",
+      "reason": "The codemode-mode test now covers the real loadout declaration mask (hiddenDeclarations + lazySchemas) used by disable; the lazy-schema contract itself is unchanged."
+    },
+    "subagent.lifecycle": {
+      "docs": "d63397a49b04cf3af4498f3ee5e61e144c258ade0b261e1c238312da88ecd5d9",
+      "tests": "4310e6724d33493f45a567a973833b96149cd993c8a033f020480f3f06ce7c99",
+      "reason": "native-job-runner adds a live-snapshot assertion for a running Job; creation and execution lifecycle behavior is unchanged."
+    },
+    "subagent.delivery": {
+      "docs": "3b8cc6a2e08fea413d06c642fb553d75e5591c5352989b1389df1c0b9ef8f456",
+      "tests": "378bf6f4465e3134573148e5980f9a2705f93a88ea54a31f77a02f0f34232113",
+      "reason": "The new live snapshot is a read-only observation surface; delivery and terminal-notification semantics are unchanged."
+    },
+    "subagent.parent-hold": {
+      "docs": "1bf1ee9a30aa83b99ec446a6a12d1e078fc27936675eaba6deb53720fce8e5e4",
+      "tests": "b23bbaa0c1ba6c74369a86fc56da5549144912bbfb4032a23311a309f460233b",
+      "reason": "The live-snapshot test does not alter parent-hold behavior; only a new read-only observation is asserted."
+    },
+    "subagent.retirement": {
+      "docs": "ab10900eec7e9ccfefbe498e7c56038cffde62abcfb72f083c8181465ae93db0",
+      "tests": "7082627e00417fd9651cf12bc1cd435b1597ebedd8773c6281d07e4ddb8838a2",
+      "reason": "The live-snapshot test does not alter retirement or generation-fence behavior."
+    },
+    "capability.scope-admission": {
+      "docs": "4393d3c918137e6171a7bd47b85e5d4786688cf2b5a0bbb4b200c761617509d1",
+      "tests": "bd89ca297c7399c5e61e89fc867b02a93fbc454bf320423b30c6b4715de714ce",
+      "reason": "test seed switched from legacy capability-discovery manual to a canonical enabled permission record; the authorized-tool visibility contract is unchanged"
     }
   }
 }

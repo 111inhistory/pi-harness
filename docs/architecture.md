@@ -17,12 +17,13 @@
 | `native-runner.ts` | Session 执行句柄生命周期、输入准入、在途 steer 协调、原生输入缓冲、本地就绪（local readiness）判定与资源清理 | 裁定 Job 状态、决定空闲唤醒、写根终态 |
 | `actor-sessions.ts` | Actor 角色／模型身份记录、原生 manager 引用与已记录锚点、身份补丁 | Job 状态和停止排序 |
 | `native-session.ts` | Settings、ResourceLoader、子扩展装配及 SDK 会话创建（Fresh／Inherited 均独立加载扩展与 MCP 后端，Inherited 恢复捕获白名单并对异步 MCP 提供有界等待，默认 10 秒） | 路由、任务结果裁决 |
-| `root-service.ts` | 组装上述模块，根事件写入、历史视图、内存超限临时文件管理（进程正常退出清理）和故障锁存 | 第二套 Job 状态机 |
+| `root-service.ts` | 组装上述模块，根事件写入、历史视图、内存超限临时文件管理（进程正常退出清理）、故障锁存，以及把当前根有效黑名单过滤后的作用域交给子会话 | 第二套 Job 状态机 |
 | `extension.ts`、`lifecycle.ts` | SDK 生命周期钩子、代次隔离、退役期限和资源隔离 | 伪造物理退出、重跑已结束任务 |
 | `surface.ts`、`message-write.ts` | 工具声明、调用方身份绑定、输入捕获、专用 `msg_write` 消息工具（`write` 为 SDK 原生文件工具完全保持不变） | 持有全局注册表或执行循环 |
 | `command.ts`、`status-view.ts` | `/subagent` 命令注册、参数解析、错误呈现与列表文本渲染 | Job 状态、准入或消息投递 |
 | `capability/command.ts`、`capability/catalog.ts`、`capability/enable.ts`、`capability/activation.ts` | `/capability` 目录浏览与用户启用、按实时注册表解析启用目标、激活与可达性判定（发现、命令与跨会话回复工具加载共用） | 检索会话、路由、Subagent 状态 |
-| `capability/admission.ts` | 单次操作的工具准入视图：一次解析作用域链与分支记录，提供 `declares`（声明）、`admits`（执行）、`admitsManual` 与 `admitsServer` | 跨请求缓存、第二套权限服务、改写激活集 |
+| `capability/admission.ts` | 单次操作的工具准入视图：一次解析作用域链与分支记录，提供 `declares`（声明）、`admits`（执行）、`disabled`（显式禁用）、`enabled`（显式启用）与 `admitsServer`；复用已解析的工具目录，不重复读取 catalog | 跨请求缓存、第二套权限服务、改写激活集 |
+| `capability/tool-permission.ts`、`capability/permission-migration.ts` | 三态工具权限的 canonical 分支重放、config 默认条目、精确／组／prefix 匹配、派生四态查询与 enable／disable／reset；`permission-migration.ts` 仅供显式离线脚本 `scripts/migrate-tool-permissions.mjs` 使用，runtime 不调用 | 工具准入与执行本身、SDK 限制合成、跨作用域传播的存储 |
 | `capability/lazy-schemas.ts`、`capability/codemode-mode.ts` | lazySchemas ref 解析与组归属、生效 Codemode 模式（预设记录在分支上的覆盖，回退到 Pi 设置） | 改变启用集合、授权或工具 exposure；写入 Pi 原生设置 |
 | `src/preset/*`、`extensions/preset.ts` | 模型 Preset 配置加载与合并、解析、模型／thinking／工具应用、分支快照与 instructions 段落、`/preset` 与 `--preset` | Capability 检索、Subagent 路由、Pi 原生设置写入 |
 | `listeners.ts`、`ipc/` | 端点目录、监听、NDJSON 分帧、平台资源归属校验，以及“端点属于哪个 session 命名空间”的地址分类（Unix 为目录包含，Windows 为管道名前缀） | 用显示窗口决定可达性、另写广播状态机、用文件系统路径推断管道归属 |
@@ -161,11 +162,11 @@ Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返�
 
 宿主不从 Skill 文本猜测禁止事项、前置条件、静默失败、绑定关系或执行优先级，也不按未命中词项推断能力缺口。Skill 返回元数据和绝对入口路径，由 Agent 使用原生 `read` 阅读并理解正文。`src/capability/result.ts` 移除模型可见结果中的排序诊断；`src/capability/prompt.ts` 投影分支发现记忆。
 
-`src/capability/command.ts` 解析 `/capability` 的目录浏览与启用参数；`src/capability/enable.ts` 把启用目标在**执行时**对照当前注册表解析（精确工具名、`mcp://<server>`、`namespace://<name>`），先调用共享的 `activation.ts` 激活，再把实际激活的成员以 `manual` 分类写入同一 `capability-discovery` 记录。先激活后记录使记录不会包含被激活阶段静默遮掉的成员；记录写入失败不回滚激活，命令单独报告该失败，缺少记录时 manual 工具在下一次请求被声明剪枝移除。实时解析让 Pi 原生 `/mcp` 重连后注册的工具无需重启或模型发现即可启用。
+`src/capability/command.ts` 解析 `/capability` 的 `list`／`enable`／`disable`／`reset` 参数；`src/capability/enable.ts` 把启用目标在**执行时**对照当前注册表解析（精确工具名、`mcp://<server>`、`namespace://<name>`），由 `tool-permission.ts` 先写权限记录、再激活实际可用的成员。权限记录是唯一持久化点；写入失败时不激活、不宣称成功，命令报告 `recordError`。实时解析让 Pi 原生 `/mcp` 重连后注册的工具无需重启或模型发现即可启用。
 
-`capability.manualTools` 的门禁收在 `scope.ts`：根作用域保存名单谓词，任何带父节点的视图在计算 `effective` 与 `allows` 时都排除名单内名字，因此子会话既看不到也不能继承。`tool-catalog.ts` 默认排除名单内工具，只有目录浏览与执行守卫传 `includeManual`；`activation.ts` 对发现路径返回 `manual_only`。
+`capability.manualTools` 归一为 `tool-permission.ts` 里同 target/state 结构的默认 `disabled` 条目（精确名或 prefix）；`scope.ts` 只保存原始 patterns 并跨 extension bus 共享，不再有独立 `rootOnly` matcher。子会话通过 `root-service.ts` 的 `#childDeniedNames`（`explicitlyDisabled ∪ explicitlyEnabled`）以 denial 阻止继承；发现与准入按 `disabled` 条目排除。
 
-授权判定集中在 `admission.ts` 的单次操作视图：它一次解析作用域链、分支记录（一次扫描同时得到「已选择」与「用户已启用」两个集合）与当前激活集，再提供逐名字谓词。`declares` 用于声明准入（禁用原生工具、MCP 选择、manual 授权，不含作用域），`admits` 在声明规则上叠加作用域，供 Codemode 准入使用，`admitsServer` 判定资源读取。manual 工具必须处于根作用域且当前分支存在 `manual` 记录。
+权限判定集中在 `admission.ts` 的单次操作视图：它一次解析作用域链、分支记录（一次扫描同时得到「已选择」与三态权限）与当前激活集，再提供逐名字谓词。`declares` 用于声明准入（禁用原生工具、MCP 选择，不含作用域），`admits` 在声明规则上叠加作用域与显式禁用，供 Codemode 准入使用，`admitsServer` 判定资源读取。显式禁用优先于声明与授权；显式启用只在根作用域成立，子会话不能凭祖先记录获得授权。
 
 声明裁剪只有一处：`native-discovery.ts` 的 `before_agent_start` 用 `declares` 过滤激活集与 `selectedTools`，同时覆盖 `defaultActive`、历史恢复和其他扩展的激活；`src/capability/extension.ts` 的同一钩子只处理 Skill 段。执行仍分别检查：原生 MCP 的 `tool_call` 用 `declares` 加激活状态，能力侧 `tool_call` 用目录/激活状态加 `admitsManual`。作用域拒绝只关闭执行，不改写分支选择或历史声明。请求投影用 `includeManual` 的目录解析执行视图，Main 可见、子会话仍被作用域排除。
 

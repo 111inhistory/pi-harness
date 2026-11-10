@@ -18,8 +18,8 @@ import {
   describeEnableSkip, enableCapabilityTargets,
 } from '../../src/capability/enable.ts';
 import { retainReachableSelectedTools } from '../../src/capability/tool-catalog.ts';
-import { manualToolMatcher } from '../../src/capability/manual-tools.ts';
-import { setCapabilityRootOnlyPolicy } from '../../src/capability/scope.ts';
+import { setCapabilityPermissionDefaults } from '../../src/capability/scope.ts';
+import { explicitlyDisabled } from '../../src/capability/tool-permission.ts';
 
 interface FakeTool {
   name: string;
@@ -95,13 +95,15 @@ test('a script-only tool activates once Codemode is active and eligible', () => 
   assert.deepEqual(outcome.skipped, []);
 });
 
-test('reachability is checked after the existing hidden/manual/scope reasons', () => {
+test('reachability is checked after the existing hidden/disabled/scope reasons', () => {
   const fixture = host(baseTools, []);
-  setCapabilityRootOnlyPolicy(fixture.api, manualToolMatcher(['manual_script']));
-  const outcome = activateToolNames(fixture.api, ['hidden_tool', 'manual_script', 'codemode_only']);
+  setCapabilityPermissionDefaults(fixture.api, ['manual_script']);
+  const outcome = activateToolNames(fixture.api, ['hidden_tool', 'manual_script', 'codemode_only'], {
+    disabled: (name) => explicitlyDisabled(fixture.api, [], name),
+  });
   assert.deepEqual(outcome.skipped, [
     { name: 'hidden_tool', reason: 'hidden' },
-    { name: 'manual_script', reason: 'manual_only' },
+    { name: 'manual_script', reason: 'disabled' },
     { name: 'codemode_only', reason: 'unreachable' },
   ]);
 });
@@ -131,12 +133,13 @@ test('retainReachableSelectedTools drops only unreachable members and keeps non-
   assert.equal((retained.result.mcp[0] as { toolCount?: number } | undefined)?.toolCount, 1);
 });
 
-test('/capability enable refuses a script-only tool while Codemode is off and records nothing', () => {
+test('/capability enable records an enabled rule and reports an unreachable tool', () => {
   const fixture = host(baseTools, []);
   const result = enableCapabilityTargets(fixture.api, ['codemode_only']);
-  assert.deepEqual(result.enabled, []);
+  assert.deepEqual(result.enabled, ['codemode_only'], 'the durable enabled rule is written');
   assert.deepEqual(result.skipped, [{ name: 'codemode_only', reason: 'unreachable' }]);
-  assert.equal(fixture.entries().length, 0, 'no discovery or manual record for an unreachable tool');
+  assert.equal(fixture.entries().length, 1, 'one permission record is written');
+  assert.equal(fixture.api.getActiveTools().includes('codemode_only'), false, 'an unreachable tool is not activated');
 });
 
 test('/capability enable records a script-only tool once Codemode is active', () => {
@@ -194,19 +197,21 @@ test('discovery and /capability enable agree: deferred/direct pass, codemode-onl
   assert.deepEqual(retained.dropped, ['codemode_only']);
 
   const enabled = enableCapabilityTargets(off.api, ['deferred_tool', 'direct_tool', 'codemode_only']);
-  assert.deepEqual([...enabled.enabled].sort(), ['deferred_tool', 'direct_tool']);
+  assert.deepEqual([...enabled.enabled].sort(), ['codemode_only', 'deferred_tool', 'direct_tool'],
+    'the enabled rules are durable for every resolved target');
   assert.deepEqual(enabled.skipped, [{ name: 'codemode_only', reason: 'unreachable' }]);
 });
 
-test('a mixed selection records only the reachable member', () => {
+test('a mixed selection records both rules and activates only the reachable member', () => {
   const off = host(baseTools, []);
   const result = enableCapabilityTargets(off.api, ['deferred_tool', 'codemode_only']);
-  assert.deepEqual(result.enabled, ['deferred_tool']);
+  assert.deepEqual([...result.enabled].sort(), ['codemode_only', 'deferred_tool']);
   assert.deepEqual(result.skipped, [{ name: 'codemode_only', reason: 'unreachable' }]);
-  assert.equal(off.entries().length, 1, 'only the reachable member is recorded');
+  assert.equal(off.entries().length, 1, 'one permission record carries both rules');
   const recorded = JSON.stringify(off.entries()[0]);
   assert.match(recorded, /deferred_tool/);
-  assert.doesNotMatch(recorded, /codemode_only/);
+  assert.match(recorded, /codemode_only/);
+  assert.deepEqual(off.api.getActiveTools(), ['deferred_tool'], 'only the reachable member is activated');
 });
 
 test('a Skill survives losing its only tool to reachability', () => {

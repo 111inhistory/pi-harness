@@ -87,12 +87,13 @@ import { parentModelRuntime } from "../subagent/model-runtime.ts";
 import { installNativeDiscoveryBoundary } from "./native-discovery.ts";
 import { createEligibleToolCatalog, retainEligibleSelectedTools, retainReachableSelectedTools, supplySelectedToolInterfaces } from "./tool-catalog.ts";
 import { activateToolNames, codemodeAvailable, toolReachability } from "./activation.ts";
+import { activeToolsAfterDisabled, createToolPermissionResolver, explicitlyDisabled, explicitlyEnabled, noticedToolPermissionNames } from "./tool-permission.ts";
+import type { ToolGuidance } from "../tool-guidance.ts";
 import { argumentCompletionProvider } from "../autocomplete.ts";
 import { installCapabilityCommand } from "./command.ts";
-import { manualToolMatcher } from "./manual-tools.ts";
 import { hasPresetBaseToolRemoval, restorePresetSnapshot } from "../preset/state.ts";
-import { createToolAdmission } from "./admission.ts";
-import { createCapabilityScopeView, setCapabilityRootOnlyPolicy } from "./scope.ts";
+import { createToolAdmission, isMcpExecutionTool } from "./admission.ts";
+import { setCapabilityPermissionDefaults } from "./scope.ts";
 import { providerSessionPolicy } from "../provider-session.ts";
 import { projectRecordedToolGuidance } from "../tool-guidance.ts";
 import { projectToolPromptUpdates } from '../tool-prompt-updates.ts';
@@ -158,11 +159,11 @@ export default function capabilityExtension(
    * once per session; a child surface reads the root's policy through the scope
    * chain, so a manual tool never becomes eligible below Main.
    */
-  const applyManualPolicy = (patterns: readonly string[]): void => {
-    setCapabilityRootOnlyPolicy(pi, manualToolMatcher(patterns));
+  const applyPermissionDefaults = (patterns: readonly string[]): void => {
+    setCapabilityPermissionDefaults(pi, patterns);
   };
-  if (config !== undefined) applyManualPolicy(config.capability.manualTools);
-  installCapabilityCommand(pi, { prepare: (ctx) => applyManualPolicy(configFor(ctx).capability.manualTools) });
+  if (config !== undefined) applyPermissionDefaults(config.capability.manualTools);
+  installCapabilityCommand(pi, { prepare: (ctx) => applyPermissionDefaults(configFor(ctx).capability.manualTools) });
   let autocompleteInstalled = false;
   const service = {
     agentDir: getAgentDir(),
@@ -170,7 +171,7 @@ export default function capabilityExtension(
   };
   pi.on("session_start", (_event, ctx) => {
     service.projectTrusted = ctx.isProjectTrusted();
-    applyManualPolicy(configFor(ctx).capability.manualTools);
+    applyPermissionDefaults(configFor(ctx).capability.manualTools);
     // The editor's Tab request skips slash-command arguments; this wrapper only
     // restores them for /capability (see argumentCompletionProvider).
     if (!autocompleteInstalled) {
@@ -191,21 +192,27 @@ export default function capabilityExtension(
   // placements stay fixed; new state appends at the tail. Exposure and execution
   // remain separate.
   pi.on("context_with_system", (event, ctx) => {
-    // The projection answers "what may this session use", not "what may
-    // discovery propose". A manual tool the user enabled belongs in the
-    // request memory; a child scope still drops it in the scope view.
-    const catalog = createEligibleToolCatalog(pi, { includeManual: true });
-    const available = catalog.names;
+    // The permission is a query/memory exclusion here, not a declaration rewrite:
+    // an already-recorded capability section must not keep advertising a disabled
+    // tool, while the native declaration of an independent tool is retained until
+    // the next successful compaction (see native-discovery.ts).
     const branch = ctx.sessionManager.getBranch();
+    const permission = createToolPermissionResolver(pi, null, branch);
+    const catalog = createEligibleToolCatalog(pi, {
+      blocked: (tool) => permission.disabledFor(tool),
+    });
+    const available = catalog.names;
     const admission = createToolAdmission(pi, branch, catalog);
     const callable = new Set(pi.getActiveTools().filter(admission.admits));
     const updates = projectToolPromptUpdates({
       messages: event.messages, tools: catalog.tools, active: callable, branch,
       appendEntry: (kind, data) => pi.appendEntry(kind, data),
     });
-    const guidance = [...registeredToolGuidance(catalog.tools, SUBAGENT_TOOL_GUIDANCE,
+    const guidance: ToolGuidance[] = [...registeredToolGuidance(catalog.tools, SUBAGENT_TOOL_GUIDANCE,
       branch.some(entry => entry.type === "custom" && entry.customType === CAPABILITY_PROMPT_RECORD),
       callable), ...updates.guidance];
+    const permissionDisabled = permissionDisabledGuidance(pi, branch);
+    if (permissionDisabled !== null) guidance.push(permissionDisabled);
     const guided = projectRecordedToolGuidance(updates.messages, guidance, {
       branch,
       checkpointId: branch.findLast((entry) => entry.type === "compaction" || entry.type === "context_edit")?.id ?? null,
@@ -230,20 +237,34 @@ export default function capabilityExtension(
   });
   pi.on("tool_call", (event, ctx) => {
     // This entry owns declaration/activation; the shared admission view owns the
-    // common rule (scope, MCP selection, manual authorization).
-    const tool = createEligibleToolCatalog(pi, { includeManual: true }).tools.find((entry) => entry.name === event.toolName);
+    // common rule (scope, MCP selection, three-state permission).
+    const tool = pi.getAllTools().find((entry) => entry.name === event.toolName);
     if (!tool || (!pi.getActiveTools().includes(event.toolName) && !["codemode", "deferred"].includes(tool.exposure ?? ""))) {
       return { block: true, reason: `Tool ${event.toolName} is unavailable in this session; retained declarations do not enable execution.` };
     }
     const admission = createToolAdmission(pi, ctx.sessionManager.getBranch());
-    if (!admission.admitsManual(event.toolName)) {
-      return { block: true, reason: `Tool ${event.toolName} is manual and requires explicit user authorization in this session.` };
+    if (admission.disabled(event.toolName)) {
+      return { block: true, reason: `Tool ${event.toolName} is disabled by the tool permission.` };
+    }
+    // MCP execution keeps its dedicated selection/server check in
+    // native-discovery.ts; every other tool also has to pass current scope
+    // qualification on this call.
+    if (!isMcpExecutionTool(event.toolName) && !admission.admits(event.toolName)) {
+      return { block: true, reason: `Tool ${event.toolName} is not permitted in this session scope.` };
     }
     return undefined;
   });
 
   pi.on('session_compact', (_event, ctx) => {
     const branch = ctx.sessionManager.getBranch();
+    // Directed disabled removal at a successful compaction is independent of
+    // `pruneOnCompaction`: a still-disabled tool loses its active slot here,
+    // whether or not it was used in the window. This is the deferred half of an
+    // independent declaration; a Codemode-only member was removed when the
+    // permission was set.
+    const current = pi.getActiveTools();
+    const kept = activeToolsAfterDisabled(pi, branch, current);
+    if (kept.length !== current.length) pi.setActiveTools(kept);
     // The active branch identifies the boundary even when summaries repeat.
     const checkpointId = branch.findLast(entry => entry.type === 'compaction')!.id;
     if (!(configFor(ctx).capability.pruneOnCompaction || hasPresetBaseToolRemoval(branch, checkpointId))) return;
@@ -255,8 +276,18 @@ export default function capabilityExtension(
     // Keep discovery and its indirect execution path available for recovery.
     protectedTools.add('capability');
     protectedTools.add('codemode');
+    // An explicit enable is a user decision and outranks the prune heuristic;
+    // the old manual protection contract carries over to the unified record.
+    for (const tool of pi.getAllTools()) {
+      if (explicitlyEnabled(pi, branch, tool.name)) protectedTools.add(tool.name);
+    }
+    // A tool whose current permission is disabled must keep that prohibition;
+    // pruning it back to "rediscoverable" would contradict the disabled notice.
+    const excludedTools = pi.getAllTools()
+      .filter((tool) => explicitlyDisabled(pi, branch, tool.name))
+      .map((tool) => tool.name);
     const pruning = recordCompactionPruning(pi, {
-      branch, checkpointId, protectedTools,
+      branch, checkpointId, protectedTools, excludedTools,
     });
     if (pruning?.removedTools.length) {
       const removed = new Set(pruning.removedTools);
@@ -282,7 +313,7 @@ export default function capabilityExtension(
         const lazyNames = lazyGroupMemberNames(pi, config, ctx.sessionManager.getBranch());
         const snapshot = captureInheritedContext(pi, ctx, toolCallId);
         const engine = createCapabilityDiscovery({
-          broker: createCapabilityBroker(createProviders(pi, service), config.capability.search),
+          broker: createCapabilityBroker(createProviders(pi, service, () => ctx.sessionManager.getBranch()), config.capability.search),
           openSession: (request) => openInternalSession(pi, service, ctx, request, snapshot, lazyNames),
           budget: config.capability.budget,
           noSelectionLimit: config.capability.noSelectionLimit,
@@ -317,8 +348,10 @@ export default function capabilityExtension(
         if (result.status !== "failed" && !cancelled(signal, ctx.signal)) {
           try {
             previouslyActive = new Set(pi.getActiveTools());
-            const activation = activateSelectedTools(pi, result);
-            const eligible = createEligibleToolCatalog(pi).names;
+            const activation = activateSelectedTools(pi, result, ctx.sessionManager.getBranch());
+            const eligible = createEligibleToolCatalog(pi, {
+              disabled: (name) => explicitlyDisabled(pi, ctx.sessionManager.getBranch(), name),
+            }).names;
             // Publication follows what is actually active, not what the search
             // hoped to activate. This is a synchronous read of the SDK's state,
             // not a rollback path.
@@ -403,12 +436,34 @@ function discoveryNotDurable(result: CapabilityDiscoveryResult, error: unknown):
   return result.endReason === undefined ? failed : { ...failed, endReason: result.endReason };
 }
 
+function permissionDisabledGuidance(host: ExtensionAPI, branch: readonly unknown[]): ToolGuidance | null {
+  const noticed = noticedToolPermissionNames(branch);
+  if (noticed.size === 0) return null;
+  const names = [...noticed].filter((name) => explicitlyDisabled(host, branch, name)).sort();
+  if (names.length === 0) return null;
+  const text = promptString('capability-policy.json', 'toolPermissionDisabled')
+    .replace('{tools}', names.map((name) => `- ${name}`).join('\n'));
+  return {
+    id: 'tool-permission:disabled',
+    tools: names,
+    text,
+    initialPlacement: 'tail',
+    eligible: true,
+  };
+}
+
 function createProviders(
   pi: ExtensionAPI,
   service: { readonly agentDir: string; readonly projectTrusted: boolean },
+  branch: () => readonly unknown[] | null,
 ): CapabilityProviders {
   return {
-    listTools: () => createEligibleToolCatalog(pi).tools,
+    // A disabled tool never becomes a discovery candidate. The branch is read
+    // now so a rule added after the picker opened is honoured.
+    listTools: () => {
+      const permission = createToolPermissionResolver(pi, null, branch());
+      return createEligibleToolCatalog(pi).tools.filter((tool) => !permission.disabledFor(tool));
+    },
     listActiveTools: () => pi.getActiveTools(),
     discoverSkills: (cwd: string) => discoverSessionSkills(pi, {
       cwd,
@@ -458,14 +513,16 @@ function internalSettings(pi: ExtensionAPI, trusted: boolean): SettingsManager {
  * `mcp://<server>` ref names no single registered tool, so only a tool ref that
  * lost its registration is reported.
  */
-function activateSelectedTools(pi: ExtensionAPI, result: CapabilityDiscoveryResult): Activation {
+function activateSelectedTools(pi: ExtensionAPI, result: CapabilityDiscoveryResult, branch: readonly unknown[]): Activation {
   const selected: ActivationHit[] = [];
   for (const hit of [...result.tools, ...result.mcp]) {
     if (Array.isArray(hit.tools)) selected.push(...hit.tools);
     else selected.push(hit);
   }
   const named = selected.flatMap((hit) => typeof hit.name === "string" && hit.name !== "" ? [{ name: hit.name, kind: hit.kind }] : []);
-  const outcome = activateToolNames(pi, named.map((hit) => hit.name));
+  const outcome = activateToolNames(pi, named.map((hit) => hit.name), {
+    disabled: (name: string) => explicitlyDisabled(pi, branch, name),
+  });
   const kindOf = new Map(named.map((hit) => [hit.name, hit.kind]));
   const warnings: string[] = [];
   for (const skip of outcome.skipped) {
@@ -473,6 +530,7 @@ function activateSelectedTools(pi: ExtensionAPI, result: CapabilityDiscoveryResu
       warnings.push(`selected tool "${skip.name}" is not registered in this session`);
     }
     if (skip.reason === "hidden") warnings.push(`selected tool "${skip.name}" is hidden and cannot be activated`);
+    if (skip.reason === "disabled") warnings.push(`selected tool "${skip.name}" is disabled by the tool permission`);
     if (skip.reason === "unreachable") warnings.push(`selected tool "${skip.name}" has no usable call path because Codemode is not enabled in this session`);
   }
   return { activated: outcome.activated, warnings, active: outcome.active };
@@ -712,11 +770,12 @@ async function openInternalSession(
   });
   await resourceLoader.reload();
   const model = snapshot.model;
-  const rootOnly = createCapabilityScopeView(pi).rootOnly;
-  // Manual tools and lazily-projected members must not travel to the retrieval
-  // model: the former cannot be inherited, the latter would re-send the large
-  // schema the lazy projection deliberately withheld from the parent request.
-  const keepInherited = (name: string): boolean => !lazyNames.has(name) && (rootOnly === null || !rootOnly(name));
+  const branch = ctx.sessionManager.getBranch();
+  // Managed tools and lazily-projected members must not travel to the retrieval
+  // model: a disabled tool cannot be inherited, an explicitly enabled tool is
+  // root-only, and a lazily projected member would re-send the large schema.
+  const keepInherited = (name: string): boolean => !lazyNames.has(name)
+    && !explicitlyDisabled(pi, branch, name) && !explicitlyEnabled(pi, branch, name);
   const inheritedEntries = snapshot.entries.map(entry => {
     if (entry.type !== "message" || entry.message.role !== "system") return entry;
     const message = entry.message;
@@ -761,8 +820,10 @@ async function openInternalSession(
     const previousTransform = session.agent.transformContext;
     session.agent.transformContext = async (messages, signal) => {
       const transformed = previousTransform ? await previousTransform(messages, signal) : messages;
-      const catalog = createEligibleToolCatalog(pi);
       const branch = session.sessionManager.getBranch();
+      const catalog = createEligibleToolCatalog(pi, {
+        disabled: (name) => explicitlyDisabled(pi, branch, name),
+      });
       const admission = createToolAdmission(pi, branch, catalog);
       const historical = projectPrunedToolHistory(transformed, branch);
       const declarations = projectDiscoveryDeclarations(historical,

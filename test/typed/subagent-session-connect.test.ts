@@ -58,6 +58,15 @@ interface Recorded {
   readonly registered: Map<string, { name: string; exposure?: string }>;
 }
 
+function permissionGrants(branch: readonly unknown[]): Array<{ target: string; state: string }> {
+  return branch.flatMap((entry) => {
+    const record = entry as { type?: string; customType?: string; data?: { set?: Array<{ target: string; state: string }> } };
+    return record.type === 'custom' && record.customType === 'capability-tool-permission'
+      ? record.data?.set ?? []
+      : [];
+  });
+}
+
 async function fixture(t: TestContext, options: { readonly failRecord?: boolean } = {}) {
   const cwd = await mkdtemp(path.join(tmpdir(), 'pi-session-connect-'));
   const socketRoot = SOCKET_ROOT;
@@ -74,7 +83,7 @@ async function fixture(t: TestContext, options: { readonly failRecord?: boolean 
       for (const name of names) if (recorded.registered.has(name)) recorded.active.add(name);
     },
     appendEntry(customType: string, data?: unknown) {
-      if (options.failRecord === true && customType === harness.records.CAPABILITY_DISCOVERY_RECORD) {
+      if (options.failRecord === true && customType === 'capability-tool-permission') {
         throw new Error('the session branch is read-only');
       }
       recorded.entries.push({ customType, data });
@@ -111,7 +120,6 @@ test('connect appends the peer contact and grants msg_write once', async (t) => 
   assert.equal(result.session.uid, peer.uid);
   assert.equal(result.address, address);
   assert.deepEqual([...result.enabled], ['msg_write']);
-  assert.equal(result.recordError, null);
   assert.ok(recorded.active.has('msg_write'), 'the shared enable path activated the tool');
 
   assert.equal(recorded.messages.length, 1);
@@ -127,24 +135,24 @@ test('connect appends the peer contact and grants msg_write once', async (t) => 
   assert.ok(text.includes(`Main address: ${address}`));
   assert.match(text, /Use msg_write/);
 
-  const record = recorded.entries.filter((entry) => entry.customType === harness.records.CAPABILITY_DISCOVERY_RECORD);
+  const record = recorded.entries.filter((entry) => entry.customType === 'capability-tool-permission');
   assert.equal(record.length, 1, 'the grant is one branch record');
-  const memory = (record[0]!.data as { result: { manual: Array<{ name?: string }> } }).result;
-  assert.deepEqual(memory.manual.map((hit) => hit.name), ['msg_write']);
+  const memory = record[0]!.data as { set: Array<{ target: string; state: string }> };
+  assert.deepEqual(memory.set.map((item) => item.target), ['msg_write']);
+  assert.equal(memory.set[0]!.state, 'enabled');
 
   // A repeat is allowed and appends the current contact again, without a second
   // record: connect keeps no connection state of its own.
   const again = await service.connectSession(peer.sessionId);
   assert.deepEqual([...again.enabled], []);
   assert.deepEqual([...again.alreadyEnabled], ['msg_write']);
-  assert.equal(again.recordError, null);
   assert.equal(recorded.messages.length, 2);
-  assert.equal(recorded.entries.filter((entry) => entry.customType === harness.records.CAPABILITY_DISCOVERY_RECORD).length, 1);
+  assert.equal(recorded.entries.filter((entry) => entry.customType === 'capability-tool-permission').length, 1);
 
   assert.equal(existsSync(address), false, 'connect writes no frame to the peer');
 });
 
-test('connect records its manual grant even when msg_write was already discovered', async (t) => {
+test('connect records its explicit grant even when msg_write was already discovered', async (t) => {
   const { cwd, socketRoot, manager, service, recorded, harness } = await fixture(t);
   const peer = await harness.registerSession(socketRoot, { sessionId: 'peer-discovered-session', cwd, name: null });
   t.after(() => harness.unregisterSession(socketRoot, peer.sessionId));
@@ -157,27 +165,26 @@ test('connect records its manual grant even when msg_write was already discovere
     },
   });
   recorded.active.add('msg_write');
-  assert.equal(harness.records.manualEnabledTools(manager.getBranch()).has('msg_write'), false);
+  assert.equal(permissionGrants(manager.getBranch()).length, 0, 'no permission record yet');
 
   const result = await service.connectSession(peer.uid);
   assert.deepEqual([...result.enabled], ['msg_write']);
   assert.deepEqual([...result.alreadyEnabled], []);
   assert.equal(recorded.entries.length, 1, 'discovery does not suppress the explicit user grant');
-  assert.equal(harness.records.manualEnabledTools(manager.getBranch()).has('msg_write'), true);
+  assert.deepEqual(permissionGrants(manager.getBranch()).map((item) => item.target), ['msg_write']);
   assert.equal(recorded.messages.length, 1);
 });
 
-test('a failed branch record still appends the contact but reports a partial result', async (t) => {
+test('a failed branch record refuses the grant and appends no contact', async (t) => {
   const { cwd, socketRoot, service, recorded, harness } = await fixture(t, { failRecord: true });
   const peer = await harness.registerSession(socketRoot, { sessionId: 'peer-record-failure', cwd, name: null });
   t.after(() => harness.unregisterSession(socketRoot, peer.sessionId));
 
-  const result = await service.connectSession(peer.uid);
-  assert.match(result.recordError ?? '', /the session branch is read-only/);
-  assert.deepEqual([...result.enabled], ['msg_write'], 'activation still succeeded');
-  assert.ok(recorded.active.has('msg_write'));
-  assert.equal(recorded.messages.length, 1, 'the contact is appended despite the failed record');
+  await assert.rejects(service.connectSession(peer.uid), (error: unknown) =>
+    error instanceof Error && 'code' in error && (error as { code: string }).code === 'msg_write_unavailable');
+  assert.equal(recorded.messages.length, 0, 'no contact is appended without a durable grant');
   assert.equal(recorded.entries.length, 0, 'no durable grant was written');
+  assert.equal(recorded.active.has('msg_write'), false, 'a failed record applies no activation');
 });
 
 test('connect refuses an unknown or self target without touching context', async (t) => {
@@ -329,7 +336,7 @@ async function sdkFixture(t: TestContext, options: { manual?: boolean } = {}) {
     cwd, session, model, requests, declared, errors, notices, peer, held, command, directory,
     address: directory.sessionMainAddress(peer),
     contacts: () => entries().filter((entry) => entry.type === 'custom_message' && entry.customType === root.SESSION_CONTACT).length,
-    grants: () => entries().filter((entry) => entry.type === 'custom' && entry.customType === 'capability-discovery').length,
+    grants: () => entries().filter((entry) => entry.type === 'custom' && entry.customType === 'capability-tool-permission').length,
     connect: async (target: string = peer.uid) => { await command.handler(`sessions connect ${target}`, ctx); },
     hold: (): AssistantMessageEventStream => {
       const stream = new AssistantMessageEventStream();

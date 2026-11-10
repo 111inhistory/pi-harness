@@ -10,8 +10,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  appendCodemodeMode, CODEMODE_MODE_RECORD, effectiveCodemodeMode, readCodemodeModeOverride,
-  type CodemodeModeWriter,
+  appendCodemodeMode, CODEMODE_MODE_RECORD, effectiveCodemodeMode,
+  readCodemodeModeOverride, type CodemodeModeWriter,
 } from '../../src/capability/codemode-mode.ts';
 import { lazySchemasActive } from '../../src/capability/lazy-schemas.ts';
 

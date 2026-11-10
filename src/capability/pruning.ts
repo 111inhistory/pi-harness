@@ -16,7 +16,6 @@
 
 import {
   discoveryRecords,
-  manualEnabledTools,
   appendPruneRecord,
   type CapabilityPruneRecord,
   type DiscoveryRecordWriter,
@@ -29,6 +28,12 @@ export interface PruneCalculationOptions {
   readonly checkpointId: string;
   /** Protected or baseline tool names that must not be pruned (e.g. builtins, depth harness tools). */
   readonly protectedTools?: readonly string[] | ReadonlySet<string>;
+  /**
+   * Discovered names that must stay out of the prune set even when unused.
+   * Explicitly disabled tools (including migrated rules and manual seeds) keep
+   * their prohibition; pruning them would re-advertise them as rediscoverable.
+   */
+  readonly excludedTools?: readonly string[] | ReadonlySet<string>;
 }
 
 export interface PruneCalculationResult {
@@ -144,14 +149,13 @@ export function computePrunableCapabilities(options: PruneCalculationOptions): P
   }
   const priorBranch = branch.slice(0, currentIndex);
   const priorDiscoveries = discoveryRecords(priorBranch);
-  const manualTools = manualEnabledTools(priorBranch);
 
   const protectedSet = new Set<string>();
   if (options.protectedTools) {
     for (const name of options.protectedTools) protectedSet.add(name);
   }
-  for (const name of manualTools) {
-    protectedSet.add(name);
+  if (options.excludedTools) {
+    for (const name of options.excludedTools) protectedSet.add(name);
   }
 
   const groupMembers = new Map<string, Set<string>>();
