@@ -200,8 +200,9 @@ Capability 调用仍等待检索完成，再返回筛选后的资源。复用执
 - SDK 命令行限制（`--exclude-tools`、严格 allowlist）不属于管理状态，也不合成为记录；解除管理不会解除 SDK 限制，查询与诊断不虚构 SDK 未提供的来源。
 - 只读查询不暴露来源、命中规则或诊断信息；需要时只返回状态与必要结果。
 
-### 派生视图与查询
+- Activation, immediate removal, compaction deferral and disabled notices follow the final effective permission after a successful mutation. An exact enabled member remains active when its group is disabled; an exact disabled member is not activated when its group is enabled. Callers may supply a live branch array or a detached branch snapshot; both use the same canonical replay and precedence.
 
+### 派生视图与查询
 - 面向用户与程序的派生视图为互斥四态：已管理的 `enabled`／`disabled`，未管理的运行时成员 `active`／`inactive`。四态是展示与过滤层，不是第二份持久化状态；已管理工具不因处于 active 集而被报告为显式启用。
 - `/capability list [expr]` 与 RPC `tools.permission.query` 共用同一套表达式：term ∈ `enabled`、`disabled`、`active`、`inactive`、`tool`、`namespace`，`+`／`-` 连接，默认 `enabled+active`；只写类别时取该类别默认集。
 - 查询结果只包含名称、类别、`state`、是否已管理、是否注册与是否 active；不返回来源或命中规则。

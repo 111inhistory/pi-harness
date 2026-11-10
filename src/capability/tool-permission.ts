@@ -615,8 +615,9 @@ export function setToolPermission(
   targets: readonly string[],
   state: ToolPermissionManagedState,
 ): ToolPermissionSetResult {
+  const preBranch = branch ? [...branch] : [];
   const { resolved, unresolved } = resolveTargets(host, targets);
-  const explicitStateMap = new Map(explicitEntries(branch).map((stored) => [stored.entry.id, stored.entry.state]));
+  const explicitStateMap = new Map(explicitEntries(preBranch).map((stored) => [stored.entry.id, stored.entry.state]));
   const changedTargets: TargetResolution[] = [];
   const alreadySet: string[] = [];
   for (const item of resolved) {
@@ -650,32 +651,58 @@ export function setToolPermission(
   const removedActive: string[] = [];
   const pendingCompaction: string[] = [];
   const noticed: string[] = [];
-  if (durable && state === 'enabled' && resolvedAffected.size > 0) {
-    const outcome = activateToolNames(host, [...resolvedAffected]);
-    activated.push(...outcome.activated);
-    for (const skip of outcome.skipped) skipped.push({ target: skip.name, reason: skip.reason });
-  }
-  if (durable && state === 'disabled' && changedAffected.size > 0) {
-    const activeBefore = new Set(host.getActiveTools());
-    const tools = new Map(host.getAllTools().map((tool) => [tool.name, tool]));
-    const declared = independentDeclarations(host);
-    for (const name of changedAffected) {
-      if (!activeBefore.has(name)) continue;
-      const independent = declared === null
-        ? tools.get(name)?.exposure !== 'codemode'
-        : declared.has(name);
-      if (independent) pendingCompaction.push(name);
-      else removedActive.push(name);
+  if (durable && (resolvedAffected.size > 0 || changedAffected.size > 0)) {
+    const allTools = host.getAllTools();
+    const postBranch = changedTargets.length === 0
+      ? preBranch
+      : [...preBranch, {
+        type: 'custom',
+        customType: CAPABILITY_TOOL_PERMISSION_RECORD,
+        data: {
+          version: CAPABILITY_TOOL_PERMISSION_VERSION,
+          set: changedTargets.map((item) => ({ target: item.target.target, state })),
+        },
+      }];
+    const postStored = storedEntries(host, postBranch);
+    const effectiveResolver = createToolPermissionResolverWithStored(host, allTools, postStored);
+
+    if (state === 'enabled' && resolvedAffected.size > 0) {
+      // Activate resolved members whose effective state after mutation is enabled.
+      // An exact disabled rule outranks an overlapping group enable, so still-disabled
+      // members are preserved as unactivated.
+      const toActivate = [...resolvedAffected].filter((name) => effectiveResolver.enabled(name));
+      if (toActivate.length > 0) {
+        const outcome = activateToolNames(host, toActivate);
+        activated.push(...outcome.activated);
+        for (const skip of outcome.skipped) skipped.push({ target: skip.name, reason: skip.reason });
+      }
     }
-    if (removedActive.length > 0) {
-      const drop = new Set(removedActive);
-      host.setActiveTools([...activeBefore].filter((name) => !drop.has(name)));
-    }
-    const used = extractUsedToolsFromWindow(extractWindowEntries(branch, null));
-    const names = [...changedAffected].filter((name) => activeBefore.has(name) && used.has(name));
-    if (names.length > 0) {
-      appendToolPermissionNotice(writer, names);
-      noticed.push(...names);
+    if (state === 'disabled' && changedAffected.size > 0) {
+      const activeBefore = new Set(host.getActiveTools());
+      const tools = new Map(allTools.map((tool) => [tool.name, tool]));
+      // The native loadout owns the real declaration mask. Without a registered
+      // loadout, fall back to the tool's exposure: a script-only tool has no
+      // independent declaration either way.
+      const declared = independentDeclarations(host);
+      const toDisable = [...changedAffected].filter((name) => effectiveResolver.disabled(name));
+      for (const name of toDisable) {
+        if (!activeBefore.has(name)) continue;
+        const independent = declared === null
+          ? tools.get(name)?.exposure !== 'codemode'
+          : declared.has(name);
+        if (independent) pendingCompaction.push(name);
+        else removedActive.push(name);
+      }
+      if (removedActive.length > 0) {
+        const drop = new Set(removedActive);
+        host.setActiveTools([...activeBefore].filter((name) => !drop.has(name)));
+      }
+      const used = extractUsedToolsFromWindow(extractWindowEntries(preBranch, null));
+      const names = toDisable.filter((name) => activeBefore.has(name) && used.has(name));
+      if (names.length > 0) {
+        appendToolPermissionNotice(writer, names);
+        noticed.push(...names);
+      }
     }
   }
 
@@ -710,11 +737,12 @@ export function resetToolPermission(
   branch: readonly unknown[] | null | undefined,
   targets: readonly string[],
 ): ToolPermissionResetResult {
+  const preBranch = branch ? [...branch] : [];
   const { resolved, unresolved } = resolveTargets(host, targets);
   const tools = host.getAllTools();
-  const stored = storedEntries(host, branch);
+  const stored = storedEntries(host, preBranch);
   const resolver = createToolPermissionResolverWithStored(host, tools, stored);
-  const explicit = explicitState(branch);
+  const explicit = explicitState(preBranch);
   const managedIds = new Set(stored.map((item) => item.entry.id));
   const changed: TargetResolution[] = [];
   const notManaged: string[] = [...unresolved];
@@ -746,20 +774,22 @@ export function resetToolPermission(
   }
   const stillManaged: { name: string; state: ToolPermissionManagedState }[] = [];
   if (durable) {
-    // Evaluate against a virtual branch that already contains this unset, so an
-    // old migrated rule cannot make a just-reset target look managed.
-    const virtual = changed.length === 0
-      ? branch
-      : [...(branch ?? []), {
+    const postBranch = changed.length === 0
+      ? preBranch
+      : [...preBranch, {
         type: 'custom',
         customType: CAPABILITY_TOOL_PERMISSION_RECORD,
-        data: { version: CAPABILITY_TOOL_PERMISSION_VERSION, unset: changed.map((item) => item.target.target) },
+        data: {
+          version: CAPABILITY_TOOL_PERMISSION_VERSION,
+          unset: changed.map((item) => item.target.target),
+        },
       }];
-    const virtualResolver = createToolPermissionResolver(host, tools, virtual);
+    const postStored = storedEntries(host, postBranch);
+    const postResolver = createToolPermissionResolverWithStored(host, tools, postStored);
     const affected = new Set<string>();
     for (const item of resolved) for (const name of item.affectedTools) affected.add(name);
     for (const name of affected) {
-      const decision = virtualResolver.decide(name);
+      const decision = postResolver.decide(name);
       if (decision !== null) stillManaged.push({ name, state: decision.state });
     }
   }
