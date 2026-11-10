@@ -10,8 +10,10 @@
  * and then apply `message_update` deltas without a gap.
  *
  * The Runtime's Job terminal state is a different boundary from `agent_end` /
- * `agent_settled`; the stream reports it as a separate `job` event from the
- * Runtime's own `jobDone` promise. Observation never affects the Job.
+ * `agent_settled`; the stream reports it as a separate `job` event through a
+ * detachable Runtime observer. Teardown releases both the native listener and
+ * that observer, so an unsubscribed connection is not retained until the Job
+ * settles. Observation never affects the Job.
  */
 
 import type { RootService } from '../../subagent/root-service.ts';
@@ -48,6 +50,7 @@ export function buildStreamPort(root: RootService): StreamPort {
 
       let active = true;
       let liveUnsubscribe: (() => void) | null = null;
+      let terminalUnsubscribe: (() => void) | null = null;
       // Assign the subscription id before registering the listener. The
       // transport writes the response only after this async handler resolves,
       // so a native event can be pushed first; it must already carry the id the
@@ -55,6 +58,7 @@ export function buildStreamPort(root: RootService): StreamPort {
       const subscriptionId = connection.addSubscription(() => {
         active = false;
         liveUnsubscribe?.();
+        terminalUnsubscribe?.();
       });
       // Attach before reading the live snapshot. Both calls are synchronous and
       // the runner only registers the listener (it does not replay), so no
@@ -85,7 +89,7 @@ export function buildStreamPort(root: RootService): StreamPort {
       // native agent_end/agent_settled events. A Job that is already terminal
       // has no future transition; its state is in the response boundary.
       if (!TERMINAL.has(snapshot.status)) {
-        void root.runtime.jobDone(jobId).then((view) => {
+        terminalUnsubscribe = root.runtime.observeJobDone(jobId, (view) => {
           if (!active) return;
           connection.pushEvent(subscriptionId, {
             kind: 'job',
@@ -94,8 +98,6 @@ export function buildStreamPort(root: RootService): StreamPort {
             agentId: view.agentId,
             status: view.status,
           });
-        }).catch(() => {
-          /* A settled Job's boundary already belongs to the runtime. */
         });
       }
 

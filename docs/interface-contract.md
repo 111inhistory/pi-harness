@@ -486,7 +486,7 @@ Harness 为 Pi 原生 RPC 未覆盖的工具信息、子 Agent 控制、消息�
 - 实时数据源是子会话自己的原生事件订阅，保留完整原生事件类型与 Pi RPC 的 JSON 投影语义：不重复发送累计 `partial`，工具调用保留 `toolCallId` 与存在时的 `parentToolCallId`，推理只提供供应商实际返回的内容。
 - 历史与实时流有明确衔接边界：订阅建立先于响应，响应返回当前 Job 的读取边界，包含 `status`、`round`、`history{startEntryId,endEntryId}`、已产生的 `messages` 与当前的 `partial`；客户端据边界补齐已产生内容后消费实时事件，不需要读取文件猜测增量起点。`live` 表示是否挂上实时源；running 与已终态 Job 都返回真实快照，订阅时 Job 已终态则不再补发终态事件，其状态只在边界中给出。
 - `agent_end`、`agent_settled` 与 Harness Job 最终结束不是同一边界。订阅单独报告 Runtime 的 Job 终态；Job 可能继续消费停放输入或等待子任务，最终状态以 Runtime 为准。
-- 订阅者异常或断连不影响任务执行；观察失败不改变任务结果。
+- 订阅者异常或断连不影响任务执行；观察失败不改变任务结果。解除订阅或断连会同时释放该订阅的原生监听与 Runtime 终态观察，不将连接保留到 Job 结束。
 
 ## 异步 Shell
 

@@ -838,7 +838,7 @@ export class SubagentRuntime {
   #jobs = new Map<string, Job>();
   #handles = new Map<string, StartedJobHandle | null>();
   #budgetWatches = new Map<string, () => void>();
-  #waiters = new Map<string, Array<(view: JobView) => void>>();
+  #waiters = new Map<string, Set<(view: JobView) => void>>();
   #childSequences = new Map<string, number>();
   #transitionDepth = 0;
   #completions: Job[] = [];
@@ -1313,10 +1313,39 @@ export class SubagentRuntime {
     const job = this.#requireJob(jobId);
     if (TERMINAL_STATUSES.has(job.status)) return Promise.resolve(this.#jobView(job));
     return new Promise((resolve) => {
-      const waiters = this.#waiters.get(job.jobId) ?? [];
-      waiters.push(resolve);
-      this.#waiters.set(job.jobId, waiters);
+      this.#addWaiter(job, resolve);
     });
+  }
+
+  /**
+   * Observe one Job's terminal transition without an uncancellable Promise.
+   * The detach removes only this listener; it never affects the Job or another
+   * observer. A listener registered for an already-terminal Job is called
+   * immediately, matching `jobDone`'s resolved value.
+   */
+  observeJobDone(jobId: unknown, listener: (view: JobView) => void): () => void {
+    const job = this.#requireJob(jobId);
+    if (TERMINAL_STATUSES.has(job.status)) {
+      try {
+        listener(this.#jobView(job));
+      } catch {
+        // Observation is best-effort and must not turn a terminal read into an error.
+      }
+      return () => {};
+    }
+    return this.#addWaiter(job, listener);
+  }
+
+  #addWaiter(job: Job, listener: (view: JobView) => void): () => void {
+    const waiters = this.#waiters.get(job.jobId) ?? new Set<(view: JobView) => void>();
+    waiters.add(listener);
+    this.#waiters.set(job.jobId, waiters);
+    return () => {
+      const current = this.#waiters.get(job.jobId);
+      if (current === undefined) return;
+      current.delete(listener);
+      if (current.size === 0) this.#waiters.delete(job.jobId);
+    };
   }
 
   /**
@@ -1847,10 +1876,22 @@ export class SubagentRuntime {
 
   #settle(job: Job): void {
     const waiters = this.#waiters.get(job.jobId);
-    if (waiters) {
+    if (waiters !== undefined) {
+      // Detach the bucket and its listeners before invoking any callback: a
+      // callback may unsubscribe or re-enter, and must not be able to leave a
+      // stale waiter behind or affect another observer.
       this.#waiters.delete(job.jobId);
+      const listeners = [...waiters];
+      waiters.clear();
       const view = this.#jobView(job);
-      for (const resolve of waiters) resolve(view);
+      for (const listener of listeners) {
+        try {
+          listener(view);
+        } catch {
+          // Observation is best-effort; one observer must not break settlement
+          // or suppress the remaining observers.
+        }
+      }
     }
     this.#refreshAgent(job.agentId);
   }

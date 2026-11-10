@@ -1062,11 +1062,6 @@
       "docs": "53478ad36772f5375a1a883d2f3c6b82aa2cdb4d33a405fca171975a9dccedf7",
       "tests": "d14d344767bc7f608796e8c4c3d2fd0d7ebccb58288d120189b430721507610b",
       "reason": "The pi-job fixtures now shell-quote literal arguments instead of relying on JSON escaping, and a Windows-only real-parser case asserts that a native bare -- PowerShell command stays opaque and is denied as the whole command; the approval ordering, extraction and fail-closed contracts are unchanged."
-    },
-    "harness.rpc-interface": {
-      "docs": "07262ebf7413f9a220ffc80c724b49d34e3342913ba8355a98d22ff38cef3f73",
-      "tests": "8b7923aacb5b037836055fb19ddfd68c425c40c2e4403e4f5c233275c6ac6348",
-      "reason": "Internal live projections omit unused fields; actual wire payloads, schema and method semantics remain unchanged. Platform fixture corrections are retained."
     }
   }
 }

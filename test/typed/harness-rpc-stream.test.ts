@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { buildStreamPort } from "../../src/harness-rpc/ports/stream.ts";
 import { projectSessionEvent } from "../../src/harness-rpc/stream-projection.ts";
@@ -99,6 +103,24 @@ function rootFor(runtime: SubagentRuntime, live: NativeLiveSnapshot | null | (()
 async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+const execute = promisify(execFile);
+const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
+const retentionFixture = path.join(repositoryRoot, "test-support/rpc-observer-retention.mjs");
+
+test("unsubscribed stream connections are collectible before the Job settles", { timeout: 20000 }, async () => {
+  try {
+    const { stdout, stderr } = await execute(
+      process.execPath,
+      ["--expose-gc", "--import", "tsx", retentionFixture],
+      { cwd: repositoryRoot, timeout: 15000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 },
+    );
+    assert.match(stdout, /RETENTION_OK/, `retention fixture did not finish:\n${stdout}\n${stderr}`);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    assert.fail(`retention fixture failed: ${detail}`);
+  }
+});
 
 test("projection drops cumulative partial and keeps tool-call identity", () => {
   const projected = projectSessionEvent({
@@ -229,6 +251,64 @@ test("unsubscribe detaches the live observer and suppresses later events", async
 
   running.finish("e3");
   await running.runtime.jobDone(running.jobId);
+});
+
+test("unsubscribe releases the Runtime terminal observation without affecting another subscription", async () => {
+  const running = runningJob();
+  const root = {
+    sessionId: "session-root",
+    runtime: running.runtime,
+    subscribeJobEvents: () => () => {},
+    liveSnapshot: () => ({ endEntryId: "e2", messages: [], partial: null }),
+  } as unknown as RootService;
+  const port = buildStreamPort(root);
+  const removed = makeConnection();
+  const kept = makeConnection();
+  await port.subscribe({ jobId: running.jobId }, removed as unknown as RpcConnection);
+  await port.subscribe({ jobId: running.jobId }, kept as unknown as RpcConnection);
+
+  assert.deepEqual(port.unsubscribe({ subscription: "sub-1" }, removed as unknown as RpcConnection), { removed: true });
+  running.finish("e3");
+  await running.runtime.jobDone(running.jobId);
+  await flush();
+
+  const jobEvents = (connection: FakeConnection): number =>
+    connection.events.filter((event) => event.payload.kind === "job").length;
+  assert.equal(jobEvents(removed), 0, "an unsubscribed connection must not receive the terminal event");
+  assert.equal(jobEvents(kept), 1, "another subscription keeps its own terminal observation");
+});
+
+test("a detachable terminal observer removes only its listener and isolates observer failures", async () => {
+  const running = runningJob();
+  let detachedCalls = 0;
+  let throwingCalls = 0;
+  let keptView: unknown = null;
+  const detach = running.runtime.observeJobDone(running.jobId, () => {
+    detachedCalls += 1;
+  });
+  running.runtime.observeJobDone(running.jobId, () => {
+    throwingCalls += 1;
+    throw new Error("observer failed");
+  });
+  running.runtime.observeJobDone(running.jobId, (view) => {
+    keptView = view;
+  });
+
+  detach();
+  detach();
+  running.finish("e3");
+  const settled = await running.runtime.jobDone(running.jobId);
+
+  assert.equal(detachedCalls, 0, "a detached listener is not invoked at settlement");
+  assert.equal(throwingCalls, 1, "a throwing observer is still invoked once");
+  assert.equal(keptView, settled, "all remaining observers and jobDone receive the same terminal view");
+
+  let lateView: unknown = null;
+  const detachLate = running.runtime.observeJobDone(running.jobId, (view) => {
+    lateView = view;
+  });
+  detachLate();
+  assert.deepEqual(lateView, settled, "a terminal Job reports its view immediately to a new observer");
 });
 
 test("an already-terminal Job reports its boundary without a future terminal event", async () => {
