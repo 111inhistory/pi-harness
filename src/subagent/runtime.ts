@@ -500,8 +500,8 @@ function errorInfo(error: unknown, fallbackCode: string): LifecycleError {
  * A detached copy of optional diagnostic detail.
  *
  * Lifecycle errors travel with persisted Job events, so the accepted detail is
- * structured-cloneable JSON-like data. Unsupported detail (a live SDK object,
- * function or class instance) is omitted rather than sharing the thrown
+ * structured-cloneable data. Uncloneable detail (for example, an object with
+ * a function or a live handle) is omitted rather than sharing the thrown
  * object's mutable graph with registry state; the error code and message still
  * describe the failure.
  */
