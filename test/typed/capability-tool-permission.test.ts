@@ -24,7 +24,6 @@ import {
 import { createToolAdmission } from '../../src/capability/admission.ts';
 import { setIndependentDeclarations } from '../../src/capability/declaration-visibility.ts';
 import { setCapabilityPermissionDefaults } from '../../src/capability/scope.ts';
-import { CAPABILITY_PERMISSION_MIGRATION_RECORD, migrateLegacyPermissions } from '../../scripts/lib/permission-migration.ts';
 
 type Entry = { type: string; customType?: string; data?: unknown; message?: unknown };
 
@@ -54,18 +53,6 @@ function host(tools: readonly ToolPermissionTool[] = registry, active: readonly 
     activeNames: () => [...state.active],
     seedUsed(name: string) {
       state.entries.push({ type: 'message', message: { role: 'toolResult', toolName: name, isError: false, content: [] } });
-    },
-    seedManual(name: string) {
-      state.entries.push({
-        type: 'custom', customType: 'capability-discovery', data: {
-          version: 1,
-          result: {
-            status: 'ok', tools: [], mcp: [], skills: [],
-            manual: [{ ref: `tool://${name}`, name }],
-            coverage: { local: 'not_searched', remote: 'not_searched' },
-          },
-        },
-      });
     },
     seedBlacklist(name: string) {
       state.entries.push({
@@ -106,51 +93,6 @@ test('records replay append-only: set then reset returns the target to unmanaged
   assert.equal(explicitlyDisabled(f.api, f.branch(), 'write'), false);
   assert.equal(resolveToolPermission(f.api, f.branch(), 'write', f.activeNames()).state, 'active');
   assert.ok(f.branch().every((entry) => entry.customType === CAPABILITY_TOOL_PERMISSION_RECORD || entry.type === 'message'));
-});
-
-test('legacy manual/blacklist migrate once into canonical entries', () => {
-  const writerOf = (f: ReturnType<typeof host>) => ({
-    appendEntry: (kind: string, data?: unknown) => f.branch().push({ type: 'custom', customType: kind, data }),
-  });
-  const manual = host(registry, ['read']);
-  manual.seedManual('read');
-  const manualWriter = writerOf(manual);
-  assert.equal(migrateLegacyPermissions(manualWriter, manual.branch()), true);
-  assert.equal(explicitlyEnabled(manual.api, manual.branch(), 'read'), true);
-  assert.ok(manual.branch().some((entry) => (entry as { customType?: string }).customType === CAPABILITY_PERMISSION_MIGRATION_RECORD),
-    'one canonical marker is written');
-  assert.equal(migrateLegacyPermissions(manualWriter, manual.branch()), false, 'the marker makes it idempotent');
-
-  const both = host(registry, ['read']);
-  both.seedManual('read');
-  both.seedBlacklist('read');
-  migrateLegacyPermissions(writerOf(both), both.branch());
-  assert.equal(explicitlyDisabled(both.api, both.branch(), 'read'), true, 'legacy disabled beats legacy enabled');
-
-  const canonical = host(registry, ['read']);
-  canonical.seedBlacklist('read');
-  setToolPermission(canonical.api, canonical.api, canonical.branch(), ['read'], 'enabled');
-  migrateLegacyPermissions(writerOf(canonical), canonical.branch());
-  assert.equal(explicitlyEnabled(canonical.api, canonical.branch(), 'read'), true,
-    'an existing canonical entry is not overwritten by the legacy rule');
-
-  // A malformed canonical entry with an invalid state does not claim canonical ownership
-  const invalidCanonical = host(registry, ['read']);
-  invalidCanonical.seedBlacklist('read');
-  invalidCanonical.branch().push({
-    type: 'custom',
-    customType: CAPABILITY_TOOL_PERMISSION_RECORD,
-    data: { version: 1, set: [{ target: 'read', state: 'invalid-state' }] },
-  });
-  const writtenEntries: { customType: string; data?: unknown }[] = [];
-  migrateLegacyPermissions({ appendEntry: (kind, data) => writtenEntries.push({ customType: kind, data }) }, invalidCanonical.branch());
-  assert.deepEqual(writtenEntries[0], {
-    customType: CAPABILITY_TOOL_PERMISSION_RECORD,
-    data: {
-      version: 1,
-      set: [{ target: 'read', state: 'disabled' }],
-    },
-  }, 'malformed canonical state does not suppress legacy migration');
 });
 
 test('the manual seed disables by default and an explicit enable overrides it', () => {
@@ -314,9 +256,8 @@ test('reset tombstones explicit, migrated and config-default entries', () => {
 
   // A migrated blacklist rule is canonical `disabled`; reset removes it.
   const migrated = host(registry, ['read']);
-  migrated.seedBlacklist('read');
-  migrateLegacyPermissions({ appendEntry: (kind, data) => migrated.branch().push({ type: 'custom', customType: kind, data }) },
-    migrated.branch());
+  migrated.branch().push({ type: 'custom', customType: CAPABILITY_TOOL_PERMISSION_RECORD,
+    data: { version: 1, set: [{ target: 'read', state: 'disabled' }] } });
   assert.equal(explicitlyDisabled(migrated.api, migrated.branch(), 'read'), true);
   const resetMigrated = resetToolPermission(migrated.api, migrated.api, migrated.branch(), ['read']);
   assert.deepEqual(resetMigrated.reset.map((entry) => entry.name), ['read']);
@@ -350,14 +291,8 @@ test('reset tombstones explicit, migrated and config-default entries', () => {
 
 test('reset of a member covered by a migrated group leaves it managed', () => {
   const f = host(registry, ['docker_ps']);
-  f.branch().push({
-    type: 'custom', customType: 'capability-blacklist', data: {
-      version: 1,
-      added: [{ id: 'namespace:docker', kind: 'namespace', name: 'docker', target: 'namespace://docker', scope: 'branch' }],
-    },
-  });
-  migrateLegacyPermissions({ appendEntry: (kind, data) => f.branch().push({ type: 'custom', customType: kind, data }) },
-    f.branch());
+  f.branch().push({ type: 'custom', customType: CAPABILITY_TOOL_PERMISSION_RECORD,
+    data: { version: 1, set: [{ target: 'namespace://docker', state: 'disabled' }] } });
   assert.equal(explicitlyDisabled(f.api, f.branch(), 'docker_ps'), true);
   const reset = resetToolPermission(f.api, f.api, f.branch(), ['docker_ps']);
   assert.deepEqual(reset.reset, [], 'no exact tombstone is written for a group-covered member');

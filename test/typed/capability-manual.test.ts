@@ -16,7 +16,6 @@ import {
   CAPABILITY_DISCOVERY_RECORD,
   discoveryRecords,
 } from '../../src/capability/discovery-record.ts';
-import { migrateLegacyPermissions } from '../../scripts/lib/permission-migration.ts';
 import { CAPABILITY_SECTION, capabilityPromptTranscript } from '../../src/capability/prompt.ts';
 import { createToolAdmission } from '../../src/capability/admission.ts';
 import {
@@ -66,22 +65,6 @@ function host(tools: FakeTool[], active: string[] = [], mask: readonly string[] 
   };
   if (mask.length > 0) setCapabilityParent(api, null, mask);
   return api;
-}
-
-/** Legacy migration fixture: seed an old manual `capability-discovery` record. */
-function seedManualGrant(api: ManualHost, names: readonly string[]): void {
-  api.setActiveTools([...new Set([...api.getActiveTools(), ...names])]);
-  api.appendEntry('capability-discovery', {
-    version: 1,
-    result: {
-      status: 'ok',
-      tools: [],
-      mcp: [],
-      skills: [],
-      manual: names.map((name) => ({ ref: `tool://${name}`, name, kind: 'tool', status: 'available' })),
-      coverage: { local: 'not_searched', remote: 'not_searched' },
-    },
-  });
 }
 
 function branchOf(entries: readonly { customType: string; data?: unknown }[]): unknown[] {
@@ -162,18 +145,6 @@ test('a manualTools seed is disabled at the root and is not inherited', () => {
   const child = host(tools, []);
   setCapabilityParent(child, root);
   assert.equal(createToolAdmission(child, branch).admits('deck_pages'), false, 'an enabled tool is root-only');
-});
-
-test('a legacy manual record migrates once to a canonical enabled entry', () => {
-  const root = host(tools, []);
-  setCapabilityPermissionDefaults(root, ['deck_pages']);
-  seedManualGrant(root, ['deck_pages']);
-  const writer = { appendEntry: (kind: string, data?: unknown) => root.entries.push({ type: 'custom', customType: kind, data }) };
-  assert.equal(migrateLegacyPermissions(writer, root.entries), true);
-  const branch = branchOf(root.entries);
-  assert.equal(explicitlyEnabled(root, branch, 'deck_pages'), true);
-  assert.equal(createToolAdmission(root, branch).admits('deck_pages'), true);
-  assert.equal(migrateLegacyPermissions(writer, root.entries), false, 'the marker makes it idempotent');
 });
 
 test('list shows the four-state view without rule/source diagnostics', async () => {

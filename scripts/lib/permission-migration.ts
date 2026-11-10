@@ -1,173 +1,88 @@
-/**
- * One-time, explicit offline migration of retired permission formats.
- *
- * `capability-blacklist` and the old `capability-discovery` manual list are
- * read while the session is closed, converted into canonical
- * `capability-tool-permission` entries, and then never consulted at runtime.
- * A marker makes the migration idempotent; a child that inherits the marker
- * does not migrate again. A canonical entry that already exists wins over the
- * legacy value for the same target id.
- */
-
-import {
-  CAPABILITY_TOOL_PERMISSION_RECORD,
-  CAPABILITY_TOOL_PERMISSION_VERSION,
-  type ToolPermissionManagedState,
-} from '../../src/capability/tool-permission.ts';
+/** Offline conversion of flat manual-only records, preserving native checkpoints. */
+import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { CAPABILITY_TOOL_PERMISSION_RECORD } from '../../src/capability/tool-permission.ts';
 import { parseToolPermissionTarget } from '../../src/capability/manual-tools.ts';
 
-export const CAPABILITY_PERMISSION_MIGRATION_RECORD = 'capability-tool-permission-migration';
-export const CAPABILITY_PERMISSION_MIGRATION_VERSION = 1;
-
-const BLACKLIST_RECORD = 'capability-blacklist';
-const DISCOVERY_RECORD = 'capability-discovery';
-
-export interface MigrationWriter {
-  appendEntry(customType: string, data?: unknown): void;
-}
-
-interface MigrationEntry {
-  readonly target: string;
-  readonly state: ToolPermissionManagedState;
-  readonly id: string;
-}
-
-type UnknownRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is UnknownRecord {
+function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function targetText(value: UnknownRecord): string | null {
-  if (typeof value['target'] === 'string' && value['target'].trim() !== '') return value['target'].trim();
-  const kind = value['kind'];
-  const name = value['name'];
-  if (typeof name !== 'string' || name === '') return null;
-  if (kind === 'mcp') return `mcp://${name}`;
-  if (kind === 'namespace') return `namespace://${name}`;
-  if (kind === 'tool') return name;
-  return null;
-}
-
-function hasMigrationMarker(branch: readonly unknown[] | null | undefined): boolean {
-  for (const entry of branch ?? []) {
-    if (!isRecord(entry) || entry['type'] !== 'custom' || entry['customType'] !== CAPABILITY_PERMISSION_MIGRATION_RECORD) {
-      continue;
-    }
-    const data = entry['data'];
-    if (isRecord(data) && data['version'] === CAPABILITY_PERMISSION_MIGRATION_VERSION) return true;
-  }
-  return false;
-}
-
-/** Canonical ids this branch already sets or unsets; migration must not touch them. */
-function canonicalPermissionIds(branch: readonly unknown[] | null | undefined): ReadonlySet<string> {
-  const ids = new Set<string>();
-  for (const entry of branch ?? []) {
-    if (!isRecord(entry) || entry['type'] !== 'custom' || entry['customType'] !== CAPABILITY_TOOL_PERMISSION_RECORD) continue;
-    const data = entry['data'];
-    if (!isRecord(data) || data['version'] !== CAPABILITY_TOOL_PERMISSION_VERSION) continue;
-    if (Array.isArray(data['unset'])) {
-      for (const target of data['unset']) {
-        if (typeof target === 'string' && target.trim() !== '') {
-          const parsed = parseToolPermissionTarget(target);
-          if (parsed !== null) ids.add(parsed.id);
-        }
-      }
-    }
-    if (Array.isArray(data['set'])) {
-      for (const item of data['set']) {
-        if (!isRecord(item)) continue;
-        const state = item['state'];
-        if (state !== 'enabled' && state !== 'disabled') continue;
-        const rawTarget = typeof item['target'] === 'string' ? item['target'].trim() : '';
-        if (rawTarget === '') continue;
-        const parsed = parseToolPermissionTarget(rawTarget);
-        if (parsed !== null) ids.add(parsed.id);
-      }
-    }
-  }
-  return ids;
-}
-
-function legacyBlacklist(branch: readonly unknown[] | null | undefined): Map<string, MigrationEntry> {
-  const rules = new Map<string, { target: string; id: string }>();
-  for (const entry of branch ?? []) {
-    if (!isRecord(entry) || entry['type'] !== 'custom' || entry['customType'] !== BLACKLIST_RECORD) continue;
-    const data = entry['data'];
-    if (!isRecord(data) || data['version'] !== 1) continue;
-    if (Array.isArray(data['removed'])) {
-      for (const id of data['removed']) if (typeof id === 'string') rules.delete(id);
-    }
-    if (Array.isArray(data['added'])) {
-      for (const raw of data['added']) {
-        if (!isRecord(raw)) continue;
-        const target = targetText(raw);
-        if (target === null) continue;
-        const parsed = parseToolPermissionTarget(target);
-        if (parsed === null) continue;
-        rules.set(parsed.id, { target: parsed.target, id: parsed.id });
-      }
-    }
-  }
-  return new Map([...rules.values()].map(({ target, id }) => [id, { target, id, state: 'disabled' }]));
-}
-
-function legacyManual(branch: readonly unknown[] | null | undefined): Map<string, MigrationEntry> {
-  const names = new Set<string>();
-  for (const entry of branch ?? []) {
-    if (!isRecord(entry) || entry['type'] !== 'custom' || entry['customType'] !== DISCOVERY_RECORD) continue;
-    const data = entry['data'];
-    if (!isRecord(data)) continue;
-    const result = data['result'];
-    if (!isRecord(result) || !Array.isArray(result['manual'])) continue;
-    for (const hit of result['manual']) {
-      if (!isRecord(hit)) continue;
-      const members = Array.isArray(hit['tools']) ? hit['tools'] : [hit];
-      for (const member of members) {
-        if (isRecord(member) && typeof member['name'] === 'string' && member['name'] !== '') {
-          names.add(member['name']);
-        }
-      }
-    }
-  }
-  const entries = new Map<string, MigrationEntry>();
-  for (const name of names) {
-    const parsed = parseToolPermissionTarget(name);
-    if (parsed !== null) entries.set(parsed.id, { target: parsed.target, id: parsed.id, state: 'enabled' });
-  }
-  return entries;
-}
-
 /**
- * Append canonical permission entries for any legacy records on this branch.
- *
- * Returns true when this call wrote the marker (the branch had no marker yet).
- * An empty legacy set still writes the marker, so inherited branches never
- * retry the scan.
+ * Convert closed v3 session files containing only flat legacy manual grants.
+ * Keep entry IDs, parents, timestamps and every unrelated byte unchanged, so
+ * actor anchors and seed checkpoints see the converted rules without rebasing.
+ * Refuse unsupported mixtures before writing; this is not a general legacy
+ * rule translator. The caller owns backup and exclusion of concurrent writers.
  */
-export function migrateLegacyPermissions(
-  writer: MigrationWriter,
-  branch: readonly unknown[] | null | undefined,
-): boolean {
-  if (hasMigrationMarker(branch)) return false;
-  const canonical = canonicalPermissionIds(branch);
-  const merged = new Map<string, MigrationEntry>();
-  for (const [id, entry] of legacyManual(branch)) {
-    if (!canonical.has(id)) merged.set(id, entry);
-  }
-  // A legacy disabled rule wins over a legacy manual grant for the same id.
-  for (const [id, entry] of legacyBlacklist(branch)) {
-    if (!canonical.has(id)) merged.set(id, entry);
-  }
-  if (merged.size > 0) {
-    writer.appendEntry(CAPABILITY_TOOL_PERMISSION_RECORD, {
-      version: CAPABILITY_TOOL_PERMISSION_VERSION,
-      set: [...merged.values()].map((entry) => ({ target: entry.target, state: entry.state })),
-    });
-  }
-  writer.appendEntry(CAPABILITY_PERMISSION_MIGRATION_RECORD, {
-    version: CAPABILITY_PERMISSION_MIGRATION_VERSION,
+export function migrateSessionFile(file: string): boolean {
+  const sourceStat = lstatSync(file);
+  if (!sourceStat.isFile()) throw new Error('Migration requires a regular session file.');
+  const source = readFileSync(file, 'utf8');
+  const lines = source.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  let headerSeen = false;
+  let hasCanonical = false;
+  let converted = 0;
+  const output = lines.map((raw, index) => {
+    if (raw.trim() === '') return raw;
+    const fail = (message: string): never => {
+      throw new Error(`Session ${file}:${index + 1}: ${message}; file left unchanged.`);
+    };
+    let entry: unknown;
+    try { entry = JSON.parse(raw); }
+    catch { return fail('invalid JSON'); }
+    if (!record(entry)) return fail('expected a native session entry');
+    if (!headerSeen) {
+      if (entry['type'] !== 'session' || entry['version'] !== 3) return fail('expected a v3 session header');
+      headerSeen = true;
+      return raw;
+    }
+    if (entry['type'] !== 'custom') return raw;
+    if (entry['customType'] === 'capability-blacklist') return fail('unsupported capability-blacklist record');
+    if (entry['customType'] === CAPABILITY_TOOL_PERMISSION_RECORD) {
+      hasCanonical = true;
+      return raw;
+    }
+    if (entry['customType'] !== 'capability-discovery') return raw;
+    const data = entry['data'];
+    const result = record(data) ? data['result'] : undefined;
+    if (!record(result) || !Object.hasOwn(result, 'manual')) return raw;
+    if (!record(data) || data['version'] !== 1 || !Array.isArray(result['manual'])) return fail('unsupported manual record version or shape');
+    if (result['manual'].length === 0) return raw;
+    for (const category of ['tools', 'mcp', 'skills', 'guidance']) {
+      const hits = result[category];
+      if (hits !== undefined && (!Array.isArray(hits) || hits.length > 0)) return fail('unsupported mixed capability-discovery record');
+    }
+    const targets = new Set<string>();
+    for (const hit of result['manual']) {
+      if (!record(hit) || hit['tools'] !== undefined) return fail('unsupported group manual hit');
+      const name = hit['name'];
+      if (typeof name !== 'string' || name.trim() !== name) return fail('unsupported manual target');
+      const target = parseToolPermissionTarget(name);
+      if (target?.kind !== 'tool') return fail('unsupported manual target');
+      if (hit['status'] !== undefined && hit['status'] !== 'available') return fail('unsupported manual hit status');
+      targets.add(name);
+    }
+    converted += 1;
+    const ending = raw.endsWith('\r\n') ? '\r\n' : raw.endsWith('\n') ? '\n' : '';
+    return JSON.stringify({ ...entry, customType: CAPABILITY_TOOL_PERMISSION_RECORD,
+      data: { version: 1, set: [...targets].map(target => ({ target, state: 'enabled' })) } }) + ending;
   });
+  if (converted === 0) return false;
+  if (hasCanonical) throw new Error('Unsupported pre-existing canonical capability-tool-permission records alongside legacy manual grants; file left unchanged.');
+
+  const temporary = join(dirname(file), `.${basename(file)}.migrating-${randomUUID()}`);
+  const descriptor = openSync(temporary, 'wx', sourceStat.mode & 0o777);
+  try {
+    try {
+      writeFileSync(descriptor, output.join(''), 'utf8');
+      fsyncSync(descriptor);
+    } finally { closeSync(descriptor); }
+    renameSync(temporary, file);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
   return true;
 }
