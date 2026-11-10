@@ -26,7 +26,10 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { Value } from "typebox/value";
+
 import { deriveSessionUid } from "../../src/ipc/socket.ts";
+import { harnessRpcSchemaRef } from "../../src/harness-rpc/schema.ts";
 
 const isWindows = process.platform === "win32";
 const sdkEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
@@ -189,6 +192,7 @@ test(
     assert.equal(record.pid, running.child.pid);
     assert.equal(record.address, address);
     assert.notEqual(record.address, path.join(sessionDir, "Main.sock"), "the endpoint is not Main.sock");
+    assert.deepEqual([...Value.Errors(harnessRpcSchemaRef("HarnessRpcRecord"), record)], []);
 
     const response = (await rpcCall(address, { id: 1, method: "harness.info" })) as Record<string, unknown>;
     assert.deepEqual(response, {
@@ -196,6 +200,8 @@ test(
       ok: true,
       result: { protocolVersion: 1, sessionId: "smoke", pid: running.child.pid },
     });
+    assert.deepEqual([...Value.Errors(harnessRpcSchemaRef("RpcSuccessResponse"), response)], []);
+    assert.deepEqual([...Value.Errors(harnessRpcSchemaRef("HarnessInfoResult"), response.result)], []);
 
     await stopChild(running.child);
     await waitFor(() => !existsSync(recordPath) && !existsSync(address), "endpoint and record cleanup", running);

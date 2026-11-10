@@ -1,0 +1,14 @@
+{
+  "id": "create-1",
+  "method": "subagent.create",
+  "params": {
+    "context": "work",
+    "tasks": [
+      {
+        "name": "one",
+        "task": "Inspect the repo",
+        "inheritContext": false
+      }
+    ]
+  }
+}

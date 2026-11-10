@@ -1,0 +1,23 @@
+{
+  "description": "Two request frames with CRLF, an empty line, and chunk splits inside JSON tokens.",
+  "text": "{\"id\":1,\"method\":\"harness.info\"}\r\n\r\n{\"id\":2,\"method\":\"tools.detail\",\"params\":{\"name\":\"read\"}}\n",
+  "splitByteOffsets": [
+    26,
+    32,
+    86
+  ],
+  "utf8Split": false,
+  "expectedFrames": [
+    {
+      "id": 1,
+      "method": "harness.info"
+    },
+    {
+      "id": 2,
+      "method": "tools.detail",
+      "params": {
+        "name": "read"
+      }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "id": 1,
+  "method": "subagent.create",
+  "params": {
+    "tasks": [
+      {
+        "task": "t",
+        "unknown": 1
+      }
+    ]
+  }
+}

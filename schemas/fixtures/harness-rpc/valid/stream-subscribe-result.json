@@ -1,0 +1,27 @@
+{
+  "subscription": "sub-1",
+  "jobId": "job-1",
+  "agentId": "agent-1",
+  "rootSessionId": "session-demo",
+  "live": true,
+  "boundary": {
+    "status": "running",
+    "round": 1,
+    "history": {
+      "startEntryId": "e1",
+      "endEntryId": "e2"
+    },
+    "messages": [
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "already said"
+          }
+        ]
+      }
+    ],
+    "partial": null
+  }
+}

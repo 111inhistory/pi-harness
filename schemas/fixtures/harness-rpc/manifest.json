@@ -1,0 +1,397 @@
+{
+  "description": "Language-neutral valid/invalid fixtures for the Harness RPC wire protocol. Paths are relative to this directory.",
+  "fixtures": [
+    {
+      "path": "valid/request-harness-info.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": true,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "valid/request-tools-detail.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": true,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "valid/request-permission-enable.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": true,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "valid/request-subagent-create.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": true,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "valid/request-params-null.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": true,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "valid/response-success.json",
+      "kind": "frame",
+      "schema": "RpcResponse",
+      "valid": true,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "valid/response-failure.json",
+      "kind": "frame",
+      "schema": "RpcResponse",
+      "valid": true,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "valid/event-session.json",
+      "kind": "frame",
+      "schema": "RpcEventFrame",
+      "valid": true,
+      "conformance": [
+        "envelope"
+      ],
+      "nativeValidity": "illustrative"
+    },
+    {
+      "path": "valid/event-job.json",
+      "kind": "frame",
+      "schema": "RpcEventFrame",
+      "valid": true,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "valid/event-frame-opaque-payload.json",
+      "kind": "frame",
+      "schema": "RpcEventFrame",
+      "valid": true,
+      "conformance": [
+        "envelope"
+      ],
+      "nativeValidity": "opaque"
+    },
+    {
+      "path": "valid/stream-subscribe-result.json",
+      "kind": "frame",
+      "schema": "StreamSubscribeResult",
+      "valid": true,
+      "conformance": [
+        "payload"
+      ],
+      "nativeValidity": "illustrative"
+    },
+    {
+      "path": "valid/history-unavailable.json",
+      "kind": "frame",
+      "schema": "HistoryReadResult",
+      "valid": true,
+      "conformance": [
+        "payload"
+      ]
+    },
+    {
+      "path": "valid/tool-permission-query.json",
+      "kind": "frame",
+      "schema": "ToolPermissionQueryResult",
+      "valid": true,
+      "conformance": [
+        "payload"
+      ]
+    },
+    {
+      "path": "valid/discovery-record.json",
+      "kind": "frame",
+      "schema": "HarnessRpcRecord",
+      "valid": true,
+      "conformance": [
+        "payload"
+      ]
+    },
+    {
+      "path": "valid/stream-utf8.ndjson",
+      "kind": "stream",
+      "schema": "MethodRequest",
+      "valid": true,
+      "frameCount": 2,
+      "conformance": [
+        "framing",
+        "envelope"
+      ]
+    },
+    {
+      "path": "valid/stream-crlf-empty-lines.ndjson",
+      "kind": "stream",
+      "schema": "MethodRequest",
+      "valid": true,
+      "lineEnding": "crlf",
+      "frameCount": 2,
+      "conformance": [
+        "framing",
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/frame-array.json",
+      "kind": "frame",
+      "schema": "RpcRequest",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/request-missing-id.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/request-missing-method.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/request-tools-detail-missing-params.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/request-tools-detail-empty-name.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/request-targets-empty.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/request-subagent-task-unknown-field.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/response-both-ok-and-event.json",
+      "kind": "frame",
+      "schema": "RpcResponse",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/response-missing-error.json",
+      "kind": "frame",
+      "schema": "RpcResponse",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/event-seq-zero.json",
+      "kind": "frame",
+      "schema": "RpcEventFrame",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/event-missing-subscription.json",
+      "kind": "frame",
+      "schema": "RpcEventFrame",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/stream-payload-unknown-kind.json",
+      "kind": "frame",
+      "schema": "StreamEventPayload",
+      "valid": false,
+      "conformance": [
+        "payload"
+      ]
+    },
+    {
+      "path": "invalid/request-params-array.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/request-id-object.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/raw-not-json.txt",
+      "kind": "raw",
+      "valid": false,
+      "conformance": [
+        "framing"
+      ]
+    },
+    {
+      "path": "invalid/stream-bad-second-frame.ndjson",
+      "kind": "stream",
+      "schema": "MethodRequest",
+      "valid": false,
+      "invalidFrameIndex": 1,
+      "frameCount": 2,
+      "conformance": [
+        "framing",
+        "envelope"
+      ]
+    },
+    {
+      "path": "transport/split-utf8.json",
+      "kind": "transport",
+      "valid": true,
+      "conformance": [
+        "framing"
+      ]
+    },
+    {
+      "path": "transport/split-frame.json",
+      "kind": "transport",
+      "valid": true,
+      "conformance": [
+        "framing"
+      ]
+    },
+    {
+      "path": "valid/unknown-method-request.json",
+      "kind": "frame",
+      "schema": "RpcRequest",
+      "valid": true,
+      "conformance": [
+        "envelope"
+      ],
+      "dispatch": {
+        "outcome": "error",
+        "code": "method_not_found"
+      },
+      "methodRequestValid": false
+    },
+    {
+      "path": "invalid/unknown-method-method-request.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ],
+      "note": "structurally valid RpcRequest but not a supported MethodRequest"
+    },
+    {
+      "path": "stateful/subscribe-partial-then-deltas.ndjson",
+      "kind": "conversation",
+      "schemas": [
+        "MethodRequest",
+        "RpcEventFrame",
+        "RpcResponse",
+        "RpcEventFrame",
+        "RpcEventFrame",
+        "RpcEventFrame",
+        "RpcEventFrame",
+        "RpcEventFrame",
+        "RpcEventFrame",
+        "RpcEventFrame",
+        "RpcEventFrame"
+      ],
+      "expected": "stateful/subscribe-partial-then-deltas.expected.json",
+      "conformance": [
+        "stateful"
+      ],
+      "nativeValidity": "strict"
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "subscribe-then-events",
+      "conformance": "stateful",
+      "description": "A subscribe result followed by one session event and one job terminal event on the same subscription.",
+      "steps": [
+        {
+          "path": "valid/stream-subscribe-result.json",
+          "schema": "StreamSubscribeResult",
+          "role": "subscribe-result"
+        },
+        {
+          "path": "valid/event-session.json",
+          "schema": "RpcEventFrame",
+          "role": "event"
+        },
+        {
+          "path": "valid/event-job.json",
+          "schema": "RpcEventFrame",
+          "role": "event"
+        }
+      ],
+      "expect": {
+        "subscription": "sub-1",
+        "seq": [
+          1,
+          2
+        ],
+        "jobStatus": "completed"
+      }
+    }
+  ]
+}

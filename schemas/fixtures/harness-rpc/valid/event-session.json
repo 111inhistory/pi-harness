@@ -1,0 +1,19 @@
+{
+  "event": {
+    "subscription": "sub-1",
+    "seq": 1,
+    "payload": {
+      "kind": "session",
+      "rootSessionId": "session-demo",
+      "jobId": "job-1",
+      "agentId": "agent-1",
+      "event": {
+        "type": "message_start",
+        "message": {
+          "role": "assistant",
+          "content": []
+        }
+      }
+    }
+  }
+}

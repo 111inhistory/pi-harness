@@ -1,0 +1,5 @@
+# Preserve CRLF bytes in the transport conformance fixture.
+schemas/fixtures/harness-rpc/valid/stream-crlf-empty-lines.ndjson -text whitespace=cr-at-eol
+
+# Checksum bytes must match on every checkout platform.
+schemas/SHA256SUMS text eol=lf

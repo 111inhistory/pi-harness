@@ -1,0 +1,16 @@
+{
+  "scope": "branch",
+  "expression": "enabled+active",
+  "entries": [
+    {
+      "name": "read",
+      "kind": "tool",
+      "category": "tool",
+      "state": "active",
+      "managed": false,
+      "registered": true,
+      "active": true
+    }
+  ],
+  "managed": []
+}

@@ -1,0 +1,11 @@
+{
+  "id": "perm-1",
+  "method": "tools.permission.enable",
+  "params": {
+    "targets": [
+      "mcp://git",
+      "namespace://subagent",
+      "mcp__prod__*"
+    ]
+  }
+}

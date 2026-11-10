@@ -1,0 +1,39 @@
+name: Harness RPC schema
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.2'
+          cache: npm
+      - run: npm ci
+      # check:rpc-schema regenerates ignored JSON only after its bytes match the
+      # tracked SHA256SUMS. Never use schema:rpc here: CI must not update hashes.
+      - run: npm run check
+      - run: sha256sum --check schemas/SHA256SUMS
+      - run: npm run check:docs && npm run check:json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harness-rpc-protocol-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            schemas/harness-rpc.schema.json
+            schemas/harness-rpc.manifest.json
+            schemas/SHA256SUMS
+            schemas/fixtures/harness-rpc/
+            docs/harness-rpc-wire-spec.md
+            docs/harness-rpc-schema.md

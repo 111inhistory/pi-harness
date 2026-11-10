@@ -27,14 +27,16 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx scripts/test.mjs",
     "test:typed": "node --import tsx scripts/test.mjs typed",
-    "check": "npm run typecheck && npm test",
+    "check": "npm run typecheck && npm run check:rpc-schema && npm test",
     "check:json": "node scripts/check-json.mjs",
     "check:docs": "node scripts/check-docs.mjs",
     "check:test-contracts": "node scripts/check-test-contracts.mjs --staged",
     "prepare": "git config core.hooksPath .githooks || true",
     "test:subagent": "node --import tsx --test test/subagent-runtime.test.mjs",
     "test:shell-preflight": "node --import tsx --test test/shell-preflight.test.mjs test/shell-preflight-extension.test.mjs",
-    "migrate:tool-permissions": "node --import tsx scripts/migrate-tool-permissions.mjs"
+    "migrate:tool-permissions": "node --import tsx scripts/migrate-tool-permissions.mjs",
+    "check:rpc-schema": "node --import tsx scripts/check-rpc-schema.mjs",
+    "schema:rpc": "node --import tsx scripts/check-rpc-schema.mjs --write"
   },
   "dependencies": {
     "@earendil-works/pi-codemode": "1.5.0",

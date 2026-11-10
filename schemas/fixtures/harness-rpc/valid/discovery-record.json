@@ -1,0 +1,7 @@
+{
+  "protocolVersion": 1,
+  "address": "/tmp/pi-harness/session-demo/harness-rpc.sock",
+  "sessionId": "session-demo",
+  "pid": 4242,
+  "startedAt": "2026-01-01T00:00:00.000Z"
+}

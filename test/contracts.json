@@ -915,6 +915,14 @@
         {
           "path": "docs/architecture.md",
           "heading": "## Harness RPC 独立接口"
+        },
+        {
+          "path": "docs/harness-rpc-schema.md",
+          "heading": "# Harness RPC Schema"
+        },
+        {
+          "path": "docs/harness-rpc-wire-spec.md",
+          "heading": "# Harness RPC 线协议规范"
         }
       ],
       "tests": [
@@ -924,7 +932,8 @@
         "test/typed/harness-rpc-subagent.test.ts",
         "test/typed/harness-rpc-history.test.ts",
         "test/typed/harness-rpc-stream.test.ts",
-        "test/typed/harness-rpc-subprocess.test.ts"
+        "test/typed/harness-rpc-subprocess.test.ts",
+        "test/typed/harness-rpc-schema.test.ts"
       ]
     }
   ],

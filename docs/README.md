@@ -8,6 +8,8 @@
 | --- | --- |
 | [项目范围](00-scope.md) | 核心目标、主线边界和未交付功能 |
 | [接口契约](interface-contract.md) | Capability、Subagent、消息与结果的公开行为 |
+| [Harness RPC Schema](harness-rpc-schema.md) | 独立 RPC 端点的机器可读 schema、方法映射与校验入口 |
+| [Harness RPC 线协议](harness-rpc-wire-spec.md) | 语言无关的传输、信封、方法、订阅交接、解析器／组装器分工与夹具 |
 | [Harness 参数配置](harness-configuration.md) | 全局与受信项目配置、Budget、检索参数和提示词定制 |
 | [Shell 权限审批](shell-permissions.md) | Ask、Auto Approve、YOLO、静态策略与人工审批通知 |
 | [异步 Shell](async-shell.md) | POSIX tmux／Windows psmux 任务、增量输出、终端输入和结果归属 |

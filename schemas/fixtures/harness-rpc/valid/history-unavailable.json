@@ -1,0 +1,6 @@
+{
+  "available": false,
+  "jobId": "job-1",
+  "status": "running",
+  "reason": "history_unavailable"
+}

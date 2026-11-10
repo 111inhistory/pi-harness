@@ -1,0 +1,8 @@
+{
+  "id": null,
+  "ok": false,
+  "error": {
+    "code": "invalid_request",
+    "message": "Frame is not valid JSON."
+  }
+}

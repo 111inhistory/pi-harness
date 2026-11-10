@@ -15,6 +15,7 @@ const explicitFiles = [
 const targetDirs = [
   'prompts',
   'config',
+  'schemas',
 ];
 
 async function collectJsonFiles(dir) {
@@ -24,7 +25,9 @@ async function collectJsonFiles(dir) {
     for (const entry of entries) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        files.push(...await collectJsonFiles(full));
+        // Fixtures intentionally include invalid JSON shapes (arrays, bad
+        // frames); they are validated by the RPC schema check, not this one.
+        if (entry.name !== 'fixtures') files.push(...await collectJsonFiles(full));
       } else if (entry.name.endsWith('.json')) {
         files.push(full);
       }

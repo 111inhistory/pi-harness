@@ -1,0 +1,18 @@
+{
+  "description": "Two request frames; the second contains a multi-byte UTF-8 character split across reads.",
+  "text": "{\"id\":1,\"method\":\"harness.info\"}\n{\"id\":\"é\",\"method\":\"harness.info\"}\n",
+  "splitByteOffsets": [
+    41
+  ],
+  "expectedFrames": [
+    {
+      "id": 1,
+      "method": "harness.info"
+    },
+    {
+      "id": "é",
+      "method": "harness.info"
+    }
+  ],
+  "utf8Split": true
+}

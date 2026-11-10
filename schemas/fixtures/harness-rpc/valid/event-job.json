@@ -1,0 +1,13 @@
+{
+  "event": {
+    "subscription": "sub-1",
+    "seq": 2,
+    "payload": {
+      "kind": "job",
+      "rootSessionId": "session-demo",
+      "jobId": "job-1",
+      "agentId": "agent-1",
+      "status": "completed"
+    }
+  }
+}
