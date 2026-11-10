@@ -27,6 +27,26 @@
 
 纯逻辑测试仍可用于复杂算法或状态转换。使用真实 SDK 也不自动证明测试有价值。评审应检查断言是否能在目标行为被破坏时失败；修复实际缺陷时，宜验证回归在修复前失败、修复后通过。
 
+## Complexity and resource verification
+
+For changes whose work grows with history, tools, rules, actors or subscriptions, state the relevant input sizes and assess the complete call path. Count replay, catalog reads, matching, sorting, serialization and synchronous I/O across nested callers. Separate one-time initialization from work repeated per tool, request or event; include event-loop stalls when the same process owns the TUI. Complexity notation is a model, not evidence of a severity level. Confirm the trigger and user-visible impact before adding indices, batching or caches.
+
+Assess three different memory costs:
+
+| Cost | Evidence to collect |
+| --- | --- |
+| Allocation volume | Repeated arrays, object projections, serialization and temporary buffers created during an operation, even when later collected |
+| Peak live memory | Source history, copies, projections, buffers and concurrent children/requests held at the same time; include backing data kept alive by shared slices or closures |
+| Retained memory | Objects still reachable after the owning operation or subscription is released, with intended durable/live-session state accounted for |
+
+Model growth against the right population: current active subscriptions, historical subscription count, live actors or all retained actors are different bounds. A collection growing with required durable actors is not automatically a leak; an accumulation proportional to canceled subscriptions is not bounded by active subscribers. A faster cache may retain histories or sessions indefinitely. Record both the saved work and the retained-data bound before choosing it.
+
+For lifecycle changes, identify the strong-reference chain and the owner that breaks it. Include maps/sets, closure captures, unresolved Promise continuations, event emitters, sockets and request queues. Verify applicable completion, cancellation, unsubscribe, disconnect, partial-startup failure and root-retirement paths. Distinguish suppression of late delivery from removal of callbacks and waiters. Preserve ownership fences until the underlying session or resource has actually exited; weakening a fence is not a memory fix.
+
+Use deterministic assertions for teardown where possible, such as detached listeners, removed waiters, closed owned handles and unchanged active-observer counts across repeated subscribe/cancel cycles. Those assertions support, but do not alone prove, whole-object collectability. For suspected retention, use isolated process measurements, heap/reference inspection or explicit-GC diagnostics with event-loop turns. Account for references held by the diagnostic itself: `WeakRef.deref()` can keep an object alive for the current job. A `WeakMap` entry only stops retaining its key through that map; another strong path can retain the key and its graph. Do not rely on finalizer timing to release resources or make normal tests depend on prompt collection.
+
+Measure comparable phases and workloads. RSS can remain high after objects are collected because of allocator behavior; a single RSS increase does not establish a leak. Report heap, external/buffer memory and process peak RSS as applicable, alongside the objects intentionally alive at each phase. Distinguish post-operation memory with a child still alive from post-disposal recovery. Use repeat samples and the same SDK/runtime and workload for revision comparisons; keep noisy wall-clock, CPU and memory benchmarks opt-in. Add inexpensive operation-count regressions only for demonstrated excess work, through the relevant production entry point, and verify that they fail before the fix. Select evidence according to the changed resource boundary rather than requiring a full heap/performance exercise for every edit.
+
 ## 文档与测试登记
 
 `test/contracts.json` 记录行为依据，格式为：

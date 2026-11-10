@@ -19,8 +19,9 @@
 | [Provider 传输行为](provider-transports.md) | 增量工具 compat、描述与 schema 更新、缓存标识边界 |
 | [提示词资产](../prompts/README.md) | 资产字段、段落装配和修改生效规则 |
 | [已知问题与验收边界](known-issues.md) | 已知缺陷、未交付功能、待验收场景和设计限制 |
+| [开发工作流](development-workflow.md) | 先读当前架构并判断职责去留，再设计核心算法、实现、验证与交付；按变更规模执行 |
 | [测试架构与设计关联](testing.md) | design／regression 两类依据、测试价值评审、`test/contracts.json` 登记与提交前关联检查 |
-| [文档写作约定](writing-guide.md) | 术语、事实分类和写作规则 |
+| [文档写作约定](writing-guide.md) | 术语、事实分类、代码注释与写作规则 |
 
 配置示例见 [harness.json](../config/harness.json)、[subagent-routing.json](../config/subagent-routing.json) 和 [presets.json](../config/presets.json)。前二者配置执行限额、指定提示词段落与角色路由；`presets.json` 配置模型 Preset。Pi 模型认证与原生设置继续由 Pi 管理。
 

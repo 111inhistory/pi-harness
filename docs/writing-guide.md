@@ -2,7 +2,7 @@
 
 ## 适用范围
 
-本约定用于项目说明、工具说明、接口契约和设计文档。语言规则采用 `hai-simplified-technical` 的简化技术中文规则。
+本约定用于项目说明、工具说明、接口契约、设计文档与代码注释。语言规则采用 `hai-simplified-technical` 的简化技术中文规则；代码注释使用英文，具体要求见 [Code comments](#code-comments)。
 
 本约定适用于新增和改写的当前文档。历史正文保留记录时的语境；重用其中内容前应核对代码与当前契约。
 
@@ -39,6 +39,24 @@
 - 设计提案应与当前行为分节，不应把提案写成已实现行为。
 - 测试通过不能替代真实模型或平台验证。
 - 删除旧文档前，应保留其中尚未核对的约束和例外。
+
+## Code comments
+
+Use English for code comments. Explain a non-obvious reason, caller contract, ordering constraint, ownership boundary or actual limitation. Prefer a direct name or simpler code when it conveys the same information. A straightforward assignment, wrapper or private helper does not need a prose restatement or mandatory JSDoc.
+
+For exported APIs or substantial modules, document what a caller cannot learn from the signature: side effects, lifetime, mutability, error/partial-result behavior and any relevant boundary. Keep module comments short; the current contract and architecture documents own the broader design.
+
+Keep comments factual and local:
+
+- Describe the exact mutable object and its owner. Array append does not imply message-body mutation; a fresh array does not imply deeply detached values.
+- Describe what teardown actually removes and what may remain alive. Callback suppression is not observer removal, and wrapper disposal is not proof of underlying resource exit.
+- Qualify complexity and performance claims with the input and scope. Avoid unmeasured claims such as constant cost, negligible allocation or guaranteed responsiveness.
+- Cite the tested dependency version or a focused source/contract reference when a workaround depends on upstream behavior. Explain the trigger that makes the workaround necessary; do not paste an upstream implementation into comments.
+- Keep speculative causes and investigation history in the existing review. A comment asserting a safety requirement is not evidence that the requirement is necessary.
+
+When behavior changes, inspect comments on the affected caller, implementation and test. Update or remove obsolete names, format support, priority rules and guarantees in the same change. Do not leave changelog narration, commented-out old code or retired compatibility instructions in production code. A TODO should identify a concrete remaining condition or issue; do not add vague obligations such as “optimize later.”
+
+For example, prefer `// Own the append array and session header; historical message bodies stay shared.` over `// Deep-copy everything so callers can never mutate state.` when only the container and header require isolation. Likewise, document both native-listener and Runtime-observer teardown only if both are actually detached. Comments are reviewed against the code; no comment-count or JSDoc-coverage target is required.
 
 ## 工具提示词
 

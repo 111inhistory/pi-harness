@@ -4,7 +4,8 @@
 
 ## 1. 项目边界与文档地图
 
-- **不要保留兼容性**：重构或演进一次做干净。严禁保留冗余 shim、过渡包装层、兼容别名、旧版格式回退或 `.bak`／`.new` 文件；`src/` 与 `extensions/` 生产代码一律使用严格 TypeScript。
+- **功能冻结**：RPC／权限／继承与观察链路完成[改写计划](docs/reviews/rpc-permission-audit.md#rewrite-plan-and-feature-freeze)并由用户明确解除冻结前，不添加新功能。期间只推进审计、缺陷修复、必要简化、兼容性清理及对应测试／文档；已起草的性能基准保持可选，不扩展场景或框架。测试通过、提交或归档提案均不自动解除冻结。
+- **不要保留兼容性**：重构或演进一次做干净。严禁保留冗余 shim、过渡包装层、兼容别名、旧版格式回退或 `.bak`／`.new` 文件；`src/` 与 `extensions/` 生产代码一律使用严格 TypeScript。必要的迁移仅由 `scripts/` 中显式离线工具执行，生产模块不包含旧格式读取、迁移逻辑或迁移专用导出。
 - **范围**：基于 Pi SDK 的 Coding Agent Harness，包含树状 Subagent 编排、Capability 按需发现与分支记忆、以及本机受管 IPC 通信（Unix Socket / Windows Named Pipe）。不扩展脱离 Harness 的外部调度服务。
 - **文档索引**：
   - 项目目标与总览：[docs/00-scope.md](docs/00-scope.md)、[docs/README.md](docs/README.md)
@@ -14,6 +15,7 @@
   - 异步 Shell：[docs/async-shell.md](docs/async-shell.md)
   - 会话存储 v2 与分支恢复：[docs/subagent-storage.md](docs/subagent-storage.md)、[docs/capability-prompt-memory.md](docs/capability-prompt-memory.md)
   - 提示词资产与写作规范：[prompts/README.md](prompts/README.md)、[docs/writing-guide.md](docs/writing-guide.md)
+  - 开发工作流：[docs/development-workflow.md](docs/development-workflow.md)；按变更规模执行，资源／平台专项只在相关路径触发
   - 测试架构与文档关联：[docs/testing.md](docs/testing.md)、[test/contracts.json](test/contracts.json)
   - 已知问题与待验收边界：[docs/known-issues.md](docs/known-issues.md)
 - **资产与配置入口**：工具链与脚本以 `package.json`、`tsconfig.json` 为准；模型提示词正文统一存于 `prompts/*.json`（由 `src/prompt-text.ts` 加载），路由示例见 `config/subagent-routing.json`，不在业务代码中硬编码额外副本。
@@ -27,10 +29,16 @@
 
 - **先审前提，区分强依赖与弱依赖**：
   - 新增防御校验、回滚或字段前，先核实故障前提在现实中是否成立，并区分**强依赖前提**（如跨进程会话/IPC 句柄所有权、代次围栏、磁盘 JSONL 恢复、外部 Socket 报文、工具入参）与**弱依赖前提**（如可随时从原生区间重建的 `views/` 视图、TUI 折叠缓存）。
-  - 同一宿主内的受控 TS 模块间信任静态类型：仅在存在真实并发原地修改（如共享 `copyInheritedEntries`）时才做深拷贝；严禁把内部协作边界当成强事务不变量去重复编写字段白名单自检（`checkFields`）、递归 `deepFreeze` 或无意义的 `structuredClone`。
+  - 同一宿主内的受控 TS 模块间信任静态类型。历史 entry 与消息正文按不可变数据共享；子会话独立持有追加数组、header、索引与分支指针。仅对已证明会原地修改的对象做必要复制，不把容器追加当作整份历史深拷贝的理由，也不引入通用 CoW。确需复制上下文时，按 SDK 最近有效 compaction 的摘要、保留区间及后续必要状态限定范围。严禁把内部协作边界当成强事务不变量去重复编写字段白名单自检（`checkFields`）、递归 `deepFreeze` 或无意义的 `structuredClone`。
+- **Complexity, ownership and release**:
+  - For changes that scale with history, tools, rules, actors or subscriptions, identify those input sizes and the total time/space cost across callers. Check nested scans, repeated replay/sorting/serialization and synchronous main-thread work; reuse operation-local results before adding persistent caches or indices.
+  - Distinguish allocation volume, peak live memory and retained memory after teardown. Account for shared history, full projections, buffers and queued work; reducing CPU time does not justify unbounded retention. Every substantial copy or cache needs an owner, a bound and an actual mutation/reuse reason.
+  - Trace strong references through maps, closures, pending Promises and listeners. Define release on completion, cancellation, unsubscribe, disconnect, startup failure and root retirement as applicable. Suppressing callbacks is not detaching observers; releasing a wrapper must not remove resource fences while underlying work remains alive.
+  - Weak references describe reachability, not cleanup. A `WeakMap` does not neutralize other strong paths; `WeakRef` and `FinalizationRegistry` do not replace deterministic teardown. Verify observable release and retained-object behavior separately; validation guidance is in [resource verification](docs/testing.md#complexity-and-resource-verification).
 - **保持架构审美与主体性，变丑前先停下并交用户拍板**：
   - 面对边缘追问或审查意见时，不机械顺从、不为应付极端巧合而叠床架屋（审美是启动复核的信号，但不能作为删除已证必要正确性约束的理由）。
   - 当识别出某处属于弱边界、继续加保护会让架构、状态机、接口或 Prompt 变拧巴时，**先停下添加机制，向用户简列：① 触发条件；② 用户可见失败/残留状态及影响范围；③ 恢复办法；④ 增加保护的代价与推荐取舍**，由用户拍板后再修改；未获确认前不私自放宽契约或把部分失败包装成成功。
+- **Workflow and comments**: Before writing production code, inspect the affected architecture and actual callers; decide whether to keep, merge, delete, replace or add responsibility, then settle the core algorithm, data ownership, costs and reachable boundary cases. Follow [the development workflow](docs/development-workflow.md); scale the explanation to the change rather than requiring a new report. Explain non-obvious reasons and ownership in English comments, and update or remove stale guarantees with the implementation. Follow [code comment guidance](docs/writing-guide.md#code-comments); do not require comments on every symbol or preserve mechanisms solely because comments/tests describe them.
 - **Prompt 资产改动原则**：
   - Prompt 是系统契约的一部分，严禁混入内部实现细节噪音（底层函数名、中间变量、特定实验反馈要求）；修改已打磨的提示词遵循最小改动原则，使用明确的技术动词与行为原语，杜绝空洞说教与反向诱导。
 
