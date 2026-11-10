@@ -888,10 +888,6 @@ export class SubagentRuntime {
 
   /** Validate, atomically register and start a batch; return the public Agent view. */
   create(batch: unknown, options: TaskOptions = {}): CreatedAgents {
-    const rawOptions: unknown = options;
-    if (!isPlainObject(rawOptions)) {
-      throw new SubagentError("invalid_options", "create options must be an object.");
-    }
     return this.#withTransition(() => {
       const { entries, snapshot } = this.#planBatch(batch, options);
       // Task language is not a lifecycle decision. The router may prefer
