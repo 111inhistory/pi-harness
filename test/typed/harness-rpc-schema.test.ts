@@ -23,6 +23,7 @@ import { buildStreamPort } from '../../src/harness-rpc/ports/stream.ts';
 import { RPC_METHODS, type RpcMethod } from '../../src/harness-rpc/protocol.ts';
 import { HARNESS_RPC_METHOD_SCHEMAS, harnessRpcSchemaRef } from '../../src/harness-rpc/schema.ts';
 import { RpcRequestError } from '../../src/harness-rpc/error.ts';
+import { getAgentSocketPath, getBroadcastSocketPath } from '../../src/ipc/socket.ts';
 import { createSubagentRuntime, type JobRequest, type JobRecordView, type JobView, type SubagentRuntime } from '../../src/subagent/runtime.ts';
 import type { RootService } from '../../src/subagent/root-service.ts';
 import type { NativeLiveSnapshot } from '../../src/subagent/native-types.ts';
@@ -227,7 +228,7 @@ test('subagent, job and message method results match the schema', async () => {
     [RPC_METHODS.jobsResult, { jobId: 'sub_01' }],
     [RPC_METHODS.subagentCreate, { context: 'ctx', tasks: [{ name: 'one', task: 'do it' }] }],
     [RPC_METHODS.subagentStop, { id: 'sub_01' }],
-    [RPC_METHODS.messageSend, { path: '/tmp/project/sub_01.sock', content: 'hi' }],
+    [RPC_METHODS.messageSend, { path: getAgentSocketPath('sub_01', '/tmp/project'), content: 'hi' }],
   ] as Array<[RpcMethod, unknown]>) {
     assertResult(method, await call(router, method, params));
   }
@@ -247,7 +248,7 @@ test('subagent, job and message method results match the schema', async () => {
   const broadcastRouter = createRouter({
     sessionId: 's', tool: toolStub, subagent: buildSubagentPort(api, ctx, broadcastRoot), history: historyStub, stream: streamStub,
   });
-  assertResult(RPC_METHODS.messageSend, await call(broadcastRouter, RPC_METHODS.messageSend, { path: '/tmp/project/broadcast.sock', content: 'hi' }));
+  assertResult(RPC_METHODS.messageSend, await call(broadcastRouter, RPC_METHODS.messageSend, { path: getBroadcastSocketPath('Main', '/tmp/project'), content: 'hi' }));
 
   const crossRoot = makeRoot({
     resolveEndpoint: async () => ({ isManaged: false }),
@@ -256,7 +257,7 @@ test('subagent, job and message method results match the schema', async () => {
   const crossRouter = createRouter({
     sessionId: 's', tool: toolStub, subagent: buildSubagentPort(api, ctx, crossRoot), history: historyStub, stream: streamStub,
   });
-  assertResult(RPC_METHODS.messageSend, await call(crossRouter, RPC_METHODS.messageSend, { path: '/tmp/project/other/Main.sock', content: 'hi' }));
+  assertResult(RPC_METHODS.messageSend, await call(crossRouter, RPC_METHODS.messageSend, { path: getAgentSocketPath('Main', '/tmp/project/other'), content: 'hi' }));
 });
 
 test('job result errors keep the structured error envelope', async () => {

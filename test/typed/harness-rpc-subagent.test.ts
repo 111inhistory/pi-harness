@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import { buildSubagentPort } from "../../src/harness-rpc/ports/subagent.ts";
 import { RpcRequestError } from "../../src/harness-rpc/error.ts";
+import { getAgentSocketPath, getBroadcastSocketPath } from "../../src/ipc/socket.ts";
 import type { RootService } from "../../src/subagent/root-service.ts";
 import type { JobRecordView, JobView } from "../../src/subagent/runtime.ts";
 
@@ -140,7 +141,7 @@ test("stop and single-recipient send go through the root domain", async () => {
   });
   const port = buildSubagentPort(api, ctx, root);
   assert.deepEqual(port.stop({ id: "sub_01" }), { ok: true, id: "sub_01", status: "stopping" });
-  const receipt = await port.send({ path: "/tmp/project/pi-session/sub_01.sock", content: "hi" });
+  const receipt = await port.send({ path: getAgentSocketPath("sub_01", "/tmp/project/pi-session"), content: "hi" });
   assert.deepEqual(receipt, { ok: true, to: "sub_01", jobId: "sub_01" });
   assert.deepEqual(sent, { from: "Main", to: "sub_01", content: "hi" });
 });
@@ -151,7 +152,7 @@ test("broadcast send resolves to all, and unmanaged/foreign addresses are refuse
     sendMessage: () => ({ ok: true, to: "all", sent: [], errors: [] }),
   }));
   assert.deepEqual(
-    await broadcast.send({ path: "/tmp/project/pi-session/children.sock", content: "hi" }),
+    await broadcast.send({ path: getBroadcastSocketPath("Main", "/tmp/project/pi-session"), content: "hi" }),
     { ok: true, to: "all", sent: [], errors: [] },
   );
 
@@ -160,7 +161,7 @@ test("broadcast send resolves to all, and unmanaged/foreign addresses are refuse
     sessionEndpoint: async () => ({ kind: "foreign" }),
   }));
   await assert.rejects(
-    foreign.send({ path: "/tmp/project/pi-session/Main.sock", content: "hi" }),
+    foreign.send({ path: getAgentSocketPath("Main", "/tmp/project/pi-session"), content: "hi" }),
     (error: unknown) => error instanceof RpcRequestError && error.code === "invalid_target",
   );
 

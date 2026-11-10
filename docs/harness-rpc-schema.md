@@ -22,7 +22,7 @@ sha256sum --check schemas/SHA256SUMS
 
 `npm run check` 已包含 `check:rpc-schema`，干净 checkout 无需预先生成 JSON。Git 只追踪定义源码、夹具和 `SHA256SUMS`；生成器按固定依赖版本、对象顺序、两空格缩进、UTF-8 与 LF 序列化。协议修改后运行 `schema:rpc`，审查源码与本地生成物差异，再提交更新的校验和；普通检查不会改写校验和，缺失或不匹配会失败。
 
-[Harness RPC schema 工作流](../.github/workflows/harness-rpc-schema.yml) 在 push、pull request 和手动触发时用 `npm ci` 安装锁定依赖，运行基准检查、`sha256sum --check` 与文档／JSON 检查。成功后在 GitHub Actions 运行页面提供 `harness-rpc-protocol-<commit SHA>` artifact，包含生成的两个 JSON、校验和、协议文档与语言无关夹具；其他语言的解析库可以直接下载使用。仓库没有自动 Release 发布流程。
+[Harness RPC schema 工作流](../.github/workflows/harness-rpc-schema.yml) 在 push、pull request 和手动触发时，分别在 Ubuntu 与 Windows runner 上用 `npm ci` 安装锁定依赖，运行完整基准检查、`sha256sum --check` 与文档／JSON 检查。成功后由 Ubuntu job 在 GitHub Actions 运行页面提供 `harness-rpc-protocol-<commit SHA>` artifact，包含生成的两个 JSON、校验和、协议文档与语言无关夹具；其他语言的解析库可以直接下载使用。仓库没有自动 Release 发布流程。
 
 ## 帧与校验
 
@@ -124,4 +124,4 @@ schema 与实现使用同一套三态管理模型，不新增独立 schema 状�
 - `npm run check:rpc-schema`：18 个方法与 `$defs` 覆盖一致；`MethodRequest` 每个方法恰好一个分支；`$ref` 均可解析；样例请求／响应／事件／发现记录通过 TypeBox 校验；`valid/`、`invalid/`、`transport/`、`stateful/` 夹具按 manifest 声明验证（含 `conformance` 标签、`nativeValidity` 标签、`conversation` 逐帧 schema 与 `scenarios` 有状态序列）；`strict` 对话还校验上游 `AssistantMessage`/`Usage`/`toolCall` 必填字段；schema 与 manifest 的生成字节匹配 Git 追踪的 SHA-256。
 - `test/typed/harness-rpc-schema.test.ts`：用真实 `createRouter`、工具端口、子 Agent 端口、历史端口与执行流端口产生结果，逐个方法校验 `$defs`；覆盖 `record:null`、`history_unavailable`、`stream` 的 `session`/`job` 事件、广播与跨会话回执、错误 envelope 与全部方法请求。
 - 夹具是普通 JSON/NDJSON，其他语言可直接读取；`scripts/check-rpc-schema.mjs` 只是仓库 CI，不是跨语言运行时。
-- 本 schema 不替代平台与在线验收：Windows Named Pipe 实机、真实在线供应商多轮仍未覆盖。
+- Windows runner 的 transport 与装配测试使用真实 Named Pipe，验证请求／响应、订阅与端点生命周期；消息投递测试使用平台地址生成器。CLI 子进程烟测仍仅在 POSIX 运行，Windows 的完整 CLI 生命周期与真实在线供应商多轮不在该覆盖范围。

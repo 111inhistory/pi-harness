@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
+import { once } from "node:events";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,7 +10,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import { harnessRpcEnabled, installHarnessRpc } from "../../src/harness-rpc/assembly.ts";
 import { harnessRpcTarget } from "../../src/harness-rpc/discovery.ts";
-import { deriveSessionUid } from "../../src/ipc/socket.ts";
+import { getAgentSocketPath } from "../../src/ipc/socket.ts";
 import type { RootService } from "../../src/subagent/root-service.ts";
 
 async function fixture(t: test.TestContext): Promise<string> {
@@ -59,9 +61,9 @@ test("rpc mode binds a distinct endpoint and publishes/removes its discovery rec
   assert.equal(handle.status().available, true);
 
   const target = harnessRpcTarget(directory, "session-xyz");
-  // The endpoint is not Main.sock and lives inside the session directory.
-  assert.ok(handle.address?.endsWith(path.join(deriveSessionUid("session-xyz"), "harness-rpc.sock")));
-  assert.notEqual(handle.address, path.join(directory, deriveSessionUid("session-xyz"), "Main.sock"));
+  // Each platform derives a distinct endpoint from the same session namespace.
+  assert.equal(handle.address, getAgentSocketPath("harness-rpc", target.socketDir));
+  assert.notEqual(handle.address, getAgentSocketPath("Main", target.socketDir));
 
   const record = JSON.parse(await fsp.readFile(target.recordPath, "utf8")) as Record<string, unknown>;
   assert.equal(record.address, handle.address);
@@ -70,5 +72,9 @@ test("rpc mode binds a distinct endpoint and publishes/removes its discovery rec
 
   await handle.close();
   await assert.rejects(fsp.access(target.recordPath), "the record is removed on close");
-  await assert.rejects(fsp.access(target.address), "the endpoint is released on close");
+  await assert.rejects(async () => {
+    const socket = net.connect(target.address);
+    try { await once(socket, "connect"); }
+    finally { socket.destroy(); }
+  }, "the endpoint refuses connections after close");
 });
