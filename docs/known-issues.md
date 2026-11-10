@@ -4,6 +4,17 @@
 
 ## 已知缺陷
 
+### 权限、继承创建与 RPC 观察
+
+当前审计已复现以下缺陷：
+
+- 旧 `capability-discovery.manual` 仍经 admission 的 selected 路径授予 MCP 准入，canonical reset 不能清除这条旧来源授权。
+- 重叠目标的最终管理状态与操作效果不一致：宽组修改可能激活仍被精确规则禁用的成员，或撤下仍被精确规则启用的成员；执行 hook 仍拒绝 disabled 工具。
+- RPC 取消订阅后，终态 Promise 的 waiter 继续持有连接直到 Job 结束，反复订阅长任务会累积保留对象。
+- Inherited 创建的根权限传播曾逐工具重放分支并重建工具目录，引入同步停顿；修复与回归证据见审计，完整改写尚未交付。
+
+证据、影响范围与功能冻结期间的修复要求见[审计及改写计划](reviews/rpc-permission-audit.md)。历史提案归档和既有测试通过不表示这些问题已关闭。
+
 ### 严格工具 allowlist 下的激活记忆不一致
 
 Pi SDK `1.5.0` 可能保留 MCP 注册，却拒绝激活不匹配 allowlist 的成员。例如 allowlist 只列出 `read`、`write`、`capability`，既不匹配目标 `mcp__*` 工具，也不保留隐藏的 `tool_search`。SDK 没有公开的激活资格预检接口，激活调用可以静默省略成员。
@@ -35,7 +46,7 @@ Capability 按实际激活集筛选公开结果，返回失败或部分成功。
 - **Capability lazy schema**：离线 SDK 用例验证命中组 schema 不进入独立声明也不进入 Codemode 目录、`describeTool` 可取完整接口且脚本可执行、后续内部继承检索不重发这些 schema。真实提供方缓存命中、多轮模型遵循和长期保持未验收。
 - **模型 Preset**：`/preset`、`--preset` 的模型切换、thinking、工具修饰符基于稳定基线、instructions 段落投影、分支指令快照恢复、`codemode.mode` 生效覆盖已有离线单测与离线 SDK 冒烟；真实 TUI 下的 `/preset` 选择器与 `--preset` 命令交互、真实提供方的模型切换与在线缓存仍未验收。
 - **异步 Shell**：Linux tmux 与原生 Windows psmux 已通过真实 SDK 的离线回归，Windows 覆盖 Bash／PowerShell 入口、Main／Subagent 回调和取消清理。真实提供方多轮运行、长时压力与 Windows 进程查询不可用的故障注入仍未验收。Windows PowerShell SDK 用例曾报告一次未保留完整断言日志的偶发失败，尚未归因；最终基线通过不能证明该现象已修复，详见[平台验收记录](reviews/async-shell-platform-acceptance.md)。
-- **平台与用户边界**：Linux 与 Windows 的完整离线套件已运行；macOS 实机、多用户切换与管道权限隔离尚未验收。
+- **平台与用户边界**：Linux 与 Windows 曾运行完整离线套件；本轮 Windows VM 对当前基线及 RPC 测试调整的首轮结果为 1,162 项、1,130 通过、14 失败、18 跳过，失败集中在 preset 路径夹具与 Shell 解析／审批用例，尚未修复。该结果不支持当前版本 Windows 全套通过的结论。macOS 实机、多用户切换与管道权限隔离尚未验收。
 
 现有在线样本只证明记录中的具体场景，不替代当前调用链的完整验收。
 

@@ -1,5 +1,7 @@
 # Capability 启用重写交接计划
 
+状态：enable、实时注册表选择与 sessions connect 已落地；本计划中的 manual 记录模型已被三态管理替代，归档为历史交接材料。当前入口见[接口契约](../interface-contract.md)，未关闭缺陷与新改写计划见[审计记录](../reviews/rpc-permission-audit.md)。以下授权范围和实施状态仅描述当时的工作，不能据此恢复旧格式或启动新功能。
+
 ## 授权范围
 
 保留 `/capability` 及其只读的 list/category/filter 界面与补全。保留 `capability.manualTools`、手动分支授权、发现排除、仅根会话资格以及直接/MCP/Codemode 准入。仅替换旧版 enable 实现。保留无关工作以及 Pi 1.5.0 迁移成果。未经用户要求，不合并、不提交也不清理分支。

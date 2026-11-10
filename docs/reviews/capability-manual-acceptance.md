@@ -4,7 +4,7 @@
 
 本页保存检查时的证据与运行方式，不描述当前产品契约。当前行为见[接口契约](../interface-contract.md)与[Harness 参数配置](../harness-configuration.md)。
 
-旧 `enable` 实现、选择器及在线启用脚本已移除；下文的命令、脚本和成功记录仅属当时基线，不能作为当前或重写后实现的验收结论。重写范围与验证要求见[交接计划](capability-enable-rewrite-plan.md)。
+旧 `enable` 实现、选择器及在线启用脚本已移除；下文的命令、脚本和成功记录仅属当时基线，不能作为当前或重写后实现的验收结论。重写范围与验证要求见[历史交接计划](../archive/capability-enable-rewrite-plan.md)。
 
 ## 1. 完整 SDK 离线验收
 
