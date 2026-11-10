@@ -286,6 +286,46 @@ test("discoveryRecords drops fully removed group guidance and prose entirely", (
   assert.equal(folded[0]?.result.guidance, undefined, "guidance for fully pruned group is completely omitted");
 });
 
+test("successive member pruning removes old guidance without reviving metadata on rediscovery", () => {
+  const branch: unknown[] = [];
+  const writer = {
+    appendEntry(customType: string, data?: unknown) {
+      branch.push({ type: "custom", customType, data });
+    },
+  };
+  appendDiscoveryRecord(writer, "old", {
+    status: "ok",
+    tools: [{ ref: "namespace://fixture", name: "fixture", tools: [
+      { ref: "tool://fixture_a", name: "fixture_a" },
+      { ref: "tool://fixture_b", name: "fixture_b" },
+    ] }],
+    mcp: [], skills: [],
+    guidance: [{ ref: "namespace://fixture", instructions: "Old group guidance", tools: [
+      { ref: "tool://fixture_a", name: "fixture_a" },
+      { ref: "tool://fixture_b", name: "fixture_b" },
+    ] }],
+  }, coverage);
+  appendPruneRecord(writer, "checkpoint_a", ["fixture_a"]);
+  appendDiscoveryRecord(writer, "new_a", {
+    status: "ok", tools: [{ ref: "tool://fixture_a", name: "fixture_a", description: "New A metadata" }],
+    mcp: [], skills: [],
+  }, coverage);
+  appendPruneRecord(writer, "checkpoint_b", ["fixture_b"]);
+  appendDiscoveryRecord(writer, "new_b", {
+    status: "ok", tools: [{ ref: "tool://fixture_b", name: "fixture_b", description: "New B metadata" }],
+    mcp: [], skills: [],
+  }, coverage);
+
+  const records = discoveryRecords(branch);
+  assert.equal(records.length, 3);
+  assert.deepEqual(records[0]?.result.tools, []);
+  assert.equal(records[0]?.result.guidance, undefined, "separate removals exhaust the old group's members");
+  assert.equal(records[1]?.result.tools[0]?.name, "fixture_a");
+  assert.equal(records[1]?.result.tools[0]?.description, "New A metadata");
+  assert.equal(records[2]?.result.tools[0]?.name, "fixture_b");
+  assert.equal(records[2]?.result.tools[0]?.description, "New B metadata");
+});
+
 test("discoveryRecords folds prune records chronologically and preserves skills", () => {
   const branch: any[] = [];
   const writer = {

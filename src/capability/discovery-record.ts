@@ -281,23 +281,30 @@ function filterDiscoveryByPrune(
 }
 
 export function discoveryRecords(branch: readonly unknown[] | null | undefined): StoredDiscovery[] {
-  let records: StoredDiscovery[] = [];
-  for (const entry of branch ?? []) {
-    if (!isRecord(entry)) continue;
-    if (entry["type"] !== "custom") continue;
-    if (entry["customType"] === CAPABILITY_DISCOVERY_RECORD) {
-      const record = parseRecord(entry["data"]);
-      if (record !== null) records.push(record);
-    } else if (entry["customType"] === CAPABILITY_PRUNE_RECORD) {
+  const entries = branch ?? [];
+  const records: StoredDiscovery[] = [];
+  const removedTools = new Set<string>();
+  const removedGroups = new Set<string>();
+  // Each discovery sees only later removals. Rediscovery does not resurrect
+  // earlier records, and each record is projected once rather than per prune.
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!isRecord(entry) || entry["type"] !== "custom") continue;
+    if (entry["customType"] === CAPABILITY_PRUNE_RECORD) {
       const prune = parsePruneRecord(entry["data"]);
-      if (prune !== null && (prune.removedTools.length > 0 || (prune.removedGroups?.length ?? 0) > 0)) {
-        const removedTools = new Set(prune.removedTools);
-        const removedGroups = new Set(prune.removedGroups ?? []);
-        records = records.map((record) => filterDiscoveryByPrune(record, removedTools, removedGroups));
+      if (prune === null) continue;
+      for (const name of prune.removedTools) removedTools.add(name);
+      for (const group of prune.removedGroups ?? []) removedGroups.add(group);
+    } else if (entry["customType"] === CAPABILITY_DISCOVERY_RECORD) {
+      const record = parseRecord(entry["data"]);
+      if (record !== null) {
+        records.push(removedTools.size > 0 || removedGroups.size > 0
+          ? filterDiscoveryByPrune(record, removedTools, removedGroups)
+          : record);
       }
     }
   }
-  return records;
+  return records.reverse();
 }
 
 /**
