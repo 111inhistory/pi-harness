@@ -406,5 +406,3 @@ export function appendDiscoveryRecord(
   pi.appendEntry(CAPABILITY_DISCOVERY_RECORD, record);
   return memory;
 }
-
-
