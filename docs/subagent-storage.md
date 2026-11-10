@@ -58,6 +58,17 @@ Subagent 会话存储使用增量生命周期事件与独立子会话文件。�
 - Inherited 种子在创建时过滤 `subagent-*` 条目，再写入子文件。捕获时不额外裁剪压缩前的原生对话；末尾未完成的工具调用按快照规则过滤。持久化 Job 只保留 `seedFile`、`seedLeafId` 等元数据，不常驻 `entries` 数组。
 - 原生条目中的签名和扩展字段原样保留。
 
+捕获与种子不复制整份历史。原生会话按追加写入：`SessionManager` 只向自己的条目数组 push 新条目并移动叶指针，context edit 以新条目记录替换对象，历史条目本身不再改写。因此容器、header 与索引归每个子会话，历史 entry 与消息正文按不可变数据共享。
+
+| 数据 | 所有者 | 写入方式 |
+| --- | --- | --- |
+| 历史 entry 与消息正文 | 父会话的原生 `SessionManager`；捕获、种子和子会话只读引用 | 追加新条目，不改写已有条目 |
+| 捕获数组与 header 副本 | 批次捕获；非持久化模式下每个 Inherited 子会话一份 | 新数组、新 session header id；条目按引用共享 |
+| 条目数组、header、分支索引与叶指针 | 每个子 `SessionManager` | 追加 push、`branch` 移动叶指针；header 使用新 id |
+| 模型可见上下文 | SDK 投影 | 每次按 compaction 摘要、`firstKeptEntryId` 区间与后续条目投影，不缓存副本 |
+
+共享条目只来自当前版本的活动会话；旧版本 header 的条目原地迁移在加载阶段完成，不会改写捕获后共享的条目。持久化模式为每个子文件写入新 header 与种子正文，不共享条目数组。
+
 ### 4.3 所属权与 Fork：写时复制
 
 根会话只写自有目录中的子文件。Actor 的权威文件为记录中的 `sessionFile`，锚点为折叠状态中的 `anchor`。
@@ -81,6 +92,7 @@ ID 占用扫描覆盖根文件全部分支的 Actor 与 Job 事件、自有子�
 | --- | --- |
 | 根 `SessionManager`、Actor 与 Job 元数据和结果文本 | 已结束的持久化子会话 manager 在清理后解除引用；下次续跑或读取再打开 |
 | 运行中 Job 的 live 会话 | 已结束持久化 Job 的对话按原生区间读取，不把完整对话附在 Job 元数据中 |
+| 捕获的 Inherited 历史条目（跨子会话按只读引用共享） | 每个子会话自己的条目数组、header、分支索引与叶指针（随 manager 释放） |
 | 纯内存 Actor 的唯一对话 | 持久化 Inherited 种子写入后删除 Job 对数组的引用 |
 
 临时打开的 manager 不跨操作缓存。已有 live manager 时优先复用。纯内存 Actor 不能套用持久化文件的释放规则。

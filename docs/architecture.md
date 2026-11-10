@@ -51,6 +51,8 @@ Fresh 在自己的 Job Budget 内路由。初始工具使用 Pi 默认工具与�
 
 Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定底层物理模型（`physicalModelForCall`），避免虚拟模型在子会话中重路由。Inherited 独立加载配置的扩展与 MCP 后端。它恢复捕获的工具白名单、系统提示词与思考强度。白名单仅限可重新创建的文件型扩展工具与 MCP 工具，父会话专属诊断工具不传递。若继承的 MCP 工具尚未完成异步注册，按 `subagent.inheritedToolWaitMs` 有界等待，默认最多 10 秒，超时则抛出 `inherited_tool_unavailable`。路由完成的 Actor 在续跑时沿用已记录身份，不重新选择角色。
 
+Inherited 捕获每个批次只读取一次父分支，Fresh-only 批次不捕获。每个子会话持有自己的条目数组、session header、分支索引与叶指针；历史 entry 与消息正文按不可变数据共享，运行时不为整份历史做深拷贝，也不预先物化压缩后的有效上下文。只有 SDK 明确原地写入的对象才需要复制。
+
 Runner 通过 `openSubagentExecution` 获得 SDK Session。共享执行句柄负责 abort 和 cleanup；Root 不用超时竞争强制 dispose 一个仍在执行的 Session。
 
 父 Subagent 回复结束后，若直接子节点仍处于 `running`、`stopping` 或 `finalizing`，或当前执行仍持有未完成的异步 Shell 任务，Runner 保留会话并等待事件，不结束当前 Job。Runtime 暂停活跃时间并重排到 lifetime 截止时间；消息、子节点通知或最后一项工作结束会唤醒原循环，恢复活跃时间后重排 deadline。队列和所属工作均为空才正常收尾，期间不分配新 Job 或 Budget。取消会释放等待；失败或取消后的晚到子节点通知只追加保留历史。

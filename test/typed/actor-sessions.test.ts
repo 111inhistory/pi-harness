@@ -573,6 +573,94 @@ test("open reuses a live manager and restores a seeded memory conversation", (t)
   assert.equal(live.getLeafId(), liveLeaf, "a live manager keeps its own authoritative leaf");
 });
 
+test("inherited siblings append, branch and compact over shared immutable history", (t) => {
+  const h = createHarness({ durable: false });
+  t.after(() => h.dispose());
+
+  const source = SessionManager.inMemory(CWD);
+  const question = source.appendMessage(user("parent question"));
+  const toolCall = source.appendMessage({
+    role: "assistant",
+    content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "a.txt" } }],
+    api: "anthropic-messages",
+    provider: "fake",
+    model: "model-1",
+    usage: USAGE,
+    stopReason: "toolUse",
+    timestamp: Date.now(),
+  });
+  const toolResult = source.appendMessage({
+    role: "toolResult",
+    toolCallId: "call-1",
+    toolName: "read",
+    content: [{ type: "text", text: "file body" }],
+    isError: false,
+    timestamp: Date.now(),
+  });
+  // A checkpoint whose retained interval still starts at the tool call.
+  const checkpoint = source.appendCompaction("Parent summary", toolCall, 42);
+  const postCheckpoint = source.appendMessage(user("after the checkpoint"));
+  const edit = source.appendContextEdit(postCheckpoint, { content: "edited after the checkpoint" });
+  const custom = source.appendCustomEntry("fixture-state", { mode: "captured" });
+  const sourceIds = [question, toolCall, toolResult, checkpoint, postCheckpoint, edit, custom];
+  const sourceBranch = source.getBranch();
+  assert.deepEqual(sourceBranch.map((entry) => entry.id), sourceIds);
+
+  const seed = seedOf(source);
+  const first = h.store.open({ agentId: "s1", retained: null, seed, cwd: CWD });
+  const second = h.store.open({ agentId: "s2", retained: null, seed, cwd: CWD });
+  const firstBranch = first.getBranch();
+  const secondBranch = second.getBranch();
+  assert.deepEqual(firstBranch.map((entry) => entry.id), sourceIds);
+  // Each child indexes the captured entries; the entries themselves are shared
+  // immutable data, not copies.
+  for (const [index, entry] of sourceBranch.entries()) {
+    assert.equal(firstBranch[index], entry, "a child shares the captured entry object");
+    assert.equal(secondBranch[index], entry);
+  }
+
+  // The model-visible context is the captured effective context, including the
+  // checkpoint interval, the post-checkpoint edit and the tool call/result link.
+  const messages = first.buildSessionContext().messages as unknown as Array<Record<string, unknown>>;
+  assert.equal(messages.length, 4);
+  assert.equal(messages[0]?.["role"], "compactionSummary");
+  assert.equal(messages[0]?.["summary"], "Parent summary");
+  assert.equal(messages[0]?.["tokensBefore"], 42);
+  assert.deepEqual(messages[1]?.["content"], [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "a.txt" } }]);
+  assert.equal(messages[2]?.["role"], "toolResult");
+  assert.deepEqual(messages[2]?.["content"], [{ type: "text", text: "file body" }]);
+  assert.equal(messages[3]?.["content"], "edited after the checkpoint");
+  assert.equal(first.getEntry(custom)?.type, "custom");
+
+  // One child appends, compacts and branches on its own containers.
+  const childTurn = first.appendMessage(user("child-only question"));
+  first.appendCompaction("Child summary", childTurn, 7);
+  first.branch(question);
+  const childBranchTurn = first.appendMessage(user("child branch question"));
+  assert.equal(first.getLeafId(), childBranchTurn);
+
+  // The source, the sibling and a fresh open of the same seed keep their own
+  // conversation: no append reached the shared seed array.
+  assert.deepEqual(source.getBranch().map((entry) => entry.id), sourceIds);
+  assert.deepEqual(second.getBranch().map((entry) => entry.id), sourceIds);
+  const reopened = h.store.open({ agentId: "s3", retained: null, seed, cwd: CWD });
+  assert.deepEqual(reopened.getBranch().map((entry) => entry.id), sourceIds);
+
+  // Shared historical bodies still hold the captured values after sibling writes.
+  const siblingMessages = second.buildSessionContext().messages as unknown as Array<Record<string, unknown>>;
+  assert.deepEqual(siblingMessages[2]?.["content"], [{ type: "text", text: "file body" }]);
+  assert.equal(siblingMessages[3]?.["content"], "edited after the checkpoint");
+  assert.equal(second.getEntry(toolResult)?.type, "message");
+  assert.equal((second.getEntry(toolResult) as { message?: { role?: string } } | undefined)?.message?.role, "toolResult");
+  assert.equal(second.getEntry(edit)?.type, "context_edit");
+
+  // The sibling appends to its own array and leaf only.
+  const siblingTurn = second.appendMessage(user("sibling-only question"));
+  assert.equal(second.getLeafId(), siblingTurn);
+  assert.equal(first.getLeafId(), childBranchTurn);
+  assert.equal(source.getLeafId(), custom);
+});
+
 test("a seed header is never a conversation anchor", (t) => {
   const h = createHarness({ durable: false });
   t.after(() => h.dispose());

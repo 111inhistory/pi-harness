@@ -954,9 +954,9 @@
       "reason": "Precise call-surface section renamed and mapping refined; the surface behavior and tests are unchanged."
     },
     "subagent.integration": {
-      "docs": "37c9ffe581f5e21e7c28557d60470a1e7e4ae6875a7fdb61f61f5e9b2f835856",
+      "docs": "26a9eabd7b6207123ddf6dfaa857d7139ea83acebf9555b55869ec0dcf7b6d9b",
       "tests": "724704d451155986cb1f315723ecb47afccff0c23888f66d1474b9761ca92d0a",
-      "reason": "The shared architecture and interface files changed in the Capability and permission sections; subagent integration behavior is unchanged and still covered by the real integration test."
+      "reason": "The creation section gained an ownership statement for inherited history containers; inherited creation behavior is unchanged and the real SDK integration scenario still covers it."
     },
     "subagent.socket": {
       "docs": "7216b044f0e7d4aa77ed1e49a258ad02d6fade8d2beaeab7add3d62692d1720c",
@@ -1062,6 +1062,11 @@
       "docs": "53478ad36772f5375a1a883d2f3c6b82aa2cdb4d33a405fca171975a9dccedf7",
       "tests": "d14d344767bc7f608796e8c4c3d2fd0d7ebccb58288d120189b430721507610b",
       "reason": "The pi-job fixtures now shell-quote literal arguments instead of relying on JSON escaping, and a Windows-only real-parser case asserts that a native bare -- PowerShell command stays opaque and is denied as the whole command; the approval ordering, extraction and fail-closed contracts are unchanged."
+    },
+    "inherited.capture": {
+      "docs": "0386f1ee279a7d3a24d9892d6c7fc4de63da737e4776c211d6c1484da8015751",
+      "tests": "182539fab521bb3538099dffae78b5e727d4cf21e8bf18738d65ae1996499696",
+      "reason": "The creation section gained an ownership statement for inherited history containers; the capture implementation and its cache-identity behavior are unchanged, and the runtime/actor-session ownership tests cover the new statement."
     }
   }
 }

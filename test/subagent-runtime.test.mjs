@@ -297,7 +297,7 @@ function snapshot0() {
   return { systemPrompt: "parent", tools: [], entries: [] };
 }
 
-test("gives each inherited child its own native entries and session identity", () => {
+test("gives each inherited child its own native containers over shared immutable history", () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({ startJob: adapter.startJob });
   const header = { type: "session", id: "session_parent", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/work" };
@@ -308,19 +308,25 @@ test("gives each inherited child its own native entries and session identity", (
     timestamp: "2026-01-01T00:00:01.000Z",
     message: { role: "user", content: [{ type: "text", text: "parent work" }] },
   };
+  // The body is an accessor so creation that serializes the whole history is
+  // observable: sharing must not read a captured message body at all.
+  let bodyReads = 0;
+  const assistantBody = [
+    { type: "thinking", thinking: "weigh options", signature: "sig-1" },
+    { type: "text", text: "done" },
+    { type: "toolCall", id: "call-1", name: "read", arguments: { path: "a.txt" } },
+  ];
+  const assistantMessage = { role: "assistant" };
+  Object.defineProperty(assistantMessage, "content", {
+    enumerable: true, configurable: true,
+    get() { bodyReads += 1; return assistantBody; },
+  });
   const assistantEntry = {
     type: "message",
     id: "e2",
     parentId: "e1",
     timestamp: "2026-01-01T00:00:02.000Z",
-    message: {
-      role: "assistant",
-      content: [
-        { type: "thinking", thinking: "weigh options", signature: "sig-1" },
-        { type: "text", text: "done" },
-        { type: "toolCall", id: "call-1", name: "read", arguments: { path: "a.txt" } },
-      ],
-    },
+    message: assistantMessage,
   };
   const capture = {
     capturedAt: 1,
@@ -339,12 +345,19 @@ test("gives each inherited child its own native entries and session identity", (
   assert.equal(items.length, 2);
 
   const [snapshotA, snapshotB] = adapter.started.map((handle) => handle.job.spec.inheritedContext);
-  // Every child owns its entries array and its top-level snapshot object; the
-  // capture itself is never handed to a session.
+  // Creation shares the capture instead of serializing it; the probe reads a
+  // nested message body accessor and must stay at zero.
+  assert.equal(bodyReads, 0, "creation must not serialize captured message bodies");
+  // Each child owns its top-level snapshot, its entries array and its session
+  // header. The captured history itself is immutable data and stays shared.
   assert.notEqual(snapshotA.entries, snapshotB.entries);
   assert.notEqual(snapshotA.entries, capture.entries);
   assert.notEqual(snapshotA.entries[0], capture.entries[0]);
   assert.notEqual(snapshotA, snapshotB);
+  assert.equal(snapshotA.entries[1], userEntry);
+  assert.equal(snapshotA.entries[2], assistantEntry);
+  assert.equal(snapshotB.entries[1], userEntry);
+  assert.equal(snapshotB.entries[2], assistantEntry);
 
   // Each seeded session has its own identity instead of the caller's.
   const headerIdOf = (snapshot) => snapshot.entries.find((entry) => entry.type === "session").id;
@@ -352,7 +365,7 @@ test("gives each inherited child its own native entries and session identity", (
   assert.notEqual(headerIdOf(snapshotA), "session_parent");
   assert.notEqual(headerIdOf(snapshotB), "session_parent");
 
-  // Native blocks survive the copy verbatim — provider signature included.
+  // Native blocks are shared unchanged — provider signature included.
   assert.deepEqual(snapshotA.entries[2].message.content[0], { type: "thinking", thinking: "weigh options", signature: "sig-1" });
   assert.deepEqual(snapshotA.entries[2].message.content[2], { type: "toolCall", id: "call-1", name: "read", arguments: { path: "a.txt" } });
 

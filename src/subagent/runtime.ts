@@ -558,16 +558,22 @@ export function canonicalActorId(value: unknown): string | null {
 }
 
 /**
- * Deep-copy captured native session entries for one in-memory consumer.
+ * Give one inherited consumer its own native session containers.
  *
- * `SessionManager.inMemory(cwd, {}, entries)` keeps the array it is handed and
- * appends to it, so two sessions built from one snapshot would share storage
- * and one session identity. Every consumer gets its own copy with a fresh
- * session id on the copied header; native blocks are cloned verbatim.
+ * A captured history is immutable data: `SessionManager` appends by pushing new
+ * entries onto its own `fileEntries` array, moves only its leaf pointer, and
+ * projects context edits as replacement objects. Session identity, the append
+ * array, the branch index and the leaf therefore belong to each child, while the
+ * captured entries and their message bodies stay shared. `SessionManager`
+ * indexes the array it is handed and appends to it, so the array must never be
+ * the capture's or a sibling's; the header carries the child's own session id.
+ *
+ * The capture comes from a live current-version session, so the SDK's in-place
+ * entry migrations (older headers only) never touch these shared entries.
  */
 export function copyInheritedEntries(entries: unknown): unknown {
   if (!Array.isArray(entries)) return entries;
-  const copy: unknown[] = structuredClone(entries);
+  const copy = [...entries];
   const header = copy.findIndex((entry) => isPlainObject(entry) && entry.type === "session" && typeof entry.id === "string");
   if (header !== -1) {
     const original = copy[header];
