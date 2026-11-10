@@ -23,7 +23,7 @@
 | `command.ts`、`status-view.ts` | `/subagent` 命令注册、参数解析、错误呈现与列表文本渲染 | Job 状态、准入或消息投递 |
 | `capability/command.ts`、`capability/catalog.ts`、`capability/enable.ts`、`capability/activation.ts` | `/capability` 目录浏览与用户启用、按实时注册表解析启用目标、激活与可达性判定（发现、命令与跨会话回复工具加载共用） | 检索会话、路由、Subagent 状态 |
 | `capability/admission.ts` | 单次操作的工具准入视图：一次解析作用域链与分支记录，提供 `declares`（声明）、`admits`（执行）、`disabled`（显式禁用）、`enabled`（显式启用）与 `admitsServer`；复用已解析的工具目录，不重复读取 catalog | 跨请求缓存、第二套权限服务、改写激活集 |
-| `capability/tool-permission.ts`、`capability/permission-migration.ts` | 三态工具权限的 canonical 分支重放、config 默认条目、精确／组／prefix 匹配、派生四态查询与 enable／disable／reset；`permission-migration.ts` 仅供显式离线脚本 `scripts/migrate-tool-permissions.mjs` 使用，runtime 不调用 | 工具准入与执行本身、SDK 限制合成、跨作用域传播的存储 |
+| `capability/tool-permission.ts` | 三态工具权限的 canonical 分支重放、config 默认条目、精确／组／prefix 匹配、派生四态查询与 enable／disable／reset；历史格式迁移由离线脚本 `scripts/migrate-tool-permissions.mjs` 独立承担，runtime 不调用 | 工具准入与执行本身、SDK 限制合成、跨作用域传播的存储 |
 | `harness-rpc/*` | 独立 RPC 端点的协议、传输、发现、方法分派与工具／子任务／历史适配；仅在根宿主运行模式为 `rpc` 时装配，复用受管 IPC 的归属与清理 | Pi 原生 RPC 命令、Capability 内部规则、第二套 Job 状态机 |
 | `capability/lazy-schemas.ts`、`capability/codemode-mode.ts` | lazySchemas ref 解析与组归属、生效 Codemode 模式（预设记录在分支上的覆盖，回退到 Pi 设置） | 改变启用集合、授权或工具 exposure；写入 Pi 原生设置 |
 | `src/preset/*`、`extensions/preset.ts` | 模型 Preset 配置加载与合并、解析、模型／thinking／工具应用、分支快照与 instructions 段落、`/preset` 与 `--preset` | Capability 检索、Subagent 路由、Pi 原生设置写入 |

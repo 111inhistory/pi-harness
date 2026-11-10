@@ -1034,14 +1034,14 @@
       "reason": "test seed switched from legacy capability-discovery manual to a canonical enabled permission record; the authorized-tool visibility contract is unchanged"
     },
     "capability.tool-permission": {
-      "docs": "b2749d2f47c6ed6bdd25ade075f52fd137deb0f447dbd786bee8bb704e9d451c",
-      "tests": "60a062a1ceda7ccb089a20d7573fb2fc312a15ff0001afb8c41d81ff097b0e5e",
-      "reason": "Asserted admission sequence: retired manual record denied, canonical enable admitted, reset denied, and valid discovery positive control admitted."
+      "docs": "8212ad2e80db376be9ca22c1a38a601eb8a2a95de4d920921898479abc21b446",
+      "tests": "45ca87a548aec82a507cc914f8519cf058fc23902f8ef552282bfb386b4f8cea",
+      "reason": "Updated migration test with malformed canonical state regression and offline script import."
     },
     "capability.manual-enable": {
       "docs": "e4e5e4b4c213f9d9dd36e9cee79a0643aaea294f9710e790c9bba83820105bc4",
-      "tests": "f36929219831113dbc59f59aec65c64d463628d8566a696c679bfc103672c611",
-      "reason": "Removed retired appendManualRecord runtime export; tests now write raw fixture entries or use canonical setToolPermission without contract change."
+      "tests": "a9a8ab1f0cdd78659e8c49c291d07b9d99414e9377fc353c7a926e27c9ef36da",
+      "reason": "Switched migration import to offline scripts tooling without changing runtime contract."
     },
     "capability.compaction-prune": {
       "docs": "1dbe56d105a2ad54efa5d461f74a151112e5dd00b5dbb50236217bad2779f442",

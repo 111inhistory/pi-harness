@@ -1,8 +1,8 @@
 /**
- * One-time, explicit migration of the retired permission formats.
+ * One-time, explicit offline migration of retired permission formats.
  *
  * `capability-blacklist` and the old `capability-discovery` manual list are
- * read exactly once per branch, converted into canonical
+ * read while the session is closed, converted into canonical
  * `capability-tool-permission` entries, and then never consulted at runtime.
  * A marker makes the migration idempotent; a child that inherits the marker
  * does not migrate again. A canonical entry that already exists wins over the
@@ -12,10 +12,9 @@
 import {
   CAPABILITY_TOOL_PERMISSION_RECORD,
   CAPABILITY_TOOL_PERMISSION_VERSION,
-  canonicalPermissionIds,
   type ToolPermissionManagedState,
-} from './tool-permission.ts';
-import { parseToolPermissionTarget } from './manual-tools.ts';
+} from '../../src/capability/tool-permission.ts';
+import { parseToolPermissionTarget } from '../../src/capability/manual-tools.ts';
 
 export const CAPABILITY_PERMISSION_MIGRATION_RECORD = 'capability-tool-permission-migration';
 export const CAPABILITY_PERMISSION_MIGRATION_VERSION = 1;
@@ -23,7 +22,7 @@ export const CAPABILITY_PERMISSION_MIGRATION_VERSION = 1;
 const BLACKLIST_RECORD = 'capability-blacklist';
 const DISCOVERY_RECORD = 'capability-discovery';
 
-interface MigrationWriter {
+export interface MigrationWriter {
   appendEntry(customType: string, data?: unknown): void;
 }
 
@@ -59,6 +58,36 @@ function hasMigrationMarker(branch: readonly unknown[] | null | undefined): bool
     if (isRecord(data) && data['version'] === CAPABILITY_PERMISSION_MIGRATION_VERSION) return true;
   }
   return false;
+}
+
+/** Canonical ids this branch already sets or unsets; migration must not touch them. */
+function canonicalPermissionIds(branch: readonly unknown[] | null | undefined): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const entry of branch ?? []) {
+    if (!isRecord(entry) || entry['type'] !== 'custom' || entry['customType'] !== CAPABILITY_TOOL_PERMISSION_RECORD) continue;
+    const data = entry['data'];
+    if (!isRecord(data) || data['version'] !== CAPABILITY_TOOL_PERMISSION_VERSION) continue;
+    if (Array.isArray(data['unset'])) {
+      for (const target of data['unset']) {
+        if (typeof target === 'string' && target.trim() !== '') {
+          const parsed = parseToolPermissionTarget(target);
+          if (parsed !== null) ids.add(parsed.id);
+        }
+      }
+    }
+    if (Array.isArray(data['set'])) {
+      for (const item of data['set']) {
+        if (!isRecord(item)) continue;
+        const state = item['state'];
+        if (state !== 'enabled' && state !== 'disabled') continue;
+        const rawTarget = typeof item['target'] === 'string' ? item['target'].trim() : '';
+        if (rawTarget === '') continue;
+        const parsed = parseToolPermissionTarget(rawTarget);
+        if (parsed !== null) ids.add(parsed.id);
+      }
+    }
+  }
+  return ids;
 }
 
 function legacyBlacklist(branch: readonly unknown[] | null | undefined): Map<string, MigrationEntry> {

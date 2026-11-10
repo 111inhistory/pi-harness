@@ -312,12 +312,6 @@ function explicitEntries(branch: readonly unknown[] | null | undefined): Managed
   return [...explicitState(branch).sets.values()];
 }
 
-/** Canonical ids this branch already sets or unsets; migration must not touch them. */
-export function canonicalPermissionIds(branch: readonly unknown[] | null | undefined): ReadonlySet<string> {
-  const { sets, unsets } = explicitState(branch);
-  return new Set([...sets.keys(), ...unsets]);
-}
-
 /**
  * Every effective managed entry: config defaults and canonical explicit sets.
  * Legacy records are migrated once into canonical entries before runtime reads;

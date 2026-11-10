@@ -16,7 +16,7 @@ import { resolve } from 'node:path';
 
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 
-import { migrateLegacyPermissions } from '../src/capability/permission-migration.ts';
+import { migrateLegacyPermissions } from './lib/permission-migration.ts';
 
 const files = process.argv.slice(2).filter((argument) => !argument.startsWith('--'));
 if (files.length === 0) {

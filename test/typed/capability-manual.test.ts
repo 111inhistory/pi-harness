@@ -16,7 +16,7 @@ import {
   CAPABILITY_DISCOVERY_RECORD,
   discoveryRecords,
 } from '../../src/capability/discovery-record.ts';
-import { migrateLegacyPermissions } from '../../src/capability/permission-migration.ts';
+import { migrateLegacyPermissions } from '../../scripts/lib/permission-migration.ts';
 import { CAPABILITY_SECTION, capabilityPromptTranscript } from '../../src/capability/prompt.ts';
 import { createToolAdmission } from '../../src/capability/admission.ts';
 import {

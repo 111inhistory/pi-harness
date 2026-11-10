@@ -24,7 +24,7 @@ import {
 import { createToolAdmission } from '../../src/capability/admission.ts';
 import { setIndependentDeclarations } from '../../src/capability/declaration-visibility.ts';
 import { setCapabilityPermissionDefaults } from '../../src/capability/scope.ts';
-import { CAPABILITY_PERMISSION_MIGRATION_RECORD, migrateLegacyPermissions } from '../../src/capability/permission-migration.ts';
+import { CAPABILITY_PERMISSION_MIGRATION_RECORD, migrateLegacyPermissions } from '../../scripts/lib/permission-migration.ts';
 
 type Entry = { type: string; customType?: string; data?: unknown; message?: unknown };
 
@@ -133,6 +133,24 @@ test('legacy manual/blacklist migrate once into canonical entries', () => {
   migrateLegacyPermissions(writerOf(canonical), canonical.branch());
   assert.equal(explicitlyEnabled(canonical.api, canonical.branch(), 'read'), true,
     'an existing canonical entry is not overwritten by the legacy rule');
+
+  // A malformed canonical entry with an invalid state does not claim canonical ownership
+  const invalidCanonical = host(registry, ['read']);
+  invalidCanonical.seedBlacklist('read');
+  invalidCanonical.branch().push({
+    type: 'custom',
+    customType: CAPABILITY_TOOL_PERMISSION_RECORD,
+    data: { version: 1, set: [{ target: 'read', state: 'invalid-state' }] },
+  });
+  const writtenEntries: { customType: string; data?: unknown }[] = [];
+  migrateLegacyPermissions({ appendEntry: (kind, data) => writtenEntries.push({ customType: kind, data }) }, invalidCanonical.branch());
+  assert.deepEqual(writtenEntries[0], {
+    customType: CAPABILITY_TOOL_PERMISSION_RECORD,
+    data: {
+      version: 1,
+      set: [{ target: 'read', state: 'disabled' }],
+    },
+  }, 'malformed canonical state does not suppress legacy migration');
 });
 
 test('the manual seed disables by default and an explicit enable overrides it', () => {
