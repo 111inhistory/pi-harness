@@ -1035,8 +1035,18 @@
     },
     "capability.tool-permission": {
       "docs": "b2749d2f47c6ed6bdd25ade075f52fd137deb0f447dbd786bee8bb704e9d451c",
-      "tests": "b4c413cd873e0e2b06f2c748c1128009e95f98594d76d3098ba5f70a2b62ede2",
-      "reason": "The ownership table identifies the RPC adapter; existing tool-permission state, execution and propagation contracts remain covered by unchanged domain tests. RPC tool-port tests cover the new transport entry points."
+      "tests": "60a062a1ceda7ccb089a20d7573fb2fc312a15ff0001afb8c41d81ff097b0e5e",
+      "reason": "Asserted admission sequence: retired manual record denied, canonical enable admitted, reset denied, and valid discovery positive control admitted."
+    },
+    "capability.manual-enable": {
+      "docs": "e4e5e4b4c213f9d9dd36e9cee79a0643aaea294f9710e790c9bba83820105bc4",
+      "tests": "f36929219831113dbc59f59aec65c64d463628d8566a696c679bfc103672c611",
+      "reason": "Removed retired appendManualRecord runtime export; tests now write raw fixture entries or use canonical setToolPermission without contract change."
+    },
+    "capability.compaction-prune": {
+      "docs": "1dbe56d105a2ad54efa5d461f74a151112e5dd00b5dbb50236217bad2779f442",
+      "tests": "96e0426d076f5ab6a924ec78710cc140e7633db13f8fe3ef59d657d8885dd5c2",
+      "reason": "Tested that protectedTools preserves an unused discovered tool that unprotected candidate pruning removes."
     }
   }
 }

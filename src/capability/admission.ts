@@ -73,34 +73,30 @@ export interface AdmissionHost extends CapabilityToolCatalog {
 
 /** What the branch records for discovery selection. */
 export interface BranchSelection {
-  /** Names the branch records as discovered/selected, including legacy manual. */
+  /** Names the branch records as discovered/selected by discovery memory. */
   readonly selected: ReadonlySet<string>;
-  /** Legacy manual names; retained for preset retention, not execution authority. */
-  readonly manual: ReadonlySet<string>;
 }
 
 /**
- * One pass over the branch records yields both sets.
+ * One pass over the branch records yields discovered tool names.
  *
- * `manual` is legacy only (the three-state permission module migrates it to
- * `enabled`); `selected` keeps the discovery selection the MCP rule needs.
+ * Retired legacy manual records are not scanned; canonical tool permissions and
+ * normalized config defaults are the only management authority.
  */
 export function branchToolSelection(branch: readonly unknown[] | null | undefined): BranchSelection {
   const selected = new Set<string>();
-  const manual = new Set<string>();
   for (const record of discoveryRecords(branch)) {
-    for (const category of ['tools', 'mcp', 'manual'] as const) {
+    for (const category of ['tools', 'mcp'] as const) {
       for (const hit of record.result[category] ?? []) {
         if (hit.status && hit.status !== 'available') continue;
         for (const member of hit.tools ?? [hit]) {
           if (typeof member.name !== 'string' || member.name === '') continue;
           selected.add(member.name);
-          if (category === 'manual') manual.add(member.name);
         }
       }
     }
   }
-  return { selected, manual };
+  return { selected };
 }
 
 /**

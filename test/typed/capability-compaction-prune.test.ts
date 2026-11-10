@@ -20,7 +20,6 @@ import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
   appendDiscoveryRecord,
-  appendManualRecord,
   appendPruneRecord,
   discoveryRecords,
   latestPruneRecord,
@@ -287,7 +286,7 @@ test("discoveryRecords drops fully removed group guidance and prose entirely", (
   assert.equal(folded[0]?.result.guidance, undefined, "guidance for fully pruned group is completely omitted");
 });
 
-test("discoveryRecords folds prune records chronologically and preserves skills/manual", () => {
+test("discoveryRecords folds prune records chronologically and preserves skills", () => {
   const branch: any[] = [];
   const writer = {
     appendEntry: (customType: string, data?: unknown) => {
@@ -326,16 +325,13 @@ test("discoveryRecords folds prune records chronologically and preserves skills/
     coverage,
   );
 
-  // 2. Manual grant
-  appendManualRecord(writer, [{ ref: "tool://manual_tool", name: "manual_tool" }]);
-
-  // 3. Compaction and prune record
+  // 2. Compaction and prune record
   branch.push({ id: "comp_1", type: "compaction", summary: "compaction summary" });
   appendPruneRecord(writer, "comp_1", ["docker_build", "standalone", "gh_issue"], ["mcp://github"]);
 
   // Inspect folded discovery records
   const folded = discoveryRecords(branch);
-  assert.equal(folded.length, 2, "keeps discovery and manual records");
+  assert.equal(folded.length, 1, "keeps discovery records");
 
   const disc = folded[0]!;
   // docker namespace survived with only docker_ps
@@ -346,10 +342,9 @@ test("discoveryRecords folds prune records chronologically and preserves skills/
   // mcp://github had 0 tools left and was in removedGroups -> completely dropped with its guidance
   assert.equal(disc.result.mcp.length, 0);
 
-  // skills and manual are preserved
+  // skills are preserved
   assert.equal(disc.result.skills.length, 1);
   assert.equal(disc.result.skills[0]?.filePath, "/skills/test/SKILL.md");
-  assert.deepEqual(folded.flatMap((record) => record.result.manual?.map((hit) => hit.name) ?? []), ["manual_tool"]);
 
   // Pruned set check
   const pruned = prunedToolNames(branch);
@@ -357,7 +352,6 @@ test("discoveryRecords folds prune records chronologically and preserves skills/
   assert.equal(pruned.has("standalone"), true);
   assert.equal(pruned.has("gh_issue"), true);
   assert.equal(pruned.has("docker_ps"), false);
-  assert.equal(pruned.has("manual_tool"), false, "manual tools are never pruned");
 
   const latest = latestPruneRecord(branch);
   assert.equal(latest?.checkpointId, "comp_1");
@@ -483,8 +477,11 @@ test("createToolAdmission gates declares() against derived pruned set and restor
     coverage,
   );
 
-  // Manual grant for manual_edit
-  appendManualRecord(writer, [{ ref: "tool://manual_edit", name: "manual_edit" }]);
+  // Canonical enable for manual_edit
+  writer.appendEntry("capability-tool-permission", {
+    version: 1,
+    set: [{ target: "manual_edit", state: "enabled" }],
+  });
 
   // Before compaction: admission declares all three
   const admissionBefore = createToolAdmission(host as any, branch);
@@ -496,11 +493,11 @@ test("createToolAdmission gates declares() against derived pruned set and restor
   branch.push({ id: "comp_1", type: "compaction", summary: "c1" });
   appendPruneRecord(writer, "comp_1", ["docker_build", "mcp__gh__issue"], ["mcp://gh"]);
 
-  // After compaction: admission rejects pruned tools
+  // After compaction: admission rejects pruned tools while canonical enable survives
   const admissionAfter = createToolAdmission(host as any, branch);
   assert.equal(admissionAfter.declares("docker_build"), false, "ordinary non-MCP tool gated when pruned");
   assert.equal(admissionAfter.declares("mcp__gh__issue"), false, "pruned MCP tool not declared");
-  assert.equal(admissionAfter.declares("manual_edit"), true, "manual tool still declared");
+  assert.equal(admissionAfter.declares("manual_edit"), true, "explicitly enabled tool still declared");
 
   // Re-discovery of docker_build
   appendDiscoveryRecord(
@@ -696,18 +693,19 @@ test("branch tree forking isolates pruning to downstream branch only", () => {
   }
 });
 
-test("manual tools are protected even if explicitly passed to candidate pruning", () => {
+test("protectedTools preserves an unused discovered tool that unprotected candidate pruning removes", () => {
   const { pi, entries } = memoryWriter();
 
-  // Manual grant for manual_action
-  appendManualRecord(pi, [{ ref: "tool://manual_action", name: "manual_action" }]);
-  // Discovered tool
+  // Two discovered tools in the same candidate source
   appendDiscoveryRecord(
     pi,
     "call_d",
     {
       status: "ok",
-      tools: [{ ref: "tool://disc_tool", name: "disc_tool" }],
+      tools: [
+        { ref: "tool://disc_tool", name: "disc_tool" },
+        { ref: "tool://protected_tool", name: "protected_tool" },
+      ],
       mcp: [],
       skills: [],
     },
@@ -716,17 +714,22 @@ test("manual tools are protected even if explicitly passed to candidate pruning"
 
   const branch = [
     { id: "e1", type: "custom", customType: "capability-discovery", data: entries[0]!.data },
-    { id: "e2", type: "custom", customType: "capability-discovery", data: entries[1]!.data },
     { id: "comp_1", type: "compaction", summary: "c1" },
   ];
 
-  // Neither manual_action nor disc_tool were called in window
-  const prunable = computePrunableCapabilities({
+  // 1. Unprotected control: both unused discovered tools are prunable
+  const unpruned = computePrunableCapabilities({
     branch,
     checkpointId: "comp_1",
   });
+  assert.deepEqual([...unpruned.removedTools].sort(), ["disc_tool", "protected_tool"]);
 
-  // manual_action is protected by manual grant; only disc_tool is removed
+  // 2. Protected test: protectedTools preserves protected_tool while disc_tool is still removed
+  const prunable = computePrunableCapabilities({
+    branch,
+    checkpointId: "comp_1",
+    protectedTools: ["protected_tool"],
+  });
   assert.deepEqual(prunable.removedTools, ["disc_tool"]);
-  assert.equal(prunable.removedTools.includes("manual_action"), false);
+  assert.equal(prunable.removedTools.includes("protected_tool"), false);
 });

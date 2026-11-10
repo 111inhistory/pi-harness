@@ -13,7 +13,6 @@ import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand } from '@
 import { CombinedAutocompleteProvider, type AutocompleteProvider } from '@earendil-works/pi-tui';
 
 import {
-  appendManualRecord,
   CAPABILITY_DISCOVERY_RECORD,
   discoveryRecords,
 } from '../../src/capability/discovery-record.ts';
@@ -72,7 +71,17 @@ function host(tools: FakeTool[], active: string[] = [], mask: readonly string[] 
 /** Legacy migration fixture: seed an old manual `capability-discovery` record. */
 function seedManualGrant(api: ManualHost, names: readonly string[]): void {
   api.setActiveTools([...new Set([...api.getActiveTools(), ...names])]);
-  appendManualRecord(api, names.map((name) => ({ ref: `tool://${name}`, name, kind: 'tool', status: 'available' })));
+  api.appendEntry('capability-discovery', {
+    version: 1,
+    result: {
+      status: 'ok',
+      tools: [],
+      mcp: [],
+      skills: [],
+      manual: names.map((name) => ({ ref: `tool://${name}`, name, kind: 'tool', status: 'available' })),
+      coverage: { local: 'not_searched', remote: 'not_searched' },
+    },
+  });
 }
 
 function branchOf(entries: readonly { customType: string; data?: unknown }[]): unknown[] {
@@ -320,11 +329,22 @@ test('the manual tool list is configured per layer and validated', () => {
 
 test('projecting a legacy authorization produces no system section', () => {
   const entries: { customType: string; data?: unknown }[] = [];
-  appendManualRecord({ appendEntry: (customType, data) => { entries.push({ customType, data }); } }, [
-    { ref: 'tool://deck_pages', name: 'deck_pages', description: 'List deck pages', exposure: 'deferred', kind: 'tool' },
-  ]);
+  entries.push({
+    customType: 'capability-discovery',
+    data: {
+      version: 1,
+      result: {
+        status: 'ok',
+        tools: [],
+        mcp: [],
+        skills: [],
+        manual: [{ ref: 'tool://deck_pages', name: 'deck_pages', description: 'List deck pages', exposure: 'deferred', kind: 'tool' }],
+        coverage: { local: 'not_searched', remote: 'not_searched' },
+      },
+    },
+  });
   const branch = entries.map((entry) => ({ type: 'custom', customType: entry.customType, data: entry.data }));
-  assert.deepEqual(discoveryRecords(branch)[0]?.result.manual?.map((hit) => hit.ref), ['tool://deck_pages']);
+  assert.equal(discoveryRecords(branch)[0]?.result.tools.length, 0);
   const head = [{ role: 'system', content: 'base', sections: { preamble: 'Base' }, timestamp: 0 }];
   assert.deepEqual(capabilityPromptTranscript(head, branch, { allowsTool: () => true }), head);
   assert.deepEqual(capabilityPromptTranscript(head, branch, { allowsTool: () => false }), head);

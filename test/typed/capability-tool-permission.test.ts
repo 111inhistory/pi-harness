@@ -367,3 +367,85 @@ test('activeToolsAfterDisabled filters disabled names from an active set', () =>
   assert.deepEqual(activeToolsAfterDisabled(f.api, f.branch(), ['write', 'read']), ['write']);
   assert.deepEqual([...effectiveToolPermissionEntries(f.api, f.branch()).map((entry) => entry.id)], ['tool:read']);
 });
+
+test('retired capability-discovery manual records do not admit MCP tools, while canonical permissions and current discoveries admit them', () => {
+  const mcpTool: ToolPermissionTool = {
+    name: 'mcp__github__create_issue',
+    exposure: 'deferred',
+    namespace: { name: 'mcp__github', aliases: ['github'] },
+  };
+  const ordinaryTool: ToolPermissionTool = {
+    name: 'ordinary_discovered_tool',
+    exposure: 'deferred',
+  };
+  const f = host([mcpTool, ordinaryTool], [mcpTool.name, ordinaryTool.name]);
+
+  // 1. Empty branch: MCP tool not admitted without discovery or canonical enable
+  const admEmpty = createToolAdmission(f.api, f.branch());
+  assert.equal(admEmpty.admits(mcpTool.name), false);
+  assert.equal(admEmpty.admitsServer('github'), false);
+
+  // 2. Retired capability-discovery record with manual hit: must NOT grant admission
+  const legacyRecord = {
+    type: 'custom',
+    customType: 'capability-discovery',
+    data: {
+      version: 1,
+      result: {
+        status: 'ok',
+        tools: [],
+        mcp: [],
+        skills: [],
+        manual: [{ ref: 'mcp://github', name: 'github', tools: [{ ref: 'tool://mcp__github__create_issue', name: mcpTool.name }] }],
+        coverage: { local: 'not_searched', remote: 'not_searched' },
+      },
+    },
+  };
+  f.branch().push(legacyRecord);
+  const admLegacy = createToolAdmission(f.api, f.branch());
+  assert.equal(admLegacy.admits(mcpTool.name), false, 'retired manual category does not admit MCP tool');
+  assert.equal(admLegacy.admitsServer('github'), false, 'retired manual category does not admit MCP server');
+
+  // 3. Same retired record plus canonical unset: still not admitted
+  f.branch().push({
+    type: 'custom',
+    customType: CAPABILITY_TOOL_PERMISSION_RECORD,
+    data: { version: 1, unset: [mcpTool.name] },
+  });
+  const admUnset = createToolAdmission(f.api, f.branch());
+  assert.equal(admUnset.admits(mcpTool.name), false, 'canonical unset leaves tool unmanaged and unadmitted');
+  assert.equal(admUnset.admitsServer('github'), false);
+
+  // 4. Canonical enable: admitted
+  setToolPermission(f.api, f.api, f.branch(), [mcpTool.name], 'enabled');
+  const admEnabled = createToolAdmission(f.api, f.branch());
+  assert.equal(admEnabled.admits(mcpTool.name), true, 'canonical permission admits MCP tool');
+  assert.equal(admEnabled.admitsServer('github'), true);
+
+  // 5. Production resetToolPermission: returns to unmanaged -> denied without legitimate discovery
+  resetToolPermission(f.api, f.api, f.branch(), [mcpTool.name]);
+  const admReset = createToolAdmission(f.api, f.branch());
+  assert.equal(admReset.admits(mcpTool.name), false, 'resetToolPermission removes canonical enable and leaves tool unadmitted');
+  assert.equal(admReset.admitsServer('github'), false);
+
+  // 6. Current legitimate discovery positive control: both tools and mcp categories populate selected and admit tools
+  const validDiscovery = {
+    type: 'custom',
+    customType: 'capability-discovery',
+    data: {
+      version: 1,
+      result: {
+        status: 'ok',
+        tools: [{ ref: 'tool://ordinary_discovered_tool', name: ordinaryTool.name }],
+        mcp: [{ ref: 'mcp://github', name: 'github', tools: [{ ref: 'tool://mcp__github__create_issue', name: mcpTool.name }] }],
+        skills: [],
+        coverage: { local: 'searched', remote: 'not_searched' },
+      },
+    },
+  };
+  f.branch().push(validDiscovery);
+  const admValid = createToolAdmission(f.api, f.branch());
+  assert.equal(admValid.admits(mcpTool.name), true, 'current legitimate discovery admits MCP tool');
+  assert.equal(admValid.admitsServer('github'), true, 'current legitimate discovery admits MCP server');
+  assert.equal(admValid.declares(ordinaryTool.name), true, 'ordinary discovered tool is declared');
+});
