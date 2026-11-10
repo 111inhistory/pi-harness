@@ -1067,6 +1067,11 @@
       "docs": "0386f1ee279a7d3a24d9892d6c7fc4de63da737e4776c211d6c1484da8015751",
       "tests": "182539fab521bb3538099dffae78b5e727d4cf21e8bf18738d65ae1996499696",
       "reason": "The creation section gained an ownership statement for inherited history containers; the capture implementation and its cache-identity behavior are unchanged, and the runtime/actor-session ownership tests cover the new statement."
+    },
+    "harness.rpc-interface": {
+      "docs": "594d0ef01f83c003dc7d2479e4d899731b402db84eec8b5fbae215cf42d8c973",
+      "tests": "baf74acfd6caf97c39835faa3a1fd6857b4d05dda34e7681cfc1d5f1a1a3119f",
+      "reason": "Real transport through router and stream into Runtime verifies unsubscribe and disconnect ownership; half-close flush retains the complete large final response. Wire behavior and schema stay unchanged."
     }
   }
 }

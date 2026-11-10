@@ -92,14 +92,25 @@ export class RpcConnection {
   #chain: Promise<void> = Promise.resolve();
   #eventSeq = 0;
   #closed = false;
+  #inputEnded = false;
 
   constructor(socket: net.Socket, handler: RpcHandler, maxBacklogBytes: number, onError: (error: Error) => void) {
     this.#socket = socket;
     this.#handler = handler;
     this.#maxBacklogBytes = maxBacklogBytes;
     this.#onError = onError;
+    // A client may finish its request before reading the response. Stop new
+    // observations at FIN, but let the ordered request chain queue its
+    // responses before ending the writable side; `end()` flushes those bytes
+    // instead of discarding a backpressured response. An unresolved handler
+    // keeps this connection as in-flight ownership; it is not a subscription
+    // cancellation path.
     socket.allowHalfOpen = true;
     socket.on('data', (chunk: Buffer) => this.#onData(chunk));
+    socket.on('end', () => {
+      this.#inputEnded = true;
+      void this.#chain.then(() => this.#finishInput());
+    });
     socket.on('error', (error: NodeJS.ErrnoException) => {
       if (error.code !== 'EPIPE' && error.code !== 'ECONNRESET') this.#onError(asError(error));
     });
@@ -130,9 +141,9 @@ export class RpcConnection {
     return true;
   }
 
-  /** Push one event for a subscription. No-op once the connection is closed. */
+  /** Push one event for a subscription. No-op once input ended or the connection closed. */
   pushEvent(subscription: string, payload: unknown): void {
-    if (this.#closed) return;
+    if (this.#closed || this.#inputEnded) return;
     this.#eventSeq += 1;
     const frame: RpcEventFrame = { event: { subscription, seq: this.#eventSeq, payload } };
     this.#write(frame);
@@ -142,6 +153,31 @@ export class RpcConnection {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#releaseSubscriptions();
+    if (!this.#socket.destroyed) {
+      try {
+        this.#socket.destroy();
+      } catch {
+        /* teardown must not throw */
+      }
+    }
+  }
+
+  /** Finish after input ended: release observations, then flush queued writes. */
+  #finishInput(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#releaseSubscriptions();
+    if (!this.#socket.destroyed) {
+      try {
+        this.#socket.end();
+      } catch {
+        /* teardown must not throw */
+      }
+    }
+  }
+
+  #releaseSubscriptions(): void {
     for (const unsubscribe of this.#subscriptions.values()) {
       try {
         unsubscribe();
@@ -150,13 +186,6 @@ export class RpcConnection {
       }
     }
     this.#subscriptions.clear();
-    if (!this.#socket.destroyed) {
-      try {
-        this.#socket.destroy();
-      } catch {
-        /* teardown must not throw */
-      }
-    }
   }
 
   #onData(chunk: Buffer): void {
