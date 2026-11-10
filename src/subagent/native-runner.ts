@@ -89,6 +89,8 @@ class LiveJob {
   readonly listeners = new Set<(event: NativeSessionEvent) => void>();
   /** Latest cumulative assistant partial being streamed, for a live snapshot. */
   latestPartial: unknown | null = null;
+  /** Reads the run's current end boundary once its session exists. */
+  endEntryId: (() => string | null) | null = null;
   /** Reads the run's current boundary and produced content once its session exists. */
   snapshot: (() => NativeLiveSnapshot) | null = null;
   wake: (() => void) | null = null;
@@ -179,9 +181,18 @@ export class NativeJobRunner {
   }
 
   /**
-   * Read one live run's current boundary and produced content. Returns null when
-   * the Job has no live run (unknown, finished, or its session is not ready).
-   * Reading is a projection and never consumes the event stream.
+   * Read one live run's current end boundary. Returns undefined when the Job
+   * has no live run; null is a real live boundary (the leaf is not recorded).
+   */
+  liveEndEntryId(jobId: string): string | null | undefined {
+    const live = this.#jobs.get(jobId);
+    if (live === undefined || live.closed || live.endEntryId === null) return undefined;
+    return live.endEntryId();
+  }
+
+  /**
+   * Read one live run's stream projection. Returns null when the Job has no
+   * live run. Reading is a projection and never consumes the event stream.
    */
   liveSnapshot(jobId: string): NativeLiveSnapshot | null {
     const live = this.#jobs.get(jobId);
@@ -541,13 +552,12 @@ export class NativeJobRunner {
       // boundary is the leaf at start, and native compaction appends entries
       // instead of rewriting or dropping them.
       const jobMessages = (): unknown[] => messagesAfter(manager, boundary);
-      // A live snapshot is a read projection over the same recorded interval plus
-      // the cumulative assistant partial the provider is streaming right now.
+      // The live stream projection is read only by stream.subscribe. History
+      // reads the end boundary alone, so neither caller builds unused arrays.
+      live.endEntryId = () => manager.getLeafId();
       live.snapshot = () => ({
-        startEntryId: boundary,
         endEntryId: manager.getLeafId(),
         messages: jobMessages(),
-        entries: entriesAfter(manager, boundary),
         partial: live.latestPartial,
       });
 
@@ -646,6 +656,7 @@ export class NativeJobRunner {
     })).finally(async (): Promise<void> => {
       live.closed = true;
       live.listeners.clear();
+      live.endEntryId = null;
       live.snapshot = null;
       live.latestPartial = null;
       this.#jobs.delete(request.jobId);
@@ -808,13 +819,17 @@ function takeParkedMessages(session: NativeSession): unknown[] {
 
 /** Native messages appended since a boundary, for run classification. */
 function messagesAfter(sessionManager: SessionManager, boundary: string | null): unknown[] {
-  return messagesOf(entriesAfter(sessionManager, boundary));
-}
-
-function messagesOf(entries: readonly SessionEntry[]): unknown[] {
+  const branch = sessionManager.getBranch();
+  let start = 0;
+  if (boundary !== null) {
+    const at = branch.findIndex((entry) => entry.id === boundary);
+    if (at === -1) return [];
+    start = at + 1;
+  }
   const messages: unknown[] = [];
-  for (const entry of entries) {
-    if (entry.type === "message") messages.push(entry.message);
+  for (let index = start; index < branch.length; index += 1) {
+    const entry = branch[index];
+    if (entry?.type === "message") messages.push(entry.message);
   }
   return messages;
 }

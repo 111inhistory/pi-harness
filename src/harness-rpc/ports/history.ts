@@ -43,8 +43,9 @@ export function buildHistoryPort(root: RootService): HistoryPort {
       // null before the session recorded anything), not "not started": read from
       // the branch head and return the null start verbatim.
       const start = snapshot.history.startEntryId;
-      const live = root.liveSnapshot(jobId);
-      const end = live?.endEntryId ?? snapshot.history.endEntryId ?? null;
+      const liveEnd = root.liveEndEntryId(jobId);
+      const live = liveEnd !== undefined;
+      const end = liveEnd ?? snapshot.history.endEntryId ?? null;
       const entries = root.actors.readInterval({
         agentId: snapshot.agentId,
         startEntryId: start,
@@ -57,7 +58,7 @@ export function buildHistoryPort(root: RootService): HistoryPort {
         available: true,
         jobId,
         status: snapshot.status,
-        live: live !== null,
+        live,
         bounds: { startEntryId: start, endEntryId: end },
         entries,
       };

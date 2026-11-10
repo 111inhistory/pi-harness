@@ -42,7 +42,7 @@ function rootWithRuntime(
   const root = {
     sessionId: "session-root",
     runtime,
-    liveSnapshot: () => options.live ?? null,
+    liveEndEntryId: () => options.live == null ? undefined : options.live.endEntryId,
     actors: {
       readInterval: (input: { startEntryId: string | null; endEntryId: string | null }) => {
         requested = { startEntryId: input.startEntryId, endEntryId: input.endEntryId };
@@ -55,7 +55,7 @@ function rootWithRuntime(
 
 test("a running Job returns the interval produced so far plus the live end", () => {
   const running = runningJob();
-  const live: NativeLiveSnapshot = { startEntryId: "e1", endEntryId: "e2", messages: [], entries: [], partial: null };
+  const live: NativeLiveSnapshot = { endEntryId: "e2", messages: [], partial: null };
   const harness = rootWithRuntime(running.runtime, { live, entries: [{ type: "message", id: "e1" }] });
   const result = buildHistoryPort(harness.root).read({ jobId: running.jobId });
 
@@ -88,10 +88,8 @@ test("a legitimate null start is read as the branch head, not treated as not-sta
   // before the session recorded anything). It is not "not started".
   const running = runningJob(null);
   const live: NativeLiveSnapshot = {
-    startEntryId: null,
     endEntryId: "e2",
     messages: [{ role: "assistant" }],
-    entries: [{ type: "message", id: "e2" }],
     partial: null,
   };
   const harness = rootWithRuntime(running.runtime, { live, entries: [{ type: "message", id: "e2" }] });
@@ -142,7 +140,7 @@ test("history distinguishes unknown, not-yet-started and unreadable intervals", 
   });
 
   // A durable record whose interval cannot be read (memory-only).
-  const live: NativeLiveSnapshot = { startEntryId: "e1", endEntryId: "e2", messages: [], entries: [], partial: null };
+  const live: NativeLiveSnapshot = { endEntryId: "e2", messages: [], partial: null };
   const unreadable = rootWithRuntime(running.runtime, { live, entries: null });
   assert.equal(buildHistoryPort(unreadable.root).read({ jobId: running.jobId }).available, false);
 

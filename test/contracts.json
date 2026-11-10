@@ -1010,23 +1010,23 @@
     },
     "subagent.lifecycle": {
       "docs": "d63397a49b04cf3af4498f3ee5e61e144c258ade0b261e1c238312da88ecd5d9",
-      "tests": "4310e6724d33493f45a567a973833b96149cd993c8a033f020480f3f06ce7c99",
-      "reason": "native-job-runner adds a live-snapshot assertion for a running Job; creation and execution lifecycle behavior is unchanged."
+      "tests": "b905491262da2bc449e98cf02b632634ab40e377b99cab4f9073c86b90804ce7",
+      "reason": "The file change only extends the live snapshot test with the focused end-boundary read; lifecycle behavior and its documented contract are unchanged."
     },
     "subagent.delivery": {
       "docs": "3b8cc6a2e08fea413d06c642fb553d75e5591c5352989b1389df1c0b9ef8f456",
-      "tests": "378bf6f4465e3134573148e5980f9a2705f93a88ea54a31f77a02f0f34232113",
-      "reason": "The new live snapshot is a read-only observation surface; delivery and terminal-notification semantics are unchanged."
+      "tests": "cf5459850e8dd485456155f4c9cbe2afbf5bfb382812392ff101f2686424aeb5",
+      "reason": "The file change only extends the live snapshot test with the focused end-boundary read; delivery behavior and its documented contract are unchanged."
     },
     "subagent.parent-hold": {
       "docs": "1bf1ee9a30aa83b99ec446a6a12d1e078fc27936675eaba6deb53720fce8e5e4",
-      "tests": "b23bbaa0c1ba6c74369a86fc56da5549144912bbfb4032a23311a309f460233b",
-      "reason": "The live-snapshot test does not alter parent-hold behavior; only a new read-only observation is asserted."
+      "tests": "8961b32b622e62dda35cff10a03ad4142c9b13d7cade9ceedc72a3fe6eb29305",
+      "reason": "The file change only extends the live snapshot test with the focused end-boundary read; parent-hold behavior and its documented contract are unchanged."
     },
     "subagent.retirement": {
       "docs": "ab10900eec7e9ccfefbe498e7c56038cffde62abcfb72f083c8181465ae93db0",
-      "tests": "7dbc0a3b0ef3a14661fc086776040ca7ac3588c9d5d5614b1c426981d6603efc",
-      "reason": "The root boundary fixture adds real creation work-count and permission loadout coverage; its existing quiescence, cancellation and terminal ownership assertions remain unchanged."
+      "tests": "d40e9d761b33eba8d6945065cd1f07881c7895a5122daca37d92090f1d478131",
+      "reason": "Focused boundary reads and actual root creation assertions preserve retirement ownership and cancellation behavior."
     },
     "capability.scope-admission": {
       "docs": "4393d3c918137e6171a7bd47b85e5d4786688cf2b5a0bbb4b200c761617509d1",
@@ -1062,6 +1062,11 @@
       "docs": "53478ad36772f5375a1a883d2f3c6b82aa2cdb4d33a405fca171975a9dccedf7",
       "tests": "d14d344767bc7f608796e8c4c3d2fd0d7ebccb58288d120189b430721507610b",
       "reason": "The pi-job fixtures now shell-quote literal arguments instead of relying on JSON escaping, and a Windows-only real-parser case asserts that a native bare -- PowerShell command stays opaque and is denied as the whole command; the approval ordering, extraction and fail-closed contracts are unchanged."
+    },
+    "harness.rpc-interface": {
+      "docs": "07262ebf7413f9a220ffc80c724b49d34e3342913ba8355a98d22ff38cef3f73",
+      "tests": "8b7923aacb5b037836055fb19ddfd68c425c40c2e4403e4f5c233275c6ac6348",
+      "reason": "Internal live projections omit unused fields; actual wire payloads, schema and method semantics remain unchanged. Platform fixture corrections are retained."
     }
   }
 }

@@ -316,7 +316,7 @@ function historyRoot(runtime: SubagentRuntime, live: NativeLiveSnapshot | null):
   return {
     sessionId: 'session-root',
     runtime,
-    liveSnapshot: () => live,
+    liveEndEntryId: () => live === null ? undefined : live.endEntryId,
     actors: { readInterval: () => [{ type: 'message', id: 'e1' }] },
   } as unknown as RootService;
 }
@@ -350,10 +350,8 @@ test('history and stream method results and event payloads match the schema', as
   const produced = { role: 'assistant', content: [{ type: 'text', text: 'already said' }] };
   const partial = { role: 'assistant', content: [{ type: 'text', text: 'streaming' }] };
   const live: NativeLiveSnapshot = {
-    startEntryId: 'e1',
     endEntryId: 'e2',
     messages: [produced],
-    entries: [{ type: 'message', id: 'e2' }],
     partial,
   };
 

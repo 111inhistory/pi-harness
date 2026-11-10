@@ -1453,8 +1453,10 @@ test("live snapshot exposes produced messages and the streaming partial mid-run"
   assert.equal((snapshot.messages.at(-1) as AssistantMessage).role, "assistant");
   assert.equal((snapshot.partial as AssistantMessage).role, "assistant", "the streaming partial is visible");
   assert.equal(typeof snapshot.endEntryId, "string");
+  assert.equal(h.runner.liveEndEntryId("sub_01"), snapshot.endEntryId, "history reads only the live end boundary");
 
   gate.resolve("done");
   assert.equal((await started.done).status, "completed");
   assert.equal(h.runner.liveSnapshot("sub_01"), null, "a finished Job has no live snapshot");
+  assert.equal(h.runner.liveEndEntryId("sub_01"), undefined, "a finished Job has no live end boundary");
 });

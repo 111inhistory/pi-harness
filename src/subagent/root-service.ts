@@ -401,7 +401,13 @@ export class RootService implements ManagedWriteHost {
     return this.runner.subscribeJobEvents(jobId, listener);
   }
 
-  /** Read one live Job's current boundary and produced content (null when it has no live run). */
+  /** Read one live Job's current end boundary (undefined when it has no live run). */
+  liveEndEntryId(jobId: string): string | null | undefined {
+    this.assertOperational();
+    return this.runner.liveEndEntryId(jobId);
+  }
+
+  /** Read one live Job's stream projection (null when it has no live run). */
   liveSnapshot(jobId: string): NativeLiveSnapshot | null {
     this.assertOperational();
     return this.runner.liveSnapshot(jobId);

@@ -129,7 +129,7 @@ test("projection drops cumulative partial and keeps tool-call identity", () => {
 
 test("an event can precede the subscribe response and still carries the assigned subscription id", async () => {
   const running = runningJob();
-  const live: NativeLiveSnapshot = { startEntryId: "e1", endEntryId: "e2", messages: [], entries: [], partial: null };
+  const live: NativeLiveSnapshot = { endEntryId: "e2", messages: [], partial: null };
   const captured: { listener: ((event: unknown) => void) | null } = { listener: null };
   const root = {
     sessionId: "session-root",
@@ -165,10 +165,8 @@ test("a running Job yields a real snapshot boundary, then live deltas and the Ru
   const produced = { role: "assistant", content: [{ type: "text", text: "already said" }] };
   const partial = { role: "assistant", content: [{ type: "text", text: "already said plus" }] };
   const live: NativeLiveSnapshot = {
-    startEntryId: "e1",
     endEntryId: "e2",
     messages: [produced],
-    entries: [{ type: "message", id: "e2" }],
     partial,
   };
   const harness = rootFor(running.runtime, () => (running.runtime.jobSnapshot(running.jobId)?.status === "completed" ? null : live));
@@ -216,7 +214,7 @@ test("a running Job yields a real snapshot boundary, then live deltas and the Ru
 
 test("unsubscribe detaches the live observer and suppresses later events", async () => {
   const running = runningJob();
-  const live: NativeLiveSnapshot = { startEntryId: "e1", endEntryId: "e2", messages: [], entries: [], partial: null };
+  const live: NativeLiveSnapshot = { endEntryId: "e2", messages: [], partial: null };
   const harness = rootFor(running.runtime, live);
   const port = buildStreamPort(harness.root);
   const connection = makeConnection();
