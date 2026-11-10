@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import test from 'node:test';
 
 import { loadPresets, type PresetFileReader } from '../../src/preset/config.ts';
@@ -7,10 +8,12 @@ function readerFrom(files: Record<string, string>): PresetFileReader {
   return (filePath) => files[filePath];
 }
 
-const agentDir = '/agent';
-const cwd = '/project';
-const globalPath = '/agent/presets.json';
-const projectPath = '/project/.pi/presets.json';
+const agentDir = path.resolve('/agent');
+const cwd = path.resolve('/project');
+// The injected reader stands in for the file system, so it is keyed by the
+// native absolute paths the loader asks for, not by POSIX spellings.
+const globalPath = path.join(agentDir, 'presets.json');
+const projectPath = path.join(cwd, '.pi', 'presets.json');
 
 test('loads global presets', () => {
   const read = readerFrom({

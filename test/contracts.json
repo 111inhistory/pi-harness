@@ -1047,6 +1047,11 @@
       "docs": "1dbe56d105a2ad54efa5d461f74a151112e5dd00b5dbb50236217bad2779f442",
       "tests": "96e0426d076f5ab6a924ec78710cc140e7633db13f8fe3ef59d657d8885dd5c2",
       "reason": "Tested that protectedTools preserves an unused discovered tool that unprotected candidate pruning removes."
+    },
+    "preset.config": {
+      "docs": "5bf2efc378b5fbc58416a1e7d5e355364c4da48587f5a8b2ec1cc4656d8ac4b6",
+      "tests": "cefd97f779b75aa0c2171dc3cb98ff575053ac08514a53e7fee5d12d9e77e9d7",
+      "reason": "The preset test now keys its injected file reader by native path.join paths because the loader correctly asks the platform filesystem; preset parsing, whole-entry replacement, trust and warning contracts are unchanged and still asserted."
     }
   }
 }
