@@ -112,10 +112,12 @@ for (const file of mdFiles) {
   }
 
   // Skip archive, reviews, and writing-guide itself from prose rule enforcement
+  // Normalize native Windows paths before checking document categories.
+  const portableFile = file.replaceAll('\\', '/');
   const isHistoricOrMeta =
-    file.includes('/archive/') ||
-    file.includes('/reviews/') ||
-    file.endsWith('writing-guide.md');
+    portableFile.includes('/archive/') ||
+    portableFile.includes('/reviews/') ||
+    portableFile.endsWith('writing-guide.md');
 
   if (!isHistoricOrMeta) {
     let inCodeBlock = false;
