@@ -210,7 +210,9 @@ test("FIN stops new events, releases subscriptions and ends instead of destroyin
   let destroyed = false;
   const fakeSocket = {
     writableLength: 0,
-    destroyed: false,
+    get destroyed() {
+      return destroyed;
+    },
     allowHalfOpen: false,
     on(event: string, listener: (...args: never[]) => void) {
       listeners.set(event, listener);
@@ -242,6 +244,11 @@ test("FIN stops new events, releases subscriptions and ends instead of destroyin
   assert.equal(ended, true, "FIN ends the writable side after the request chain");
   assert.equal(destroyed, false, "FIN does not discard queued response bytes");
   assert.equal(writes.some((line) => line.includes('"late"')), false, "no new event is queued after input ends");
+
+  // Server retirement calls close() on every tracked connection. A FIN'd
+  // connection must still release the live socket instead of making close() a no-op.
+  connection.close();
+  assert.equal(destroyed, true, "explicit close destroys a FIN'd but still-live socket");
 });
 
 test("closing a connection releases its subscriptions", async (t) => {

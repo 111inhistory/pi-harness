@@ -1070,8 +1070,8 @@
     },
     "harness.rpc-interface": {
       "docs": "594d0ef01f83c003dc7d2479e4d899731b402db84eec8b5fbae215cf42d8c973",
-      "tests": "baf74acfd6caf97c39835faa3a1fd6857b4d05dda34e7681cfc1d5f1a1a3119f",
-      "reason": "Real transport through router and stream into Runtime verifies unsubscribe and disconnect ownership; half-close flush retains the complete large final response. Wire behavior and schema stay unchanged."
+      "tests": "bdf79135e5a52f3f17ef62bbb5eba605e181facbe328b408cd5c4f6f7283b985",
+      "reason": "Explicit server retirement still destroys a FIN-ended owned socket while normal half-close flush remains intact; wire methods and payloads are unchanged."
     }
   }
 }

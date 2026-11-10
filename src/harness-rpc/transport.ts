@@ -149,11 +149,19 @@ export class RpcConnection {
     this.#write(frame);
   }
 
-  /** Release subscriptions and drop the socket. Idempotent. */
+  /**
+   * Release subscriptions and drop the socket. Idempotent.
+   *
+   * A FIN'd connection is logically closed but may still be flushing a
+   * backpressured response. Server retirement must still be able to destroy
+   * that live socket, so only the subscription release is skipped on a second
+   * call; the owned socket is always checked and released.
+   */
   close(): void {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#releaseSubscriptions();
+    if (!this.#closed) {
+      this.#closed = true;
+      this.#releaseSubscriptions();
+    }
     if (!this.#socket.destroyed) {
       try {
         this.#socket.destroy();
