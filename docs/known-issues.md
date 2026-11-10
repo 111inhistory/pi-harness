@@ -4,17 +4,6 @@
 
 ## 已知缺陷
 
-### 权限、继承创建与 RPC 观察
-
-当前审计已复现以下缺陷：
-
-- 旧 `capability-discovery.manual` 仍经 admission 的 selected 路径授予 MCP 准入，canonical reset 不能清除这条旧来源授权。
-- 重叠目标的最终管理状态与操作效果不一致：宽组修改可能激活仍被精确规则禁用的成员，或撤下仍被精确规则启用的成员；执行 hook 仍拒绝 disabled 工具。
-- RPC 取消订阅后，终态 Promise 的 waiter 继续持有连接直到 Job 结束，反复订阅长任务会累积保留对象。
-- Inherited 创建的根权限传播曾逐工具重放分支并重建工具目录，引入同步停顿；修复与回归证据见审计，完整改写尚未交付。
-
-证据、影响范围与功能冻结期间的修复要求见[审计及改写计划](reviews/rpc-permission-audit.md)。历史提案归档和既有测试通过不表示这些问题已关闭。
-
 ### 严格工具 allowlist 下的激活记忆不一致
 
 Pi SDK `1.5.0` 可能保留 MCP 注册，却拒绝激活不匹配 allowlist 的成员。例如 allowlist 只列出 `read`、`write`、`capability`，既不匹配目标 `mcp__*` 工具，也不保留隐藏的 `tool_search`。SDK 没有公开的激活资格预检接口，激活调用可以静默省略成员。
@@ -60,6 +49,7 @@ ModelRuntime 桥依赖 SDK 的内部结构，升级 SDK 时应复核。子会话
 
 这些限制描述当前行为，不自动转为新增功能承诺：
 
+- **Offline permission conversion**: the runtime reads canonical records only. The explicit converter supports flat manual-only records in closed v3 files and preserves native checkpoint IDs and unrelated bytes. Blacklist, mixed/group records and legacy/canonical mixtures are refused unchanged. Active roots and their owned child files must be closed before external conversion; backing up or completing other files does not make active-file migration safe. Exact completed/deferred evidence is in the [rewrite audit](reviews/rpc-permission-audit.md).
 - **恢复与写入**：Shutdown 不可取消。强制退出或清理失败可能留下原生对话而没有根终态，下次按中断恢复。没有跨文件事务，也不支持多个进程同时写同一根会话。
 - **导航取消**：导航尝试会先停止子 Job。后续插件取消导航时，已停止的 Job 不回滚或自动重跑。
 - **消息交接**：异常、断连或超时不证明消息未入队，不自动重发。普通消息和子节点通知可触发模型请求，本项目不合并不同事件。跨 session 消息的 session 记录与 `from` 都是同用户本机进程的声明，不是认证；进程异常退出可能留下已失效的 session 记录，读取时按 pid 存活过滤，pid 复用时可能短暂误报。同一 durable session 不支持多进程同时打开；目录记录按 session ID 归属，重复打开时较早退出的进程可能删除后者记录。

@@ -4,7 +4,7 @@
 
 This review covers the permission, child-scope and observation changes introduced after `af3494b`, including the RPC/schema commits subsequently split into the current history. It examines production call paths and the behavioral evidence used to approve them. It is not a claim that every repository module has been audited. The findings describe the inspected baseline; the implementation ledger below records later fixes and remaining acceptance gaps.
 
-The reviewer used synthetic histories and tools, real Pi SDK sessions for creation, and the actual permission domain and Runtime for focused reproductions. No online provider or external MCP service was involved. Windows verification is tracked separately: the first native VM run reported 1,162 tests, 1,130 passes, 14 failures and 18 skips. Those failures remain unresolved at this review point.
+The reviewer used synthetic histories and tools, real Pi SDK sessions for creation, and the actual permission domain and Runtime for focused reproductions. No online provider or external MCP service was involved. Windows verification is tracked separately: the first native VM run reported 1,162 tests, 1,130 passes, 14 failures and 18 skips. These are historical baseline failures; their fixes and subsequent platform receipts are recorded below.
 
 ## Findings
 
@@ -97,7 +97,7 @@ This is unnecessary work and transient allocation in an observation path, introd
 
 ## Current disposition
 
-The audit does not yet approve the rewrite as complete. Several fixes have been integrated and independently checked; the ledger below separates those results from pending permission integration, actual-data migration and final platform acceptance. The original findings remain as the failed-before evidence.
+The audit does not yet approve the complete local-data migration. The ledger separates integrated code and checks from active-root files excluded from external writes, final platform acceptance and untested online/long-duration boundaries. The original findings remain as the failed-before evidence.
 
 The new optional creation benchmark is deliberately narrow. It records CPU, memory and event-loop data for synthetic creation through the real SDK; it is outside the default gate. It does not cover repeated subscriptions, compaction, tool-management queries, external MCP startup, concurrent batches, revival, or post-disposal memory recovery. Passing it is not a substitute for addressing those paths or for resolving the Windows failures.
 
@@ -113,13 +113,27 @@ node --import tsx --test test/typed/capability-tool-permission.test.ts test/type
 
 Result: 48 passed, 0 failed, 0 skipped in the executor worktree. The admission regression now covers retired record rejection, canonical enable, production reset and a current-discovery positive control. The pruning test includes both protected and unprotected tools in the actual candidate source and verifies the unprotected control before asserting protection.
 
-Disposition: integrated as `1332132`, with offline migration isolation corrected in `e1d0931`. `1ff62a03` then verifies the execution surface in a real SDK session: retired manual-only MCP-shaped tool is denied by Codemode, canonical enable permits one actual execution, reset denies again. Main reran the whole SDK file: 2 passed. This uses an offline faux model and synthetic registered tool, not external MCP transport or direct model-to-MCP invocation. Winner/query consolidation and mutation effects are still under main review. Full integrated and platform gates are tracked separately.
+Disposition: integrated as `1332132`, with offline migration isolation corrected in `e1d0931`. `1ff62a03` then verifies the execution surface in a real SDK session: retired manual-only MCP-shaped tool is denied by Codemode, canonical enable permits one actual execution, reset denies again. Main reran the whole SDK file: 2 passed. This uses an offline faux model and synthetic registered tool, not external MCP transport or direct model-to-MCP invocation. The final consolidation and effects units are recorded below. Full integrated and platform gates are tracked separately.
 
 ### Stage 1, Unit 2: offline migration isolation
 
 Executor candidate `9504c7d` moved migration to `scripts/lib/permission-migration.ts` and removed the production-only export. Main reproduced a persisted-input regression: an invalid canonical assignment suppressed conversion of a legacy denial. Corrected `1500ef2`, integrated as `e1d0931`, validates assignment state in offline code and retains the denial. No migration-only module remains under production `src/`.
 
-Actual-data readiness exposed a separate boundary: child sessions are reopened at root-recorded `anchor` / `seedLeafId`, so canonical records appended only at the file tail are not visible after restore to those checkpoints. The append-only leaf traversal is insufficient for full migration. The current offline conversion work must preserve native IDs/checkpoint semantics and unrelated discovery content; it will first run on verified backup copies. No production fallback or auto-migration is authorized.
+Actual-data readiness exposed a separate boundary: child sessions are reopened at root-recorded `anchor` / `seedLeafId`, so canonical records appended only at the file tail are not visible after restore to those checkpoints. The append-only leaf traversal is insufficient for full migration. The final conservative converter and actual closed-file execution are recorded below; they preserve native IDs/checkpoints and leave unsupported shapes untouched. No production fallback or auto-migration is authorized.
+
+### Final permission consolidation and mutation effects
+
+Main integrated the resolver portion of executor `371fb462` as `f9d4bbf`, excluding its unrelated migration blocks. One operation-local catalog, canonical replay and winner implementation serve queries and bulk filters in compaction, discovery, Preset, BTW and RPC. The committed 500-tool / 30-rule query regression fails against `f36fe85` with 1,001 catalog reads and passes after consolidation with one catalog read and one branch traversal. No persistent cache or new authority was added.
+
+`a13b871` filters activation, immediate removal, deferred compaction and notices by the effective winner after the successful canonical mutation. A pre-write pointer-array snapshot makes live branch arrays and detached branch snapshots equivalent without copying historical bodies or introducing a second mutation reducer. Main replaced the executor's comparison-only fixture with independent expected outcomes through the actual domain writer. The two overlap regressions and both live/snapshot cases all fail against `f9d4bbf` and pass after the fix. Failed persistence still applies no effects.
+
+### Checkpoint-preserving conversion and actual execution
+
+`243a225` replaces the superseded append-marker migrator with a conservative offline converter for the verified actual shape: v3 files containing flat manual-only discovery records. Blacklist, mixed/group records and legacy/canonical coexistence are refused before writing. Production still has no retired reader, migration export or fallback. The converter preserves original entry IDs, parents, timestamps and unrelated bytes, including blank lines, CRLF and absent final newlines. A unique sibling temporary file is written and fsynced before rename; failure cleans it up. This tool is deliberately not a universal legacy rule translator.
+
+Main reproduced the checkpoint defect through the old CLI and real SDK: the old conversion enables the tool at the tail but leaves it unmanaged at a saved pre-tail actor checkpoint. The new conversion enables it at that checkpoint and preserves the selected leaf. The committed offline suite additionally uses ActorSessionStore/storage restore, actual SDK sibling branches, exact canonical expected data, unsupported-input refusal and byte-idempotent reruns. The removed append-marker/blacklist migration fixtures no longer describe the supported converter; canonical group/reset coverage remains in the runtime suite.
+
+Actual authorized execution converted **25 closed files / 39 records**, with zero errors. Before each write, the independent verifier checked the original backup checksum, current source checksum and live root ownership; it then verified exact canonical sets, native metadata, unrelated bytes and zero-write rerun. Original verified backups total 216,544,876 bytes. A fresh inventory finds **12 files / 12 retired records** remaining, all owned by live roots; no active file was externally modified. Private manifests, original bytes and dry-run/execution reports remain outside Git. This is completed closed-file migration, not completion of all local history.
 
 ### Inherited creation, ownership and propagation
 
@@ -144,6 +158,7 @@ Actual socket integration found an additional FIN lifecycle gap. `b4cdbd9` handl
 - Initial concurrent Linux full run: 1,164 tests, 1,151 pass, 4 SDK subprocess timeouts, 9 skips. The affected integration file then passed all 35 tests without competing full gates. No timeout threshold changed.
 - Integrated Linux midpoint gate: 1,163 tests, 1,153 pass, 0 fail, 10 skips; type and schema checks passed. This is a milestone, not the final revision's acceptance.
 - Integrated Linux gate at `27d1c8c`: 1,169 tests, 1,159 pass, 0 fail, 10 skips; includes the real SDK retired-manual Codemode sequence, live root-to-grandchild propagation, usage ownership and transport fixes. Type and protocol schema checks pass. Permission consolidation and checkpoint-preserving migration are still outside this revision.
+- Final integrated Linux gate at `243a225`: 1,176 tests, 1,166 pass, 0 fail, 10 skips, approximately 84.2 seconds; type and protocol schema checks pass. This includes the final resolver, effective effects, conservative checkpoint converter and observed-turn shell synchronization. JSON, active-document links/technical language and contract checks also pass.
 - Native Windows baseline had 14 failures in preset paths, POSIX parser fixtures and real PowerShell argv extraction. Integrated fixture fixes preserve exact expectations and add a native bare-`--` opaque-command denial test. Focused VM run: 36 tests, 35 pass, 0 fail, 1 prerequisite skip. Natural PowerShell bare `--` remains a pinned-parser limitation handled by whole-command review.
 - Integrated Windows gate at `b4cdbd9`: 1,167 tests, 1,148 pass, 1 fail, 18 skips. The remaining failure is an async-shell SDK scenario waiting for a child to yield after create; investigation continues, not declared fixed by a retry.
 - Inventory: 540 native session files, 37 containing 51 retired manual records; no retired blacklist or mixed discovery/manual records in this inventory. Backups cover 25 closed files (216,544,876 bytes). Twelve files belonging to active roots remain excluded from external writes. Backups/manifests containing private local paths remain outside Git.
