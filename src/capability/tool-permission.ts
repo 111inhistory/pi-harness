@@ -365,43 +365,30 @@ interface Decision {
   readonly defaulted: boolean;
 }
 
-/** Resolve the managed state of one tool, or null when unmanaged. */
-function decide(
-  host: ToolPermissionHost,
-  branch: readonly unknown[] | null | undefined,
-  name: string,
-): Decision | null {
-  const tool = toolFor(host, name);
-  const matches = storedEntries(host, branch).filter((stored) => matchesEntry(stored.entry, tool, name));
-  if (matches.length === 0) return null;
-  // An explicit or migrated entry outranks a config default even when the
-  // default is narrower (an exact tool vs. an enabling namespace).
-  matches.sort((left, right) => Number(left.defaulted) - Number(right.defaulted)
-    || KIND_RANK[left.entry.kind] - KIND_RANK[right.entry.kind]
-    || right.order - left.order);
-  const winner = matches[0]!;
-  return { state: winner.entry.state, entry: winner.entry, defaulted: winner.defaulted };
+function isBetterEntry(candidate: ManagedEntry, currentBest: ManagedEntry): boolean {
+  if (candidate.defaulted !== currentBest.defaulted) {
+    return !candidate.defaulted;
+  }
+  if (KIND_RANK[candidate.entry.kind] !== KIND_RANK[currentBest.entry.kind]) {
+    return KIND_RANK[candidate.entry.kind] < KIND_RANK[currentBest.entry.kind];
+  }
+  return candidate.order > currentBest.order;
 }
 
-/** Resolve one tool to its four-state permission. */
-export function resolveToolPermission(
-  host: ToolPermissionHost,
-  branch: readonly unknown[] | null | undefined,
+function findWinningEntry(
+  stored: readonly ManagedEntry[],
+  tool: ToolPermissionTool | undefined,
   name: string,
-  activeSet: readonly string[],
-): ToolPermissionInfo {
-  const tool = toolFor(host, name);
-  const decision = decide(host, branch, name);
-  const active = activeSet.includes(name);
-  return {
-    name,
-    kind: decision?.entry.kind ?? 'tool',
-    category: tool?.namespace === undefined ? 'tool' : 'namespace',
-    state: decision?.state ?? (active ? 'active' : 'inactive'),
-    managed: decision !== null,
-    registered: tool !== undefined,
-    active,
-  };
+): ManagedEntry | null {
+  let winner: ManagedEntry | null = null;
+  for (const item of stored) {
+    if (matchesEntry(item.entry, tool, name)) {
+      if (winner === null || isBetterEntry(item, winner)) {
+        winner = item;
+      }
+    }
+  }
+  return winner;
 }
 
 /** A per-operation resolver that reads stored entries once. */
@@ -412,6 +399,59 @@ export interface ToolPermissionResolver {
   readonly seedDisabled: (name: string) => boolean;
   /** Resolve using an already-read tool record, without a second registry read. */
   readonly disabledFor: (tool: ToolPermissionTool) => boolean;
+  /** Resolve the managed decision for a name, or null when unmanaged. */
+  readonly decide: (name: string) => Decision | null;
+  /** Resolve one tool by name and active status to its derived info. */
+  readonly resolve: (name: string, active: boolean) => ToolPermissionInfo;
+  /** Resolve an already-read tool and active status to its derived info. */
+  readonly resolveFor: (tool: ToolPermissionTool, active: boolean) => ToolPermissionInfo;
+}
+
+function createToolPermissionResolverWithStored(
+  host: ToolPermissionHost | null,
+  tools: readonly ToolPermissionTool[] | null,
+  stored: readonly ManagedEntry[],
+): ToolPermissionResolver {
+  const byName = tools === null ? null : new Map(tools.map((tool) => [tool.name, tool]));
+  const cache = new Map<string, { readonly decision: Decision | null; readonly tool: ToolPermissionTool | undefined }>();
+
+  const resolveTool = (tool: ToolPermissionTool | undefined, name: string): { readonly decision: Decision | null; readonly tool: ToolPermissionTool | undefined } => {
+    const cached = cache.get(name);
+    if (cached !== undefined) return cached;
+    const resolvedTool = tool ?? (byName !== null ? byName.get(name) : (host ? toolFor(host, name) : undefined));
+    const winner = findWinningEntry(stored, resolvedTool, name);
+    const decision: Decision | null = winner === null ? null : {
+      state: winner.entry.state,
+      entry: winner.entry,
+      defaulted: winner.defaulted,
+    };
+    const result = { decision, tool: resolvedTool };
+    cache.set(name, result);
+    return result;
+  };
+
+  const resolveInfo = (tool: ToolPermissionTool | undefined, name: string, active: boolean): ToolPermissionInfo => {
+    const { decision, tool: resolvedTool } = resolveTool(tool, name);
+    return {
+      name,
+      kind: decision?.entry.kind ?? 'tool',
+      category: resolvedTool?.namespace === undefined ? 'tool' : 'namespace',
+      state: decision?.state ?? (active ? 'active' : 'inactive'),
+      managed: decision !== null,
+      registered: resolvedTool !== undefined,
+      active,
+    };
+  };
+
+  return {
+    enabled: (name) => resolveTool(undefined, name).decision?.state === 'enabled',
+    disabled: (name) => resolveTool(undefined, name).decision?.state === 'disabled',
+    seedDisabled: (name) => resolveTool(undefined, name).decision?.defaulted === true,
+    disabledFor: (tool) => resolveTool(tool, tool.name).decision?.state === 'disabled',
+    decide: (name) => resolveTool(undefined, name).decision,
+    resolve: (name, active) => resolveInfo(undefined, name, active),
+    resolveFor: (tool, active) => resolveInfo(tool, tool.name, active),
+  };
 }
 
 /**
@@ -428,32 +468,27 @@ export function createToolPermissionResolver(
   branch: readonly unknown[] | null | undefined,
 ): ToolPermissionResolver {
   const stored = storedEntries(host, branch);
-  const byName = tools === null ? null : new Map(tools.map((tool) => [tool.name, tool]));
-  const cache = new Map<string, { readonly state: ToolPermissionManagedState | null; readonly seeded: boolean }>();
-  const resolveTool = (tool: ToolPermissionTool | undefined, name: string): { readonly state: ToolPermissionManagedState | null; readonly seeded: boolean } => {
-    const cached = cache.get(name);
-    if (cached !== undefined) return cached;
-    const matches = stored.filter((entry) => matchesEntry(entry.entry, tool, name));
-    let resolved: { readonly state: ToolPermissionManagedState | null; readonly seeded: boolean };
-    if (matches.length > 0) {
-      matches.sort((left, right) => Number(left.defaulted) - Number(right.defaulted)
-        || KIND_RANK[left.entry.kind] - KIND_RANK[right.entry.kind]
-        || right.order - left.order);
-      const winner = matches[0]!;
-      resolved = { state: winner.entry.state, seeded: winner.defaulted };
-    } else {
-      resolved = { state: null, seeded: false };
-    }
-    cache.set(name, resolved);
-    return resolved;
-  };
-  const resolveName = (name: string) => resolveTool(byName?.get(name), name);
-  return {
-    enabled: (name) => resolveName(name).state === 'enabled',
-    disabled: (name) => resolveName(name).state === 'disabled',
-    seedDisabled: (name) => resolveName(name).seeded,
-    disabledFor: (tool) => resolveTool(tool, tool.name).state === 'disabled',
-  };
+  return createToolPermissionResolverWithStored(host, tools, stored);
+}
+
+/** Resolve the managed state of one tool, or null when unmanaged. */
+function decide(
+  host: ToolPermissionHost,
+  branch: readonly unknown[] | null | undefined,
+  name: string,
+): Decision | null {
+  return createToolPermissionResolver(host, null, branch).decide(name);
+}
+
+/** Resolve one tool to its four-state permission. */
+export function resolveToolPermission(
+  host: ToolPermissionHost,
+  branch: readonly unknown[] | null | undefined,
+  name: string,
+  activeSet: readonly string[],
+): ToolPermissionInfo {
+  const active = activeSet.includes(name);
+  return createToolPermissionResolver(host, null, branch).resolve(name, active);
 }
 
 /** Whether the tool resolves to an explicit/migrated enabled state. */
@@ -462,7 +497,7 @@ export function explicitlyEnabled(
   branch: readonly unknown[] | null | undefined,
   name: string,
 ): boolean {
-  return decide(host, branch, name)?.state === 'enabled';
+  return createToolPermissionResolver(host, null, branch).enabled(name);
 }
 
 /** Whether the tool resolves to a disabled state (including the manual seed). */
@@ -471,7 +506,7 @@ export function explicitlyDisabled(
   branch: readonly unknown[] | null | undefined,
   name: string,
 ): boolean {
-  return decide(host, branch, name)?.state === 'disabled';
+  return createToolPermissionResolver(host, null, branch).disabled(name);
 }
 
 /** The active set with explicitly disabled names removed. */
@@ -480,7 +515,9 @@ export function activeToolsAfterDisabled(
   branch: readonly unknown[] | null | undefined,
   active: readonly string[],
 ): string[] {
-  return active.filter((name) => !explicitlyDisabled(host, branch, name));
+  const tools = host.getAllTools();
+  const resolver = createToolPermissionResolver(host, tools, branch);
+  return active.filter((name) => !resolver.disabled(name));
 }
 
 function matchesQuery(info: ToolPermissionInfo, query: PermissionQuery): boolean {
@@ -504,17 +541,20 @@ export function queryToolPermissions(
 ): ToolPermissionQueryResult {
   const query = parsePermissionQuery(expression ?? '');
   const tools = host.getAllTools();
+  const stored = storedEntries(host, branch);
+  const resolver = createToolPermissionResolverWithStored(host, tools, stored);
   const names = new Set<string>(tools.filter((tool) => tool.exposure !== 'hidden').map((tool) => tool.name));
-  for (const stored of storedEntries(host, branch)) {
-    if (stored.entry.kind === 'tool') names.add(stored.entry.name);
+  for (const item of stored) {
+    if (item.entry.kind === 'tool') names.add(item.entry.name);
   }
+  const active = new Set(activeSet);
   const entries: ToolPermissionInfo[] = [];
   for (const name of names) {
-    const info = resolveToolPermission(host, branch, name, activeSet);
+    const info = resolver.resolve(name, active.has(name));
     if (matchesQuery(info, query)) entries.push(info);
   }
   entries.sort((left, right) => left.name.localeCompare(right.name));
-  const managed = storedEntries(host, branch).map((stored) => stored.entry);
+  const managed = stored.map((item) => item.entry);
   return { scope: 'branch', expression: query.text, entries, managed };
 }
 
@@ -530,6 +570,7 @@ function resolveTargets(host: ToolPermissionHost, targets: readonly string[]): {
   const resolved: TargetResolution[] = [];
   const unresolved: string[] = [];
   const seen = new Set<string>();
+  const tools = host.getAllTools();
   for (const raw of targets) {
     const target = parseToolPermissionTarget(raw);
     if (target === null) {
@@ -538,7 +579,7 @@ function resolveTargets(host: ToolPermissionHost, targets: readonly string[]): {
     }
     if (seen.has(target.id)) continue;
     seen.add(target.id);
-    const affectedTools = host.getAllTools()
+    const affectedTools = tools
       .filter((tool) => matchesEntry(target, tool, tool.name))
       .map((tool) => tool.name);
     resolved.push({ target, affectedTools });
@@ -610,10 +651,6 @@ export function setToolPermission(
   const pendingCompaction: string[] = [];
   const noticed: string[] = [];
   if (durable && state === 'enabled' && resolvedAffected.size > 0) {
-    // Activate every resolved member, including an already-enabled target that
-    // lost its active slot to a prune or a previous loadout. The user control
-    // plane may enable a manual-seeded tool; activation is the root's own
-    // action, so the root-only restriction does not gate it here.
     const outcome = activateToolNames(host, [...resolvedAffected]);
     activated.push(...outcome.activated);
     for (const skip of outcome.skipped) skipped.push({ target: skip.name, reason: skip.reason });
@@ -621,9 +658,6 @@ export function setToolPermission(
   if (durable && state === 'disabled' && changedAffected.size > 0) {
     const activeBefore = new Set(host.getActiveTools());
     const tools = new Map(host.getAllTools().map((tool) => [tool.name, tool]));
-    // The native loadout owns the real declaration mask. Without a registered
-    // loadout, fall back to the tool's exposure: a script-only tool has no
-    // independent declaration either way.
     const declared = independentDeclarations(host);
     for (const name of changedAffected) {
       if (!activeBefore.has(name)) continue;
@@ -677,8 +711,11 @@ export function resetToolPermission(
   targets: readonly string[],
 ): ToolPermissionResetResult {
   const { resolved, unresolved } = resolveTargets(host, targets);
+  const tools = host.getAllTools();
+  const stored = storedEntries(host, branch);
+  const resolver = createToolPermissionResolverWithStored(host, tools, stored);
   const explicit = explicitState(branch);
-  const managedIds = new Set(storedEntries(host, branch).map((stored) => stored.entry.id));
+  const managedIds = new Set(stored.map((item) => item.entry.id));
   const changed: TargetResolution[] = [];
   const notManaged: string[] = [...unresolved];
   for (const item of resolved) {
@@ -694,7 +731,7 @@ export function resetToolPermission(
       notManaged.push(item.target.target);
       continue;
     }
-    const covered = item.affectedTools.some((name) => decide(host, branch, name) !== null);
+    const covered = item.affectedTools.some((name) => resolver.decide(name) !== null);
     if (!covered) notManaged.push(item.target.target);
   }
   let recordError: string | null = null;
@@ -718,10 +755,11 @@ export function resetToolPermission(
         customType: CAPABILITY_TOOL_PERMISSION_RECORD,
         data: { version: CAPABILITY_TOOL_PERMISSION_VERSION, unset: changed.map((item) => item.target.target) },
       }];
+    const virtualResolver = createToolPermissionResolver(host, tools, virtual);
     const affected = new Set<string>();
     for (const item of resolved) for (const name of item.affectedTools) affected.add(name);
     for (const name of affected) {
-      const decision = decide(host, virtual, name);
+      const decision = virtualResolver.decide(name);
       if (decision !== null) stillManaged.push({ name, state: decision.state });
     }
   }

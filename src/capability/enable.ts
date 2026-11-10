@@ -17,7 +17,7 @@
  */
 
 import type { ActivationSkip, ActivationSkipReason } from './activation.ts';
-import { explicitlyEnabled, setToolPermission } from './tool-permission.ts';
+import { createToolPermissionResolver, setToolPermission } from './tool-permission.ts';
 
 /** A registered tool as enablement needs to see it. */
 export interface EnableTool {
@@ -168,7 +168,8 @@ export function enableCapabilityTargets(
   const recordable = [...new Set(targets
     .map((target) => target.trim())
     .filter((target) => target !== '' && !hidden.has(target) && !unresolved.has(target)))];
-  const already = new Set(resolved.names.filter((name) => explicitlyEnabled(host, options.branch, name)));
+  const permission = createToolPermissionResolver(host, host.getAllTools(), options.branch);
+  const already = new Set(resolved.names.filter((name) => permission.enabled(name)));
   const set = setToolPermission(host, host, options.branch ?? [], recordable, 'enabled');
   const recorded = new Set(set.changed.flatMap((change) => change.affectedTools));
   const refusedHidden: EnableSkip[] = resolved.names

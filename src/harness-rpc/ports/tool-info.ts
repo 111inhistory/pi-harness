@@ -20,7 +20,7 @@ import { createCapabilityCatalog, type CapabilityCategory } from '../../capabili
 import { createEligibleToolCatalog } from '../../capability/tool-catalog.ts';
 import { enableCapabilityTargets, type EnableResult } from '../../capability/enable.ts';
 import {
-  explicitlyDisabled,
+  createToolPermissionResolver,
   queryToolPermissions,
   resolveToolPermission,
   setToolPermission,
@@ -92,19 +92,20 @@ interface StateSnapshot {
 function snapshot(api: ExtensionAPI, ctx: ExtensionContext): StateSnapshot {
   const branch = ctx.sessionManager.getBranch();
   const active = api.getActiveTools();
-  const registered = new Map(api.getAllTools().map((tool) => [tool.name, tool]));
-  // Derive every registered tool's state directly; a filtered query (the
-  // default is enabled+active) would hide disabled/inactive tools.
+  const allTools = api.getAllTools();
+  const registered = new Map(allTools.map((tool) => [tool.name, tool]));
+  const resolver = createToolPermissionResolver(api, allTools, branch);
+  const activeSet = new Set(active);
   const permission = new Map<string, ToolPermissionInfo>();
-  for (const name of registered.keys()) {
-    permission.set(name, resolveToolPermission(api, branch, name, active));
+  for (const tool of allTools) {
+    permission.set(tool.name, resolver.resolveFor(tool, activeSet.has(tool.name)));
   }
   return {
     registered,
     eligible: createEligibleToolCatalog(api, {
-      disabled: (name) => explicitlyDisabled(api, branch, name),
+      disabled: (name) => resolver.disabled(name),
     }).names,
-    active: new Set(active),
+    active: activeSet,
     permission,
   };
 }

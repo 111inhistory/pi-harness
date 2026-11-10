@@ -1048,8 +1048,8 @@
     },
     "capability.tool-permission": {
       "docs": "8212ad2e80db376be9ca22c1a38a601eb8a2a95de4d920921898479abc21b446",
-      "tests": "4d1f45b45190f9224eae035e297d8e1fb341293a90adb0a230136f99b6e3d5b6",
-      "reason": "Replace simulated RootService propagation with actual SDK child loadout assertions; explicitly enabled and disabled root tools are excluded while an unmanaged tool remains active. Scope learned-denial behavior remains covered by capability-scope-view tests."
+      "tests": "852e2fc7c290bd7f1526b817e2989ad4df99726ad62a3a200bb022286699576a",
+      "reason": "One operation-local catalog and canonical replay now serve query and bulk filters through one winner algorithm; existing precedence and permission contract unchanged. The 500-tool work-count regression covers the measured repeated replay."
     },
     "capability.manual-enable": {
       "docs": "e4e5e4b4c213f9d9dd36e9cee79a0643aaea294f9710e790c9bba83820105bc4",

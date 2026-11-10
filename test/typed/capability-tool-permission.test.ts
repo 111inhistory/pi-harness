@@ -379,6 +379,52 @@ test('reset reports notManaged and targets still managed by another rule or the 
   assert.deepEqual(notManaged.notManaged, ['write']);
 });
 
+test("queryToolPermissions resolves 500 tools and 30 rules with exactly one branch scan and one catalog read", () => {
+  let catalogReads = 0;
+  const tools: ToolPermissionTool[] = [];
+  for (let i = 0; i < 500; i++) {
+    tools.push({
+      name: `tool_${i}`,
+      exposure: "direct",
+      namespace: { name: `ns_${i % 30}`, aliases: [`alias_${i % 30}`] },
+    });
+  }
+
+  const queryHost = {
+    getAllTools: () => {
+      catalogReads++;
+      return tools;
+    },
+  };
+
+  const branch: unknown[] = [];
+  for (let i = 0; i < 30; i++) {
+    branch.push({
+      type: "custom",
+      customType: CAPABILITY_TOOL_PERMISSION_RECORD,
+      data: {
+        version: 1,
+        set: [{ target: `namespace://ns_${i}`, state: "enabled" }],
+      },
+    });
+  }
+
+  let branchIterations = 0;
+  const observedBranch = new Proxy(branch, {
+    get(target, prop) {
+      if (prop === Symbol.iterator) {
+        branchIterations++;
+      }
+      return Reflect.get(target, prop);
+    },
+  });
+
+  const result = queryToolPermissions(queryHost, observedBranch, [], "enabled");
+  assert.equal(catalogReads, 1, "catalog read exactly once");
+  assert.equal(branchIterations, 1, "branch scanned exactly once");
+  assert.equal(result.entries.length, 500);
+});
+
 test('activeToolsAfterDisabled filters disabled names from an active set', () => {
   const f = host(registry, ['write', 'read']);
   setToolPermission(f.api, f.api, f.branch(), ['read'], 'disabled');

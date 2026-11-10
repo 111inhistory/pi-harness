@@ -8,7 +8,7 @@ import {
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { explicitlyDisabled, explicitlyEnabled } from '../capability/tool-permission.ts';
+import { createToolPermissionResolver } from '../capability/tool-permission.ts';
 import { createToolAdmission } from '../capability/admission.ts';
 import { projectDiscoveryDeclarations } from '../capability/declarations.ts';
 import { projectCompactionCapabilityNotice, projectPrunedToolHistory } from '../capability/compaction-context.ts';
@@ -46,8 +46,9 @@ export async function openBtwConversation(
     ...pi.getSettings(), packages: [], extensions: [], skills: [], prompts: [], themes: [], cacheWarming: 'off',
   }, { projectTrusted: ctx.isProjectTrusted() });
   const branch = ctx.sessionManager.getBranch();
+  const permission = createToolPermissionResolver(pi, pi.getAllTools(), branch);
   const keepInherited = (name: string): boolean =>
-    !explicitlyDisabled(pi, branch, name) && !explicitlyEnabled(pi, branch, name);
+    !permission.disabled(name) && !permission.enabled(name);
   const entries = snapshot.entries.map(entry => {
     if (entry.type !== 'message' || entry.message.role !== 'system') return entry;
     const message = entry.message;

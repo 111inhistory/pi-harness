@@ -30,7 +30,7 @@ import { projectPresetInstruction } from '../src/preset/instruction.ts';
 import type { TranscriptMessageLike } from '../src/session-transcript.ts';
 import { appendCodemodeMode } from '../src/capability/codemode-mode.ts';
 import { branchToolSelection } from '../src/capability/admission.ts';
-import { explicitlyEnabled } from '../src/capability/tool-permission.ts';
+import { createToolPermissionResolver } from '../src/capability/tool-permission.ts';
 import { applyToolModifiers, parseToolModifiers } from '../src/preset/modifiers.ts';
 
 /** `customType` of the applied-preset snapshot on the branch. */
@@ -70,7 +70,8 @@ export default function presetExtension(pi: ExtensionAPI): void {
       // snapshot: only the stable resolved selection is a compaction baseline.
       const branch = ctx.sessionManager.getBranch();
       const { selected } = branchToolSelection(branch);
-      const active = pi.getActiveTools().filter(name => selected.has(name) || explicitlyEnabled(pi, branch, name));
+      const permission = createToolPermissionResolver(pi, pi.getAllTools(), branch);
+      const active = pi.getActiveTools().filter(name => selected.has(name) || permission.enabled(name));
       // The same native modifiers honor explicit removals and bare-name
       // replacements; intersecting with active never resurrects an old grant.
       const retained = applyToolModifiers(active, parseToolModifiers(modifiers).tokens)
