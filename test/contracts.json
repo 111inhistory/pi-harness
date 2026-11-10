@@ -1000,6 +1000,11 @@
       "docs": "4393d3c918137e6171a7bd47b85e5d4786688cf2b5a0bbb4b200c761617509d1",
       "tests": "bd89ca297c7399c5e61e89fc867b02a93fbc454bf320423b30c6b4715de714ce",
       "reason": "test seed switched from legacy capability-discovery manual to a canonical enabled permission record; the authorized-tool visibility contract is unchanged"
+    },
+    "capability.tool-permission": {
+      "docs": "dff00fb33725db588ee1c5448d9e8572dfb7bab8684e190a61e5aa25e34bea6f",
+      "tests": "b4c413cd873e0e2b06f2c748c1128009e95f98594d76d3098ba5f70a2b62ede2",
+      "reason": "The ownership table adds the native runner live event/snapshot read surface; canonical permission resolution and its existing domain/propagation tests are unchanged."
     }
   }
 }

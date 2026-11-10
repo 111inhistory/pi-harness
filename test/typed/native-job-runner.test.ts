@@ -330,6 +330,10 @@ class FakeSession implements NativeSession {
     for (const listener of this.#listeners) listener({ type });
   }
 
+  emitEvent(event: NativeSessionEvent): void {
+    for (const listener of this.#listeners) listener(event);
+  }
+
   getActiveToolNames(): string[] {
     return [...this.activeTools];
   }
@@ -1427,4 +1431,30 @@ test("resolved prompt sections reach Fresh and Inherited without touching host c
     "COMMON_VALIDATION_GUIDANCE",
     "REPLACED_INHERITED_GUIDANCE",
   ]);
+});
+
+test("live snapshot exposes produced messages and the streaming partial mid-run", async () => {
+  const gate = deferred<null | string>();
+  const h = harness({
+    route: routedIdentity(),
+    promptHandler: async () => {
+      const session = h.factory.sessions[0]!;
+      session.append(assistant("produced answer"));
+      session.emitEvent({ type: "message_update", message: assistant("partial answer") } as NativeSessionEvent);
+      return gate.promise;
+    },
+  });
+  const started = h.runner.start(jobRequest(freshSpec()));
+  await waitFor(() => h.factory.sessions[0]?.prompts.length === 1, "the primary prompt");
+
+  const snapshot = h.runner.liveSnapshot("sub_01");
+  assert.ok(snapshot, "a live Job has a snapshot");
+  assert.ok(snapshot.messages.length >= 1, "completed messages produced so far are visible");
+  assert.equal((snapshot.messages.at(-1) as AssistantMessage).role, "assistant");
+  assert.equal((snapshot.partial as AssistantMessage).role, "assistant", "the streaming partial is visible");
+  assert.equal(typeof snapshot.endEntryId, "string");
+
+  gate.resolve("done");
+  assert.equal((await started.done).status, "completed");
+  assert.equal(h.runner.liveSnapshot("sub_01"), null, "a finished Job has no live snapshot");
 });

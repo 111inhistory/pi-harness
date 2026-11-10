@@ -210,6 +210,20 @@ export interface NativeSessionEvent {
   readonly type?: string | undefined;
 }
 
+/** A snapshot of one live native run, read without consuming its events. */
+export interface NativeLiveSnapshot {
+  /** The leaf id when the Job started. */
+  readonly startEntryId: string | null;
+  /** The current leaf id (the recorded end of what the run produced so far). */
+  readonly endEntryId: string | null;
+  /** Completed native messages produced since the start boundary. */
+  readonly messages: readonly unknown[];
+  /** Raw native entries produced since the start boundary. */
+  readonly entries: readonly unknown[];
+  /** The cumulative assistant partial being streamed right now, if any. */
+  readonly partial: unknown | null;
+}
+
 /** The Agent queue surface the end-of-turn loop reads parked messages through. */
 export interface NativeQueueAgent extends QueueCapable, Pick<Agent, 'streamFunction' | 'prepareRequest'> {
   hasQueuedMessages(): boolean;

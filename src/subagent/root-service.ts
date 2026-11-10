@@ -33,7 +33,7 @@ import type { DeliveryCustomMessage } from './delivery.ts';
 import { createNativeSessionFactory } from './native-session.ts';
 import { installSessionSurface, type SubagentSurfaceCreateOptions } from './surface.ts';
 import type { ManagedWriteHost, SessionEndpoint } from './message-write.ts';
-import type { NativeCustomHandoff, NativeRouteResult, NativeRoutingPort, NativeStartedJob } from './native-types.ts';
+import type { NativeCustomHandoff, NativeLiveSnapshot, NativeRouteResult, NativeRoutingPort, NativeSessionEvent, NativeStartedJob } from './native-types.ts';
 import {
   createSubagentRuntime, copyInheritedEntries, SubagentError,
   type RuntimeEvent, type SubagentRuntime, type DetailedAgentItem,
@@ -393,6 +393,18 @@ export class RootService implements ManagedWriteHost {
   sendMessage(command: Parameters<SubagentRuntime['sendMessage']>[0]) {
     this.assertOperational();
     return this.runtime.sendMessage(command);
+  }
+
+  /** Observe one live Job's full native event stream (null when it has no live run). */
+  subscribeJobEvents(jobId: string, listener: (event: NativeSessionEvent) => void): (() => void) | null {
+    this.assertOperational();
+    return this.runner.subscribeJobEvents(jobId, listener);
+  }
+
+  /** Read one live Job's current boundary and produced content (null when it has no live run). */
+  liveSnapshot(jobId: string): NativeLiveSnapshot | null {
+    this.assertOperational();
+    return this.runner.liveSnapshot(jobId);
   }
 
   async #shellResult(actorId: string, result: ShellResult): Promise<void> {

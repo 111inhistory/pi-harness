@@ -54,12 +54,14 @@ import type {
   NativeHandoffResult,
   NativeJobOutcome,
   NativeJobRunnerDeps,
+  NativeLiveSnapshot,
   NativeModelRef,
   NativePeerHandoff,
   NativePendingCustom,
   NativePendingInput,
   NativeRetainedActor,
   NativeSession,
+  NativeSessionEvent,
   NativeStartedJob,
 } from "./native-types.ts";
 
@@ -83,6 +85,12 @@ class LiveJob {
   child: NativeChildApi | null = null;
   closed = false;
   cancelled = false;
+  /** Observers of the full native event stream; they never affect the Job. */
+  readonly listeners = new Set<(event: NativeSessionEvent) => void>();
+  /** Latest cumulative assistant partial being streamed, for a live snapshot. */
+  latestPartial: unknown | null = null;
+  /** Reads the run's current boundary and produced content once its session exists. */
+  snapshot: (() => NativeLiveSnapshot) | null = null;
   wake: (() => void) | null = null;
   readonly ready: Promise<void>;
   sessionReady!: () => void;
@@ -154,6 +162,31 @@ export class NativeJobRunner {
       if (live.agentId === agentId && live.child !== null && !live.closed) return live.child;
     }
     return null;
+  }
+
+  /**
+   * Observe one live Job's full native event stream. Returns null when the Job
+   * has no live run (unknown, finished, or not yet started under the runner).
+   * The returned function detaches only this observer; it never touches the Job.
+   */
+  subscribeJobEvents(jobId: string, listener: (event: NativeSessionEvent) => void): (() => void) | null {
+    const live = this.#jobs.get(jobId);
+    if (live === undefined || live.closed) return null;
+    live.listeners.add(listener);
+    return () => {
+      live.listeners.delete(listener);
+    };
+  }
+
+  /**
+   * Read one live run's current boundary and produced content. Returns null when
+   * the Job has no live run (unknown, finished, or its session is not ready).
+   * Reading is a projection and never consumes the event stream.
+   */
+  liveSnapshot(jobId: string): NativeLiveSnapshot | null {
+    const live = this.#jobs.get(jobId);
+    if (live === undefined || live.closed || live.snapshot === null) return null;
+    return live.snapshot();
   }
 
   /**
@@ -508,6 +541,15 @@ export class NativeJobRunner {
       // boundary is the leaf at start, and native compaction appends entries
       // instead of rewriting or dropping them.
       const jobMessages = (): unknown[] => messagesAfter(manager, boundary);
+      // A live snapshot is a read projection over the same recorded interval plus
+      // the cumulative assistant partial the provider is streaming right now.
+      live.snapshot = () => ({
+        startEntryId: boundary,
+        endEntryId: manager.getLeafId(),
+        messages: jobMessages(),
+        entries: entriesAfter(manager, boundary),
+        partial: live.latestPartial,
+      });
 
       let jobErr: unknown = null;
 
@@ -516,6 +558,18 @@ export class NativeJobRunner {
         // finalized boundaries without copying history or appending per-turn
         // root state.
         unsubscribe = native.session.subscribe((event) => {
+          // Full-stream observers see the raw native event; an observer failure
+          // must never affect the Job's own turn accounting.
+          for (const listener of live.listeners) {
+            try {
+              listener(event);
+            } catch {
+              /* observation is best-effort and never blocks execution */
+            }
+          }
+          const record = event as { type?: string; message?: unknown };
+          if (record.type === "message_update") live.latestPartial = record.message ?? null;
+          else if (record.type === "message_end" || record.type === "agent_end") live.latestPartial = null;
           if (event.type !== "message_end" && event.type !== "turn_end" && event.type !== "agent_end") return;
           updateRetainedTools?.();
         });
@@ -591,6 +645,9 @@ export class NativeJobRunner {
       transcript: sessionManager === null || !boundaryEstablished ? [] : readTranscript(entriesAfter(sessionManager, boundary)),
     })).finally(async (): Promise<void> => {
       live.closed = true;
+      live.listeners.clear();
+      live.snapshot = null;
+      live.latestPartial = null;
       this.#jobs.delete(request.jobId);
       // A revival reuses the loadout the run actually ended with — capability
       // activation can open tools mid-run — never the pre-run allowlist. The

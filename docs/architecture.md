@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | `harness-config.ts` | 外部配置读取、合成与校验；根配置快照和指定提示词段落 | 路由角色、Pi 原生设置、运行中 Job 变更 |
 | `runtime.ts` | Actor 拓扑、Job 状态机、活跃名额控制（Fresh 与 Inherited 独立父节点名额池）、停止原因、续跑准入、中断恢复、终态事件与单一 Budget 监控（监控 lifetime 与 active hard 截止时间，`startActive` 时重置，`stop`/`finalize`/`end` 时清理） | SDK Session、Socket、原生文件解析 |
-| `native-runner.ts` | Session 执行句柄生命周期、输入准入、在途 steer 协调、原生输入缓冲、本地就绪（local readiness）判定与资源清理 | 裁定 Job 状态、决定空闲唤醒、写根终态 |
+| `native-runner.ts` | Session 执行句柄生命周期、输入准入、在途 steer 协调、原生输入缓冲、本地就绪（local readiness）判定、资源清理，以及按 Job 提供原生事件观察与实时快照 | 裁定 Job 状态、决定空闲唤醒、写根终态 |
 | `actor-sessions.ts` | Actor 角色／模型身份记录、原生 manager 引用与已记录锚点、身份补丁 | Job 状态和停止排序 |
 | `native-session.ts` | Settings、ResourceLoader、子扩展装配及 SDK 会话创建（Fresh／Inherited 均独立加载扩展与 MCP 后端，Inherited 恢复捕获白名单并对异步 MCP 提供有界等待，默认 10 秒） | 路由、任务结果裁决 |
 | `root-service.ts` | 组装上述模块，根事件写入、历史视图、内存超限临时文件管理（进程正常退出清理）、故障锁存，以及把当前根有效黑名单过滤后的作用域交给子会话 | 第二套 Job 状态机 |

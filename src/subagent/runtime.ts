@@ -290,6 +290,25 @@ export interface JobRecordView {
   previousJobId: string | null;
 }
 
+/**
+ * A Job's readable boundary while it is still running or after it settled.
+ * Unlike {@link JobRecordView}, this is available for `running` Jobs so a client
+ * can read what the Job has produced so far and then consume live deltas.
+ * `history.endEntryId` is the start boundary for a running Job (the native end
+ * is owned by the live session); the stream/history adapter fills it from the
+ * live snapshot.
+ */
+export interface JobSnapshotView {
+  jobId: string;
+  agentId: string;
+  name: string | null;
+  round: number;
+  status: JobStatus;
+  history: HistoryBounds | null;
+  error: LifecycleError | null;
+  previousJobId: string | null;
+}
+
 export interface CancelJobResult {
   ok: boolean;
   reason?: string;
@@ -1324,6 +1343,27 @@ export class SubagentRuntime {
     if (job.historyState !== undefined) record.historyState = job.historyState;
     if (job.historyError !== undefined) record.historyError = job.historyError;
     return record;
+  }
+
+  /**
+   * Readable boundary for any registered Job, including a `running` one.
+   * Returns null only for an unknown Job. The native end/partial belong to the
+   * live session and are supplied by the adapter's live snapshot.
+   */
+  jobSnapshot(jobId: unknown): JobSnapshotView | null {
+    const job = typeof jobId === "string" ? this.#jobs.get(jobId) : undefined;
+    if (job === undefined) return null;
+    const agent = this.#agents.get(job.agentId);
+    return {
+      jobId: job.jobId,
+      agentId: job.agentId,
+      name: agent?.name ?? null,
+      round: Math.max(1, (agent?.jobIds.indexOf(job.jobId) ?? 0) + 1),
+      status: job.status,
+      history: job.history === null ? null : { ...job.history },
+      error: cloneValue(job.error),
+      previousJobId: job.continuedFromJobId,
+    };
   }
 
   /**
