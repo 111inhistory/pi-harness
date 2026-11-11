@@ -118,6 +118,16 @@ node scripts/check-test-contracts.mjs --all
 
 `--all` 额外检查暂存版本中的全部测试是否登记。它不会自动生成映射，也不执行测试。单独运行关联检查可使用 `npm run check:test-contracts`。
 
+## Common-path measurements
+
+```sh
+npm run bench:common -- --output /tmp/common-paths.json
+```
+
+This opt-in script measures permission queries, local broker searches, scoped/full root lists and real owned IPC roundtrips. Fixed profiles contain 4,000/8,000 assistant-message proxies, 30/50 registered tools, eight active tools and terminal registries with 120/240 actors and 200/400 Jobs. The permission replay receives the corresponding user/assistant/tool-result entry counts; it does not inspect message bodies. Root lists use an in-memory registry and omit archive/view I/O. Broker provider ports use synthetic in-memory catalogs and Skill bodies, so this measures local search, not retrieval-model latency or Skill filesystem performance.
+
+Imports and fixture setup are excluded. The first operation is timed before validation; subsequent operations are reported separately with median/min/max wall time, process CPU and applicable work counts. `--iterations N` controls warm samples (default 25). Assertions run outside the clocks. Each invocation owns a private IPC root and tears it down before reporting success. Results include platform, Node, revision and working-tree status; timings are measurements, not CI thresholds or memory-growth evidence.
+
 ## Inherited 创建性能
 
 性能基准独立于 `npm run check`，按需运行：

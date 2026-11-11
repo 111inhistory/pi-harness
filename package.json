@@ -37,6 +37,7 @@
     "migrate:tool-permissions": "node --import tsx scripts/migrate-tool-permissions.mjs",
     "check:rpc-schema": "node --import tsx scripts/check-rpc-schema.mjs",
     "schema:rpc": "node --import tsx scripts/check-rpc-schema.mjs --write",
+    "bench:common": "node --import tsx scripts/common-path-bench.mjs",
     "bench:inherited": "node scripts/inherited-creation-bench.mjs"
   },
   "dependencies": {
