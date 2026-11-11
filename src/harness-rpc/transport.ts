@@ -1,7 +1,7 @@
 /**
  * The independent Harness RPC server.
  *
- * One owned endpoint, one newline-delimited JSON reader per accepted client, and
+ * One owned endpoint, one admitted client with a newline-delimited JSON reader, and
  * a request/response protocol that also lets the server push subscription
  * events on the same connection. Ownership, stale-endpoint recovery and inode
  * bound cleanup are delegated to `createOwnedServer`; this module owns framing,
@@ -249,13 +249,12 @@ export class RpcConnection {
 export interface HarnessRpcServer {
   readonly address: string;
   readonly ready: Promise<void>;
-  readonly connections: Set<RpcConnection>;
   close(): Promise<void>;
 }
 
-/** Start the owned Harness RPC endpoint at `options.address`. */
+/** Start the owned endpoint; an occupied connection slot rejects new sockets. */
 export function createHarnessRpcServer(options: HarnessRpcServerOptions): HarnessRpcServer {
-  const connections = new Set<RpcConnection>();
+  let connection: RpcConnection | null = null;
   const onError = options.onError ?? (() => {});
   const maxBacklogBytes = options.maxBacklogBytes ?? DEFAULT_MAX_BACKLOG_BYTES;
   const owned: OwnedServer = createOwnedServer({
@@ -263,9 +262,15 @@ export function createHarnessRpcServer(options: HarnessRpcServerOptions): Harnes
     isNamespace: ipc.isNamespace(options.address),
     root: options.root,
     onConnection(socket: net.Socket) {
-      const connection = new RpcConnection(socket, options.handler, maxBacklogBytes, onError);
-      connections.add(connection);
-      socket.once('close', () => connections.delete(connection));
+      if (connection !== null) {
+        socket.destroy();
+        return;
+      }
+      const accepted = new RpcConnection(socket, options.handler, maxBacklogBytes, onError);
+      connection = accepted;
+      // FIN may leave requests or response bytes in flight. Keep ownership
+      // until the socket closes, not merely until observations are detached.
+      socket.once('close', () => { if (connection === accepted) connection = null; });
     },
     onError,
   });
@@ -273,10 +278,8 @@ export function createHarnessRpcServer(options: HarnessRpcServerOptions): Harnes
   return {
     address: options.address,
     ready: owned.ready,
-    connections,
     async close() {
-      for (const connection of [...connections]) connection.close();
-      connections.clear();
+      connection?.close();
       await owned.close();
     },
   };

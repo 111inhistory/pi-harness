@@ -55,7 +55,8 @@
 - 每个连接内的请求按到达顺序串行处理，响应按请求顺序写出。
 - 订阅事件在请求处理之外推送，可能与响应交错；同一连接的事件与响应不保证全局因果顺序。
 - 本端点与 Pi 原生 RPC 是两个通道，不承诺跨通道的全局消息顺序。客户端不能仅按接收先后推断操作因果。
-- 每个连接独立；不同连接之间没有顺序保证。
+- An endpoint owns at most one client connection. Additional connections are closed without dispatching their requests; the current connection is not displaced.
+- The slot is released on actual socket close. FIN stops events but retains ownership while pending handlers or response writes remain. Endpoint retirement force-closes the owned connection. A client may establish a replacement after closure; subscriptions are not transferred or replayed.
 
 ## 3. 信封与判别
 

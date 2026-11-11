@@ -458,6 +458,7 @@ Harness 为 Pi 原生 RPC 未覆盖的工具信息、子 Agent 控制、消息�
 ### 协议
 
 - 帧为换行分隔的 JSON。请求为 `{id, method, params?}`；响应为 `{id, ok: true, result}` 或 `{id, ok: false, error: {code, message, detail?}}`；订阅事件为 `{event: {subscription, seq, payload}}`。
+- Each endpoint admits one client connection. While it is occupied, additional connections are closed without dispatching requests; the current client keeps ownership. Disconnect releases subscriptions. FIN retains the slot until pending responses finish and the socket actually closes; root retirement force-closes the owned connection. A replacement client may connect after that close.
 - 每连接请求按顺序处理并保序响应。慢客户端的有界积压（默认 4 MiB，实现可调）超过上限时断开并释放订阅，不阻塞模型执行，也不静默丢弃事件后假装完整。
 - 客户端不能自动重放结果未知的控制输入。异常、超时与断连不证明输入尚未入队。
 - 语言无关的线协议规范见 [Harness RPC 线协议规范](harness-rpc-wire-spec.md)；机器可读 schema 与方法清单由定义源码生成，Git 追踪 [`schemas/SHA256SUMS`](../schemas/SHA256SUMS) 和 [`schemas/fixtures/harness-rpc/`](../schemas/fixtures/harness-rpc/)；生成、GitHub Actions 下载与 `$defs` 细节见 [Harness RPC Schema](harness-rpc-schema.md)。

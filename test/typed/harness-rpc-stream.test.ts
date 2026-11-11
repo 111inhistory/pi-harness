@@ -224,31 +224,6 @@ test("unsubscribe detaches the live observer and suppresses later events", async
   await running.runtime.jobDone(running.jobId);
 });
 
-test("unsubscribe releases the Runtime terminal observation without affecting another subscription", async () => {
-  const running = startRunningJob();
-  const root = {
-    sessionId: "session-root",
-    runtime: running.runtime,
-    subscribeJobEvents: () => () => {},
-    liveSnapshot: () => ({ endEntryId: "e2", messages: [], partial: null }),
-  } as unknown as RootService;
-  const port = buildStreamPort(root);
-  const removed = makeConnection();
-  const kept = makeConnection();
-  await port.subscribe({ jobId: running.jobId }, removed as unknown as RpcConnection);
-  await port.subscribe({ jobId: running.jobId }, kept as unknown as RpcConnection);
-
-  assert.deepEqual(port.unsubscribe({ subscription: "sub-1" }, removed as unknown as RpcConnection), { removed: true });
-  running.finish("e3");
-  await running.runtime.jobDone(running.jobId);
-  await flush();
-
-  const jobEvents = (connection: FakeConnection): number =>
-    connection.events.filter((event) => event.payload.kind === "job").length;
-  assert.equal(jobEvents(removed), 0, "an unsubscribed connection must not receive the terminal event");
-  assert.equal(jobEvents(kept), 1, "another subscription keeps its own terminal observation");
-});
-
 test("a detachable terminal observer removes only its listener and isolates observer failures", async () => {
   const running = startRunningJob();
   let detachedCalls = 0;

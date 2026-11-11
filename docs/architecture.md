@@ -181,6 +181,8 @@ Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返�
 
 ## Harness RPC 独立接口
 
+The endpoint holds one client connection reference. Additional sockets are closed before request dispatch. Ownership lasts until actual socket close, including after FIN while handlers or response writes remain; endpoint retirement force-closes that connection. Reconnecting creates new subscriptions rather than transferring old observations.
+
 独立端点由 `src/harness-rpc/*` 实现，只在根宿主运行模式为 `rpc` 时由 `src/subagent/extension.ts` 装配；TUI、print、JSON 与内部 SDK 子会话不装配。`transport.ts` 复用 `createOwnedServer` 与平台适配，负责 NDJSON 分帧、保序响应、订阅推送与有界积压；`discovery.ts` 在会话私有目录发布 `harness-rpc.json`；`router.ts` 分派到 `ports/*`，各 port 调用现有领域 API（Capability 目录、RootService、Runtime、`capability/tool-permission.ts`），不解析 Slash 输出。执行流订阅由 `native-runner.ts` 按 `jobId` 转发原生事件，`ports/stream.ts` 投影并携带归属；观察失败不影响 Job。端点失败向接入方报告，不阻止宿主启动；切根先关闭旧端点再装配新端点。
 
 ## Shell 执行前检查
