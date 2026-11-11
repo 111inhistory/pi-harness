@@ -38,6 +38,8 @@ Main 和普通 Fresh／Inherited Subagent 在原生压缩成功后，若 `capabi
 
 宿主按原生会话条目来源，持续屏蔽淘汰前的旧声明。重新发现会追加新声明，不会把工具恢复到旧检查点并改变已发送的前缀。当前记忆初始化新的压缩边界时，不包含已淘汰资源。
 
+A real native declaration recorded after pruning reintroduces that name for declaration history, even after a temporary explicit enable is reset or disabled. Selection and execution permissions remain separate. When compaction hooks remove disabled tools after the SDK captures its checkpoint, the first request’s native removals fix that checkpoint; a later enable appends its declaration instead of restoring the old head.
+
 内部 Capability 检索与 `/btw` 不独立执行淘汰。它们的继承视图保留父会话的当前状态与边界通知。
 
 ## 原生发现边界

@@ -1072,9 +1072,9 @@
       "reason": "Table-driven overlap rows retain their original names, initial registry/loadout, effects and before/after state checks. Four identical parser assertions are covered by the existing manual parser test and its unique list-active input was moved there. No distinct input, expected outcome or invariant was removed."
     },
     "capability.compaction-prune": {
-      "docs": "f2697a2950a341f4a41eaa29fb949435daf94f4b49fa4b79ffd69c32c95b38ed",
-      "tests": "1e021885175a85492967bf09979e4b2843fb9b5555d7ee20ea8e8c04da99df4b",
-      "reason": "Replace the old imperative SDK file with generated real discovery/permission/compaction/reopen histories. The reference state tracks current discovered membership and backend use independently. Product pruning contracts are unchanged; unresolved prefix failures are retained and documented in the PBT review."
+      "docs": "6e3374f07feffed783bea55c10ce9177fc578db67b1ce05a1d75d82e9dbe4d33",
+      "tests": "f6b842279ad42a207463359a5dc81d45c596ed286024a575a846fb6918600e31",
+      "reason": "Clarify declaration provenance after pruning and first-request checkpoint removals. Existing generated discover/compact/enable/disable and disable/compact/enable histories now pass unchanged, and the existing compaction/admission/transport tests pass. No duplicate imperative cases are needed; selection and execution permission contracts remain unchanged."
     },
     "preset.config": {
       "docs": "5bf2efc378b5fbc58416a1e7d5e355364c4da48587f5a8b2ec1cc4656d8ac4b6",

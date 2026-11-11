@@ -4,15 +4,32 @@ import { buildSessionProjection, type SessionEntry } from '@earendil-works/pi-co
 import { promptString } from '../prompt-text.ts';
 import { latestPruneRecord } from './discovery-record.ts';
 
-/** Mask pre-prune declaration contributions by native source-entry provenance. */
+/** Mask retired declaration contributions by native source-entry provenance. */
 export function projectPrunedToolHistory(
   messages: readonly AgentMessage[],
   branch: readonly SessionEntry[],
 ): AgentMessage[] {
   const removedAt = new Map<string, number>();
+  let checkpoint: number | undefined;
+  let initialRequest = false;
   for (let index = 0; index < branch.length; index++) {
-    const prune = latestPruneRecord([branch[index]]);
+    const entry = branch[index]!;
+    const prune = latestPruneRecord([entry]);
     for (const name of prune?.removedTools ?? []) removedAt.set(name, index);
+    if (entry.type === 'compaction') {
+      checkpoint = index;
+      initialRequest = true;
+    } else if (entry.type === 'message' && initialRequest) {
+      if (entry.message.role === 'assistant') initialRequest = false;
+      else if (entry.message.role === 'system' && checkpoint !== undefined) {
+        // Compaction hooks can remove disabled tools after the SDK captured
+        // its checkpoint. The first request's native removal fixes that head;
+        // a later enable must append, never restore the old head declaration.
+        for (const tool of entry.message.toolsRemoved ?? []) {
+          removedAt.set(tool.name, Math.max(removedAt.get(tool.name) ?? checkpoint, checkpoint));
+        }
+      }
+    }
   }
   if (removedAt.size === 0) return [...messages];
   const positions = new Map(branch.map((entry, index) => [entry.id, index]));

@@ -348,36 +348,49 @@ export function latestPruneRecord(branch: readonly unknown[] | null | undefined)
 /**
  * Return the set of currently pruned tool names derived from branch history.
  *
- * Removed tools accumulate chronologically across prune records; a later
- * discovery clears them from the pruned set. An explicit enable is not a
- * discovery and is handled by admission, which lets it win over a prune.
+ * Removed names follow branch order. Later discovery or a native system
+ * `toolsAdded` declaration reintroduces a name; a later prune retires it again.
+ * A published post-prune declaration therefore survives the end of a temporary
+ * `enabled` override. MCP selection and execution permissions remain separate
+ * admission checks.
  */
 export function prunedToolNames(branch: readonly unknown[] | null | undefined): ReadonlySet<string> {
   const pruned = new Set<string>();
 
   for (const entry of branch ?? []) {
     if (!isRecord(entry)) continue;
-    if (entry["type"] !== "custom") continue;
+    const type = entry["type"];
 
-    if (entry["customType"] === CAPABILITY_PRUNE_RECORD) {
-      const record = parsePruneRecord(entry["data"]);
-      if (record !== null) {
-        for (const name of record.removedTools) pruned.add(name);
-      }
-    } else if (entry["customType"] === CAPABILITY_DISCOVERY_RECORD) {
-      const discovery = parseRecord(entry["data"]);
-      if (discovery !== null) {
-        for (const category of ["tools", "mcp"] as const) {
-          for (const hit of discovery.result[category] ?? []) {
-            if (hit.status && hit.status !== "available") continue;
-            for (const member of hit.tools ?? [hit]) {
-              if (member.status && member.status !== "available") continue;
-              if (typeof member.name === "string" && member.name !== "") {
-                pruned.delete(member.name);
+    if (type === "custom") {
+      if (entry["customType"] === CAPABILITY_PRUNE_RECORD) {
+        const record = parsePruneRecord(entry["data"]);
+        if (record !== null) {
+          for (const name of record.removedTools) pruned.add(name);
+        }
+      } else if (entry["customType"] === CAPABILITY_DISCOVERY_RECORD) {
+        const discovery = parseRecord(entry["data"]);
+        if (discovery !== null) {
+          for (const category of ["tools", "mcp"] as const) {
+            for (const hit of discovery.result[category] ?? []) {
+              if (hit.status && hit.status !== "available") continue;
+              for (const member of hit.tools ?? [hit]) {
+                if (member.status && member.status !== "available") continue;
+                if (typeof member.name === "string" && member.name !== "") {
+                  pruned.delete(member.name);
+                }
               }
             }
           }
         }
+      }
+    } else if (type === "message") {
+      const message = entry["message"];
+      if (!isRecord(message) || message["role"] !== "system") continue;
+      const added = message["toolsAdded"];
+      if (!Array.isArray(added)) continue;
+      for (const tool of added) {
+        const name = isRecord(tool) ? tool["name"] : undefined;
+        if (typeof name === "string" && name !== "") pruned.delete(name);
       }
     }
   }
