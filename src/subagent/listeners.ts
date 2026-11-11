@@ -153,8 +153,16 @@ export class AgentListeners {
             }
           },
         });
-        this.#servers.set(key, server);
-        await server.ready;
+        try {
+          await server.ready;
+          this.#servers.set(key, server);
+        } catch (readyError) {
+          const outcome = await server.close();
+          if (outcome.releaseError !== null) {
+            this.#options.onError(outcome.releaseError);
+          }
+          throw readyError;
+        }
       }
     });
   }

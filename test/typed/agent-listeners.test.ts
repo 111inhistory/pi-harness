@@ -7,6 +7,9 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  IpcOwnershipError,
+} from "../../src/ipc/endpoint.ts";
+import {
   getAgentSocketPath,
   getBroadcastSocketPath,
   writeSocket,
@@ -236,3 +239,84 @@ test("close rejects new traffic and releases every registered socket", async (t)
     (error: unknown) => error instanceof SubagentError && error.code === "runtime_closed",
   );
 });
+
+test("obstructed actor endpoint fails startup without takeover and binds on subsequent sync after blocker is closed", async (t) => {
+  const root = await socketRoot(t);
+  const actorSocketPath = getAgentSocketPath("sub_01", root);
+
+  const blocker = net.createServer((socket) => socket.resume());
+  await new Promise<void>((resolve, reject) => {
+    blocker.once("error", reject);
+    blocker.listen(actorSocketPath, () => resolve());
+  });
+  t.after(() => {
+    if (blocker.listening) {
+      blocker.close();
+    }
+  });
+
+  let actors = [{ agentId: "sub_01", parentAgentId: null, depth: 1 }];
+  const sends: unknown[] = [];
+  const errors: Error[] = [];
+  const listeners = new AgentListeners({
+    sessionId: "test-session",
+    socketDir: root,
+    baseSocketDir: root,
+    maxDepth: 2,
+    actors: () => actors,
+    isAccepting: () => true,
+    send: async (command) => {
+      sends.push(command);
+      return { ok: true, to: command.to, jobId: null };
+    },
+    onError: (error) => {
+      errors.push(error);
+    },
+  });
+  t.after(() => listeners.close());
+
+  // First sync fails because of the competing live server on registered actor sub_01.
+  await assert.rejects(
+    listeners.sync(),
+    (error: unknown) => error instanceof IpcOwnershipError && error.code === "ipc_endpoint_in_use",
+  );
+
+  // The competing live server is preserved: not taken over or forcefully closed.
+  assert.equal(
+    await canConnect(actorSocketPath),
+    true,
+    "the blocker endpoint remains live and unaffected by first sync",
+  );
+
+  // Explicitly close the blocker.
+  await new Promise<void>((resolve) => blocker.close(() => resolve()));
+
+  // Add a newly registered actor to mirror a subsequent root.create batch.
+  actors = [
+    { agentId: "sub_01", parentAgentId: null, depth: 1 },
+    { agentId: "sub_02", parentAgentId: null, depth: 1 },
+  ];
+
+  // Second sync should bind both the previously obstructed earlier registered actor and the new actor.
+  await listeners.sync();
+  assert.equal(
+    await canConnect(actorSocketPath),
+    true,
+    "the previously obstructed earlier registered actor endpoint is bound on subsequent sync",
+  );
+  const secondActorSocketPath = getAgentSocketPath("sub_02", root);
+  assert.equal(
+    await canConnect(secondActorSocketPath),
+    true,
+    "the newly registered actor endpoint is also bound on subsequent sync",
+  );
+
+  await writeSocket(actorSocketPath, JSON.stringify({ from: "sub_01", content: "hello earlier actor" }));
+  await writeSocket(secondActorSocketPath, JSON.stringify({ from: "sub_02", content: "hello new actor" }));
+  assert.equal(sends.length, 2);
+  assert.deepEqual(sends, [
+    { from: "sub_01", to: "sub_01", content: "hello earlier actor" },
+    { from: "sub_02", to: "sub_02", content: "hello new actor" },
+  ]);
+});
+

@@ -1101,6 +1101,11 @@
       "docs": "ff2252d7cce9483604b0eac1be4c744fd85c8819ce4fb98b636eac9d2fb59dc7",
       "tests": "8237013a51a301cdc32a834d124832d9fa56c97eb23f1a695c14790b644ae2c8",
       "reason": "The documented Child Session section already specifies live denial propagation and root-only enable; this new test is the first actual RootService/SDK grandchild coverage of that existing contract, so the document itself needs no change."
+    },
+    "subagent.delivery": {
+      "docs": "3b8cc6a2e08fea413d06c642fb553d75e5591c5352989b1389df1c0b9ef8f456",
+      "tests": "bb068e2a064af5c7ec8bcac0a1675251b4f15e5c6a08a3fdb02ef61c88341875",
+      "reason": "Extend agent-listeners regression for obstructed actor endpoint startup failure cleanup and recovery on subsequent sync; underlying delivery contracts are unchanged"
     }
   }
 }
