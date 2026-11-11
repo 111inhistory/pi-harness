@@ -17,12 +17,10 @@ import {
   abortableGate,
   assertEndpointReachable,
   deliverToActor,
-  detailsOf,
   isSubagentError,
   lastToolResult,
   assertMessageSuccessFromMessage,
   occurrences,
-  readTranscriptEvents,
   createdItems,
   createdItemsFromMessage,
   listedActors,
@@ -218,108 +216,6 @@ export async function runPeerSenderScenario(fixture: ScenarioFixture): Promise<v
     occurrences(text, `[Message from ${sender.id}]`),
     1,
     "the host frames the actual native write owner exactly once",
-  );
-}
-
-/**
- * A busy Subagent parent receives peer progress as a native steer and the
- * terminal notice as its own delivery. Progress and terminal stay independent,
- * each exactly once, and the provider plus native transcript observe both.
- */
-export async function runUpstreamParentSteerScenario(fixture: ScenarioFixture): Promise<void> {
-  const send = fixture.gate();
-  const parentWaiting = fixture.gate();
-  const parentExit = fixture.gate();
-  let parent: FixtureActor | undefined;
-  let progressWriteCompleted = false;
-  let parentRequests = 0;
-  let progressSeen = false;
-  let terminalSeen = false;
-  const parentOwner = (): FixtureActor => {
-    if (parent === undefined) throw new Error("the parent Actor must exist before its model call");
-    return parent;
-  };
-  fixture.controls.chat = async (request) => {
-    if (request.text.includes("PARENT_MERGE_LEAF")) {
-      const wrote = lastToolResult(request.context.messages, "msg_write");
-      if (wrote === undefined) {
-        await send.promise;
-        return fixture.toolAnswer("msg_write", { path: parentOwner().socket, content: "PARENT_MERGE_PROGRESS" }, "parent-merge-write");
-      }
-      assertMessageSuccessFromMessage(wrote);
-      progressWriteCompleted = true;
-      return fixture.textAnswer("Leaf completed");
-    }
-    assert.ok(request.text.includes("PARENT_MERGE_OWNER"));
-    parentRequests += 1;
-    const created = request.context.messages.some(
-      (message) => message.role === "toolResult" && message.toolName === "subagent_create",
-    );
-    if (!created) {
-      return fixture.toolAnswer("subagent_create", {
-        tasks: [{ task: "PARENT_MERGE_LEAF: send progress to your direct parent" }],
-      }, "parent-merge-create");
-    }
-    if (!request.text.includes("PARENT_MERGE_PROGRESS")) {
-      parentWaiting.resolve();
-      await parentExit.promise;
-      return fixture.textAnswer("Parent finishes its held model turn");
-    }
-    // Pi may consume the separate messages together or on successive turns.
-    // The plugin never rewrites the ordinary message with the terminal.
-    const deliveries = request.context.messages.filter(
-      (message) => message.role !== "system" && JSON.stringify(message.content).includes("PARENT_MERGE_PROGRESS"),
-    );
-    assert.equal(deliveries.length, 1, "the busy parent observes peer progress exactly once");
-    assert.doesNotMatch(JSON.stringify(deliveries[0]?.content ?? ""), /\[Subagent .* completed/);
-    progressSeen = true;
-    terminalSeen = request.text.includes(`[Subagent ${parentOwner().id}_01 completed`);
-    return fixture.textAnswer("Parent received independent progress and terminal events");
-  };
-  parent = await fixture.create("PARENT_MERGE_OWNER: delegate one leaf and consume its result");
-  await parentWaiting.promise;
-  const leaf = listedActors(await fixture.call("subagent_list", { all: true })).find(
-    (entry) => entry.id !== "Main" && entry.id !== parentOwner().id,
-  );
-  assert.ok(leaf, "the parent must have created exactly one leaf");
-  send.resolve();
-  await waitForCondition(() => progressWriteCompleted, "leaf progress write completion");
-  await fixture.stopped(leaf.id);
-  parentExit.resolve();
-  await waitForCondition(() => progressSeen && terminalSeen, "busy Subagent parent consumes both independent events");
-  await fixture.stopped(parent.id);
-  await fixture.session.waitForIdle();
-  assert.ok(parentRequests === 3 || parentRequests === 4, "Pi chooses whether separate queued messages need one or two turns");
-  assert.equal(fixture.classifications.length, 4, "the terminal notice does not route another parent assignment");
-  const history = (await fixture.stopped(parent.id)).history;
-  assert.ok(history);
-  const stored = await readTranscriptEvents(history.cleanJsonl);
-  const progress = stored.filter(
-    (event) => event.role === 'custom' && event.customType === 'agent-delivery' &&
-      detailsOf(event.details).source === 'agent' && JSON.stringify(event.content ?? '').includes('PARENT_MERGE_PROGRESS'),
-  );
-  assert.equal(progress.length, 1, 'the peer steer remains one independent native event');
-  assert.match(JSON.stringify(progress[0]?.content ?? ''), new RegExp(`\\[Message from ${leaf.id}\\]`));
-  assert.equal(detailsOf(progress[0]?.details).sourceId, leaf.id);
-  assert.equal(detailsOf(progress[0]?.details).round, 1);
-  assert.equal(detailsOf(progress[0]?.details).jobId, leaf.id);
-  assert.equal(stored.filter((event) => event.role === 'user' && JSON.stringify(event.content ?? '').includes('PARENT_MERGE_PROGRESS')).length,
-    0, 'peer bodies must not be concatenated into a control/user prompt');
-  const terminals = stored.filter(
-    (event) =>
-      event.role === "custom" &&
-      event.customType === "agent-delivery" &&
-      detailsOf(event.details).source === "host" &&
-      detailsOf(event.details).sourceId === leaf.id,
-  );
-  assert.equal(terminals.length, 1, "the terminal notice is stored exactly once");
-  const terminal = terminals[0];
-  assert.ok(terminal);
-  assert.equal(detailsOf(terminal.details).status, "completed");
-  assert.equal(
-    JSON.stringify(terminal.content ?? "").includes("PARENT_MERGE_PROGRESS"),
-    false,
-    "the terminal notice never absorbs the earlier progress",
   );
 }
 

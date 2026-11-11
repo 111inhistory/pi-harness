@@ -303,7 +303,7 @@ export async function createSdkFixture(options: SdkFixtureOptions): Promise<SdkF
       });
     }
 
-    const durable = options.durable ?? ["reload", "upstream-main-reload", "listener-cache", "revive", "history", "upstream-parent", "upstream-parent-steer", "stopping", "stop-history", "failure", "memory-owners", "restore-invalid"].includes(scenario);
+    const durable = options.durable ?? ["reload", "upstream-main-reload", "listener-cache", "revive", "history", "stopping", "stop-history", "failure", "memory-owners", "restore-invalid"].includes(scenario);
     const sessionManager = durable ? SessionManager.create(cwd, path.join(cwd, "root-sessions")) : SessionManager.inMemory(cwd);
     if (durable) {
       sessionManager.appendMessage({ role: "user", content: "Root seed", timestamp: Date.now() });

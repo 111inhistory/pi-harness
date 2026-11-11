@@ -627,6 +627,7 @@
         "test/typed/native-delivery.test.ts",
         "test/typed/agent-listeners.test.ts",
         "test/typed/native-lifecycle-model.test.ts",
+        "test/typed/parent-coordination-model.test.ts",
         "test/typed/subagent-lifecycle.test.ts"
       ]
     },
@@ -653,11 +654,18 @@
         {
           "path": "docs/interface-contract.md",
           "heading": "### 等待子任务"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 自动完成通知"
+        },
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### 广播"
         }
       ],
       "tests": [
-        "test/typed/runtime-parent-hold.test.ts",
-        "test/typed/parent-hold-sdk.test.ts"
+        "test/typed/parent-coordination-model.test.ts"
       ]
     },
     {
@@ -983,8 +991,8 @@
     },
     "subagent.integration": {
       "docs": "b031489f5c0c6bfd024f737282029c6ed108c1a0fdea4be32539e7f7e7d82fa8",
-      "tests": "15ce93417cdddcb9350c0f432cde30fc71edbd9dc9a7105ae2aabae0406b3dcc",
-      "reason": "Increase subprocess and outer test deadlines as requested: PBT 120/150 seconds, ordinary SDK scenarios 30/45 seconds. Generated behavior, admission and cleanup assertions are unchanged; these are test execution budgets, not product timeouts."
+      "tests": "4f2738db954e14eee243ae0b66060e172b7ce1667de9a0f4ce8501980694cbc8",
+      "reason": "Remove the three old parent/upstream/broadcast scenario entries and their dedicated helpers. Generated coordination histories now own that combined behavior under the parent-hold and delivery associations; the remaining SDK scenario roster and product interfaces are unchanged."
     },
     "subagent.socket": {
       "docs": "a464102b233a0a5ca99fc25ffb288834cef2fbebc230ac833ed7830abcae5916",
@@ -1043,13 +1051,13 @@
     },
     "subagent.delivery": {
       "docs": "3b8cc6a2e08fea413d06c642fb553d75e5591c5352989b1389df1c0b9ef8f456",
-      "tests": "9bca26d4c910409ed098dadb3f85af67f640df83a38aed108512ba079cfb933b",
-      "reason": "Increase subprocess and outer test deadlines as requested: PBT 120/150 seconds, ordinary SDK scenarios 30/45 seconds. Generated behavior, admission and cleanup assertions are unchanged; these are test execution budgets, not product timeouts."
+      "tests": "4ece959a729b5afe1d7b586be5e67c4b012a27b39f9c59e6ee47437089977536",
+      "reason": "The generated parent-child model checks terminal delivery and explicit message recipients through real SDK sessions, managed IPC and reopened durable files. Existing lifecycle tests keep flat actor handoff coverage. Public delivery semantics are unchanged; no duplicate pin catalogue or artificial contract wording is needed."
     },
     "subagent.parent-hold": {
-      "docs": "1bf1ee9a30aa83b99ec446a6a12d1e078fc27936675eaba6deb53720fce8e5e4",
-      "tests": "caf304efd1a7834765f29f0ec8b2d5a9951b598f226100b4eebb3dac93bb7970",
-      "reason": "Remove the deleted fake runner file from this association. The new model does not claim parent-hold coverage; runtime-parent-hold and parent-hold-sdk remain the registered behavior owners. Product hold/wake semantics did not change."
+      "docs": "554d0bca470f93c5815877b931f64ff5caf5e23fdc8e86bb87f0ff5acf913739",
+      "tests": "c88a5823d50415fef61d2c96cd14eec9d9f8d4ac491e590b1ce0c177c00acd4a",
+      "reason": "Delete the imperative parent-hold and upstream/broadcast catalogue before introducing generated histories. The new strict TypeScript model observes live-child Job continuity, late notices, explicit revival and direct-recipient routing through the real pipeline. Existing budget tests retain clock contracts. Public hold/wake semantics are unchanged; this is not a one-for-one reproduction of the removed assertions."
     },
     "subagent.retirement": {
       "docs": "2dd9c045b69c0732a0ab414f3922f789600cbeb9a6a44bb145f73843b45e37e9",

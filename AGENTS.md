@@ -62,7 +62,7 @@ npm run check
 npm run test:typed
 
 # 3) 定向运行单个或多个测试文件（必须带 --test）
-node --import tsx --test test/typed/runtime-parent-hold.test.ts
+node --import tsx --test test/typed/parent-coordination-model.test.ts
 node --import tsx --test test/typed/subagent-surface.test.ts
 
 # 4) Prompt、配置与文档自检（JSON 合法性与 Markdown 技术语言/链接验证）

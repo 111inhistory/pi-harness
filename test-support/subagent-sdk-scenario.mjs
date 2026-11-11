@@ -15,11 +15,9 @@ import {
 } from "../test/typed/support/subagent-sdk-fixture.ts";
 import {
   runExternalSocketScenario, runListenerCacheScenario, runPeerSenderScenario,
-  runRestoreInvalidScenario, runUpstreamParentSteerScenario,
+  runRestoreInvalidScenario,
 } from "../test/typed/support/subagent-sdk-scenarios.ts";
 import { runAsyncShellScenario } from "../test/typed/support/async-shell-sdk-scenario.ts";
-import { runHierarchicalBroadcastScenario } from "../test/typed/support/broadcast-parent-hold-scenario.ts";
-import { runUpstreamParentHoldScenario } from "../test/typed/support/upstream-parent-hold-scenario.ts";
 import {
   runPackageSkillsScenario,
   runResponsesOnlyScenario,
@@ -280,10 +278,6 @@ try {
     // JSON-literal sender spoofing is covered by sender-reserved against a
     // distinct actor. Sending Main -> Main here would instead be a forbidden
     // self-send, irrespective of the literal text.
-  } else if (scenario === "upstream-parent-steer") {
-    await runUpstreamParentSteerScenario(fixture);
-  } else if (scenario === "upstream-parent") {
-    await runUpstreamParentHoldScenario(fixture);
   } else if (scenario === "sender-wire") {
     await runPeerSenderScenario(fixture);
   } else if (scenario === "sender-reserved") {
@@ -356,8 +350,6 @@ try {
     for (const actor of actors) await listener(actor.socket);
     exit.resolve();
     await Promise.all(actors.map((actor) => stopped(actor.id)));
-  } else if (scenario === "broadcast") {
-    await runHierarchicalBroadcastScenario(fixture);
   } else if (scenario === "failure") {
     controls.chat = () => assistant([], "error", "Local provider failure");
     const first = await create("Fail a native model request");

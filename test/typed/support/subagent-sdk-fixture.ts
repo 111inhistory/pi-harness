@@ -232,15 +232,6 @@ export async function deliverToActor(
   assertMessageSuccess(await fixture.call("msg_write", { path: actor.socket, content }));
 }
 
-/** Fanout is verified in recipient transcripts, not in a public receipt. */
-export async function deliverBroadcast(
-  fixture: ScenarioFixture,
-  socket: string,
-  content: string,
-): Promise<void> {
-  assertMessageSuccess(await fixture.call("msg_write", { path: socket, content }));
-}
-
 /** A stopping write must be refused by the Runtime with its own busy state. */
 export function isStoppingRefusal(agentId: string, error: unknown): boolean {
   return (
@@ -280,11 +271,6 @@ function transcriptEvent(value: unknown): FixtureTranscriptEvent {
     ...("content" in event ? { content: event.content } : {}),
     ...("details" in event ? { details: event.details } : {}),
   };
-}
-
-/** Narrow a transcript/delivery `details` object for assertion messages. */
-export function detailsOf(value: unknown): Record<string, unknown> {
-  return record(value, "Delivery details");
 }
 
 /** Wait for an observable condition instead of an assumed transport delay. */
