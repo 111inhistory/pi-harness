@@ -136,11 +136,15 @@ Imports and fixture setup are excluded. The first operation is timed before vali
 npm run bench:inherited -- --output /tmp/inherited-performance.json
 ```
 
-[Inherited creation performance 工作流](../.github/workflows/inherited-performance.yml) 仅由 `workflow_dispatch` 手动触发，在 Ubuntu 与 Windows 上运行并上传 JSON 结果。每个样本使用独立 Node 进程、真实 SDK 的 `subagent_create` 入口和 durable 合成历史，覆盖 100／500 轮对话、不同消息体积与工具数量，每种场景重复三次；不调用在线模型或外部 MCP。可用 `--project <checkout>` 对另一份已安装依赖的检出运行相同基准。
+[Inherited creation performance 工作流](../.github/workflows/inherited-performance.yml) 仍只由 `workflow_dispatch` 手动触发。默认测量 1,000／4,000／16,000／32,000 条历史 assistant 消息代理值，每档同时持有三个实际运行中的 Inherited Subagent，分别使用 print 和 RPC 宿主模式；4,000 档另外测量单子 Agent 对照。每个配置重复三次，每次使用独立 Node 进程，不调用在线模型或外部 MCP。`--calls 1000 --children 3 --mode rpc --repeats 1` 可用于限定单次冒烟；`--project <checkout>` 指定检出。
 
-结果记录创建完成时间、首次 prompt 时间、用户／系统 CPU 时间、根目录读取次数，以及 1 ms 定时器观察到的最长事件循环间隔。内存包含创建前、创建后、显式 GC 后子会话仍存活时的 RSS／堆／external，并记录各阶段的进程峰值 RSS；峰值包含 SDK 初始化，不能把峰值或单次 RSS 增长直接当作泄漏。GC 后指标不包含销毁子会话后的回收情况。
+合成历史约为 1 user／10 assistant／9 toolResult，工具结果包含 512 B 与 16 KiB 文本，持久化后重新打开，避免夹具共享常量字符串低估已加载历史占用。完整历史随档位增长，规范 compaction 将有效尾部保持在约 300 条 entry 加摘要。目录保持小规模（Linux 当前夹具 31 个注册工具，Main 激活 8 个）；输出记录实际父子工具数、历史 entry 数与文件字节数。这些档位是负载输入，不代表真实供应商请求数或单次在线上下文容量。
 
-比较时核对 Node 版本、操作系统、场景和提交；CPU、墙钟与内存数据用于分析，不设跨 runner 的绝对耗时门禁。默认回归只对已确认的重复工作设宽松读取次数上限，并走真实创建入口；不得用放宽耗时阈值掩盖行为或资源退化。
+创建走真实 `subagent_create`，等全部子会话实际分发本地模型流后才采样。RPC 配置还建立真实连接，并给每个运行中 Job 订阅执行流；分别采样连接／订阅存活及断开后的内存。子任务真实收尾后，通过 `AgentSessionRuntime.fork` 测量完整 SDK 分叉，验证生命周期钩子、新会话身份及源文件未被分叉写入修改。它不模拟数千份归档子会话、持续 RPC 事件积压、多根 Session 并行或 MCP 复用／lazy-load。
+
+内存阶段包括导入后基线、操作前、创建后、GC 后子会话存活、RPC 断开、分叉后，以及实际退役并释放夹具引用后的 GC。RSS、heap、external、arrayBuffers 与进程峰值 RSS 分开记录；进程峰值不可重置，包含导入、夹具构建和验证，平台不支持时为 null。GC 快照不是分配总量或无泄漏证明。输出还记录创建／分叉耗时、CPU、catalog 读取次数，以及包含 GC、校验和收尾在内的生命周期最长事件循环间隔。单 worker 有 120 秒退出期限，失败或资源清理失败不输出成功结果。
+
+比较时核对 Node 版本、操作系统、配置与提交；CPU、墙钟与内存数据用于分析，不设跨 runner 的绝对门禁。默认回归只对已确认的重复工作设宽松读取次数上限，不通过放宽超时掩盖退化。
 
 ## 迁移与验证边界
 
