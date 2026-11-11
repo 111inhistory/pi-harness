@@ -79,7 +79,7 @@ The scripted external provider runs native child creation and message tools. A s
 
 The model generates up to 24 commands per history and runs 50 histories by default. It checks execution authority, active declarations, current schema/description and serialized prefix stability within a checkpoint. `PI_PBT_RUNS`, `PI_PBT_SEED`, `PI_PBT_PATH` and `PI_PBT_COMMAND_PATH` control sample size and replay, with the same usage as the native model. All models print the actual seed and run/shrink counts even on success. PBT subprocesses have 120-second deadlines with 150-second outer limits.
 
-The generated property found production declaration-history and prune-usage defects. Minimal traces, causes, fixes and unchanged-property regression results are recorded in [Capability history counterexamples](reviews/capability-history-pbt.md). Those histories pass after the production fixes; no generated commands were skipped and no failures were marked as expected.
+The generated property found production declaration-history and prune-usage defects. Minimal traces, causes, fixes and unchanged-property regression results are recorded in [archived Capability history counterexamples](archive/capability-history-pbt.md). Those histories pass after the production fixes; no generated commands were skipped and no failures were marked as expected.
 
 ## 文档与测试登记
 

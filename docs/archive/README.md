@@ -18,6 +18,7 @@
 | [Capability 启用重写交接计划](capability-enable-rewrite-plan.md) | enable、实时选择器与 sessions connect 已落地，manual 模型已替代；当前缺陷及改写见[审计计划](../reviews/rpc-permission-audit.md) |
 | [工具权限管理提案](tool-permission-management-proposal.md) | 三态接口已落地，旧来源授权与效果一致性仍需修复；归档不表示验收通过，见[审计计划](../reviews/rpc-permission-audit.md) |
 | [Harness RPC 独立接口提案](harness-rpc-interface-proposal.md) | 首批独立接口已落地；后续接口不纳入冻结期间范围，当前协议见[线协议](../harness-rpc-wire-spec.md) |
+| [Capability 历史 PBT 反例修复](capability-history-pbt.md) | 声明历史与使用记录的具体反例已修复；provider 请求职责与 thinking/cache 设计缺口仍见[已知问题](../known-issues.md) |
 | [已修复问题记录](resolved-issues.md) | 保存修复时的证据和验证范围；当前缺陷见[已知问题](../known-issues.md) |
 
 ## 旧契约与候选设计

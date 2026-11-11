@@ -1,4 +1,6 @@
-# Capability history PBT counterexamples
+# Resolved Capability history PBT counterexamples
+
+Archived evidence of the concrete declaration-history and usage-classification fixes. This record does not resolve provider request ownership or compat-driven thinking/cache adaptation; those remain in [known issues](../known-issues.md#provider-request-ownership-and-compat-driven-thinking-changes).
 
 The generated model runs real SDK sessions, Capability retrieval, registered `/capability` commands, backend execution, compaction, durable reopen and the installed Responses serializer. Provider responses and compaction summaries are scripted external inputs. The failures below were located on test revision `bbb2d79` with production code unchanged; the subsequent fixes and regression evidence are recorded below.
 
