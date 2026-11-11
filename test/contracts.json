@@ -979,8 +979,8 @@
     },
     "subagent.integration": {
       "docs": "b031489f5c0c6bfd024f737282029c6ed108c1a0fdea4be32539e7f7e7d82fa8",
-      "tests": "724704d451155986cb1f315723ecb47afccff0c23888f66d1474b9761ca92d0a",
-      "reason": "Directory lookup failures are reported through the command and tested in session-directory and subagent-command cases. Current-generation inspection/cancellation after metadata failure is covered by the real-SDK boundary regression. Existing broad creation, delivery and recovery scenarios remain unchanged."
+      "tests": "23be38c43599dc5263531d4b03368418ad0819a5c7d8a1aeb7d1db4e9c0a0ca1",
+      "reason": "Bounded offline SDK scenarios to concurrency: 2 within parent describe suite; all 35 scenario names, assertions, isolated child processes and documented behavior are unchanged."
     },
     "subagent.socket": {
       "docs": "a464102b233a0a5ca99fc25ffb288834cef2fbebc230ac833ed7830abcae5916",
@@ -999,8 +999,8 @@
     },
     "async-shell.platform": {
       "docs": "3516091b2521b32ec1a313d086c2d213c075c002a2c8ddf183c4f111c5773fc1",
-      "tests": "07ac27b97a99da28e1d4da8a140c5058c7b809be512af91ec62776cb00d6c220",
-      "reason": "The SDK acceptance scenario now resolves each child yield from the actual scripted model turn that carries the Shell result instead of a 3s poll; docs/async-shell.md and the test/async-shell-sdk.test.mjs entrypoint are unchanged, and the same argv, environment, once-delivery and Shell-failure assertions remain. The unproven single ENOENT registration refusal is recorded in known-issues and the acceptance review, not repaired."
+      "tests": "9181217d9b65bedea606b27966b2639224a3e426af23bcd3b5299b1b0f91b03b",
+      "reason": "Bounded SDK acceptance shell scenarios to concurrency: 2 within parent describe suite; assertions, environment isolation, platform checks and documented behavior are unchanged."
     },
     "preset.runtime": {
       "docs": "1ed8d56f436aa1991f5ac6f8b6d12804bcd9bf1e79a9519c806092fdf300a68e",

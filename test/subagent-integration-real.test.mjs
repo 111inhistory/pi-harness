@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { describe } from "node:test";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
@@ -31,7 +31,8 @@ async function scenario(t, name) {
   }
 }
 
-for (const [name, description] of [
+describe("offline SDK scenarios", { concurrency: 2 }, () => {
+  for (const [name, description] of [
   ["reviewer-sol", "role-local singleton reviewer pool selects native Sol with high effort and only one Jev classification"],
   ["package-skills", "Capability searches and reads native package and CLI Skills while respecting filters and invocation flags"],
   ["package-skills-cold", "Capability finds installed package Skills without symlinks, loaded Skills or command entries"],
@@ -69,5 +70,6 @@ for (const [name, description] of [
   ["memory-only", "memory-only actors preserve their sole history across revival without writing subagent files"],
   ["restore-invalid", "invalid restored ownership fails closed without writing recovery events or executing work"],
 ]) {
-  test(`offline SDK: ${description}`, { timeout: 10000 }, (t) => scenario(t, name));
-}
+    test(`offline SDK: ${description}`, { timeout: 10000 }, (t) => scenario(t, name));
+  }
+});
