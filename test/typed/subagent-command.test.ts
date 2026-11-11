@@ -341,3 +341,20 @@ test("sessions lists live sessions with their managed Main address and native na
   assert.ok(text.includes(`main: ${sessionMainAddress(other)}`), text);
   assert.match(text, /session other-session/);
 });
+
+test("sessions reports directory lookup failures instead of claiming no live sessions", async () => {
+  const notifications: Array<{ text: string; type: string }> = [];
+  const failure = new Error("ENOTDIR: not a directory, scandir '/tmp/sockets/sessions'");
+  (failure as NodeJS.ErrnoException).code = "ENOTDIR";
+  const service = {
+    sessionId: "current-session",
+    listSessions: async () => { throw failure; },
+  } as unknown as RootService;
+  const { handler } = install(service);
+  await handler("sessions", context(notifications));
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0]?.type, "error");
+  assert.match(notifications[0]?.text ?? "", /ENOTDIR/);
+  assert.doesNotMatch(notifications[0]?.text ?? "", /none/);
+});
+

@@ -295,7 +295,7 @@ Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）�
 | `/subagent`、`/subagent list` | 打印当前根的 Actor 树；`--all` 展开完整树，`--id <actorId>` 只看指定子树 |
 | `/subagent stop <actorId>` | 请求取消该 Actor 的当前 Job；返回 `ok` 与 `status`，被拒绝时附带 `reason`（`already_finished`、`stopping`、`finalizing`、`budget_exceeded`）；Actor 没有运行中的 Job 时保持幂等 `ok`，视图提示无运行任务 |
 | `/subagent stop --all` | 对当前根所有 `running` Job 请求取消，立即汇总已请求／拒绝／失败数量，不等待终态 |
-| `/subagent sessions` | 列出同一 Socket 根下所有存活 session 的短标识、进程、工作目录、session id 与 Main 的跨 session 地址；当前 session 以 `*` 标记 |
+| `/subagent sessions` | 列出同一 Socket 根下所有存活 session 的短标识、进程、工作目录、session id 与 Main 的跨 session 地址；当前 session 以 `*` 标记；目录读取失败时报告错误通知，不报告「none」假成功 |
 | `/subagent sessions connect <uid\|sessionId>` | 把选中存活 session 的联系信息作为一条本地上下文消息追加给当前 agent，并启用 `msg_write`；不向对方发送任何消息 |
 
 - 列表输出为纯文本：树形缩进，`●` 活跃、`◐` 正在停止或收尾、`○` 空闲；列固定为 ID、深度、种类（`fresh`／`inherited`）、角色、状态与调用数。标题给出当前根的全部 Actor 数；活跃数与 Fresh／Inherited 分项只统计运行中的 Actor。窗口隐藏节点时给出提示。
@@ -331,7 +331,7 @@ Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）�
 **平台范围**：Unix Socket 与 Windows Named Pipe 共用同一份目录、记录和 Main 与 Main 之间的准入。地址属于哪个 session 的端点命名空间由 IPC 平台适配层判定：Unix 是 session 目录下的 socket 文件，Windows 是以该目录派生的管道名前缀；业务层不把管道地址当文件系统路径推断。文件系统路径等价（目录记录的 `socketDir` 自洽校验、storage 自有文件与 copy-on-write 的父文件比对）按平台原生语义比较：Windows 视为大小写不敏感，POSIX 保持大小写敏感。
 
 - **地址**：目标 session 的受管 `Main` Socket 路径，与本地 `msg_write` 使用同一地址空间，没有第二套 scheme。`/subagent sessions` 直接显示该路径；外部编排者读取目录记录的 `socketDir` 推导同一路径。指向其他 session 非 `Main` 端点的路径以 `invalid_target` 拒绝，因此拿到任意子 Actor Socket 也不能越界。
-- **发现**：`/subagent sessions` 是用户侧发现入口；模型侧不注册 session 工具，外部编排者直接读取同一份共享目录：`socketRoot/sessions/<uid>.json` 由各 session 在 `initialize` 后发布，`retire` 时按记录归属删除；读取时按 `pid` 存活与记录自洽过滤，畸形或残留记录被忽略且不由他人删除。记录只含稳定 uid（8 位十六进制）、session id、原生 session name、工作目录、`pid` 与起始时间，不含拓扑或对话内容。`pid` 只在本机解释，因此 `socketRoot` 必须保持本机私有；跨机共享 durable session 历史不受此限制。`subagent_list` 仍只描述当前根。
+- **发现**：`/subagent sessions` 是用户侧发现入口；模型侧不注册 session 工具，外部编排者直接读取同一份共享目录：`socketRoot/sessions/<uid>.json` 由各 session 在 `initialize` 后发布，`retire` 时按记录归属删除；读取时按 `pid` 存活与记录自洽过滤，畸形或残留记录被忽略且不由他人删除。共享目录缺失（`ENOENT`）视为空目录；其他目录读取错误向调用方如实抛出并在命令入口报错，不伪装为「无存活 session」。记录只含稳定 uid（8 位十六进制）、session id、原生 session name、工作目录、`pid` 与起始时间，不含拓扑或对话内容。`pid` 只在本机解释，因此 `socketRoot` 必须保持本机私有；跨机共享 durable session 历史不受此限制。`subagent_list` 仍只描述当前根。
 - **补全**：`/subagent sessions con` 补全为 `sessions connect `；随后按实时存活目录补全目标 uid，候选显示会话名称、工作目录与完整 session id。可按 uid／完整 session id 的前缀或名称筛选；排除当前会话，不产生授权、激活或消息写入。选中后执行 connect 时仍重新校验目标是否存活。
 - **连接**：`/subagent sessions connect <uid|sessionId>` 由用户指定一个存活 session，参数是列表中显示的完整 uid 或完整原生 session id，不接受序号或别名。命令把该 session 的 uid、原生 session id、原生名称、工作目录与 Main 地址作为一条原生自定义上下文消息追加到当前会话：不触发新一轮，忙碌时按 SDK 队列语义在当前轮结束时落盘、下一轮可见；不改写提示词头部、不复制对方 transcript、不注入整份目录、不建立持久连接状态。同一次 connect 经用户启用路径（与 `/capability enable` 相同）启用 `msg_write`；`msg_write` 被列入 `manualTools` 时，本次 connect 就是显式授权，不需要额外命令、确认或握手。目标未知或已退出以 `session_not_found` 报告，指向自身以 `invalid_target` 拒绝；重复 connect 允许再次追加当前信息，显式启用记录保持幂等。connect 只写本会话，不发送消息、不唤醒对方。
 - **发送**：`msg_write` 接受上述路径，且只有 `Main` 可发送。宿主先按本 root 的受管端点解析：属于本 session 的路径走原有本地写入（`Main` 写给自己的 `Main` 由 Runtime 的 self-send 规则拒绝）；不属于本 root 时，只有目标为已发布 session 的 `Main` 才按跨 session 写入。线上帧只有 `from` 与 `content`，`from` 由发送宿主绑定为 `<session-uid>:Main`，模型不提供发送者或独立 session 字段。

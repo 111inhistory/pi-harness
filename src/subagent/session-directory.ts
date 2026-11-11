@@ -192,8 +192,9 @@ export async function liveSessions(root: string): Promise<LiveSession[]> {
   let names: string[];
   try {
     names = await readdir(directory(root));
-  } catch {
-    return [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
+    throw error;
   }
   const sessions: LiveSession[] = [];
   for (const name of names) {

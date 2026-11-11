@@ -978,14 +978,14 @@
       "reason": "Precise call-surface section renamed and mapping refined; the surface behavior and tests are unchanged."
     },
     "subagent.integration": {
-      "docs": "57bd152a431f78bd067cab068ba346744f620f1893c19679c4e1fee0341e8339",
+      "docs": "b031489f5c0c6bfd024f737282029c6ed108c1a0fdea4be32539e7f7e7d82fa8",
       "tests": "724704d451155986cb1f315723ecb47afccff0c23888f66d1474b9761ca92d0a",
-      "reason": "The added architecture paragraph separates current-generation observation and cancellation from write admission. The real-SDK regression is in root-service-boundary.test.ts under subagent.retirement and also verifies failed navigation, new-work rejection and retired-service rejection. Existing broad integration scenarios retain their unchanged creation, delivery and recovery expectations."
+      "reason": "Directory lookup failures are reported through the command and tested in session-directory and subagent-command cases. Current-generation inspection/cancellation after metadata failure is covered by the real-SDK boundary regression. Existing broad creation, delivery and recovery scenarios remain unchanged."
     },
     "subagent.socket": {
-      "docs": "7216b044f0e7d4aa77ed1e49a258ad02d6fade8d2beaeab7add3d62692d1720c",
+      "docs": "a464102b233a0a5ca99fc25ffb288834cef2fbebc230ac833ed7830abcae5916",
       "tests": "779b03af3cf721ebc29011e186a33310d67f15443092c3dafca6bab4d48347a6",
-      "reason": "Only a cross-reference anchor in the External Socket section changed after the heading rename; the socket contract is unchanged."
+      "reason": "Session directory read error propagation and missing-dir behavior are tested in session-directory.test.ts in ipc.transport; subagent.socket covers IPC socket creation and teardown."
     },
     "capability.native-exposure": {
       "docs": "ef49dbf8cad3dedd5e0c80e2ce810537fb5b64eeb1665fbac22952643113da63",
@@ -1013,9 +1013,9 @@
       "reason": "The capability memory document now describes the permission record instead of a manual record; guidance and section-journal replay behavior is unchanged and still covered by the journal tests."
     },
     "cross-session.messaging": {
-      "docs": "83e7881f348ed7f7d7a10c7f369faca6bbbc1dcdad2eb0ab338994dd143e9b22",
-      "tests": "713be207117c9b64b4180821fc87816030001421b3d23174588348e828d40c49",
-      "reason": "The receive path still activates msg_write without writing a user grant; only permission terminology in the Capability and connect sections changed. Messaging behavior is unchanged."
+      "docs": "1423e639cb5e99561bd024761e74ea822d6b9ed8564a65c8fea28d271f77aa7b",
+      "tests": "f58faaf1529e0827ec301a2595396a39b63beb249b209b4642038a25732592b9",
+      "reason": "Directory read error propagation is covered by session-directory.test.ts in ipc.transport; cross-session messaging tests already assume registered sessions."
     },
     "subagent.command": {
       "docs": "c04e6585460fae93d20046cadbea8d65872a276605f26bf96ff5235160ea5680",
