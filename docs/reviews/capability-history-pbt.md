@@ -58,3 +58,5 @@ Broader generation exposed three additional traces while fixing the original two
 | discover(beta), disable(beta), execute(beta), reset(beta), compact | 74113 | `397:9:10:10:10:10:10:12:12:12:14:14:16:16:16:17:17` | `/a:D` |
 
 Use the same replay command shown above with these seed/path values and `PI_PBT_RUNS=1000`. The five traces pass after the fixes without changes to the model, generation or assertions. Three broader runs with seeds 74113, 12345 and 20260718 each pass 1,000 generated histories. Linux full validation passes 1,122 tests with zero failures and 10 platform/environment skips.
+
+Native Windows validation at fixed candidate `48753cba` also passes: 1,112 tests, zero failures and 21 platform/environment skips. That full run executes 100 histories in each PBT with seed 74113. All five exact counterexample replays pass separately. Strict types, docs, JSON, contract associations and RPC schema checks pass; the vendor WASM checksum is verified and its parser tests run. Windows uses Node 24.22.1 and fast-check 4.10.2.
