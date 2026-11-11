@@ -14,6 +14,18 @@ Capability 按实际激活集筛选公开结果，返回失败或部分成功。
 
 这项缺陷尚未修复，也不是 `harness.json` 中的可选策略。修复需要明确 SDK 激活资格或调整记录协议；当前没有激活探针、回滚或补偿状态机。
 
+## 待处理设计问题
+
+### Thinking changes and provider-cache adaptation
+
+Changing the effective thinking configuration can invalidate a provider's prompt cache even when the serialized message prefix and cache key are unchanged. This includes budget changes, thinking enable/disable transitions, and top-level effort changes with adaptive thinking. The visible cost is another cache write or uncached input processing; accepting the request or retaining a connection does not prove cache reuse. Anthropic documents these effects and a supported per-message effort alternative in [thinking and caching](https://platform.claude.com/docs/en/build-with-claude/thinking-steering-and-cost#prompt-caching) and [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#what-invalidates-the-cache). This is provider-specific, not a claim that every thinking-level change invalidates every provider's cache.
+
+Pi SDK 1.5.0 already handles part of this boundary: Anthropic models with `supportsMidConvoEffort` use historical per-message effort markers and a fixed top-level effort while thinking remains enabled; disabled thinking follows a separate path. The Codex WebSocket adapter abandons incremental `previous_response_id` reuse when non-input request parameters differ, including reasoning settings. That continuation check does not guarantee prompt-cache reuse. Harness must reuse these native adaptations rather than install a competing effort encoder or rotate cache keys on every level change.
+
+The unresolved design gap is that Harness's prefix/cache contract and regression evidence do not yet account for effective thinking configuration across provider paths. The Capability history model checks converted Responses messages under fixed thinking settings; it does not observe the complete outbound payload, adaptive/off transitions, or online cache usage. Request projection is assembled by the Capability extension, while native encoding belongs to the provider adapter. A provider-boundary review must distinguish ordinary budgets, adaptive effort, off transitions, native incremental-effort support and unsupported paths, using the SDK-clamped effective value. Stable message prefixes alone are insufficient acceptance evidence.
+
+No additional Harness adaptation is implemented for this gap, and no online cache-miss reproduction has been performed here. This entry records a confirmed design/validation omission and documented provider behavior, not a reproduced request-corruption defect. Keeping thinking settings stable avoids the documented parameter-change invalidation on affected paths, but does not itself guarantee a cache hit.
+
 ## 未交付功能
 
 | 项目 | 当前边界 |
