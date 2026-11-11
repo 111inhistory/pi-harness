@@ -48,6 +48,7 @@ const group = {
   ref: "namespace://deck",
   name: "deck",
   instructions: "Use the active deck",
+  ...ranking,
   tools: [
     {
       ref: "tool://deck_pages",

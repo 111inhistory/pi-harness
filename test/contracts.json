@@ -950,8 +950,8 @@
   "reviews": {
     "capability.result-projection": {
       "docs": "8d9764a793666840fba8a4a2073bd3bb602febc2d2978d854671962ab3e8ba8f",
-      "tests": "b4856fe50b9ab95c3a4bfcc4722a819273947b5f4c1062ce91155eaf16dfaa86",
-      "reason": "Merged capability-record into capability-result under the same discovery outcome projection lifecycle; shared hit fixtures and preserved all 10 scenario names and assertions across public result and branch memory; contracts and documents unchanged."
+      "tests": "cfd49a2ec98c4657cc70c925a20e16637feda48d106bd405d5f234d71959bd00",
+      "reason": "Restore diagnostic ranking fields on the shared namespace input so the original recursive public-result stripping assertion still detects outer-group leakage. All ten projection and memory scenarios remain; the documented behavior is unchanged."
     },
     "capability.provider-prefix": {
       "docs": "08743e2b55aa3beece61d6456f52e1db5a79180169cebb0df5a9d95a36772a36",
