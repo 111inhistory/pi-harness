@@ -68,7 +68,7 @@ export default function subagentExtension(api: ExtensionAPI): void {
   const current = async (ctx: ExtensionContext): Promise<RootService> => {
     if (transitionPending || lifecycle.retiring) throw new SubagentError('runtime_transitioning', 'The root is quiescing; no new Subagent operation is admitted.');
     const service = lifecycle.service ?? await activate(ctx);
-    service.assertOperational();
+    service.assertCurrent();
     return service;
   };
   const beforeTransition = async (ctx: ExtensionContext) => {

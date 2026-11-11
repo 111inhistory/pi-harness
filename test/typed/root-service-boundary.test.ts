@@ -11,6 +11,7 @@ import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-s
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
 import subagentExtension from '../../src/subagent/extension.ts';
+import { RootService } from '../../src/subagent/root-service.ts';
 
 function deferred() {
   let resolve!: () => void;
@@ -18,8 +19,11 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function runBoundary(rejectWrite: boolean, unlistedModel = false, children = 1,
-  catalogSize = 0, historyTurns = 0, managedTools = false): Promise<number> {
+async function runBoundary({ rejectWrite = false, unlistedModel = false, children = 1,
+  catalogSize = 0, historyTurns = 0, managedTools = false, isolateFailure = false }: {
+  rejectWrite?: boolean; unlistedModel?: boolean; children?: number;
+  catalogSize?: number; historyTurns?: number; managedTools?: boolean; isolateFailure?: boolean;
+} = {}): Promise<number> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'root-boundary-'));
   const agentDir = path.join(cwd, 'agent');
   await mkdir(agentDir);
@@ -40,14 +44,30 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
   const originalPrompt = AgentSession.prototype.prompt;
   runtime.hasConfiguredAuth = () => true;
   const started = deferred();
+  const allStarted = deferred();
+  const firstFinished = deferred();
+  const terminalRejected = deferred();
+  const nativeCancelled = deferred();
   const finish = deferred();
+  const initialize = RootService.prototype.initialize;
+  let root: RootService | undefined;
+  if (isolateFailure) RootService.prototype.initialize = async function () {
+    root = this;
+    await initialize.call(this);
+  };
   let dispatchedCalls = 0;
   let childActiveNames: string[] = [];
-  runtime.streamSimple = () => {
+  runtime.streamSimple = (_model, _context, options) => {
     dispatchedCalls += 1;
     const stream = new AssistantMessageEventStream();
     started.resolve();
-    void finish.promise.then(() => {
+    if (dispatchedCalls === children) allStarted.resolve();
+    if (isolateFailure && dispatchedCalls === 2) options?.signal?.addEventListener('abort', () => {
+      nativeCancelled.resolve();
+      finish.resolve();
+    }, { once: true });
+    const completion = isolateFailure && dispatchedCalls === 1 ? firstFinished.promise : finish.promise;
+    void completion.then(() => {
       const message: AssistantMessage = {
         role: 'assistant', api: model.api, provider: model.provider, model: model.id,
         content: [{ type: 'text', text: 'done' }], stopReason: 'stop', timestamp: Date.now(),
@@ -88,7 +108,10 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
       api.appendEntry = (customType, data) => {
         if (customType === 'subagent-job-end') {
           terminalAttempts += 1;
-          if (rejectTerminal) throw new Error('fixture terminal metadata write failed');
+          if (rejectTerminal) {
+            terminalRejected.resolve();
+            throw new Error('fixture terminal metadata write failed');
+          }
         }
         append(customType, data);
       };
@@ -168,6 +191,31 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
       assert.equal(childActiveNames.includes('edit'), true, 'unmanaged native tools remain available');
     }
     rejectTerminal = rejectWrite;
+    if (isolateFailure) {
+      await allStarted.promise;
+      firstFinished.resolve();
+      await terminalRejected.promise;
+      assert.ok(root);
+      const sibling = registration.items[1]!.id as string;
+      const job = root.runtime.jobs().jobs.find(item => item.agentId === sibling)!;
+      assert.equal(job.status, 'running');
+      const list = session.getToolDefinition('subagent_list')!;
+      const tree = await list.execute('inspect', { id: sibling }, undefined, undefined, context);
+      assert.equal((tree.details as { id: string }).id, sibling, 'the real surface can inspect after a write failure');
+      assert.ok(root.liveSnapshot(job.jobId));
+      assert.notEqual(root.liveEndEntryId(job.jobId), undefined);
+      const detach = root.subscribeJobEvents(job.jobId, () => {});
+      assert.equal(typeof detach, 'function');
+      detach!();
+      await assert.rejects(create.execute('blocked', { tasks: [{ task: 'Must not start', inheritContext: true }] },
+        undefined, undefined, context), /fixture terminal metadata write failed/);
+      assert.equal(dispatchedCalls, 2, 'persistence failure still blocks new work');
+      const stop = session.getToolDefinition('subagent_stop')!;
+      const stopped = await stop.execute('stop', { id: sibling }, undefined, undefined, context);
+      assert.equal((stopped.details as { status: string }).status, 'stopping');
+      await nativeCancelled.promise;
+      await root.runtime.jobDone(job.jobId);
+    }
     const navigation = session.extensionRunner.emit({
       type: 'session_before_switch', reason: 'resume', targetSessionFile: path.join(cwd, 'other.jsonl'),
     });
@@ -175,10 +223,18 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
     await new Promise<void>((resolve) => setImmediate(resolve));
     finish.resolve();
     const result = await navigation;
-    assert.equal(terminalAttempts, children, 'one terminal owner per child attempts one append during quiescence');
+    assert.equal(terminalAttempts, isolateFailure ? 1 : children,
+      'the first persistence failure fences subsequent writes while cancellation can still finish');
     assert.deepEqual(extensionErrors, []);
     if (rejectWrite) {
       assert.equal(result?.cancel, true, 'a failed terminal append must reach the before-hook cancellation result');
+      if (isolateFailure) {
+        assert.ok(root);
+        await assert.rejects(root.list({}, 'Main'), /not accepting new operations/);
+        assert.throws(() => root!.stop(registration.items[1]!.id), /not accepting new operations/);
+        assert.throws(() => root!.liveSnapshot(registration.items[1]!.id as string), /not accepting new operations/);
+        await assert.rejects(session.getToolDefinition('subagent_list')!.execute('retired', {}, undefined, undefined, context), /quiescing/);
+      }
     } else {
       assert.equal(result, undefined);
       const terminal = session.sessionManager.getBranch().filter((entry) =>
@@ -190,6 +246,8 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
   } finally {
     releaseSecondPrompt.resolve();
     AgentSession.prototype.prompt = originalPrompt;
+    RootService.prototype.initialize = initialize;
+    firstFinished.resolve();
     finish.resolve();
     await session?.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
     session?.dispose();
@@ -202,28 +260,32 @@ async function runBoundary(rejectWrite: boolean, unlistedModel = false, children
 }
 
 test('actual quiescing root persists its one terminal event before the before-hook returns', { timeout: 15000 }, async () => {
-  await runBoundary(false);
+  await runBoundary();
 });
 
 test('actual extension cancels navigation when quiescing terminal metadata cannot persist', { timeout: 15000 }, async () => {
-  await runBoundary(true);
+  await runBoundary({ rejectWrite: true });
 });
 
 test('initial Inherited Job retains SDK custom model even when absent from catalog', { timeout: 15000 }, async () => {
-  await runBoundary(false, true);
+  await runBoundary({ unlistedModel: true });
 });
 
 test('batch create waits for local readiness without waiting for every provider dispatch', { timeout: 15000 }, async () => {
-  await runBoundary(false, false, 2);
+  await runBoundary({ children: 2 });
 });
 
 test('actual root excludes explicitly enabled and disabled tools from an Inherited child loadout', { timeout: 15000 }, async () => {
-  await runBoundary(false, false, 1, 0, 0, true);
+  await runBoundary({ managedTools: true });
 });
 
 test('Inherited creation reads the root catalog per operation with a long parent history', { timeout: 15000 }, async () => {
-  const reads = await runBoundary(false, false, 1, 250, 500);
+  const reads = await runBoundary({ catalogSize: 250, historyTurns: 500 });
   // Exercise the actual tool, RootService and child SDK initialization. A broad
   // count bound catches per-tool registry reconstruction without timing the host.
   assert.ok(reads < 100, `creation read the root catalog ${reads} times for 250 tools`);
+});
+
+test('metadata failure preserves current-generation inspection and cancellation but still blocks creation and navigation', { timeout: 15000 }, async () => {
+  await runBoundary({ rejectWrite: true, children: 2, isolateFailure: true });
 });

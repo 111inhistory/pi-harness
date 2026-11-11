@@ -13,14 +13,28 @@ async function fixture(t: TestContext) {
   const manager = SessionManager.inMemory(cwd);
   const context = { cwd, sessionManager: manager, modelRegistry: { find: () => undefined }, isIdle: () => true } as unknown as ExtensionContext;
   const api = { appendEntry() {}, getAllTools: () => [], getActiveTools: () => [], sendMessage() {} } as unknown as ExtensionAPI;
-  const service = new RootService({ api, context, agentDir: path.join(cwd, 'agent'), allocatedIds: new Set(), ownsContext: () => true });
+  let current = true;
+  const service = new RootService({ api, context, agentDir: path.join(cwd, 'agent'), allocatedIds: new Set(), ownsContext: () => current });
   await service.initialize();
   t.after(async () => { await service.retire(); await rm(cwd, { recursive: true, force: true }); });
   const options = { parentAgentId: null, allowInherited: true,
     origin: { cwd, trusted: true, sessionId: manager.getSessionId(), agentId: null, mode: 'test' },
     captureInheritedContext: () => null };
-  return { service, create: () => service.create({ tasks: [{ task: 'READY_TASK' }] }, options, context) };
+  return { service, expire: () => { current = false; },
+    create: () => service.create({ tasks: [{ task: 'READY_TASK' }] }, options, context) };
 }
+
+test('a root that lost its generation cannot inspect, observe or cancel', async t => {
+  const { service, expire } = await fixture(t);
+  expire();
+  await assert.rejects(service.list({}, 'Main'), /not accepting new operations/);
+  for (const operation of [
+    () => service.stop('all'),
+    () => service.liveSnapshot('sub_01'),
+    () => service.liveEndEntryId('sub_01'),
+    () => service.subscribeJobEvents('sub_01', () => {}),
+  ]) assert.throws(operation, /not accepting new operations/);
+});
 
 test('IPC readiness gates native startup and create waits for session readiness', async t => {
   const { service, create } = await fixture(t);

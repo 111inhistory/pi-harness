@@ -978,9 +978,9 @@
       "reason": "Precise call-surface section renamed and mapping refined; the surface behavior and tests are unchanged."
     },
     "subagent.integration": {
-      "docs": "26a9eabd7b6207123ddf6dfaa857d7139ea83acebf9555b55869ec0dcf7b6d9b",
+      "docs": "57bd152a431f78bd067cab068ba346744f620f1893c19679c4e1fee0341e8339",
       "tests": "724704d451155986cb1f315723ecb47afccff0c23888f66d1474b9761ca92d0a",
-      "reason": "The creation section gained an ownership statement for inherited history containers; inherited creation behavior is unchanged and the real SDK integration scenario still covers it."
+      "reason": "The added architecture paragraph separates current-generation observation and cancellation from write admission. The real-SDK regression is in root-service-boundary.test.ts under subagent.retirement and also verifies failed navigation, new-work rejection and retired-service rejection. Existing broad integration scenarios retain their unchanged creation, delivery and recovery expectations."
     },
     "subagent.socket": {
       "docs": "7216b044f0e7d4aa77ed1e49a258ad02d6fade8d2beaeab7add3d62692d1720c",
@@ -1059,8 +1059,8 @@
     },
     "capability.tool-permission": {
       "docs": "0654a9a2c59dc9cdbbaddd112fd63733d7becb422b0fa8114b7a5ebc719cf660",
-      "tests": "425216f34839098f91329d9aad54207f7f340a87c2580dc53d45d0f2df5fbdc1",
-      "reason": "Table-driven overlap rows retain their original names, initial registry/loadout, effects and before/after state checks. Four identical parser assertions are covered by the existing manual parser test and its unique list-active input was moved there. No distinct input, expected outcome or invariant was removed."
+      "tests": "c8d2ba4815389cbbdf12d2a6ddbe05cf669a0fdb35a7ece251797bdbf8f74ac1",
+      "reason": "The boundary fixture now uses named options and adds a metadata-failure scenario. Its managed-tools denial assertions, permission records, catalog-work regression and production permission resolver are unchanged; the tool-permission contract needs no change."
     },
     "capability.manual-enable": {
       "docs": "e4e5e4b4c213f9d9dd36e9cee79a0643aaea294f9710e790c9bba83820105bc4",

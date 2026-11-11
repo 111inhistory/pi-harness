@@ -185,7 +185,7 @@ export class RootService implements ManagedWriteHost {
           return this.shell;
         }, scope.senderId);
         installSessionSurface(api, async () => {
-          this.assertOperational();
+          this.assertCurrent();
           return this;
         }, {
           callerId: scope.senderId,
@@ -269,9 +269,17 @@ export class RootService implements ManagedWriteHost {
   get active(): boolean { return this.#phase === 'open' && this.#failure === null && this.#options.ownsContext(); }
   get closed(): boolean { return this.#phase === 'detached'; }
 
+  /** Current ownership permits inspection and cancellation after a write failure. */
+  assertCurrent(): void {
+    if (this.#phase === 'failed' && this.#options.ownsContext() && this.#failure !== null) throw this.#failure;
+    if (this.#phase !== 'open' || !this.#options.ownsContext()) {
+      throw new SubagentError('runtime_closed', 'The root is not accepting new operations.');
+    }
+  }
+
   assertOperational(): void {
+    this.assertCurrent();
     if (this.#failure !== null) throw this.#failure;
-    if (!this.active) throw new SubagentError('runtime_closed', 'The root is not accepting new operations.');
   }
 
   async initialize(): Promise<void> {
@@ -358,7 +366,7 @@ export class RootService implements ManagedWriteHost {
   }
 
   async list(filter: unknown, callerId: string): Promise<DetailedAgentItem | null> {
-    this.assertOperational();
+    this.assertCurrent();
     if (!record(filter)) throw new SubagentError('invalid_request', 'List parameters must be an object.');
     if (filter.id !== undefined && typeof filter.id !== 'string') throw new SubagentError('invalid_request', 'List id must be a string.');
     if (filter.all !== undefined && typeof filter.all !== 'boolean') throw new SubagentError('invalid_request', 'List all must be a boolean.');
@@ -388,7 +396,7 @@ export class RootService implements ManagedWriteHost {
     return result;
   }
 
-  stop(target: unknown) { this.assertOperational(); return this.runtime.stop(target); }
+  stop(target: unknown) { this.assertCurrent(); return this.runtime.stop(target); }
   resolveEndpoint(address: string) { this.assertOperational(); return this.listeners.resolve(address); }
   sendMessage(command: Parameters<SubagentRuntime['sendMessage']>[0]) {
     this.assertOperational();
@@ -397,19 +405,19 @@ export class RootService implements ManagedWriteHost {
 
   /** Observe one live Job's full native event stream (null when it has no live run). */
   subscribeJobEvents(jobId: string, listener: (event: NativeSessionEvent) => void): (() => void) | null {
-    this.assertOperational();
+    this.assertCurrent();
     return this.runner.subscribeJobEvents(jobId, listener);
   }
 
   /** Read one live Job's current end boundary (undefined when it has no live run). */
   liveEndEntryId(jobId: string): string | null | undefined {
-    this.assertOperational();
+    this.assertCurrent();
     return this.runner.liveEndEntryId(jobId);
   }
 
   /** Read one live Job's stream projection (null when it has no live run). */
   liveSnapshot(jobId: string): NativeLiveSnapshot | null {
-    this.assertOperational();
+    this.assertCurrent();
     return this.runner.liveSnapshot(jobId);
   }
 

@@ -115,6 +115,8 @@ Main 压缩期间，Root 持有待投递队列，入队后应答，摘要生成�
 
 根服务区分两个权限：是否接收新命令，以及是否仍拥有原根分支的写入权。开始退役后拒绝新命令，但在原上下文仍有效时，允许已存在 Job 完成终态落盘。
 
+A metadata append failure blocks new work, message delivery and further metadata writes. The initialized root may still inspect its current state, read live history bounds, attach observations and request cancellation while it owns the current generation. These operations do not require healthy persistence. Initialization failure, retirement and loss of generation ownership still reject them; cancellation does not claim that terminal metadata persisted.
+
 `session_before_tree`、`session_before_switch` 和 `session_before_fork` 在 SDK 移动上下文前等待退役。正常路径先停止 Job、写入终态、关闭监听，再允许切换。终态由 Runtime 发布一次；视图写入器不提前抢写终态。
 
 持久化失败会锁存，阻止新工作，也阻止切换被报告为成功。钩子应显式返回 `{ cancel: true }`；SDK 会捕获扩展异常，仅抛错不能阻止切换。UI 报错失败也不能改变取消结果。
