@@ -64,6 +64,18 @@ function isAdmissionBlockText(text: string): boolean {
 }
 
 /**
+ * Exact pre-execution refusals this Harness records as tool results: Pi's agent
+ * loop rejects a name outside the current loadout, and the capability `tool_call`
+ * guard rejects a disabled or out-of-scope tool. Each is anchored to the recorded
+ * tool name, so a backend error with similar prose is still counted as usage.
+ */
+function isNonExecutionResult(text: string, toolName: string): boolean {
+  return text === `Tool ${toolName} not found`
+    || text === `Tool ${toolName} is disabled by the tool permission.`
+    || text === `Tool ${toolName} is not permitted in this session scope.`;
+}
+
+/**
  * Extract branch entries strictly after the previous compaction and before
  * the specified current compaction checkpoint.
  */
@@ -92,7 +104,8 @@ export function extractWindowEntries(
  * Counts:
  * - Completed direct `toolResult` executions (successful calls, or executions with
  *   numeric `durationMs`; error results without `durationMs` are checked against
- *   detectable admission blocks before conservatively counting).
+ *   detectable admission blocks and exact Harness pre-execution refusals before
+ *   conservatively counting).
  * - Completed nested tool executions recorded in `nestedCalls.calls` having a numeric `durationMs`.
  */
 export function extractUsedToolsFromWindow(windowEntries: readonly unknown[]): Set<string> {
@@ -113,7 +126,7 @@ export function extractUsedToolsFromWindow(windowEntries: readonly unknown[]): S
       } else {
         // Check for clear admission block text before conservatively counting
         const text = extractText(msg["content"]);
-        if (!isAdmissionBlockText(text)) {
+        if (!isAdmissionBlockText(text) && !isNonExecutionResult(text, msg["toolName"])) {
           used.add(msg["toolName"]);
         }
       }

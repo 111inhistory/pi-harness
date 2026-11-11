@@ -1,6 +1,6 @@
 # Capability history PBT counterexamples
 
-The generated model runs real SDK sessions, Capability retrieval, registered `/capability` commands, backend execution, compaction, durable reopen and the installed Responses serializer. Provider responses and compaction summaries are scripted external inputs. No production code was changed to investigate these failures.
+The generated model runs real SDK sessions, Capability retrieval, registered `/capability` commands, backend execution, compaction, durable reopen and the installed Responses serializer. Provider responses and compaction summaries are scripted external inputs. The failures below were located on test revision `bbb2d79` with production code unchanged; the subsequent fixes and regression evidence are recorded below.
 
 ## Pruned tool enabled and then disabled
 
@@ -40,4 +40,21 @@ During model development, an invalid scripted argument to the public `capability
 
 Both exact counterexamples also reproduce on native Windows with Node 24.22.1 and fast-check 4.10.2 at test commit `bbb2d79`. Each replay exits 1 on the same serialized-prefix assertion, in roughly 1.3–1.4 seconds, without reaching its process deadline. Strict types, docs, JSON, contract associations and RPC schema checks pass there. The native lifecycle model passes 50 histories with seed 74113. The full Windows suite was not run for this candidate.
 
-Linux full validation with 100 histories and seed 74113 reports 1,121 passes, this one failing generated property and 10 platform/environment skips. These are offline SDK and serializer reproductions; they do not establish online provider cache effects. The counterexamples remain failures in the PBT rather than skipped commands or expected-failure tests.
+Linux validation before the fixes, with 100 histories and seed 74113, reported 1,121 passes, this one failing generated property and 10 platform/environment skips. These are offline SDK and serializer reproductions; they do not establish online provider cache effects. The PBT assertions were kept as ordinary failures until the production fixes made them pass.
+
+## Fixes and regression evidence
+
+- Native `toolsAdded` declarations now clear earlier prune membership in branch order. A later prune retires the name again; MCP selection and execution authority remain independent.
+- Description-only duplicates are sanitized regardless of current activation. Only callable tools publish new description guidance, so enabling cannot retroactively sanitize a declaration an earlier request exposed.
+- The first post-compaction request's native tool removals fix the checkpoint's declaration head. Later enables append instead of putting a disabled tool back into that already-published head.
+- Exact SDK unknown-tool and Harness permission/scope refusals without backend duration do not count as tool use. Actual backend errors still count, including similarly worded errors.
+
+Broader generation exposed three additional traces while fixing the original two:
+
+| Trace | Seed | Property path | Command replay path |
+| --- | --- | --- | --- |
+| disable(alpha), compact, enable(alpha) | 12345 | `51:2:4:4:4:5:5:5:5:6:6:6` | `DCg:F` |
+| execute(inactive beta), discover(beta), compact | -1539492270 | `37:2:2:4:5:5:5:7:7:7:8:8:8:8` | `HAp:F` |
+| discover(beta), disable(beta), execute(beta), reset(beta), compact | 74113 | `397:9:10:10:10:10:10:12:12:12:14:14:16:16:16:17:17` | `/a:D` |
+
+Use the same replay command shown above with these seed/path values and `PI_PBT_RUNS=1000`. The five traces pass after the fixes without changes to the model, generation or assertions. Three broader runs with seeds 74113, 12345 and 20260718 each pass 1,000 generated histories. Linux full validation passes 1,122 tests with zero failures and 10 platform/environment skips.

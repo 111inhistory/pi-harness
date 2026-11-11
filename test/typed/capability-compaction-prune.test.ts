@@ -155,6 +155,33 @@ test("extractUsedToolsFromWindow counts completed direct executions and filters 
         true,
       ),
     },
+    {
+      type: "message",
+      // The exact pre-execution result Pi's agent loop records for a call whose
+      // name is not in the current loadout (no backend invocation, no durationMs).
+      message: toolResultMessage("tool_never_declared", "call_6", "Tool tool_never_declared not found", true),
+    },
+    {
+      type: "message",
+      message: toolResultMessage("tool_missing_path", "call_7", "file not found: data.txt", true),
+    },
+    {
+      type: "message",
+      message: toolResultMessage("tool_stale_name", "call_8", "Tool other_name not found", true),
+    },
+    {
+      type: "message",
+      // Exact capability `tool_call` guard refusal recorded for the attempted name.
+      message: toolResultMessage("tool_disabled_denial", "call_9", "Tool tool_disabled_denial is disabled by the tool permission.", true),
+    },
+    {
+      type: "message",
+      message: toolResultMessage("tool_scope_denial", "call_10", "Tool tool_scope_denial is not permitted in this session scope.", true),
+    },
+    {
+      type: "message",
+      message: toolResultMessage("tool_backend_permission_error", "call_11", "Upstream error: tool is disabled by the tool permission.", true),
+    },
   ];
 
   const used = extractUsedToolsFromWindow(windowEntries);
@@ -163,6 +190,12 @@ test("extractUsedToolsFromWindow counts completed direct executions and filters 
   assert.equal(used.has("tool_old_undecidable_err"), true, "undecidable non-admission error conservatively counted");
   assert.equal(used.has("tool_blocked_unavail"), false, "unavailable admission block not counted");
   assert.equal(used.has("tool_blocked_manual"), false, "manual admission block not counted");
+  assert.equal(used.has("tool_never_declared"), false, "native unknown-tool rejection not counted");
+  assert.equal(used.has("tool_missing_path"), true, "backend not-found error counted");
+  assert.equal(used.has("tool_stale_name"), true, "mismatched tool name is not a native rejection");
+  assert.equal(used.has("tool_disabled_denial"), false, "owned disabled denial not counted");
+  assert.equal(used.has("tool_scope_denial"), false, "owned scope denial not counted");
+  assert.equal(used.has("tool_backend_permission_error"), true, "backend permission prose conservatively counted");
 });
 
 test("extractUsedToolsFromWindow counts nested Codemode calls only with valid durationMs", () => {

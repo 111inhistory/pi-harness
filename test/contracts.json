@@ -1073,8 +1073,8 @@
     },
     "capability.compaction-prune": {
       "docs": "6e3374f07feffed783bea55c10ce9177fc578db67b1ce05a1d75d82e9dbe4d33",
-      "tests": "f6b842279ad42a207463359a5dc81d45c596ed286024a575a846fb6918600e31",
-      "reason": "Clarify declaration provenance after pruning and first-request checkpoint removals. Existing generated discover/compact/enable/disable and disable/compact/enable histories now pass unchanged, and the existing compaction/admission/transport tests pass. No duplicate imperative cases are needed; selection and execution permission contracts remain unchanged."
+      "tests": "49d6c1d887a50298820c6c6f4fe656ca8c9ad077e8e380d41da140546228d5e3",
+      "reason": "The existing usage-window fixture now distinguishes exact native/Harness pre-execution refusals from real backend errors. Generated unknown-tool and permission-denied histories pass unchanged after the fix. This restores the existing unused-capability pruning contract; no public compaction semantics or duplicate test family is added."
     },
     "preset.config": {
       "docs": "5bf2efc378b5fbc58416a1e7d5e355364c4da48587f5a8b2ec1cc4656d8ac4b6",
