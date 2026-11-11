@@ -24,7 +24,8 @@ import { RPC_METHODS, type RpcMethod } from '../../src/harness-rpc/protocol.ts';
 import { HARNESS_RPC_METHOD_SCHEMAS, harnessRpcSchemaRef } from '../../src/harness-rpc/schema.ts';
 import { RpcRequestError } from '../../src/harness-rpc/error.ts';
 import { getAgentSocketPath, getBroadcastSocketPath } from '../../src/ipc/socket.ts';
-import { createSubagentRuntime, type JobRequest, type JobRecordView, type JobView, type SubagentRuntime } from '../../src/subagent/runtime.ts';
+import { createSubagentRuntime, type JobRecordView, type JobView, type SubagentRuntime } from '../../src/subagent/runtime.ts';
+import { startRunningJob } from './support/rpc-job-fixture.ts';
 import type { RootService } from '../../src/subagent/root-service.ts';
 import type { NativeLiveSnapshot } from '../../src/subagent/native-types.ts';
 
@@ -285,33 +286,6 @@ test('job result errors keep the structured error envelope', async () => {
 // History / stream fixtures
 // ---------------------------------------------------------------------------
 
-interface Running {
-  readonly runtime: SubagentRuntime;
-  readonly jobId: string;
-  readonly agentId: string;
-  readonly finish: (endEntryId: string) => void;
-}
-
-function runningJob(start: string | null = 'e1'): Running {
-  let resolveDone!: (outcome: unknown) => void;
-  const done = new Promise<unknown>((resolve) => { resolveDone = resolve; });
-  const runtime = createSubagentRuntime({
-    startJob: (request: JobRequest) => {
-      request.recordStart(start);
-      return { done, cancel() {} };
-    },
-  });
-  const created = runtime.create({ tasks: [{ task: 'do work' }] });
-  const item = created.items[0];
-  assert.ok(item);
-  return {
-    runtime,
-    jobId: item.id,
-    agentId: item.id,
-    finish: (endEntryId) => resolveDone({ status: 'completed', result: 'done', history: { startEntryId: start, endEntryId } }),
-  };
-}
-
 function historyRoot(runtime: SubagentRuntime, live: NativeLiveSnapshot | null): RootService {
   return {
     sessionId: 'session-root',
@@ -346,7 +320,7 @@ async function flush(): Promise<void> {
 }
 
 test('history and stream method results and event payloads match the schema', async () => {
-  const running = runningJob();
+  const running = startRunningJob();
   const produced = { role: 'assistant', content: [{ type: 'text', text: 'already said' }] };
   const partial = { role: 'assistant', content: [{ type: 'text', text: 'streaming' }] };
   const live: NativeLiveSnapshot = {
