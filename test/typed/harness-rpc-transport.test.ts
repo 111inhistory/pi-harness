@@ -14,9 +14,9 @@ import { buildStreamPort } from "../../src/harness-rpc/ports/stream.ts";
 import type { ToolPort } from "../../src/harness-rpc/ports/tool-info.ts";
 import type { SubagentPort } from "../../src/harness-rpc/ports/subagent.ts";
 import type { HistoryPort } from "../../src/harness-rpc/ports/history.ts";
-import { createSubagentRuntime, type JobRequest } from "../../src/subagent/runtime.ts";
 import type { RootService } from "../../src/subagent/root-service.ts";
 import { getAgentSocketPath } from "../../src/ipc/socket.ts";
+import { startRunningJob } from "./support/rpc-job-fixture.ts";
 
 async function fixture(t: test.TestContext): Promise<string> {
   const directory = await fsp.mkdtemp(path.join(os.tmpdir(), "pi-harness-rpc-"));
@@ -332,19 +332,8 @@ test("a half-closed client receives a backpressured response before teardown", a
 
 test("a real socket stream releases unsubscribe/disconnect observations and delivers one terminal event", async (t) => {
   const rootDir = await fixture(t);
-  let finish!: (outcome: unknown) => void;
-  const done = new Promise<unknown>((resolve) => {
-    finish = resolve;
-  });
-  const runtime = createSubagentRuntime({
-    startJob: (request: JobRequest) => {
-      request.recordStart("e1");
-      return { done, cancel() {} };
-    },
-  });
-  const item = runtime.create({ tasks: [{ task: "work" }] }).items[0];
-  assert.ok(item);
-  const jobId = item.id;
+  const running = startRunningJob();
+  const { runtime, jobId } = running;
 
   let detaches = 0;
   const root = {
@@ -414,7 +403,7 @@ test("a real socket stream releases unsubscribe/disconnect observations and deli
   await disconnected.closed;
   await kept.waitFor(() => detaches === 2, "disconnect teardown");
 
-  finish({ status: "completed", result: "done", history: { startEntryId: "e1", endEntryId: "e3" } });
+  running.finish("e3");
   await runtime.jobDone(jobId);
   await kept.waitFor(() => jobEventCount(kept) === 1, "remaining terminal event");
   await new Promise((resolve) => setTimeout(resolve, 50));

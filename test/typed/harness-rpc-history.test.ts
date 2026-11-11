@@ -3,36 +3,10 @@ import test from "node:test";
 
 import { buildHistoryPort } from "../../src/harness-rpc/ports/history.ts";
 import { RpcRequestError } from "../../src/harness-rpc/error.ts";
-import { createSubagentRuntime, type JobRequest, type JobSnapshotView, type SubagentRuntime } from "../../src/subagent/runtime.ts";
+import type { JobSnapshotView, SubagentRuntime } from "../../src/subagent/runtime.ts";
 import type { RootService } from "../../src/subagent/root-service.ts";
 import type { NativeLiveSnapshot } from "../../src/subagent/native-types.ts";
-
-interface Running {
-  readonly runtime: SubagentRuntime;
-  readonly jobId: string;
-  readonly finish: (endEntryId: string) => void;
-}
-
-function runningJob(start: string | null = "e1"): Running {
-  let resolveDone!: (outcome: unknown) => void;
-  const done = new Promise<unknown>((resolve) => {
-    resolveDone = resolve;
-  });
-  const runtime = createSubagentRuntime({
-    startJob: (request: JobRequest) => {
-      request.recordStart(start);
-      return { done, cancel() {} };
-    },
-  });
-  const created = runtime.create({ tasks: [{ task: "do work" }] });
-  const item = created.items[0];
-  assert.ok(item);
-  return {
-    runtime,
-    jobId: item.id,
-    finish: (endEntryId) => resolveDone({ status: "completed", result: "done", history: { startEntryId: start, endEntryId } }),
-  };
-}
+import { startRunningJob } from "./support/rpc-job-fixture.ts";
 
 function rootWithRuntime(
   runtime: SubagentRuntime,
@@ -54,7 +28,7 @@ function rootWithRuntime(
 }
 
 test("a running Job returns the interval produced so far plus the live end", () => {
-  const running = runningJob();
+  const running = startRunningJob();
   const live: NativeLiveSnapshot = { endEntryId: "e2", messages: [], partial: null };
   const harness = rootWithRuntime(running.runtime, { live, entries: [{ type: "message", id: "e1" }] });
   const result = buildHistoryPort(harness.root).read({ jobId: running.jobId });
@@ -71,7 +45,7 @@ test("a running Job returns the interval produced so far plus the live end", () 
 });
 
 test("a settled Job returns its sealed interval and reports live=false", async () => {
-  const running = runningJob();
+  const running = startRunningJob();
   running.finish("e3");
   await running.runtime.jobDone(running.jobId);
 
@@ -86,7 +60,7 @@ test("a settled Job returns its sealed interval and reports live=false", async (
 test("a legitimate null start is read as the branch head, not treated as not-started", async () => {
   // A first Job may legitimately record a null start (the SDK leaf was null
   // before the session recorded anything). It is not "not started".
-  const running = runningJob(null);
+  const running = startRunningJob(null);
   const live: NativeLiveSnapshot = {
     endEntryId: "e2",
     messages: [{ role: "assistant" }],
@@ -114,7 +88,7 @@ test("a legitimate null start is read as the branch head, not treated as not-sta
 });
 
 test("history distinguishes unknown, not-yet-started and unreadable intervals", () => {
-  const running = runningJob();
+  const running = startRunningJob();
   // A registered Job before its native start boundary is recorded.
   const notStarted = {
     sessionId: "s",

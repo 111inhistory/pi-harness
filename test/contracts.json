@@ -1085,8 +1085,8 @@
     },
     "harness.rpc-interface": {
       "docs": "594d0ef01f83c003dc7d2479e4d899731b402db84eec8b5fbae215cf42d8c973",
-      "tests": "bdf79135e5a52f3f17ef62bbb5eba605e181facbe328b408cd5c4f6f7283b985",
-      "reason": "Explicit server retirement still destroys a FIN-ended owned socket while normal half-close flush remains intact; wire methods and payloads are unchanged."
+      "tests": "e688310b31ba62455c5c75fad2f3c64f7fe3f08bccfbdc82e3171466c8699493",
+      "reason": "Extracted the identical real-SubagentRuntime Job setup used by the history, stream and transport port tests into one typed support fixture. All named scenarios and their expected outcomes remain; terminal event counts, unsubscribe release, half-close flush, retirement, bounded history and the transport router wiring are unchanged."
     },
     "subagent.permission-propagation": {
       "docs": "ff2252d7cce9483604b0eac1be4c744fd85c8819ce4fb98b636eac9d2fb59dc7",

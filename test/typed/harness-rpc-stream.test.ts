@@ -9,9 +9,10 @@ import { buildStreamPort } from "../../src/harness-rpc/ports/stream.ts";
 import { projectSessionEvent } from "../../src/harness-rpc/stream-projection.ts";
 import { RpcRequestError } from "../../src/harness-rpc/error.ts";
 import type { RpcConnection } from "../../src/harness-rpc/transport.ts";
-import { createSubagentRuntime, type JobRequest, type SubagentRuntime } from "../../src/subagent/runtime.ts";
+import { createSubagentRuntime, type SubagentRuntime } from "../../src/subagent/runtime.ts";
 import type { RootService } from "../../src/subagent/root-service.ts";
 import type { NativeLiveSnapshot } from "../../src/subagent/native-types.ts";
+import { startRunningJob } from "./support/rpc-job-fixture.ts";
 
 interface FakeConnection {
   readonly events: Array<{ subscription: string; payload: Record<string, unknown> }>;
@@ -42,36 +43,6 @@ function makeConnection(): FakeConnection {
     pushEvent(subscription: string, payload: unknown): void {
       events.push({ subscription, payload: payload as Record<string, unknown> });
     },
-  };
-}
-
-interface Running {
-  readonly runtime: SubagentRuntime;
-  readonly jobId: string;
-  readonly agentId: string;
-  readonly finish: (endEntryId: string) => void;
-}
-
-/** A real SubagentRuntime Job that stays running until the test finishes it. */
-function runningJob(): Running {
-  let resolveDone!: (outcome: unknown) => void;
-  const done = new Promise<unknown>((resolve) => {
-    resolveDone = resolve;
-  });
-  const runtime = createSubagentRuntime({
-    startJob: (request: JobRequest) => {
-      request.recordStart("e1");
-      return { done, cancel() {} };
-    },
-  });
-  const created = runtime.create({ tasks: [{ task: "do work" }] });
-  const item = created.items[0];
-  assert.ok(item);
-  return {
-    runtime,
-    jobId: item.id,
-    agentId: item.id,
-    finish: (endEntryId) => resolveDone({ status: "completed", result: "done", history: { startEntryId: "e1", endEntryId } }),
   };
 }
 
@@ -150,7 +121,7 @@ test("projection drops cumulative partial and keeps tool-call identity", () => {
 });
 
 test("an event can precede the subscribe response and still carries the assigned subscription id", async () => {
-  const running = runningJob();
+  const running = startRunningJob();
   const live: NativeLiveSnapshot = { endEntryId: "e2", messages: [], partial: null };
   const captured: { listener: ((event: unknown) => void) | null } = { listener: null };
   const root = {
@@ -175,7 +146,7 @@ test("an event can precede the subscribe response and still carries the assigned
 });
 
 test("a running Job yields a real snapshot boundary, then live deltas and the Runtime terminal event", async () => {
-  const running = runningJob();
+  const running = startRunningJob();
   // The terminal-only record is empty while the Job runs; the snapshot is not.
   assert.equal(running.runtime.jobRecord(running.jobId), null);
   const snapshot = running.runtime.jobSnapshot(running.jobId);
@@ -235,7 +206,7 @@ test("a running Job yields a real snapshot boundary, then live deltas and the Ru
 });
 
 test("unsubscribe detaches the live observer and suppresses later events", async () => {
-  const running = runningJob();
+  const running = startRunningJob();
   const live: NativeLiveSnapshot = { endEntryId: "e2", messages: [], partial: null };
   const harness = rootFor(running.runtime, live);
   const port = buildStreamPort(harness.root);
@@ -254,7 +225,7 @@ test("unsubscribe detaches the live observer and suppresses later events", async
 });
 
 test("unsubscribe releases the Runtime terminal observation without affecting another subscription", async () => {
-  const running = runningJob();
+  const running = startRunningJob();
   const root = {
     sessionId: "session-root",
     runtime: running.runtime,
@@ -279,7 +250,7 @@ test("unsubscribe releases the Runtime terminal observation without affecting an
 });
 
 test("a detachable terminal observer removes only its listener and isolates observer failures", async () => {
-  const running = runningJob();
+  const running = startRunningJob();
   let detachedCalls = 0;
   let throwingCalls = 0;
   let keptView: unknown = null;
@@ -312,7 +283,7 @@ test("a detachable terminal observer removes only its listener and isolates obse
 });
 
 test("an already-terminal Job reports its boundary without a future terminal event", async () => {
-  const running = runningJob();
+  const running = startRunningJob();
   running.finish("e3");
   await running.runtime.jobDone(running.jobId);
 
