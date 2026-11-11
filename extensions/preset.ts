@@ -139,13 +139,13 @@ export default function presetExtension(pi: ExtensionAPI): void {
     description: 'Switch model preset',
     handler: async (args, ctx) => {
       const command = parsePresetCommand(args);
-      const presets = loaded(ctx);
       if (command.kind === 'clear') {
         clearActivePreset(host(ctx));
         currentName = undefined;
         renderStatus(ctx);
         return;
       }
+      const presets = loaded(ctx);
       if (command.kind === 'show') {
         const names = [...presets.keys()].sort();
         if (names.length === 0) {

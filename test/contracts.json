@@ -1003,9 +1003,9 @@
       "reason": "The SDK acceptance scenario now resolves each child yield from the actual scripted model turn that carries the Shell result instead of a 3s poll; docs/async-shell.md and the test/async-shell-sdk.test.mjs entrypoint are unchanged, and the same argv, environment, once-delivery and Shell-failure assertions remain. The unproven single ENOENT registration refusal is recorded in known-issues and the acceptance review, not repaired."
     },
     "preset.runtime": {
-      "docs": "3506e321740cc567495d8e98d652ff86ee380063e2d64670ad4c6bb142d6e328",
-      "tests": "240f2092af6c3ea0b8db81503e2a905873a90f4031aa0ce0d39f6df9b8af785e",
-      "reason": "Merged the branch state and instruction journal units into preset-branch-records.test.ts and reused the offline runtime boot in preset-sdk.test.ts. All scenarios and assertions remain; pure apply and command units stay separate, and real-SDK isolation is unchanged."
+      "docs": "1ed8d56f436aa1991f5ac6f8b6d12804bcd9bf1e79a9519c806092fdf300a68e",
+      "tests": "44110b869cd26bf925bda2e8834831ca7cc4c5f50134b21b11330d5a969e1d68",
+      "reason": "Explicit clear dispatches before loading the catalog so unreadable preset configuration does not prevent withdrawing active snapshots, instructions, or codemode mode overrides; verified by catalog obstruction test."
     },
     "tool-guidance.journal": {
       "docs": "789152f240039328e0d6c5ca2a38e190a27f2688dc415c55264ed914b36700cb",

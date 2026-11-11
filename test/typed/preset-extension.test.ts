@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -204,4 +204,90 @@ test('the captured base keeps default-active extension tools when a preset adds 
   const last = h.calls.setActiveTools.at(-1)!;
   assert.ok(last.includes('capability'), 'capability entry must survive a +codemode preset');
   assert.ok(last.includes('codemode'), 'the added codemode is applied');
+});
+
+test('/preset clear succeeds despite unreadable catalog source after apply persists snapshot', async () => {
+  const h = setup({
+    presets: {
+      pro: {
+        model: { provider: 'p', id: 'm' },
+        thinkingLevel: 'low',
+        tools: ['+write'],
+        codemode: { mode: 'only' },
+        instructions: 'Follow concise guidelines.',
+      },
+    },
+    modelIds: ['p/m'],
+  });
+
+  // 1. Start and apply preset, then prove live application and persistence.
+  await applyOnStart(h, 'pro');
+  assert.deepEqual(h.calls.setModel, ['p/m']);
+  assert.deepEqual(h.calls.setThinking, ['low']);
+  assert.deepEqual(h.calls.setActiveTools.at(-1), ['read', 'bash', 'edit', 'write']);
+  assert.equal(h.calls.status.at(-1), 'preset:pro');
+
+  const snapshotBefore = h.calls.appended
+    .filter((entry) => entry.customType === 'preset-state')
+    .map((entry) => (entry.data as { snapshot: { name?: string; instructions?: string; codemode?: unknown } | null }).snapshot)
+    .at(-1);
+  assert.equal(snapshotBefore?.name, 'pro');
+  assert.equal(snapshotBefore?.instructions, 'Follow concise guidelines.');
+  assert.deepEqual(snapshotBefore?.codemode, { mode: 'only' });
+
+  const modeBefore = h.calls.appended
+    .filter((entry) => entry.customType === 'codemode-mode')
+    .map((entry) => (entry.data as { mode?: unknown }).mode)
+    .at(-1);
+  assert.equal(modeBefore, 'only');
+
+  const projectedBefore = (await h.fire('context_with_system', {
+    messages: [{ role: 'user', content: 'inspect' }],
+  })) as { messages: { sections?: Record<string, string | null> }[] };
+  const textsBefore = projectedBefore.messages
+    .map((message) => message.sections?.['preset-instructions'])
+    .filter((value) => value !== undefined);
+  assert.ok(textsBefore.includes('Follow concise guidelines.'));
+
+  // 2. Obstruct the private catalog on disk with an unreadable directory (EISDIR).
+  const catalogPath = path.join(process.env['PI_CODING_AGENT_DIR']!, 'presets.json');
+  rmSync(catalogPath);
+  mkdirSync(catalogPath);
+  assert.throws(() => readFileSync(catalogPath, 'utf8'), { code: 'EISDIR' });
+
+  // 3. Clear must succeed despite the unreadable catalog: snapshot, instructions,
+  //    and codemode are withdrawn while model/thinking/tools remain unchanged.
+  await h.caps.commands['preset']!('clear', h.ctx);
+
+  const snapshotAfter = h.calls.appended
+    .filter((entry) => entry.customType === 'preset-state')
+    .map((entry) => (entry.data as { snapshot: unknown }).snapshot)
+    .at(-1);
+  assert.equal(snapshotAfter, null, 'clear writes a null snapshot');
+
+  const modeAfter = h.calls.appended
+    .filter((entry) => entry.customType === 'codemode-mode')
+    .map((entry) => (entry.data as { mode?: unknown }).mode)
+    .at(-1);
+  assert.equal(modeAfter, null, 'clear withdraws the codemode mode override');
+
+  const projectedAfter = (await h.fire('context_with_system', {
+    messages: [{ role: 'user', content: 'inspect' }],
+  })) as { messages: { sections?: Record<string, string | null> }[] };
+  const lastSection = projectedAfter.messages
+    .map((message) => message.sections?.['preset-instructions'])
+    .filter((value) => value !== undefined)
+    .at(-1);
+  assert.equal(lastSection, null, 'instructions are withdrawn with a null section placement');
+
+  assert.equal(h.calls.status.at(-1), undefined, 'status is cleared');
+  assert.deepEqual(h.calls.setModel, ['p/m'], 'model is not rolled back');
+  assert.deepEqual(h.calls.setThinking, ['low'], 'thinking is not rolled back');
+  assert.deepEqual(h.calls.setActiveTools.at(-1), ['read', 'bash', 'edit', 'write'], 'tools are not rolled back');
+
+  // Any command that genuinely requires catalog access fails because of the obstruction.
+  await assert.rejects(
+    async () => h.caps.commands['preset']!('other', h.ctx),
+    { code: 'EISDIR' },
+  );
 });

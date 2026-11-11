@@ -241,7 +241,7 @@ Harness RPC 独立接口提供权限查询与用户管理适配，与用户命�
 
 **应用与失败。** 先校验模型存在于目录，再 `setModel`；模型不可用则整体不应用并报错，绝不报成功；thinking 与 tools 随后应用。`instructions` 作为独立 system 段落经 `prompt-section-journal` 增量投影并在 resume／tree／fork／reload 回放，不覆盖整份 system prompt。
 
-**分支与清除。** `preset-state` 记录保存应用时解析快照（model／thinking／tools／codemode／instructions），快照用于恢复指令、状态标识及压缩保护基线，不在恢复时强制重放 model／thinking／tools；这些运行状态由 Pi 原生恢复。工具 loadout 随实际请求记录，应用 Preset 后尚未发起请求就退出，恢复时可能仍使用上一份工具集。首次启动的初始工具集另存为 `preset-base` 供修饰符计算；`/preset clear` 写入 null 快照并停止管理，不回滚已有 model／thinking／tools。
+**分支与清除。** `preset-state` 记录保存应用时解析快照（model／thinking／tools／codemode／instructions），快照用于恢复指令、状态标识及压缩保护基线，不在恢复时强制重放 model／thinking／tools；这些运行状态由 Pi 原生恢复。工具 loadout 随实际请求记录，应用 Preset 后尚未发起请求就退出，恢复时可能仍使用上一份工具集。首次启动的初始工具集另存为 `preset-base` 供修饰符计算；`/preset clear`（及 `none`／`off`）显式清除直接分发而不加载预设配置，配置文件损坏或目录阻塞等不可读故障不阻碍退出已应用的快照、指引与 codemode 覆盖；清除写入 null 快照并停止管理，不回滚已有 model／thinking／tools。
 
 **Codemode 模式。** 扩展无公开 `codemode.mode` 写入通道。Preset 以 `codemode-mode` 分支记录覆盖本会话的生效模式，原生 Codemode 工具与 `capability.lazySchemas` 均读取该生效模式，从下一次请求生效；它只改变声明投影，不改变启用集合、显式启用记录或工具 exposure。若宿主无法应用该覆盖，只记录并给出 warning，不把未生效报成成功。
 
