@@ -968,9 +968,9 @@
       "reason": "The enable test now observes a capability-tool-permission append instead of a manual discovery entry. The append-only provider-prefix contract is unchanged; the remaining wire-prefix assertions still guard it."
     },
     "ipc.transport": {
-      "docs": "6b60e899e5418c0b483e48f0f73fcad0c7ae582a5b50fc88b3fffe2d1283d906",
-      "tests": "f556b74bbe9e04475b48f148b356deb4905253bed88867b9b37ea102a6a79835",
-      "reason": "The shared interface-contract file changed in the Capability and permission sections; the External Socket and cross-session transport contract is unchanged and still covered by the IPC tests."
+      "docs": "3d760ad11a8df876ab92a28a402c111fa1a1ec2230e00588a5d4aff051d4d5b5",
+      "tests": "2e74c982b749949be0e1fdcf3ce88384b7eb4ae8be97c4a4ed4d00b8d3be34e2",
+      "reason": "Remove only an extra trailing empty line from the directory regression file; all behavior and assertions are unchanged."
     },
     "subagent.surface": {
       "docs": "29c0de3af370c86b37a44de5e55cc78046552ac4891211157c47cd3788c2e77c",
@@ -1018,9 +1018,9 @@
       "reason": "Directory read error propagation is covered by session-directory.test.ts in ipc.transport; cross-session messaging tests already assume registered sessions."
     },
     "subagent.command": {
-      "docs": "c04e6585460fae93d20046cadbea8d65872a276605f26bf96ff5235160ea5680",
-      "tests": "72231c396b8d4d76b9d3577f152e1e24fd1a8e94d03d8a2b6e5f58117fdcb2e9",
-      "reason": "The command and connect tests now assert the fail-closed three-state grant without a recordError field. The command surface and successful connect output are unchanged."
+      "docs": "e3b4239f1212aff9a3a7da7960317d013ed3d924687d60114a79389e3e43ea15",
+      "tests": "0cb967112b3447585c58fb34bf755c82588b27dd5eee75129787231b0b439351",
+      "reason": "Remove only an extra trailing empty line from the command regression file; degraded-current and replaced-generation assertions are unchanged."
     },
     "inherited.declarations": {
       "docs": "bf2defe882fe848bdfe68eea636720d6fcb725e61e2b3be93b20461d1aa2ae91",
@@ -1039,8 +1039,8 @@
     },
     "subagent.delivery": {
       "docs": "3b8cc6a2e08fea413d06c642fb553d75e5591c5352989b1389df1c0b9ef8f456",
-      "tests": "cf5459850e8dd485456155f4c9cbe2afbf5bfb382812392ff101f2686424aeb5",
-      "reason": "The file change only extends the live snapshot test with the focused end-boundary read; delivery behavior and its documented contract are unchanged."
+      "tests": "8eb4a7d022707f5596c2de6564e7bdf861e9bd034bbfe026ee78b3c6c4e149ce",
+      "reason": "Remove only an extra trailing empty line from the listener regression file; live-blocker preservation and retry assertions are unchanged."
     },
     "subagent.parent-hold": {
       "docs": "1bf1ee9a30aa83b99ec446a6a12d1e078fc27936675eaba6deb53720fce8e5e4",
@@ -1101,11 +1101,6 @@
       "docs": "ff2252d7cce9483604b0eac1be4c744fd85c8819ce4fb98b636eac9d2fb59dc7",
       "tests": "8237013a51a301cdc32a834d124832d9fa56c97eb23f1a695c14790b644ae2c8",
       "reason": "The documented Child Session section already specifies live denial propagation and root-only enable; this new test is the first actual RootService/SDK grandchild coverage of that existing contract, so the document itself needs no change."
-    },
-    "subagent.delivery": {
-      "docs": "3b8cc6a2e08fea413d06c642fb553d75e5591c5352989b1389df1c0b9ef8f456",
-      "tests": "bb068e2a064af5c7ec8bcac0a1675251b4f15e5c6a08a3fdb02ef61c88341875",
-      "reason": "Extend agent-listeners regression for obstructed actor endpoint startup failure cleanup and recovery on subsequent sync; underlying delivery contracts are unchanged"
     }
   }
 }

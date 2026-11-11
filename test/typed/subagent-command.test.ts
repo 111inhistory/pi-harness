@@ -358,4 +358,3 @@ test("sessions reports directory lookup failures instead of claiming no live ses
   assert.match(notifications[0]?.text ?? "", /ENOTDIR/);
   assert.doesNotMatch(notifications[0]?.text ?? "", /none/);
 });
-

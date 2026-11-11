@@ -161,4 +161,3 @@ test("a non-directory sessions path propagates as a directory read error", async
   await assert.rejects(liveSessions(socketRoot), (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOTDIR");
   await assert.rejects(sessionByUid(socketRoot, "00000000"), (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOTDIR");
 });
-

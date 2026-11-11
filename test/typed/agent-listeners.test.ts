@@ -319,4 +319,3 @@ test("obstructed actor endpoint fails startup without takeover and binds on subs
     { from: "sub_02", to: "sub_02", content: "hello new actor" },
   ]);
 });
-
