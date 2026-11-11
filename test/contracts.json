@@ -228,9 +228,8 @@
       ],
       "tests": [
         "test/typed/preset-apply.test.ts",
-        "test/typed/preset-state.test.ts",
+        "test/typed/preset-branch-records.test.ts",
         "test/typed/preset-command.test.ts",
-        "test/typed/preset-instruction.test.ts",
         "test/typed/preset-extension.test.ts",
         "test/typed/preset-sdk.test.ts"
       ]
@@ -992,8 +991,8 @@
     },
     "preset.runtime": {
       "docs": "3506e321740cc567495d8e98d652ff86ee380063e2d64670ad4c6bb142d6e328",
-      "tests": "95c64fddd7ad37865d20328b7f5b8e833583d03ce9c2ba1a695d097a83b6a411",
-      "reason": "Preset documentation only replaced the manual authorization record with the explicit enable record; retention behavior is unchanged and still covered by the preset tests."
+      "tests": "240f2092af6c3ea0b8db81503e2a905873a90f4031aa0ce0d39f6df9b8af785e",
+      "reason": "Merged the branch state and instruction journal units into preset-branch-records.test.ts and reused the offline runtime boot in preset-sdk.test.ts. All scenarios and assertions remain; pure apply and command units stay separate, and real-SDK isolation is unchanged."
     },
     "tool-guidance.journal": {
       "docs": "789152f240039328e0d6c5ca2a38e190a27f2688dc415c55264ed914b36700cb",
@@ -1056,9 +1055,9 @@
       "reason": "Table-driven overlap rows retain their original names, initial registry/loadout, effects and before/after state checks. Four identical parser assertions are covered by the existing manual parser test and its unique list-active input was moved there. No distinct input, expected outcome or invariant was removed."
     },
     "capability.compaction-prune": {
-      "docs": "1dbe56d105a2ad54efa5d461f74a151112e5dd00b5dbb50236217bad2779f442",
-      "tests": "96e0426d076f5ab6a924ec78710cc140e7633db13f8fe3ef59d657d8885dd5c2",
-      "reason": "Tested that protectedTools preserves an unused discovered tool that unprotected candidate pruning removes."
+      "docs": "f2697a2950a341f4a41eaa29fb949435daf94f4b49fa4b79ffd69c32c95b38ed",
+      "tests": "3d047402df67a6efb11bd60fddeeb5c6acef10c6200b28f8de59158016cecb4a",
+      "reason": "Only the shared offline-runtime boot moved into a helper inside preset-sdk.test.ts. The preset baseline compaction/pruning scenario, its inputs and its assertions are unchanged."
     },
     "preset.config": {
       "docs": "5bf2efc378b5fbc58416a1e7d5e355364c4da48587f5a8b2ec1cc4656d8ac4b6",

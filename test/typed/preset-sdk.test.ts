@@ -35,32 +35,37 @@ import { restorePresetSnapshot } from '../../src/preset/state.ts';
 import presetExtension from '../../extensions/preset.ts';
 import capabilityExtension from '../../src/capability/extension.ts';
 
+/** Offline model runtime shared by the real-session scenarios. */
+async function offlineRuntime(cwd: string, requests?: unknown[]) {
+  const runtime = await ModelRuntime.create({ authPath: path.join(cwd, 'auth.json'), modelsPath: null, refreshOnCreate: false });
+  const model = runtime.getModel('openai-codex', 'gpt-6.1-sol');
+  assert.ok(model);
+  runtime.getAuth = async () => ({ auth: { apiKey: 'offline-only' }, env: {} });
+  runtime.hasConfiguredAuth = () => true;
+  runtime.streamSimple = (_model, context) => {
+    requests?.push(structuredClone(context.messages));
+    const stream = new AssistantMessageEventStream();
+    const message = {
+      role: 'assistant', api: model.api, provider: model.provider, model: model.id,
+      content: [{ type: 'text', text: 'ok' }], stopReason: 'stop', timestamp: Date.now(),
+      usage: { input: 1, output: 1, totalTokens: 2, cacheRead: 0, cacheWrite: 0,
+        cost: { input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0 } },
+    } as AssistantMessage;
+    stream.push({ type: 'done', reason: 'stop', message });
+    stream.end();
+    return stream;
+  };
+  return { runtime, model };
+}
+
 test('a preset-state instruction reaches a real offline request as a system section', async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), 'preset-sdk-'));
   const previousAgentDir = process.env['PI_CODING_AGENT_DIR'];
   process.env['PI_CODING_AGENT_DIR'] = path.join(cwd, 'agent');
   let session: AgentSession | undefined;
   try {
-    const runtime = await ModelRuntime.create({ authPath: path.join(cwd, 'auth.json'), modelsPath: null, refreshOnCreate: false });
-    const model = runtime.getModel('openai-codex', 'gpt-6.1-sol');
-    assert.ok(model);
-    runtime.getAuth = async () => ({ auth: { apiKey: 'offline-only' }, env: {} });
-    runtime.hasConfiguredAuth = () => true;
-
     const requests: unknown[] = [];
-    runtime.streamSimple = (_model, context) => {
-      requests.push(structuredClone(context.messages));
-      const stream = new AssistantMessageEventStream();
-      const message = {
-        role: 'assistant', api: model.api, provider: model.provider, model: model.id,
-        content: [{ type: 'text', text: 'ok' }], stopReason: 'stop', timestamp: Date.now(),
-        usage: { input: 1, output: 1, totalTokens: 2, cacheRead: 0, cacheWrite: 0,
-          cost: { input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0 } },
-      } as AssistantMessage;
-      stream.push({ type: 'done', reason: 'stop', message });
-      stream.end();
-      return stream;
-    };
+    const { runtime, model } = await offlineRuntime(cwd, requests);
 
     const settingsManager = SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: 'off' });
     const resourceLoader = new DefaultResourceLoader({
@@ -110,23 +115,7 @@ test('preset switching retains Capability tools and compaction protects the pres
   }));
   let session: AgentSession | undefined;
   try {
-    const runtime = await ModelRuntime.create({ authPath: path.join(cwd, 'auth.json'), modelsPath: null, refreshOnCreate: false });
-    const model = runtime.getModel('openai-codex', 'gpt-6.1-sol');
-    assert.ok(model);
-    runtime.getAuth = async () => ({ auth: { apiKey: 'offline-only' }, env: {} });
-    runtime.hasConfiguredAuth = () => true;
-    runtime.streamSimple = () => {
-      const stream = new AssistantMessageEventStream();
-      const message = {
-        role: 'assistant', api: model.api, provider: model.provider, model: model.id,
-        content: [{ type: 'text', text: 'ok' }], stopReason: 'stop', timestamp: Date.now(),
-        usage: { input: 1, output: 1, totalTokens: 2, cacheRead: 0, cacheWrite: 0,
-          cost: { input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0 } },
-      } as AssistantMessage;
-      stream.push({ type: 'done', reason: 'stop', message });
-      stream.end();
-      return stream;
-    };
+    const { runtime, model } = await offlineRuntime(cwd);
     const settingsManager = SettingsManager.inMemory({
       defaultTools: ['read', 'bash', 'edit', 'write', 'capability', oldDefault],
       retry: { enabled: false }, compaction: { enabled: false, keepRecentTokens: 0 }, cacheWarming: 'off',

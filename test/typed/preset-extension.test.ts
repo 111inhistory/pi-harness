@@ -100,6 +100,12 @@ function setup(options: SetupOptions = {}): Harness {
   return { caps, branch, calls, ctx, fire, setActive: (names: string[]) => { activeTools = [...names]; } };
 }
 
+/** First start, then apply the named preset through the public command. */
+async function applyOnStart(h: Harness, name: string): Promise<void> {
+  await h.fire('session_start', {});
+  await h.caps.commands['preset']!(name, h.ctx);
+}
+
 test('--preset applies model/thinking/tools on session_start and sets status', async () => {
   const h = setup({
     presets: { fast: { model: { provider: 'p', id: 'm' }, thinkingLevel: 'low', tools: ['+write'] } },
@@ -116,8 +122,7 @@ test('--preset applies model/thinking/tools on session_start and sets status', a
 
 test('/preset NAME applies; unknown name notifies an error', async () => {
   const h = setup({ presets: { fast: { thinkingLevel: 'high' } } });
-  await h.fire('session_start', {});
-  await h.caps.commands['preset']!('fast', h.ctx);
+  await applyOnStart(h, 'fast');
   assert.deepEqual(h.calls.setThinking, ['high']);
   await h.caps.commands['preset']!('ghost', h.ctx);
   assert.ok(h.calls.notices.some((notice) => notice.level === 'error' && notice.message.includes('ghost')));
@@ -125,8 +130,7 @@ test('/preset NAME applies; unknown name notifies an error', async () => {
 
 test('an unauthenticated preset model applies nothing and reports an error', async () => {
   const h = setup({ presets: { remote: { model: { provider: 'p', id: 'm' }, tools: ['+write'] } }, modelIds: [] });
-  await h.fire('session_start', {});
-  await h.caps.commands['preset']!('remote', h.ctx);
+  await applyOnStart(h, 'remote');
   assert.equal(h.calls.setActiveTools.length, 0);
   assert.ok(h.calls.notices.some((notice) => notice.level === 'error'));
   assert.equal(h.calls.appended.filter((entry) => entry.customType === 'preset-state').length, 0);
@@ -134,8 +138,7 @@ test('an unauthenticated preset model applies nothing and reports an error', asy
 
 test('/preset clear records a null snapshot', async () => {
   const h = setup({ presets: { fast: { thinkingLevel: 'high' } } });
-  await h.fire('session_start', {});
-  await h.caps.commands['preset']!('fast', h.ctx);
+  await applyOnStart(h, 'fast');
   await h.caps.commands['preset']!('clear', h.ctx);
   const states = h.calls.appended.filter((entry) => entry.customType === 'preset-state').map((entry) => entry.data as { snapshot: unknown });
   assert.equal(states.at(-1)?.snapshot, null);
@@ -143,8 +146,7 @@ test('/preset clear records a null snapshot', async () => {
 
 test('context_with_system projects the instruction section after apply', async () => {
   const h = setup({ presets: { fast: { instructions: 'Be terse.' } } });
-  await h.fire('session_start', {});
-  await h.caps.commands['preset']!('fast', h.ctx);
+  await applyOnStart(h, 'fast');
   const result = (await h.fire('context_with_system', { messages: [{ role: 'user', content: 'hi' }] })) as {
     messages: { role?: string; sections?: Record<string, string | null> }[];
   };
@@ -159,14 +161,12 @@ test('a preset tool set is recomputed from a stable settings base across resume/
     activeTools: ['read', 'bash', 'edit'],
     defaultTools: ['read', 'bash', 'edit'],
   });
-  await h.fire('session_start', {});
-  await h.caps.commands['preset']!('a', h.ctx);
+  await applyOnStart(h, 'a');
   assert.deepEqual(h.calls.setActiveTools.at(-1), ['read', 'edit'], 'A removes bash from the stable base');
 
   // Simulate resume/reload: Pi restores A's active set before session_start runs.
   h.setActive(['read', 'edit']);
-  await h.fire('session_start', {});
-  await h.caps.commands['preset']!('b', h.ctx);
+  await applyOnStart(h, 'b');
   const last = h.calls.setActiveTools.at(-1)!;
   assert.ok(last.includes('bash'), 'B must compute from the stable base, so bash returns');
   assert.deepEqual([...last].sort(), ['bash', 'edit', 'read', 'write']);
@@ -174,8 +174,7 @@ test('a preset tool set is recomputed from a stable settings base across resume/
 
 test('/preset applies a codemode mode to the harness loadout and records it', async () => {
   const h = setup({ presets: { only: { codemode: { mode: 'only' } } } });
-  await h.fire('session_start', {});
-  await h.caps.commands['preset']!('only', h.ctx);
+  await applyOnStart(h, 'only');
   const modeRecord = h.calls.appended.filter((entry) => entry.customType === 'codemode-mode').at(-1);
   assert.equal((modeRecord?.data as { mode?: unknown } | undefined)?.mode, 'only');
   const snapshot = h.calls.appended.filter((entry) => entry.customType === 'preset-state').at(-1);
@@ -186,8 +185,7 @@ test('/preset applies a codemode mode to the harness loadout and records it', as
 
 test('/preset clear clears the recorded codemode mode', async () => {
   const h = setup({ presets: { only: { codemode: { mode: 'only' } } } });
-  await h.fire('session_start', {});
-  await h.caps.commands['preset']!('only', h.ctx);
+  await applyOnStart(h, 'only');
   await h.caps.commands['preset']!('clear', h.ctx);
   const modes = h.calls.appended.filter((entry) => entry.customType === 'codemode-mode').map((entry) => (entry.data as { mode?: unknown }).mode);
   assert.equal(modes.at(-1), null, 'clear drops the override so Settings governs again');
@@ -199,8 +197,7 @@ test('the captured base keeps default-active extension tools when a preset adds 
     activeTools: ['read', 'bash', 'edit', 'write', 'capability'],
     allTools: ['read', 'bash', 'edit', 'write', 'capability', 'codemode'],
   });
-  await h.fire('session_start', {});
-  await h.caps.commands['preset']!('only', h.ctx);
+  await applyOnStart(h, 'only');
   const base = h.calls.appended.find((entry) => entry.customType === 'preset-base');
   assert.ok((base?.data as { tools?: string[] } | undefined)?.tools?.includes('capability'),
     'the captured base records the default-active extension tool');
