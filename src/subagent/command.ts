@@ -135,7 +135,7 @@ async function showList(
   // The listing may have taken an await. Re-check ownership on the same
   // service before reading anything else: a retired root must not be read.
   try {
-    service.assertOperational();
+    service.assertCurrent();
   } catch {
     ctx.ui.notify("Root changed while listing; run /subagent again.", "info");
     return;

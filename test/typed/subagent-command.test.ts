@@ -121,12 +121,13 @@ test("the list view reports kind, full-root counts and hidden nodes", () => {
   assert.match(text, /window shows 3 of 4 · history \/tmp\/views/);
 });
 
-test("list resolves the windowed tree and renders it", async () => {
+test("list resolves the windowed tree and renders it despite unhealthy persistence", async () => {
   const notifications: Array<{ text: string; type: string }> = [];
   const filters: unknown[] = [];
   const service = {
     sessionId: "01a1958d-0000-7000-8000-000000000000",
-    assertOperational: () => {},
+    assertCurrent: () => {},
+    assertOperational: () => { throw new Error('fixture metadata write failed'); },
     list: async (filter: unknown) => {
       filters.push(filter);
       return tree;
@@ -178,7 +179,7 @@ test("a root replaced during the listing await is not rendered", async () => {
   const first = {
     sessionId: "01a1958d-0000-7000-8000-000000000000",
     list: async () => tree,
-    assertOperational: () => { throw new SubagentError("runtime_closed", "The root is not accepting new operations."); },
+    assertCurrent: () => { throw new SubagentError("runtime_closed", "The root is not accepting new operations."); },
     runtime: { list: () => { reads += 1; return { agents: [] }; }, jobs: () => ({ jobs: [] }) },
     actors: { get: () => null },
   } as unknown as RootService;
