@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
+import { deferred } from "../../test-support/async.ts";
 
 import { DEFAULT_HARNESS_CONFIG } from "../../src/harness-config.ts";
 import {
@@ -105,27 +106,35 @@ test("runs the local source groups concurrently and returns the host-facing resu
   let listToolsStarted = false;
   let listActiveToolsStarted = false;
   let discoverSkillsStarted = false;
+  const release = deferred();
 
   const broker = createCapabilityBroker(
     plainProviders({
       listTools: async () => {
         listToolsStarted = true;
+        await release.promise;
         return TOOLS;
       },
       listActiveTools: async () => {
         listActiveToolsStarted = true;
+        await release.promise;
         return ACTIVE_TOOLS;
       },
       discoverSkills: async () => {
         discoverSkillsStarted = true;
+        await release.promise;
         return { skills: [FIREFOX_SKILL], diagnostics: [] };
       },
     }),
   );
 
-  const result = await broker.search({ query: "firefox shell commands", src: "local" });
+  const pending = broker.search({ query: "firefox shell commands", src: "local" });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const overlapping = listToolsStarted && listActiveToolsStarted && discoverSkillsStarted;
+  release.resolve();
+  const result = await pending;
 
-  assert.ok(listToolsStarted && listActiveToolsStarted && discoverSkillsStarted);
+  assert.ok(overlapping, "all sources start before any source is allowed to finish");
   assert.equal(result.status, "ok");
   assert.deepEqual(result.remote, []);
   assert.ok(result.tools.length > 0, "expected tool hits");

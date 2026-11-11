@@ -948,6 +948,11 @@
     }
   ],
   "reviews": {
+    "capability.search-broker": {
+      "docs": "221b5978ff4ff74346731b8f04829f59b4db813f88736ba9d6cb774f2feddb3d",
+      "tests": "7dbffac78c2d01ae523bbcb9333b2888704818118986b375ac1706c165b2b8ba",
+      "reason": "Strengthen the existing concurrent-source scenario: hold all providers unresolved, observe startup before releasing any provider, then retain every result assertion. A controlled serial registry implementation now fails the test. No new product behavior or timing threshold is introduced."
+    },
     "capability.result-projection": {
       "docs": "8d9764a793666840fba8a4a2073bd3bb602febc2d2978d854671962ab3e8ba8f",
       "tests": "cfd49a2ec98c4657cc70c925a20e16637feda48d106bd405d5f234d71959bd00",
