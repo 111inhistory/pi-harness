@@ -49,18 +49,11 @@ Measure comparable phases and workloads. RSS can remain high after objects are c
 
 ## Test runner concurrency and process isolation
 
-Pi Harness tests run through Node's built-in test runner (`node:test` via `scripts/test.mjs`). The test suite follows a two-tier concurrency architecture:
+Pi Harness uses Node's test runner through `scripts/test.mjs`. Test files already run in separate worker processes, with Node's default concurrency of `max(1, os.availableParallelism() - 1)`. Each worker has its own heap, module cache and environment; filesystem paths, ports and external processes still require explicit isolation.
 
-1. **File-level parallelism (Node runner default)**:
-   - When multiple test files are passed to `node --test`, Node spawns independent worker processes with concurrency defaulted to `os.availableParallelism() - 1` (15 on 16-core Linux, 7 on 8-core Windows).
-   - Each test file runs in its own process with its own V8 instance, memory heap, and module cache.
-   - Per-file global state (`process.env`, `globalThis`, unmanaged temporary paths) is strictly isolated across files by process boundaries, preventing cross-file interference without artificial runner constraints.
+Within a file, tests remain serial unless a parent suite enables concurrency. The independent subprocess scenarios in `test/subagent-integration-real.test.mjs` and `test/async-shell-sdk.test.mjs` use parent suites capped at two concurrent scenarios. Each scenario owns a temporary working directory, agent directory and IPC namespace. Existing timeouts, assertions and cleanup remain in force. Suites that mutate in-process globals or share fixture resources remain serial within their file.
 
-2. **Within-file sequential execution vs. bounded scenario concurrency**:
-   - Within a single test file, Node runs top-level `test(...)` calls strictly sequentially. Setting `{ concurrency: true }` on individual top-level `test(...)` items does not enable concurrent execution in Node's runner; subtest concurrency requires an explicit parent suite (`describe('...', { concurrency: N }, ...)` or a parent `test(...)` with subtests).
-   - In-process unit test suites (such as `test/typed/async-shell-host.test.ts` and `test/typed/async-shell-cli.test.ts`) that manipulate process-level state (e.g. mutating `process.env.PI_ASYNC_SHELL_ROOT` or interacting with a shared default `stateRoot()`) remain serial within their files to eliminate race conditions.
-   - Integration test files where every scenario runs in a detached child process with an isolated temporary directory (`fsp.mkdtemp`), dedicated agent directory (`PI_CODING_AGENT_DIR`), and private Unix domain socket directory (`PI_SUBAGENT_SOCKET_DIR`)—specifically `test/subagent-integration-real.test.mjs` and `test/async-shell-sdk.test.mjs`—are bounded to `concurrency: 2` via parent `describe` suites.
-   - Bounding scenario subprocess concurrency to 2 caps host CPU, memory, and socket I/O pressure while eliminating the critical-path bottleneck: running 35 real-SDK scenarios drops from ~20.9s serial to ~12.7s (~40% elapsed reduction) with all scenario assertions, timeouts, and names preserved.
+The scenario cap applies within each of those two files; it is not a global process or CPU cap. Full-suite timing should be compared on the same host because other file workers still run concurrently.
 
 ## 文档与测试登记
 
