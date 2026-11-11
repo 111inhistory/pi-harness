@@ -1,4 +1,4 @@
-name: Inherited creation performance
+name: Harness performance
 
 on:
   workflow_dispatch:
@@ -29,9 +29,14 @@ jobs:
           node-version: '24.22.2'
           cache: npm
       - run: npm ci
-      - run: npm run bench:inherited -- --output "$RUNNER_TEMP/inherited-performance.json"
+      - name: Measure common paths
+        run: npm run bench:common -- --output "$RUNNER_TEMP/common-paths.json"
+      - name: Measure inherited creation and session lifecycle
+        run: npm run bench:inherited -- --output "$RUNNER_TEMP/inherited-performance.json"
       - uses: actions/upload-artifact@v7
         with:
-          name: inherited-performance-${{ matrix.os }}-${{ github.sha }}
+          name: harness-performance-${{ matrix.os }}-${{ github.sha }}
           if-no-files-found: error
-          path: ${{ runner.temp }}/inherited-performance.json
+          path: |
+            ${{ runner.temp }}/common-paths.json
+            ${{ runner.temp }}/inherited-performance.json

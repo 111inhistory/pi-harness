@@ -128,6 +128,8 @@ This opt-in script measures permission queries, local broker searches, scoped/fu
 
 Imports and fixture setup are excluded. The first operation is timed before validation; subsequent operations are reported separately with median/min/max wall time, process CPU and applicable work counts. `--iterations N` controls warm samples (default 25). Assertions run outside the clocks. Each invocation owns a private IPC root and tears it down before reporting success. Results include platform, Node, revision and working-tree status; timings are measurements, not CI thresholds or memory-growth evidence.
 
+The manual [Harness performance workflow](../.github/workflows/inherited-performance.yml) runs common-path measurements before the inherited lifecycle benchmark on each Linux and Windows runner. Each platform uploads `common-paths.json` and `inherited-performance.json` together as `harness-performance-<os>-<revision>`. The workflow remains opt-in and applies no timing thresholds.
+
 ## Inherited 创建性能
 
 性能基准独立于 `npm run check`，按需运行：
@@ -136,7 +138,7 @@ Imports and fixture setup are excluded. The first operation is timed before vali
 npm run bench:inherited -- --output /tmp/inherited-performance.json
 ```
 
-[Inherited creation performance 工作流](../.github/workflows/inherited-performance.yml) 仍只由 `workflow_dispatch` 手动触发。默认测量 1,000／4,000／16,000／32,000 条历史 assistant 消息代理值，每档同时持有三个实际运行中的 Inherited Subagent，分别使用 print 和 RPC 宿主模式；4,000 档另外测量单子 Agent 对照。每个配置重复三次，每次使用独立 Node 进程，不调用在线模型或外部 MCP。`--calls 1000 --children 3 --mode rpc --repeats 1` 可用于限定单次冒烟；`--project <checkout>` 指定检出。
+[Harness performance 工作流](../.github/workflows/inherited-performance.yml) 仍只由 `workflow_dispatch` 手动触发。默认测量 1,000／4,000／16,000／32,000 条历史 assistant 消息代理值，每档同时持有三个实际运行中的 Inherited Subagent，分别使用 print 和 RPC 宿主模式；4,000 档另外测量单子 Agent 对照。每个配置重复三次，每次使用独立 Node 进程，不调用在线模型或外部 MCP。`--calls 1000 --children 3 --mode rpc --repeats 1` 可用于限定单次冒烟；`--project <checkout>` 指定检出。
 
 合成历史约为 1 user／10 assistant／9 toolResult，工具结果包含 512 B 与 16 KiB 文本，持久化后重新打开，避免夹具共享常量字符串低估已加载历史占用。完整历史随档位增长，规范 compaction 将有效尾部保持在约 300 条 entry 加摘要。目录保持小规模（Linux 当前夹具 31 个注册工具，Main 激活 8 个）；输出记录实际父子工具数、历史 entry 数与文件字节数。这些档位是负载输入，不代表真实供应商请求数或单次在线上下文容量。
 
