@@ -276,11 +276,13 @@ export async function runLifecycleModel() {
       .map(([action, slot, result, payload]) => new Command(action, slot, result, payload)),
     fc.constantFrom<Action>('reload', 'finish-both').map(action => new Command(action)),
   ], { maxCommands: 32, ...(process.env.PI_PBT_COMMAND_PATH === undefined ? {} : { replayPath: process.env.PI_PBT_COMMAND_PATH }) });
-  await fc.assert(fc.asyncProperty(commands, fc.scheduler(), sample), {
+  const report = await fc.check(fc.asyncProperty(commands, fc.scheduler(), sample), {
     numRuns: Number(process.env.PI_PBT_RUNS ?? 50),
     ...(process.env.PI_PBT_SEED === undefined ? {} : { seed: Number(process.env.PI_PBT_SEED) }),
     ...(process.env.PI_PBT_PATH === undefined ? {} : { path: process.env.PI_PBT_PATH }),
   });
+  console.log(`PBT seed=${report.seed} runs=${report.numRuns} shrinks=${report.numShrinks}`);
+  if (report.failed) throw new Error(await fc.asyncDefaultReportMessage(report), { cause: report.errorInstance });
 }
 
 await runLifecycleModel();

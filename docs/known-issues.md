@@ -14,6 +14,12 @@ Capability 按实际激活集筛选公开结果，返回失败或部分成功。
 
 这项缺陷尚未修复，也不是 `harness.json` 中的可选策略。修复需要明确 SDK 激活资格或调整记录协议；当前没有激活探针、回滚或补偿状态机。
 
+### Capability permission transitions can rewrite published declarations
+
+Two offline generated histories expose prefix changes within one compaction window: discovering, pruning, enabling and disabling a tool can remove its newly published declaration; refreshing a disabled tool description and enabling it can retroactively sanitize a declaration already sent. Execution remains permission-gated, but the next request no longer preserves the previous serialized prefix. A new compaction starts a fresh checkpoint; it does not repair the rewritten earlier request.
+
+The production behavior is not changed by the PBT migration. The generated property retains its failing assertions. Reproduction commands and located causes are in [Capability history counterexamples](reviews/capability-history-pbt.md).
+
 ## 未交付功能
 
 | 项目 | 当前边界 |

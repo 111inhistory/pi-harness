@@ -65,6 +65,14 @@ Each sample starts one Fresh and one Inherited Actor. `fast-check` generates up 
 
 Failures print a seed, property path and command `replayPath`. Replay with `PI_PBT_SEED=<seed> PI_PBT_PATH=<path> PI_PBT_COMMAND_PATH=<replayPath> node --import tsx --test test/typed/native-lifecycle-model.test.ts`. Keep the printed scheduler expression when reproducing a scheduling-specific failure. Reload uses the existing SessionManager and does not claim fresh-process recovery coverage.
 
+## Capability history model tests
+
+`test/typed/capability-history-model.test.ts` generates histories of description/schema replacement, discovery, permission commands, backend calls, compaction and durable reopen. Discovery uses the real Capability retrieval SDK and local broker; permission commands enter through `AgentSession.prompt`. The external provider and compaction summary are scripted. Request observations use the installed additive Responses serializer. This model does not claim Chat Completions, Anthropic, MCP or nested Codemode coverage.
+
+The model generates up to 24 commands per history and runs 50 histories by default. It checks execution authority, active declarations, current schema/description and serialized prefix stability within a checkpoint. `PI_PBT_RUNS`, `PI_PBT_SEED`, `PI_PBT_PATH` and `PI_PBT_COMMAND_PATH` control sample size and replay, with the same usage as the native model. Both models print the actual seed and run/shrink counts even on success. PBT subprocesses have 120-second deadlines with 150-second outer limits.
+
+The complete property currently exposes unresolved production prefix failures. Minimal traces, replay commands, source-level causes and model-validation limits are recorded in [Capability history counterexamples](reviews/capability-history-pbt.md). The failing histories remain ordinary test failures; they are not skipped, retried or marked as expected failures.
+
 ## 文档与测试登记
 
 `test/contracts.json` 记录行为依据，格式为：

@@ -139,7 +139,7 @@
       ],
       "tests": [
         "test/typed/capability-compaction-prune.test.ts",
-        "test/typed/capability-compaction-sdk.test.ts",
+        "test/typed/capability-history-model.test.ts",
         "test/typed/preset-sdk.test.ts"
       ]
     },
@@ -295,7 +295,7 @@
       ],
       "tests": [
         "test/typed/tool-guidance-record.test.ts",
-        "test/typed/tool-prompt-updates.test.ts",
+        "test/typed/capability-history-model.test.ts",
         "test/typed/tool-prompts.test.ts",
         "test/typed/prompt-section-journal.test.ts"
       ]
@@ -892,6 +892,7 @@
       ],
       "tests": [
         "test/typed/capability-tool-permission.test.ts",
+        "test/typed/capability-history-model.test.ts",
         "test/typed/offline-permission-migration.test.ts",
         "test/typed/root-service-boundary.test.ts",
         "test/typed/capability-enable.test.ts",
@@ -1007,8 +1008,8 @@
     },
     "tool-guidance.journal": {
       "docs": "789152f240039328e0d6c5ca2a38e190a27f2688dc415c55264ed914b36700cb",
-      "tests": "258c17221b3edea4ac8cdc5dbf6e416ab31016586b8ab7039a3e05f8baf8a6d1",
-      "reason": "The capability memory document now describes the permission record instead of a manual record; guidance and section-journal replay behavior is unchanged and still covered by the journal tests."
+      "tests": "46079b09d4b2d12cc2fbf4ac91bdd19ab293e4a68c0b3626c4f62112448da83a",
+      "reason": "Replace the old projection-example family with generated SDK metadata and permission histories observed through the Responses serializer. The new property deliberately fails on published-history rewrites, with minimal counterexamples documented separately. No production semantics or required prefix guarantee was relaxed."
     },
     "cross-session.messaging": {
       "docs": "1423e639cb5e99561bd024761e74ea822d6b9ed8564a65c8fea28d271f77aa7b",
@@ -1057,8 +1058,8 @@
     },
     "capability.tool-permission": {
       "docs": "0654a9a2c59dc9cdbbaddd112fd63733d7becb422b0fa8114b7a5ebc719cf660",
-      "tests": "c8d2ba4815389cbbdf12d2a6ddbe05cf669a0fdb35a7ece251797bdbf8f74ac1",
-      "reason": "The boundary fixture now uses named options and adds a metadata-failure scenario. Its managed-tools denial assertions, permission records, catalog-work regression and production permission resolver are unchanged; the tool-permission contract needs no change."
+      "tests": "b456c6b4f5d07c91cec4251111dc2e28e9168a18aaeb6db39d86c25a8b955901",
+      "reason": "Add real slash-command permission transitions, SDK backend execution and durable reopen to the generated history model. Execution effects and current registration schema are independent observations. The permission contract is unchanged; production prefix defects found by the model remain unfixed."
     },
     "capability.manual-enable": {
       "docs": "e4e5e4b4c213f9d9dd36e9cee79a0643aaea294f9710e790c9bba83820105bc4",
@@ -1067,8 +1068,8 @@
     },
     "capability.compaction-prune": {
       "docs": "f2697a2950a341f4a41eaa29fb949435daf94f4b49fa4b79ffd69c32c95b38ed",
-      "tests": "3d047402df67a6efb11bd60fddeeb5c6acef10c6200b28f8de59158016cecb4a",
-      "reason": "Only the shared offline-runtime boot moved into a helper inside preset-sdk.test.ts. The preset baseline compaction/pruning scenario, its inputs and its assertions are unchanged."
+      "tests": "1e021885175a85492967bf09979e4b2843fb9b5555d7ee20ea8e8c04da99df4b",
+      "reason": "Replace the old imperative SDK file with generated real discovery/permission/compaction/reopen histories. The reference state tracks current discovered membership and backend use independently. Product pruning contracts are unchanged; unresolved prefix failures are retained and documented in the PBT review."
     },
     "preset.config": {
       "docs": "5bf2efc378b5fbc58416a1e7d5e355364c4da48587f5a8b2ec1cc4656d8ac4b6",

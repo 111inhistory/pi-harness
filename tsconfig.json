@@ -14,6 +14,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "extensions/**/*.ts", "test/typed/**/*.ts", "test-support/native-lifecycle-*.ts", "test-support/subagent-sdk-fixture.ts"],
+  "include": ["src/**/*.ts", "extensions/**/*.ts", "test/typed/**/*.ts", "test-support/native-lifecycle-*.ts", "test-support/subagent-sdk-fixture.ts", "test-support/capability-*.ts"],
   "exclude": ["node_modules", "docs", ".pi", "coverage"]
 }
