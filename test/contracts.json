@@ -122,8 +122,7 @@
         "test/typed/capability-result.test.ts",
         "test/typed/capability-prompt.test.ts",
         "test/typed/capability-prompts.test.ts",
-        "test/typed/capability-guidance-journal.test.ts",
-        "test/typed/capability-record.test.ts"
+        "test/typed/capability-guidance-journal.test.ts"
       ]
     },
     {
@@ -949,6 +948,11 @@
     }
   ],
   "reviews": {
+    "capability.result-projection": {
+      "docs": "8d9764a793666840fba8a4a2073bd3bb602febc2d2978d854671962ab3e8ba8f",
+      "tests": "b4856fe50b9ab95c3a4bfcc4722a819273947b5f4c1062ce91155eaf16dfaa86",
+      "reason": "Merged capability-record into capability-result under the same discovery outcome projection lifecycle; shared hit fixtures and preserved all 10 scenario names and assertions across public result and branch memory; contracts and documents unchanged."
+    },
     "capability.provider-prefix": {
       "docs": "08743e2b55aa3beece61d6456f52e1db5a79180169cebb0df5a9d95a36772a36",
       "tests": "15d9ebd5cf1ef1c27cc569855bca555fc9b488b2ed34e4c75dedaf29de7f87a3",
