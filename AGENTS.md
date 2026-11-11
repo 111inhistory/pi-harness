@@ -2,6 +2,8 @@
 
 本文件面向在本仓库工作的 AI 编码与审查 Agent，提供执行边界、架构不变量、防膨胀原则与验证速查。功能细节与协议定义以链接文档为准，不在此重复。
 
+Read `LOCAL_AGENTS.md` at the checkout root when it exists for machine-specific workspace instructions. This optional, Git-ignored file contains local preferences; direct user instructions take precedence.
+
 ## 1. 项目边界与文档地图
 
 - **功能冻结**：RPC／权限／继承与观察链路完成[改写计划](docs/reviews/rpc-permission-audit.md#rewrite-plan-and-feature-freeze)并由用户明确解除冻结前，不添加新功能。期间只推进审计、缺陷修复、必要简化、兼容性清理及对应测试／文档；已起草的性能基准保持可选，不扩展场景或框架。测试通过、提交或归档提案均不自动解除冻结。

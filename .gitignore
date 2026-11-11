@@ -3,6 +3,9 @@ node_modules/
 coverage/
 /dist/
 
+# Machine-specific agent instructions.
+/LOCAL_AGENTS.md
+
 # Generated protocol artifacts; source, fixtures and checksums are tracked.
 /schemas/harness-rpc.schema.json
 /schemas/harness-rpc.manifest.json
