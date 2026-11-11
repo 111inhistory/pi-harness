@@ -946,6 +946,11 @@
     }
   ],
   "reviews": {
+    "provider.transport-tools": {
+      "docs": "d2668574f48a8012451c58c685cb80b9732c43d0ec7d00f192b68a88bc89a42d",
+      "tests": "b5d2e1dac2d199cd13bb860b10fbc1320f2153895d55bb8f6c721aec05c1e1c5",
+      "reason": "Clarify activation-independent sanitation of description-only duplicates. The existing generated Capability history regression disable/describe/enable now passes without changing its commands or assertions; existing provider-prefix and transport tests also pass. No transport flags or execution permissions change, so their test files need no artificial edits."
+    },
     "capability.search-broker": {
       "docs": "221b5978ff4ff74346731b8f04829f59b4db813f88736ba9d6cb774f2feddb3d",
       "tests": "ef10565155f435f70a3ee8e41aae0e360123fd16874d282202e9dee04cbb8b7f",
@@ -962,9 +967,9 @@
       "reason": "The host-root regression retains all CLI and callback assertions; teardown now waits for monitor release before root removal and restores the process root immediately after Host construction. Public task semantics are unchanged."
     },
     "capability.provider-prefix": {
-      "docs": "08743e2b55aa3beece61d6456f52e1db5a79180169cebb0df5a9d95a36772a36",
+      "docs": "d2668574f48a8012451c58c685cb80b9732c43d0ec7d00f192b68a88bc89a42d",
       "tests": "15d9ebd5cf1ef1c27cc569855bca555fc9b488b2ed34e4c75dedaf29de7f87a3",
-      "reason": "The enable test now observes a capability-tool-permission append instead of a manual discovery entry. The append-only provider-prefix contract is unchanged; the remaining wire-prefix assertions still guard it."
+      "reason": "Clarify activation-independent sanitation of description-only duplicates. The existing generated Capability history regression disable/describe/enable now passes without changing its commands or assertions; existing provider-prefix and transport tests also pass. No transport flags or execution permissions change, so their test files need no artificial edits."
     },
     "ipc.transport": {
       "docs": "3d760ad11a8df876ab92a28a402c111fa1a1ec2230e00588a5d4aff051d4d5b5",
@@ -1007,9 +1012,9 @@
       "reason": "Explicit clear dispatches before loading the catalog so unreadable preset configuration does not prevent withdrawing active snapshots, instructions, or codemode mode overrides; verified by catalog obstruction test."
     },
     "tool-guidance.journal": {
-      "docs": "789152f240039328e0d6c5ca2a38e190a27f2688dc415c55264ed914b36700cb",
-      "tests": "46079b09d4b2d12cc2fbf4ac91bdd19ab293e4a68c0b3626c4f62112448da83a",
-      "reason": "Replace the old projection-example family with generated SDK metadata and permission histories observed through the Responses serializer. The new property deliberately fails on published-history rewrites, with minimal counterexamples documented separately. No production semantics or required prefix guarantee was relaxed."
+      "docs": "ef1810b96bf835590d6e434644ae27682a07ea1fc54ae72d4d5ae9e525b0b72b",
+      "tests": "beb8322ec8b9687e45d3695d46cab393577e6ebea4aeb5c71875edc43f6c890a",
+      "reason": "Clarify activation-independent sanitation of description-only duplicates. The existing generated Capability history regression disable/describe/enable now passes without changing its commands or assertions; existing provider-prefix and transport tests also pass. No transport flags or execution permissions change, so their test files need no artificial edits."
     },
     "cross-session.messaging": {
       "docs": "1423e639cb5e99561bd024761e74ea822d6b9ed8564a65c8fea28d271f77aa7b",

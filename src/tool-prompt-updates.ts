@@ -24,14 +24,11 @@
  * are retained by the existing `harness-tool-guidance` journal across repeated
  * requests, appended turns, resume, branch rewind and compaction.
  *
- * Historical sanitation follows that journal: once a description revision was
- * published, its description-only declarations stay stripped from the request
- * even after the tool becomes inactive, so an old same-name re-declaration can
- * never reappear and rebase an additions-only prefix. Withdrawing or sanitizing
- * history never emits new prose and never grants authority: only a currently
- * active tool may publish a description, and a later retained schema-bearing
- * declaration supersedes an older revision section instead of restating a
- * stale description.
+ * Description-only declarations are sanitized independently of current
+ * activation. A disabled request must not publish a duplicate that a later
+ * enable would remove retroactively. Only a currently active tool may publish
+ * new description guidance; a retained schema-bearing declaration supersedes
+ * older revision prose.
  *
  * A tool that only reaches the model through Codemode has no declaration to
  * replace, and its current metadata cannot distinguish a revision from the
@@ -77,9 +74,8 @@ export interface ToolPromptUpdateInput<M extends TranscriptMessageLike> {
   readonly tools: readonly ToolPromptMetadata[];
   /**
    * Names with current authority: the actual active tools plus enabled indirect
-   * Codemode/deferred-callable tools. A name outside it is never stripped and
-   * never receives guidance prose, so an excluded or inactive tool cannot gain
-   * authority through this projection.
+   * Codemode/deferred-callable tools. Only these names may publish current
+   * description guidance. Historical sanitation grants no execution authority.
    */
   readonly active: ReadonlySet<string>;
   /** Session branch, read for the baseline and guidance journals. */
@@ -160,32 +156,16 @@ function baselineRecords(branch: readonly unknown[] | undefined): Map<string, st
   return baselines;
 }
 
-/**
- * Journal evidence about description revisions: every name that ever received
- * one (including a later withdrawal) and those whose latest record still
- * carries revision text.
- */
-interface RevisionEvidence {
-  /** Names whose historical description-only declarations are already prose. */
-  readonly ever: ReadonlySet<string>;
-  /** Names whose latest record still carries revision text. */
-  readonly inEffect: ReadonlySet<string>;
-}
-
-function revisionEvidence(branch: readonly unknown[] | undefined): RevisionEvidence {
+/** Names whose latest description-guidance record still carries revision text. */
+function descriptionRevisions(branch: readonly unknown[] | undefined): ReadonlySet<string> {
   const latest = new Map<string, string | null>();
   for (const record of promptSectionRecords(branch, TOOL_GUIDANCE_RECORD)) {
     if (!record.id.startsWith(TOOL_DESCRIPTION_GUIDANCE_PREFIX)) continue;
-    latest.set(record.id, record.text);
+    latest.set(record.id.slice(TOOL_DESCRIPTION_GUIDANCE_PREFIX.length), record.text);
   }
-  const ever = new Set<string>();
-  const inEffect = new Set<string>();
-  for (const [id, text] of latest) {
-    const name = id.slice(TOOL_DESCRIPTION_GUIDANCE_PREFIX.length);
-    ever.add(name);
-    if (text !== null) inEffect.add(name);
-  }
-  return { ever, inEffect };
+  const current = new Set<string>();
+  for (const [name, text] of latest) if (text !== null) current.add(name);
+  return current;
 }
 
 function revisionGuidance(name: string, description: string): ToolGuidance {
@@ -220,11 +200,7 @@ export function projectToolPromptUpdates<M extends TranscriptMessageLike>(
     metadata.set(tool.name, tool.description);
   }
 
-  // Read the journals before walking: a description revision that was already
-  // published keeps its historical declarations sanitized even after the tool
-  // becomes inactive, so an old same-name re-declaration can never reappear and
-  // rebase an additions-only prefix.
-  const revisions = revisionEvidence(input.branch);
+  const revisions = descriptionRevisions(input.branch);
   const baselines = baselineRecords(input.branch);
 
   /** Latest effective declaration per name, including stripped revisions. */
@@ -258,7 +234,7 @@ export function projectToolPromptUpdates<M extends TranscriptMessageLike>(
         const first = declaredDescription(previous);
         if (!baseline.has(name) && first !== null) baseline.set(name, first);
         const active = input.active.has(name);
-        if ((active || revisions.ever.has(name)) && descriptionOnly(previous, entry)) {
+        if (descriptionOnly(previous, entry)) {
           // The runtime's current declaration still wins for the next
           // comparison, so a long description chain stays description-only.
           live.set(name, entry);
@@ -320,7 +296,7 @@ export function projectToolPromptUpdates<M extends TranscriptMessageLike>(
   // A revision in effect stays supplied so the journal can replay it across
   // resume, appended turns and compaction. It is never resurrected for a name
   // outside the active scope, and metadata alone never duplicates prose.
-  for (const name of revisions.inEffect) {
+  for (const name of revisions) {
     if (!input.active.has(name)) continue;
     const current = live.get(name);
     // A declared tool's own text is authoritative; registered metadata is only
@@ -352,7 +328,7 @@ export function projectToolPromptUpdates<M extends TranscriptMessageLike>(
   // model that still reads A. Once a revision was emitted, the journal decides
   // between replay and update, so it is kept in that case.
   for (const [name, description] of [...revised]) {
-    if (!revisions.inEffect.has(name) && baseline.get(name) === description) revised.delete(name);
+    if (!revisions.has(name) && baseline.get(name) === description) revised.delete(name);
   }
 
   return {
