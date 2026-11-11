@@ -188,19 +188,20 @@ test("the chosen candidate's direct level decides thinking for a multi-model poo
   assert.equal(registry.calls[1].context.questions.model.criteria.deepseek, "DEEPSEEK PREFERENCE");
 });
 
-test("an explicitly unsupported model thinking level fails instead of being silently rewritten", async () => {
-  const restricted = { ...DEEPSEEK, thinkingLevelMap: { high: null } };
-  const registry = createRegistry({
-    models: new Map([["~google/gemini-pro-latest", GEMINI], ["~deepseek/deepseek-pro-latest", restricted]]),
-    responses: [
-      stopped({ role: choice("executor", { researcher: 0.1, executor: 0.8, reviewer: 0.1 }) }),
-      stopped({ model: choice("deepseek", { gemini: 0.1, deepseek: 0.9 }) }),
-    ],
-  });
-  await assert.rejects(
-    routeSubagent({ registry, budget: createBudget(), task: "TASK", config: CONFIG }),
-    routingError("routing_thinking_unsupported"),
-  );
+test("routes unsupported thinking requests to Pi's session fallback", async () => {
+  for (const capability of [{ reasoning: true, thinkingLevelMap: { high: null } }, { reasoning: false }]) {
+    const restricted = { ...DEEPSEEK, ...capability };
+    const registry = createRegistry({
+      models: new Map([["~google/gemini-pro-latest", GEMINI], ["~deepseek/deepseek-pro-latest", restricted]]),
+      responses: [
+        stopped({ role: choice("executor", { researcher: 0.1, executor: 0.8, reviewer: 0.1 }) }),
+        stopped({ model: choice("deepseek", { gemini: 0.1, deepseek: 0.9 }) }),
+      ],
+    });
+    const result = await routeSubagent({ registry, budget: createBudget(), task: "TASK", config: CONFIG });
+    assert.equal(result.model, restricted);
+    assert.equal(result.thinkingLevel, "high", "routing passes the requested level to the SDK");
+  }
 });
 
 test("an aborted signal stops before any provider dispatch", async () => {

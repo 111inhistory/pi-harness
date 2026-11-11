@@ -1034,8 +1034,8 @@
     },
     "subagent.lifecycle": {
       "docs": "ad06acca1072ec145dd6a12207c1a5094ff39206f23a7e27d3ac9b44380a3d70",
-      "tests": "060359b7e6e6b2ffffd55931e7dee5affa2a2fbea9266ac47b18f71e24259d46",
-      "reason": "Payloads now detach explicitly: unsupported adapter results fail through the existing terminal lifecycle, unsupported diagnostic detail is omitted, and projection-only changes preserve lifecycle semantics."
+      "tests": "6ffb2722a8a4d6655f547b079a8951ed836e552884f5b798b02973e510f9de81",
+      "reason": "The new native factory regression verifies SDK model-specific thinking fallback. Root retirement, resource ownership and native creation lifecycle remain unchanged; the revised thinking contract is documented separately."
     },
     "subagent.delivery": {
       "docs": "3b8cc6a2e08fea413d06c642fb553d75e5591c5352989b1389df1c0b9ef8f456",
@@ -1089,8 +1089,8 @@
     },
     "inherited.capture": {
       "docs": "0386f1ee279a7d3a24d9892d6c7fc4de63da737e4776c211d6c1484da8015751",
-      "tests": "182539fab521bb3538099dffae78b5e727d4cf21e8bf18738d65ae1996499696",
-      "reason": "The creation section gained an ownership statement for inherited history containers; the capture implementation and its cache-identity behavior are unchanged, and the runtime/actor-session ownership tests cover the new statement."
+      "tests": "ce919cfc01d9e7a7fca5b3bc033d0f7a48a366ee183bb134a193b0f2b0080759",
+      "reason": "The native factory test verifies Pi applies requested thinking levels to model capabilities. Inherited snapshot capture, tool whitelist and cache identity are unchanged; thinking behavior is documented in the interface thinking section."
     },
     "harness.rpc-interface": {
       "docs": "594d0ef01f83c003dc7d2479e4d899731b402db84eec8b5fbae215cf42d8c973",
@@ -1101,6 +1101,16 @@
       "docs": "ff2252d7cce9483604b0eac1be4c744fd85c8819ce4fb98b636eac9d2fb59dc7",
       "tests": "8237013a51a301cdc32a834d124832d9fa56c97eb23f1a695c14790b644ae2c8",
       "reason": "The documented Child Session section already specifies live denial propagation and root-only enable; this new test is the first actual RootService/SDK grandchild coverage of that existing contract, so the document itself needs no change."
+    },
+    "session-cache.identity": {
+      "docs": "9c69a306080d0d53a5f0f687f4279cda47cf5cc2b524146a2d55ef7225357cbe",
+      "tests": "f1be8371bf4bf7980f713f48710eaef2f50981d77b10e0c1a40f7e24f6143964",
+      "reason": "The native factory test adds SDK thinking fallback assertions only; cache identity, request serialization and inherited cache ownership are unchanged."
+    },
+    "config.resolve": {
+      "docs": "edf77e31dbe00a54ecb6d1d77f7c647f643621bf7d40a887402be41b48c3e23b",
+      "tests": "b3af7bdb0c1cbd69210fc9aaaf92c4f49542aa55dc359cfdb3e1d01fd7279a38",
+      "reason": "The native factory test passes explicit model capabilities and thinking requests; configuration locations, merge precedence and trust resolution are unchanged."
     }
   }
 }

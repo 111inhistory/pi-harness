@@ -357,7 +357,7 @@ session 生命周期（创建、恢复、停止、轮询、定时检查）与 `/
 
 ### 思考强度
 
-候选模型直接配置单一 `thinking` 级别，例如 `"thinking": "high"`。系统去除了区间与裁剪逻辑，不再通过区间计算最终强度。Inherited 模式仍继承父会话的思考强度。
+候选模型直接配置单一 `thinking` 请求级别，例如 `"thinking": "high"`，不通过 Harness 区间计算。请求级别传给 Pi SDK，由原生 `clampThinkingLevel` 调整到模型支持的档位；不支持 reasoning 的模型使用 `off`，路由不因该档位不受支持而拒绝启动。Inherited 模式传入捕获的父会话思考强度，同样由 Pi SDK 按实际模型能力应用。Actor 记录子会话实际生效的强度供续跑使用。
 
 ### 任务语言
 

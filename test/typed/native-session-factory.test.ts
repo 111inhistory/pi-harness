@@ -436,6 +436,26 @@ test("open builds the real child Pi, resource loader and capability scope", asyn
   }
 });
 
+test("child creation uses Pi's model-specific thinking fallback", async () => {
+  const h = await harness();
+  try {
+    for (const input of [
+      { model: { ...h.model, thinkingLevelMap: { medium: null } }, requested: "medium", expected: "high" },
+      { model: { ...h.model, thinkingLevelMap: { high: null } }, requested: "high", expected: "medium" },
+      { model: { ...h.model, reasoning: false }, requested: "medium", expected: "off" },
+    ]) {
+      const opened = await h.factory.open(request(h, { model: input.model, thinkingLevel: input.requested }));
+      try {
+        assert.equal(opened.execution.session.thinkingLevel, input.expected);
+      } finally {
+        await opened.execution.dispose();
+      }
+    }
+  } finally {
+    await close(h);
+  }
+});
+
 test("settings are cached per cwd and project trust", async () => {
   const h = await harness();
   const projectSettings = path.join(h.cwd, ".pi", "settings.json");

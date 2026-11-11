@@ -178,23 +178,6 @@ export function candidateThinking(candidate: RoutingCandidate): RoutingThinkingL
   return candidate.thinking;
 }
 
-/**
- * Check a direct level against the model's advertised capability. Catalogs
- * without an explicit map/reasoning flag are left to Pi's own clamp; an
- * explicit unsupported level is reported instead of silently rewritten.
- */
-export function modelSupportsThinking(
-  model: { reasoning?: boolean; thinkingLevelMap?: Record<string, string | null | undefined> },
-  level: RoutingThinkingLevel,
-): boolean {
-  if (model.reasoning === false) return false;
-  const map = model.thinkingLevelMap;
-  if (map !== undefined && Object.hasOwn(map, level) && map[level] === null) return false;
-  return true;
-}
-
-
-
 export interface RouteSubagentInput {
   readonly registry: Pick<ModelRegistry, 'find' | 'findOfType' | 'classify'>;
   readonly task: string;
@@ -503,14 +486,8 @@ export async function routeSubagent({
   const candidate = pool.find((entry) => entry.model === modelId)!;
   const model = modelById.get(modelId)!;
   const chatModel = resolveChatModel(registry, model);
+  // Pi applies model-specific thinking fallback when it creates the child session.
   const thinkingLevel = candidateThinking(candidate);
-  if (!modelSupportsThinking(chatModel, thinkingLevel)) {
-    throw new SubagentRoutingError(
-      "routing_thinking_unsupported",
-      `Selected model ${chatModel.provider}/${chatModel.id} does not support thinking level ${thinkingLevel}.`,
-      { candidate: candidate.model, thinking: thinkingLevel },
-    );
-  }
 
   return {
     roleId,
