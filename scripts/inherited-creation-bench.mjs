@@ -20,15 +20,51 @@ const repository = path.resolve(path.dirname(script), '..');
 const { values } = parseArgs({ options: {
   worker: { type: 'boolean' }, project: { type: 'string', default: repository }, output: { type: 'string' },
   calls: { type: 'string' }, children: { type: 'string' }, mode: { type: 'string' }, repeats: { type: 'string', default: '3' },
+  'heap-snapshot-dir': { type: 'string' },
 } });
 const positive = (value, name) => { const n = Number(value); assert.ok(Number.isSafeInteger(n) && n > 0, `${name} must be positive`); return n; };
 const project = path.resolve(values.project);
 const repeats = positive(values.repeats, '--repeats');
+const snapshotDirectory = values['heap-snapshot-dir'] && path.resolve(values['heap-snapshot-dir']);
+if (snapshotDirectory) {
+  assert.ok(values.calls, '--heap-snapshot-dir requires an explicit --calls profile');
+  assert.ok(values.worker || repeats === 1, '--heap-snapshot-dir requires --repeats 1');
+}
+const timingFields = ['firstPromptMs', 'createMs', 'forkMs', 'cpuCreateMs', 'cpuForkMs', 'maxLifecycleEventLoopGapMs'];
 const memory = () => { const peak = process.resourceUsage().maxRSS; return { ...process.memoryUsage(),
   processPeakRssBytes: peak > 0 ? peak * 1024 : null }; };
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const median = xs => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 const digest = async file => createHash('sha256').update(await readFile(file)).digest('hex');
+
+// Parse only after the measured worker exits: the snapshot graph must never become
+// another live owner of that worker's history or distort its teardown measurements.
+async function summarizeSnapshot(file) {
+  const graph = JSON.parse(await readFile(file, 'utf8'));
+  const fields = graph.snapshot.meta.node_fields;
+  const width = fields.length, typeIndex = fields.indexOf('type'), nameIndex = fields.indexOf('name'), sizeIndex = fields.indexOf('self_size');
+  const types = graph.snapshot.meta.node_types[typeIndex];
+  assert.ok(width > 0 && typeIndex >= 0 && nameIndex >= 0 && sizeIndex >= 0);
+  const groups = new Map(), typesByName = new Map();
+  let selfBytes = 0;
+  for (let at = 0; at < graph.nodes.length; at += width) {
+    const type = types[graph.nodes[at + typeIndex]];
+    // String values and closure names are not useful aggregate categories. Keep
+    // payloads and process internals in the private snapshot, not in its summary.
+    const name = type === 'object' ? graph.strings[graph.nodes[at + nameIndex]] : `[${type}]`;
+    const key = `${type}:${name}`;
+    const group = groups.get(key) ?? { type, name, count: 0, selfBytes: 0 };
+    group.count++; group.selfBytes += graph.nodes[at + sizeIndex]; selfBytes += graph.nodes[at + sizeIndex];
+    groups.set(key, group);
+    const typeGroup = typesByName.get(type) ?? { type, count: 0, selfBytes: 0 };
+    typeGroup.count++; typeGroup.selfBytes += graph.nodes[at + sizeIndex]; typesByName.set(type, typeGroup);
+  }
+  const sorted = [...groups.values()].sort((a, b) => b.selfBytes - a.selfBytes);
+  return { nodeCount: graph.snapshot.node_count, edgeCount: graph.snapshot.edge_count, selfBytes,
+    byType: [...typesByName.values()], largestGroups: sorted.slice(0, 30),
+    sessionOwners: sorted.filter(group => ['SessionManager', 'AgentSession', 'AgentSessionRuntime', 'RootService', 'Map', 'Set'].includes(group.name)),
+    interpretation: 'Counts and shallow bytes only. Shared descendants are not assigned to an owner here; inspect retained size and retainer paths in the full V8 snapshot.' };
+}
 
 async function rpcClient(address) {
   const socket = net.connect(address);
@@ -78,6 +114,15 @@ async function worker(profile) {
     ModelRuntime, SessionManager, SettingsManager } = sdk;
   global.gc();
   const baseline = memory();
+  const snapshots = [];
+  async function captureHeap(phase) {
+    if (!snapshotDirectory) return;
+    global.gc();
+    const heapSpaces = v8.getHeapSpaceStatistics();
+    const file = `${phase}.heapsnapshot`;
+    v8.writeHeapSnapshot(path.join(snapshotDirectory, file));
+    snapshots.push({ phase, file, fileBytes: (await stat(path.join(snapshotDirectory, file))).size, heapSpaces });
+  }
 
   async function run() {
     const childFinish = deferred(), childrenStarted = deferred();
@@ -173,6 +218,7 @@ async function worker(profile) {
       const registeredTools = parentApi.getAllTools().length;
       const activeTools = parentApi.getActiveTools().length;
       global.gc(); const before = memory();
+      if (snapshotDirectory) await captureHeap('parentBeforeCreate');
       let maxLifecycleEventLoopGapMs = 0, lastTick = performance.now();
       heartbeat = setInterval(() => { const now = performance.now(); maxLifecycleEventLoopGapMs = Math.max(maxLifecycleEventLoopGapMs, now - lastTick); lastTick = now; }, 1);
       create = host.session.getToolDefinition('subagent_create');
@@ -197,6 +243,7 @@ async function worker(profile) {
         }
       }
       await turn(); global.gc(); const afterGcWithChildrenAlive = memory();
+      if (snapshotDirectory) await captureHeap('childrenAlive');
       // Disconnecting one client must detach all of its observations; no work is replayed.
       if (client) { await client.close(); client = null; await turn(); }
       global.gc(); const afterRpcDisconnectWithChildrenAlive = memory();
@@ -250,6 +297,11 @@ async function worker(profile) {
   await turn(); global.gc(); await turn(); global.gc();
   result.memory.baselineAfterImports = baseline;
   result.memory.afterTeardownAndGc = memory();
+  if (snapshotDirectory) await captureHeap('afterTeardown');
+  if (snapshotDirectory) {
+    result.heapSnapshots = snapshots;
+    for (const field of timingFields) result[field] = null;
+  }
   return result;
 }
 
@@ -263,30 +315,40 @@ if (values.worker) {
     ? [{ calls: positive(values.calls, '--calls'), children: positive(values.children ?? '3', '--children'), mode: values.mode ?? 'print' }]
     : [1000, 4000, 16000, 32000].flatMap(calls => ['print', 'rpc'].map(mode => ({ calls, mode, children: 3 })))
       .concat(['print', 'rpc'].map(mode => ({ calls: 4000, mode, children: 1 })));
+  if (snapshotDirectory) await mkdir(snapshotDirectory, { mode: 0o700 });
   const samples = [];
   const execute = promisify(execFile);
   for (const profile of profiles) for (let repeat = 0; repeat < repeats; repeat++) {
     const { stdout } = await execute(process.execPath, ['--expose-gc', '--import', 'tsx', script, '--worker', '--project', project,
-      '--calls', String(profile.calls), '--children', String(profile.children), '--mode', profile.mode],
+      '--calls', String(profile.calls), '--children', String(profile.children), '--mode', profile.mode,
+      ...(snapshotDirectory ? ['--heap-snapshot-dir', snapshotDirectory] : [])],
     { cwd: project, env: stripCallbackEnv(process.env), timeout: 120000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 });
     const sample = JSON.parse(stdout.trim()); samples.push(sample);
-    console.error(`${profile.calls} calls / ${profile.children} live children / ${profile.mode}: create ${sample.createMs.toFixed(1)} ms, fork ${sample.forkMs.toFixed(1)} ms`);
+    if (snapshotDirectory) {
+      for (const snapshot of sample.heapSnapshots) snapshot.summary = await summarizeSnapshot(path.join(snapshotDirectory, snapshot.file));
+      const parentTypes = new Map(sample.heapSnapshots[0].summary.byType.map(group => [group.type, group]));
+      for (const snapshot of sample.heapSnapshots) snapshot.summary.typeChangesFromParent = snapshot.summary.byType.map(group => ({
+        type: group.type, count: group.count - (parentTypes.get(group.type)?.count ?? 0),
+        selfBytes: group.selfBytes - (parentTypes.get(group.type)?.selfBytes ?? 0),
+      }));
+      console.error(`${profile.calls} calls / ${profile.children} live children / ${profile.mode}: private heap snapshots captured; timing excluded`);
+    } else console.error(`${profile.calls} calls / ${profile.children} live children / ${profile.mode}: create ${sample.createMs.toFixed(1)} ms, fork ${sample.forkMs.toFixed(1)} ms`);
   }
   const medians = profiles.map(profile => {
     const rows = samples.filter(s => s.calls === profile.calls && s.children === profile.children && s.mode === profile.mode);
     const phases = Object.keys(rows[0].memory);
-    return { ...profile, createMs: median(rows.map(r => r.createMs)), forkMs: median(rows.map(r => r.forkMs)),
+    return { ...profile, createMs: snapshotDirectory ? null : median(rows.map(r => r.createMs)), forkMs: snapshotDirectory ? null : median(rows.map(r => r.forkMs)),
       memory: Object.fromEntries(phases.map(phase => [phase, Object.fromEntries(Object.keys(rows[0].memory[phase])
         .map(key => [key, rows[0].memory[phase][key] === null ? null : median(rows.map(r => r.memory[phase][key]))]))])) };
   });
   const report = { revision: execFileSync('git', ['-C', project, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
     dirty: Boolean(execFileSync('git', ['-C', project, 'status', '--porcelain'], { encoding: 'utf8' }).trim()),
     platform: process.platform, node: process.version, arch: process.arch, heapSizeLimitBytes: v8.getHeapStatistics().heap_size_limit,
-    repeats, memoryUnits: 'bytes', scope: 'Real SDK Inherited create and AgentSessionRuntime.fork. Compacted native history, no online models/MCP. Configured children are simultaneously dispatched and held; RPC samples include a real client and live stream subscriptions. Archive populations and MCP sharing/lazy loading are not simulated.',
+    repeats, memoryUnits: 'bytes', measurementKind: snapshotDirectory ? 'heap-attribution; timing excluded because snapshots force GC and change later work' : 'timing-and-memory', scope: 'Real SDK Inherited create and AgentSessionRuntime.fork. Compacted native history, no online models/MCP. Configured children are simultaneously dispatched and held; RPC samples include a real client and live stream subscriptions. Archive populations and MCP sharing/lazy loading are not simulated.',
     notes: ['Process peak RSS is a non-resettable worker watermark, including imports/setup; null when unsupported.',
       'Lifecycle loop gap includes GC, validation and settling, not just create/fork.',
       'GC snapshots distinguish live ownership and teardown; they do not measure allocation volume or prove absence of leaks.'],
     medians, samples };
   const text = JSON.stringify(report, null, 2) + '\n';
-  if (values.output) await writeFile(values.output, text); else process.stdout.write(text);
+  if (values.output) await writeFile(values.output, text, snapshotDirectory ? { mode: 0o600 } : undefined); else process.stdout.write(text);
 }

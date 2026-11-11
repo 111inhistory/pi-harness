@@ -148,6 +148,21 @@ npm run bench:inherited -- --output /tmp/inherited-performance.json
 
 比较时核对 Node 版本、操作系统、配置与提交；CPU、墙钟与内存数据用于分析，不设跨 runner 的绝对门禁。默认回归只对已确认的重复工作设宽松读取次数上限，不通过放宽超时掩盖退化。
 
+### Heap ownership attribution
+
+Use a separate, explicit profile to investigate live heap ownership:
+
+```sh
+npm run bench:inherited -- --calls 1000 --children 3 --mode rpc --repeats 1 \
+  --heap-snapshot-dir /tmp/private-heap-profile --output /tmp/private-heap-report.json
+```
+
+The snapshot directory must not exist yet. Snapshot mode requires an explicit `--calls` value and `--repeats 1`; it never expands into the default history matrix. The worker captures standard V8 `.heapsnapshot` files after GC at three phases: the parent before creation, all configured children actually running with RPC subscriptions when requested, and teardown after the fixture function has returned. Each snapshot records its file size and V8 heap-space occupancy. Snapshot collection forces GC and changes subsequent execution and process RSS watermarks, so all timing fields are `null` in this mode and its memory measurements must not be mixed with normal runs; normal benchmark invocations remain unchanged. The worker retains its 120-second deadline, and collection or cleanup failures fail the run.
+
+After the worker exits, the controller reads the snapshots sequentially and reports counts and shallow bytes for each V8 node type, type deltas from the parent phase, the largest object/type groups, plus session owners such as `SessionManager`, `AgentSession` and `RootService`. Compare these per-phase groups to distinguish growth in strings, arrays, maps and session objects. Shallow bytes exclude referenced descendants and do not establish retained ownership. Load the snapshots in Chrome DevTools **Memory**, use **Comparison** to compare `childrenAlive` with `parentBeforeCreate`, and inspect **Retainers** and retained sizes for individual `SessionManager` or `AgentSession` instances. Follow their history arrays, indexes and context-message references to distinguish shared message bodies from independently retained projections. Compare `afterTeardown` to check which owners remain reachable. Multiple snapshots do not establish leak freedom or allocation volume.
+
+These artifacts use synthetic history, but a V8 snapshot also contains process internals, module paths and environment-derived data. Keep snapshot files and their reports outside the repository in a private directory; do not upload them as public workflow artifacts. Large profiles can require substantially more disk and peak memory while writing or parsing snapshots. Controller parsing occurs only after the worker exits and is excluded from worker memory measurements.
+
 ## 迁移与验证边界
 
 测试整理应先建立行为与文档的对应关系，再合并重复覆盖和移除没有独立依据的断言。未迁移测试应如实报告，不批量标记成已完成。
