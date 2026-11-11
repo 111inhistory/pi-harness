@@ -140,7 +140,7 @@ npm run bench:inherited -- --output /tmp/inherited-performance.json
 
 合成历史约为 1 user／10 assistant／9 toolResult，工具结果包含 512 B 与 16 KiB 文本，持久化后重新打开，避免夹具共享常量字符串低估已加载历史占用。完整历史随档位增长，规范 compaction 将有效尾部保持在约 300 条 entry 加摘要。目录保持小规模（Linux 当前夹具 31 个注册工具，Main 激活 8 个）；输出记录实际父子工具数、历史 entry 数与文件字节数。这些档位是负载输入，不代表真实供应商请求数或单次在线上下文容量。
 
-创建走真实 `subagent_create`，等全部子会话实际分发本地模型流后才采样。RPC 配置还建立真实连接，并给每个运行中 Job 订阅执行流；分别采样连接／订阅存活及断开后的内存。子任务真实收尾后，通过 `AgentSessionRuntime.fork` 测量完整 SDK 分叉，验证生命周期钩子、新会话身份及源文件未被分叉写入修改。它不模拟数千份归档子会话、持续 RPC 事件积压、多根 Session 并行或 MCP 复用／lazy-load。
+创建走真实 `subagent_create`，等全部子会话实际分发本地模型流后才采样。RPC 配置还建立真实连接，并给每个运行中 Job 订阅执行流；分别采样连接／订阅存活及断开后的内存。仅在全部子任务以 `completed` 收尾后，通过 `AgentSessionRuntime.fork` 测量完整 SDK 分叉，验证生命周期钩子、新会话身份及源文件未被分叉写入修改。它不模拟数千份归档子会话、持续 RPC 事件积压、多根 Session 并行或 MCP 复用／lazy-load。
 
 内存阶段包括导入后基线、操作前、创建后、GC 后子会话存活、RPC 断开、分叉后，以及实际退役并释放夹具引用后的 GC。RSS、heap、external、arrayBuffers 与进程峰值 RSS 分开记录；进程峰值不可重置，包含导入、夹具构建和验证，平台不支持时为 null。GC 快照不是分配总量或无泄漏证明。输出还记录创建／分叉耗时、CPU、catalog 读取次数，以及包含 GC、校验和收尾在内的生命周期最长事件循环间隔。单 worker 有 120 秒退出期限，失败或资源清理失败不输出成功结果。
 

@@ -202,8 +202,9 @@ async function worker(profile) {
       global.gc(); const afterRpcDisconnectWithChildrenAlive = memory();
       let runningRoot = currentRoot;
       childFinish.resolve();
-      await Promise.all(created.details.items.map(item => runningRoot.runtime.jobDone(item.id)));
+      const completed = await Promise.all(created.details.items.map(item => runningRoot.runtime.jobDone(item.id)));
       await host.session.waitForIdle();
+      for (const job of completed) assert.equal(job.status, 'completed', `Synthetic child failed: ${JSON.stringify(job.error)}`);
       manager = null; create = null; context = null;
       const parentFile = host.session.sessionFile;
       const parentDigest = await digest(parentFile);
@@ -281,7 +282,7 @@ if (values.worker) {
   const report = { revision: execFileSync('git', ['-C', project, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
     dirty: Boolean(execFileSync('git', ['-C', project, 'status', '--porcelain'], { encoding: 'utf8' }).trim()),
     platform: process.platform, node: process.version, arch: process.arch, heapSizeLimitBytes: v8.getHeapStatistics().heap_size_limit,
-    repeats, memoryUnits: 'bytes', scope: 'Real SDK Inherited create and AgentSessionRuntime.fork. Compacted native history, no online models/MCP. Three children are simultaneously dispatched and held; RPC samples include a real client and live stream subscriptions. Archive populations and MCP sharing/lazy loading are not simulated.',
+    repeats, memoryUnits: 'bytes', scope: 'Real SDK Inherited create and AgentSessionRuntime.fork. Compacted native history, no online models/MCP. Configured children are simultaneously dispatched and held; RPC samples include a real client and live stream subscriptions. Archive populations and MCP sharing/lazy loading are not simulated.',
     notes: ['Process peak RSS is a non-resettable worker watermark, including imports/setup; null when unsupported.',
       'Lifecycle loop gap includes GC, validation and settling, not just create/fork.',
       'GC snapshots distinguish live ownership and teardown; they do not measure allocation volume or prove absence of leaks.'],
