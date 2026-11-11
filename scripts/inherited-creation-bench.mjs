@@ -84,7 +84,7 @@ async function worker(profile) {
     const roots = [];
     let currentRoot, host, client, parentApi;
     let childDispatches = 0, mainDispatches = 0, catalogReads = 0, firstPromptMs = null, operationStart = 0;
-    const events = [], childToolCounts = new Map();
+    const events = [], childToolCounts = new Map(), reportedErrors = [];
     const originalInitialize = RootService.prototype.initialize;
     const originalPrompt = AgentSession.prototype.prompt;
     RootService.prototype.initialize = async function () {
@@ -162,7 +162,13 @@ async function worker(profile) {
         return { ...await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model }), services, diagnostics: [] };
       };
       host = await createAgentSessionRuntime(factory, { cwd: temporary, agentDir: process.env.PI_CODING_AGENT_DIR, sessionManager: manager });
-      const rebind = session => session.bindExtensions({ mode: profile.mode, onError: error => { throw error; } });
+      const rebind = session => {
+        const ui = session.extensionRunner.createToolContext('benchmark-diagnostics', undefined).ui;
+        return session.bindExtensions({ mode: profile.mode,
+          uiContext: { ...ui, notify: (message, level) => { if (level === 'error') reportedErrors.push(new Error(message)); } },
+          onError: error => { reportedErrors.push(error); },
+        });
+      };
       host.setRebindSession(rebind); await rebind(host.session);
       const registeredTools = parentApi.getAllTools().length;
       const activeTools = parentApi.getActiveTools().length;
@@ -234,7 +240,7 @@ async function worker(profile) {
         try { await close(); } catch (error) { failures.push(error); }
       }
       RootService.prototype.initialize = originalInitialize; AgentSession.prototype.prompt = originalPrompt;
-      if (failures.length) throw new AggregateError(failures, 'Lifecycle benchmark cleanup failed');
+      if (failures.length || reportedErrors.length) throw new AggregateError([...failures, ...reportedErrors], 'Lifecycle benchmark reported setup or cleanup errors');
     }
   }
   let result;
