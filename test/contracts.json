@@ -529,7 +529,7 @@
         "test/typed/subagent-execution.test.ts",
         "test/subagent-runtime.test.mjs",
         "test/subagent-contract-redesign.test.mjs",
-        "test/typed/native-job-runner.test.ts"
+        "test/typed/native-lifecycle-model.test.ts"
       ]
     },
     {
@@ -626,7 +626,7 @@
         "test/typed/delivery-compaction.test.ts",
         "test/typed/native-delivery.test.ts",
         "test/typed/agent-listeners.test.ts",
-        "test/typed/native-job-runner.test.ts",
+        "test/typed/native-lifecycle-model.test.ts",
         "test/typed/subagent-lifecycle.test.ts"
       ]
     },
@@ -657,8 +657,7 @@
       ],
       "tests": [
         "test/typed/runtime-parent-hold.test.ts",
-        "test/typed/parent-hold-sdk.test.ts",
-        "test/typed/native-job-runner.test.ts"
+        "test/typed/parent-hold-sdk.test.ts"
       ]
     },
     {
@@ -675,7 +674,6 @@
         "test/typed/root-service-boundary.test.ts",
         "test/typed/root-service-ready.test.ts",
         "test/typed/root-service-result.test.ts",
-        "test/typed/native-job-runner.test.ts",
         "test/typed/subagent-lifecycle.test.ts",
         "test/typed/runtime-domain-contract.test.ts"
       ]
@@ -979,8 +977,8 @@
     },
     "subagent.integration": {
       "docs": "b031489f5c0c6bfd024f737282029c6ed108c1a0fdea4be32539e7f7e7d82fa8",
-      "tests": "23be38c43599dc5263531d4b03368418ad0819a5c7d8a1aeb7d1db4e9c0a0ca1",
-      "reason": "Bounded offline SDK scenarios to concurrency: 2 within parent describe suite; all 35 scenario names, assertions, isolated child processes and documented behavior are unchanged."
+      "tests": "a5925e29ea5b3562788c9c9e6e4f1679afeb0368d14875f24fdf2c8e2fac4f17",
+      "reason": "Six former standalone SDK scenarios are removed with the fake runner family. The remaining 29 scenarios reuse the extracted strictly typed SDK fixture; generated model histories replace the old examples without claiming one-for-one coverage. Production integration behavior is unchanged."
     },
     "subagent.socket": {
       "docs": "a464102b233a0a5ca99fc25ffb288834cef2fbebc230ac833ed7830abcae5916",
@@ -1034,23 +1032,23 @@
     },
     "subagent.lifecycle": {
       "docs": "ad06acca1072ec145dd6a12207c1a5094ff39206f23a7e27d3ac9b44380a3d70",
-      "tests": "6ffb2722a8a4d6655f547b079a8951ed836e552884f5b798b02973e510f9de81",
-      "reason": "The new native factory regression verifies SDK model-specific thinking fallback. Root retirement, resource ownership and native creation lifecycle remain unchanged; the revised thinking contract is documented separately."
+      "tests": "21126ec9c5bfc5e5034612fad970779244edc34470b67cbd33e2d76ad3cf5ba3",
+      "reason": "Replace the fake runner family with a strict TypeScript model that generates native lifecycle histories. The model tests Main/peer messaging, cancellation, continuation, Fresh/Inherited context and durable artifacts through real SDK/root/storage paths. It is a new test design, not a claim of assertion-by-assertion equivalence; production lifecycle contracts are unchanged."
     },
     "subagent.delivery": {
       "docs": "3b8cc6a2e08fea413d06c642fb553d75e5591c5352989b1389df1c0b9ef8f456",
-      "tests": "8eb4a7d022707f5596c2de6564e7bdf861e9bd034bbfe026ee78b3c6c4e149ce",
-      "reason": "Remove only an extra trailing empty line from the listener regression file; live-blocker preservation and retry assertions are unchanged."
+      "tests": "15e93ac4bd4d60c99878b98917f2002368e153cf4136bc271605e7dbb4277f08",
+      "reason": "Generated Main/peer messages exercise real IPC and SDK delivery, with post-enqueue failures and independently expected sender/content/result records. The new model replaces the old fake runner suite without promising each old example. Production delivery behavior and no-replay contract remain unchanged."
     },
     "subagent.parent-hold": {
       "docs": "1bf1ee9a30aa83b99ec446a6a12d1e078fc27936675eaba6deb53720fce8e5e4",
-      "tests": "8961b32b622e62dda35cff10a03ad4142c9b13d7cade9ceedc72a3fe6eb29305",
-      "reason": "The file change only extends the live snapshot test with the focused end-boundary read; parent-hold behavior and its documented contract are unchanged."
+      "tests": "caf304efd1a7834765f29f0ec8b2d5a9951b598f226100b4eebb3dac93bb7970",
+      "reason": "Remove the deleted fake runner file from this association. The new model does not claim parent-hold coverage; runtime-parent-hold and parent-hold-sdk remain the registered behavior owners. Product hold/wake semantics did not change."
     },
     "subagent.retirement": {
-      "docs": "ab10900eec7e9ccfefbe498e7c56038cffde62abcfb72f083c8181465ae93db0",
-      "tests": "d40e9d761b33eba8d6945065cd1f07881c7895a5122daca37d92090f1d478131",
-      "reason": "Focused boundary reads and actual root creation assertions preserve retirement ownership and cancellation behavior."
+      "docs": "2dd9c045b69c0732a0ab414f3922f789600cbeb9a6a44bb145f73843b45e37e9",
+      "tests": "ebec2a37f8c9c535aa3210270ae7eaa08bb2d24f86938539bfb56dede2fee243",
+      "reason": "Remove the deleted fake runner file from this association. The new lifecycle model does not claim retirement fault coverage; the surviving root-service and lifecycle/fence tests remain the behavior owners. Production retirement and persistence contracts did not change."
     },
     "capability.scope-admission": {
       "docs": "4393d3c918137e6171a7bd47b85e5d4786688cf2b5a0bbb4b200c761617509d1",

@@ -4,22 +4,14 @@ import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
-import {
-  createAgentSession, createCodemodeExtension, createWriteToolDefinition, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, DEFAULT_MAX_LINES,
-} from "@earendil-works/pi-coding-agent";
-import { AssistantMessageEventStream, getSystemMessageText, getCurrentTools } from "@earendil-works/pi-ai";
-import subagentExtension from "../src/subagent/extension.ts";
-import { installResultRendering } from "../src/result-rendering.ts";
+import { createWriteToolDefinition, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
+import { getCurrentTools, getSystemMessageText } from "@earendil-works/pi-ai";
 import { promptString, promptStrings } from "../src/prompt-text.ts";
-import capabilityExtension from "../src/capability/extension.ts";
-import { deriveSessionUid, getAgentSocketPath, getBroadcastSocketPath } from "../src/ipc/socket.ts";
-import { resolveTranscriptTools } from "../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js";
-import { convertResponsesMessages } from "../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
-import { deferred, waitFor } from "./async.ts";
+import { getAgentSocketPath, getBroadcastSocketPath } from "../src/ipc/socket.ts";
+import { waitFor } from "./async.ts";
 import { treeNodes } from "../test/typed/support/agent-tree.ts";
-import { capabilityGuiText } from "../test/typed/support/capability-gui.ts";
 import {
-  isStoppingRefusal, isSubagentError, deliverBroadcast, deliverToActor,
+  isStoppingRefusal, deliverToActor,
 } from "../test/typed/support/subagent-sdk-fixture.ts";
 import {
   runExternalSocketScenario, runListenerCacheScenario, runPeerSenderScenario,
@@ -36,226 +28,12 @@ import {
   runNamespaceScenario,
 } from "../test/typed/support/capability-batch-scenarios.ts";
 
+import { createSdkFixture } from "./subagent-sdk-fixture.ts";
+
 const scenario = process.argv[2];
-const cwd = process.cwd();
-const agentDir = process.env.PI_CODING_AGENT_DIR;
-const socketDir = process.env.PI_SUBAGENT_SOCKET_DIR;
-assert.ok(agentDir && socketDir && agentDir.startsWith(cwd) && socketDir.startsWith(cwd));
-await fsp.mkdir(agentDir, { recursive: true });
-
-// Fail closed if a supposedly offline test accidentally uses credentials/network.
-const networkAttempts = [];
-globalThis.fetch = async (url) => {
-  networkAttempts.push(String(url));
-  throw new Error(`Network forbidden in SDK test: ${url}`);
-};
-const originalConnect = net.Socket.prototype.connect;
-net.Socket.prototype.connect = function (...args) {
-  const target = Array.isArray(args[0]) ? args[0][0] : args[0];
-  if (!(typeof target === "string" || (target && typeof target.path === "string"))) {
-    networkAttempts.push("TCP connect");
-    throw new Error("TCP network forbidden in SDK test");
-  }
-  return originalConnect.apply(this, args);
-};
-
-const runtime = await ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: null, refreshOnCreate: false });
-const model = (scenario.startsWith("responses-") || scenario === "reviewer-sol") ? runtime.getModel("openai-codex", "gpt-6.1-sol") : runtime.getModel("google", "gemini-3.8-flash");
-assert.ok(model, "the installed Pi catalog must contain the offline fixture candidate");
-// Isolated Pi user config: no dependency on the real user's routing file or
-// third-party Antigravity extension. All calls use the scripted runtime below.
-const routing = JSON.parse(await fsp.readFile(new URL("../config/subagent-routing.json", import.meta.url), "utf8"));
-for (const candidate of routing.models) Object.assign(candidate, { provider: model.provider, model: model.id });
-await fsp.writeFile(path.join(agentDir, "subagent-routing.json"), JSON.stringify(routing));
-const childManagers = [];
-const nativeOpen = SessionManager.open;
-if (scenario === "memory-owners") SessionManager.open = (...args) => {
-  const manager = nativeOpen(...args);
-  if (String(args[0]).includes("subagent-sessions")) childManagers.push(new WeakRef(manager));
-  return manager;
-};
-const classifications = [];
-const chats = [];
-// Automatic host notifications run through the actual root SDK too. Track
-// their requests separately so actor-count assertions do not mistake them for
-// another execution of the delegated task.
-const notificationChats = [];
-let streamedFragments = 0;
-const controls = { classify: null, chat: null };
-let externalToolExecutions = 0;
-const gates = [];
-function controlledGate() {
-  const gate = deferred();
-  gates.push(gate);
-  return gate;
-}
-runtime.getAuth = async () => ({ auth: { apiKey: "offline-test-only" }, env: {} });
-runtime.hasConfiguredAuth = () => true;
-runtime.classify = async (classifier, context, options) => {
-  classifications.push({ context, options });
-  if (controls.classify) await controls.classify(context, options);
-  const key = Object.keys(context.questions)[0];
-  const selected = key === "role" ? (scenario === "reviewer-sol" ? "reviewer" : scenario.startsWith("upstream-") ? "researcher" : "executor") : "gemini";
-  const probabilities = Object.fromEntries(Object.keys(context.questions[key].criteria).map((name) => [name, name === selected ? 1 : 0]));
-  return { api: classifier.api, provider: classifier.provider, model: classifier.id, answers: {
-    [key]: { type: "choice", choice: selected, probabilities, confidence: 1 },
-  }, stopReason: "stop", timestamp: Date.now() };
-};
-function assistant(content, stopReason = "stop", errorMessage) {
-  return {
-    role: "assistant", content, api: model.api, provider: model.provider, model: model.id,
-    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-    stopReason, timestamp: Date.now(), ...(errorMessage ? { errorMessage } : {}),
-  };
-}
-const textAnswer = (text) => assistant([{ type: "text", text }]);
-const toolAnswer = (name, args, id = "local-tool-call") => assistant([{ type: "toolCall", id, name, arguments: args }], "toolUse");
-function textOf(context) {
-  return context.messages.map((message) => message.role === "system" ? getSystemMessageText(message) :
-    typeof message.content === "string" ? message.content :
-      (message.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("\n")).join("\n");
-}
-runtime.streamSimple = (actualModel, context, options) => {
-  assert.equal(actualModel.id, model.id);
-  const stream = new AssistantMessageEventStream();
-  const call = { context, options, text: textOf(context) };
-  const latest = options.sessionId === sessionManager.getSessionId()
-    ? session.messages.findLast((message) => message.role !== "system") : null;
-  const afterAssistant = options.sessionId === sessionManager.getSessionId()
-    ? session.messages.slice(session.messages.findLastIndex((message) => message.role === "assistant") + 1) : [];
-  const hasOrdinary = afterAssistant.some((message) => message.role === "custom" && message.customType === "agent-delivery" && message.details?.source === "agent");
-  const notice = !hasOrdinary && latest?.role === "custom" &&
-    (latest.customType === "agent-completion" || (latest.customType === "agent-delivery" && latest.details?.source === "host")) &&
-    !String(typeof latest.content === "string" ? latest.content : JSON.stringify(latest.content)).includes("[Message from ");
-  (notice ? notificationChats : chats).push(call);
-  (async () => {
-    try {
-      const message = notice ? textAnswer("Root received the host task notification.") :
-        controls.chat ? await controls.chat(call) : textAnswer("Local result. Difficulty: low — scripted offline response.");
-      const text = message.content.find((block) => block.type === "text");
-      if (text) {
-        stream.push({ type: "start", partial: { ...message, content: [], stopReason: "pending" } });
-        const split = Math.max(1, Math.floor(text.text.length / 2));
-        for (const end of [split, text.text.length]) {
-          const partial = { ...message, content: [{ type: "text", text: text.text.slice(0, end) }], stopReason: "pending" };
-          stream.push({ type: "text_delta", contentIndex: 0, delta: text.text.slice(end === split ? 0 : split, end), partial });
-          streamedFragments += 1;
-        }
-      }
-      stream.push({ type: "done", reason: message.stopReason, message });
-      stream.end();
-    } catch (error) {
-      stream.push({ type: "error", reason: options.signal?.aborted ? "aborted" : "error", error: assistant([], options.signal?.aborted ? "aborted" : "error", error.message) });
-      stream.end();
-    }
-  })();
-  return stream;
-};
-function abortable(gate, signal) {
-  if (signal?.aborted) return Promise.reject(new Error("cancelled local request"));
-  return new Promise((resolve, reject) => {
-    const abort = () => reject(new Error("cancelled local request"));
-    signal?.addEventListener("abort", abort, { once: true });
-    gate.promise.then(
-      (value) => { signal?.removeEventListener("abort", abort); resolve(value); },
-      (error) => { signal?.removeEventListener("abort", abort); reject(error); },
-    );
-  });
-}
-
-const durable = ["reload", "upstream-main-reload", "listener-cache", "revive", "history", "upstream-parent", "upstream-parent-steer", "stopping", "stop-history", "failure", "memory-owners", "restore-invalid"].includes(scenario);
-const sessionManager = durable ? SessionManager.create(cwd, path.join(cwd, "root-sessions")) : SessionManager.inMemory(cwd);
-if (durable) {
-  sessionManager.appendMessage({ role: "user", content: "Root seed", timestamp: Date.now() });
-  sessionManager.appendMessage(textAnswer("Root seed acknowledged"));
-}
-const settings = { retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: { mode: "off" },
-  ...(scenario === "responses-only" ? { codemode: { mode: "only" } } : {}),
-};
-let packageSkillPath;
-let cliSkillPath;
-if (scenario.startsWith("package-skills")) {
-  const packageRoot = path.join(cwd, "ppt-package");
-  packageSkillPath = path.join(packageRoot, "guidance", "ppt.md");
-  cliSkillPath = path.join(cwd, "cli-ppt.md");
-  await fsp.mkdir(path.join(packageRoot, "guidance"), { recursive: true });
-  await fsp.mkdir(path.join(packageRoot, "extensions"), { recursive: true });
-  await fsp.writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ name: "local-ppt-package", pi: { skills: ["guidance/*.md"], extensions: ["extensions/*.mjs"] } }));
-  await fsp.writeFile(path.join(packageRoot, "extensions", "forbidden.mjs"), 'throw new Error("Package extensions must not execute in discovery")');
-  const body = (name, extra = "") => `---\nname: ${name}\ndescription: PPT presentation workflow\n${extra}---\n# Native package PPT guidance\n`;
-  await fsp.writeFile(packageSkillPath, body("ppt-master"));
-  await fsp.writeFile(path.join(packageRoot, "guidance", "filtered.md"), body("filtered-ppt"));
-  await fsp.writeFile(path.join(packageRoot, "guidance", "private.md"), body("private-ppt", "disable-model-invocation: true\n"));
-  await fsp.writeFile(cliSkillPath, body("cli-ppt"));
-  settings.packages = [{ source: packageRoot, skills: ["!guidance/filtered.md"] }, "git:https://example.invalid/missing-package"];
-  settings.enableSkillCommands = false;
-}
-await fsp.writeFile(path.join(agentDir, "settings.json"), JSON.stringify(settings));
-const settingsManager = SettingsManager.inMemory(settings);
-const resourceLoader = new DefaultResourceLoader({
-  cwd, agentDir, settingsManager, noExtensions: true, noSkills: scenario !== "package-skills", noThemes: true, noPromptTemplates: true, noContextFiles: true,
-  ...(scenario === "package-skills" ? { additionalSkillPaths: [cliSkillPath] } : {}),
-  ...(scenario === "inherited" ? { systemPrompt: "Custom inherited system identity" } : {}),
-  extensionFactories: [
-    { name: "result-rendering", factory: installResultRendering },
-    ...(scenario !== "namespace-reverse" ? [{ name: "capability", factory: capabilityExtension }] : []),
-    ...(scenario === "capability-missing" ? [] : [{ name: "subagent", factory: subagentExtension }]),
-    ...(scenario === "namespace-reverse" ? [{ name: "capability", factory: capabilityExtension }] : []),
-    ...(scenario.startsWith("responses-") ? [{ name: "codemode", factory: createCodemodeExtension(), replaceable: true }] : []),
-    { name: "external-test-tool", factory(pi) {
-      pi.registerTool({ name: "external_test_tool", label: "External Test Tool", description: "A non-transplantable test extension tool.",
-        parameters: { type: "object", properties: {} }, execute: async () => { externalToolExecutions++; return { content: [{ type: "text", text: "unused" }] }; },
-      });
-    } },
-  ],
-});
-await resourceLoader.reload();
-assert.deepEqual(resourceLoader.getExtensions().errors, [], "extension initialization must succeed in a real loader");
-const { session } = await createAgentSession({ cwd, agentDir, sessionManager, settingsManager, resourceLoader, modelRuntime: runtime, model, thinkingLevel: "low" });
-const extensionErrors = [];
-await session.bindExtensions({ onError: (error) => extensionErrors.push(error) });
-const sessionUid = deriveSessionUid(sessionManager.getSessionId());
-const sessionSocketDir = path.join(socketDir, sessionUid);
-let toolSequence = 0;
-async function call(name, params) {
-  if (name.startsWith("subagent_")) session.setActiveToolsByName([...session.getActiveToolNames(), ...["subagent_create", "subagent_list", "subagent_stop"].filter((tool) => session.getToolDefinition(tool))]);
-  const tool = session.getToolDefinition(name);
-  assert.ok(tool, `missing native registered tool ${name}`);
-  return tool.execute(`test-call-${++toolSequence}`, params, undefined, undefined, session.extensionRunner.createContext());
-}
-async function listener(socketPath) {
-  return waitFor(() => process._getActiveHandles().find((handle) => handle instanceof net.Server && handle.listening && handle.address() === socketPath), { label: "host listener ready" });
-}
-async function create(task, extra = {}) {
-  return (await call("subagent_create", { tasks: [{ name: "LocalTask", task, ...extra }] })).details.items[0];
-}
-async function item(id) {
-  return (await call("subagent_list", { id, all: true })).details;
-}
-async function stopped(id) {
-  return waitFor(async () => {
-    const found = await item(id);
-    return found?.status === "stopped" && found;
-  }, { label: `terminal state of ${id}` });
-}
-
-
-
-
-async function events(file) {
-  const content = await fsp.readFile(file, "utf8");
-  assert.ok(content.endsWith("\n"));
-  return content.trim().split("\n").map((line) => JSON.parse(line));
-}
-const fixture = {
-  get scenario() { return scenario; },
-  cwd, agentDir, socketDir, sessionSocketDir,
-  session, sessionManager, chats, notificationChats, classifications, controls,
-  call, create, item, stopped, gate: controlledGate, textAnswer, toolAnswer,
-  resourceLoader, networkAttempts, model,
-  getExternalToolExecutions: () => externalToolExecutions,
-};
-
+const fixture = await createSdkFixture({ scenario });
+const { cwd, agentDir, sessionSocketDir, session, sessionManager, model, controls, chats, notificationChats, classifications, textAnswer, toolAnswer, assistant, call, create, item, stopped, listener, events, controlledGate, abortable, durable, childManagers } = fixture;
+let scenarioError;
 try {
   if (scenario === 'async-shell' || scenario === 'async-shell-powershell') {
     await runAsyncShellScenario(fixture, scenario === 'async-shell-powershell' ? 'powershell' : 'bash');
@@ -518,46 +296,6 @@ try {
     assert.match(chats.at(-1).text, /forged source/);
     assert.match(chats.at(-1).text, /\[Message from Main\]/);
     assert.doesNotMatch(chats.at(-1).text, /\[Message from sub_99\]/);
-  } else if (scenario === "revive") {
-    controls.chat = () => textAnswer(`Local result ROUND_${chats.length}_END`);
-    const first = await create("Original assignment marker");
-    const initial = await stopped(first.id);
-    const initialMarkdown = await fsp.readFile(initial.history.summary, "utf8");
-    const initialJsonl = await fsp.readFile(initial.history.cleanJsonl, "utf8");
-    const endpoint = await listener(first.socket);
-    let previousMarkdown = initialMarkdown;
-    let previousJsonl = initialJsonl;
-    assert.match(previousMarkdown, /Local result/);
-    assert.equal(classifications.length, 2);
-    for (const round of [2, 3]) {
-      await call("msg_write", { path: first.socket, content: `Explicit continuation ${round}` });
-      await waitFor(() => chats.length === round, { label: `revival ${round} native request` });
-      const current = await stopped(first.id);
-      assert.equal(current.socket, first.socket);
-      assert.notEqual(current.history.jobId, initial.history.jobId);
-      assert.equal(await listener(first.socket), endpoint, "revive must not replace the listener");
-      assert.equal(classifications.length, 2, "settled identity must not reroute");
-      assert.equal("budget" in (await stopped(first.id)), false);
-      assert.match(chats[round - 1].text, new RegExp(`Explicit continuation ${round}`));
-      assert.equal(chats[round - 1].text.split("Original assignment marker").length - 1, 1, "the initial task is history, not re-injected");
-      const markdown = await fsp.readFile(current.history.summary, "utf8");
-      const jsonl = await fsp.readFile(current.history.cleanJsonl, "utf8");
-      assert.match(markdown, /Previous round/);
-      assert.notEqual(markdown, previousMarkdown);
-      assert.notEqual(jsonl, previousJsonl);
-      assert.equal(await fsp.readFile(initial.history.summary, "utf8"), initialMarkdown);
-      assert.equal(await fsp.readFile(initial.history.cleanJsonl, "utf8"), initialJsonl);
-      const result = `Local result ROUND_${round}_END`;
-      assert.equal(await fsp.readFile(current.history.result, "utf8"), result);
-      const notice = sessionManager.getBranch().findLast((entry) => entry.type === "custom_message" && entry.details?.jobId === current.history.jobId);
-      assert.ok(notice);
-      assert.equal(notice.content.split(result).length - 1, 1);
-      assert.ok(!notice.content.includes(`ROUND_${round - 1}_END`));
-      assert.ok(!notice.content.includes("Original assignment marker"));
-      previousMarkdown = markdown;
-      previousJsonl = jsonl;
-    }
-    assert.deepEqual((await fsp.readdir(path.dirname(initial.history.summary))).sort(), ["result.txt", "summary.md", "transcript.jsonl"]);
   } else if (scenario === "history") {
     const finalOutput = `Complete final answer\n${'detail\n'.repeat(DEFAULT_MAX_LINES + 1)}困难度：low`;
     controls.chat = () => chats.length === 1 ? toolAnswer("write", { path: "artifact.txt", content: "Actual native tool result" }) : textAnswer(finalOutput);
@@ -572,7 +310,7 @@ try {
     assert.equal(end.toolCallId, start.id);
     assert.equal(end.isError ?? false, false);
     assert.ok(end.content.length > 0);
-    assert.ok(streamedFragments > 0, "the native Session actually received stream fragments");
+    assert.ok(fixture.streamedFragments > 0, "the native Session actually received stream fragments");
     assert.ok(records.every((r) => !["message_update", "text_delta", "toolcall_delta"].includes(r.type)));
     assert.equal(await fsp.readFile(terminal.history.result, "utf8"), finalOutput);
     const notice = sessionManager.getBranch().findLast((entry) => entry.type === "custom_message" && entry.details?.jobId === terminal.history.jobId);
@@ -585,27 +323,6 @@ try {
     assert.equal(final.stopReason, "stop");
     assert.ok(JSON.stringify(final).includes("Complete final answer"), "clean history must retain finalized message content, not just usage");
     assert.match(await fsp.readFile(terminal.history.summary, "utf8"), /Complete final answer/);
-  } else if (scenario === "steer") {
-    const exit = controlledGate();
-    controls.chat = async () => {
-      if (chats.length === 1) await exit.promise;
-      return textAnswer("Steered final answer");
-    };
-    const first = await create("One original assignment");
-    await waitFor(() => chats.length === 1, { label: "first native stream" });
-    await deliverToActor(fixture, first, "Steering marker exactly once");
-    exit.resolve();
-    await waitFor(() => chats.length === 2, { label: "steered native stream" });
-    const terminal = await stopped(first.id);
-    assert.equal(chats.length, 2);
-    assert.equal(classifications.length, 2);
-    assert.equal("budget" in (await stopped(first.id)), false);
-    assert.equal(chats[1].text.split("Steering marker exactly once").length - 1, 1);
-    assert.equal(chats[1].text.split("One original assignment").length - 1, 1);
-    await session.waitForIdle();
-    const completedNotices = sessionManager.getBranch().filter((entry) => entry.type === "custom_message" &&
-      (entry.details?.status === "completed" || entry.details?.terminal?.status === "completed"));
-    assert.equal(completedNotices.length, 1, "normal completion produces one host terminal notification");
   } else if (scenario === "parallel") {
     const exit = controlledGate();
     controls.chat = async (request) => {
@@ -641,61 +358,6 @@ try {
     await Promise.all(actors.map((actor) => stopped(actor.id)));
   } else if (scenario === "broadcast") {
     await runHierarchicalBroadcastScenario(fixture);
-  } else if (scenario === "inherited") {
-    sessionManager.appendMessage({ role: "user", content: "Captured parent context marker", timestamp: Date.now() });
-    sessionManager.appendMessage(assistant([
-      { type: "thinking", thinking: "Recorded parent thinking", thinkingSignature: "native-signature-test" },
-      { type: "text", text: "Recorded parent answer" },
-    ]));
-    session.setThinkingLevel("high");
-    const first = await create("Inherited task marker", { inheritContext: true });
-    sessionManager.appendMessage({ role: "user", content: "Later parent mutation must not leak", timestamp: Date.now() });
-    await stopped(first.id);
-    assert.ok(first.warnings.some((warning) => warning.includes("external_test_tool")), "untransplantable tools must be reported by the public create response");
-    assert.equal(getCurrentTools(chats[0].context.messages).some((tool) => tool.name === "external_test_tool"), false);
-    assert.equal(classifications.length, 0, "Inherited execution must not classify");
-    assert.equal(chats.length, 1);
-    assert.equal(chats[0].options.reasoning, "high");
-    assert.match(chats[0].text, /Custom inherited system identity/);
-    assert.match(chats[0].text, /Captured parent context marker/);
-    assert.match(chats[0].text, /Inherited task marker/);
-    assert.equal(chats[0].text.includes("Later parent mutation must not leak"), false);
-    const thinking = chats[0].context.messages.flatMap((message) => Array.isArray(message.content) ? message.content : []).find((block) => block.type === "thinking");
-    assert.equal(thinking.thinking, "Recorded parent thinking");
-    const notice = sessionManager.getBranch().findLast((entry) => entry.type === "custom_message" && entry.details?.sourceId === first.id);
-    assert.ok(notice);
-    assert.ok(notice.content.startsWith('Local result.'));
-    for (const background of ['Recorded parent answer', 'Captured parent context marker', 'Inherited task marker']) {
-      assert.ok(!notice.content.includes(background));
-    }
-    assert.equal(thinking.thinkingSignature, "native-signature-test");
-    assert.equal("budget" in (await stopped(first.id)), false);
-  } else if (scenario === "stopping" || scenario === "stop-history") {
-    const exit = controlledGate();
-    controls.chat = async (request) => {
-      await exit.promise; // Deliberately delay native exit after abort to observe stopping.
-      if (request.options.signal.aborted) throw new Error("cancelled local request");
-      return textAnswer("after exit");
-    };
-    const first = await create("Stop an active request");
-    await waitFor(() => chats.length === 1, { label: "native request started" });
-    const stopping = await call("subagent_stop", { id: first.id });
-    assert.equal(stopping.details.status, "stopping");
-    assert.equal((await item(first.id)).status, "stopping");
-    try {
-      if (scenario === "stopping") {
-        await assert.rejects(call("msg_write", { path: first.socket, content: "must not be accepted" }), (err) => isStoppingRefusal(first.id, err));
-      }
-    } finally {
-      exit.resolve();
-    }
-    assert.equal("budget" in (await stopped(first.id)), false);
-    assert.match(await fsp.readFile((await stopped(first.id)).history.summary, "utf8"), /`cancelled`/);
-    controls.chat = null;
-    await call("msg_write", { path: first.socket, content: "resume after actual exit" });
-    await waitFor(() => chats.length === 2, { label: "explicit revive after cancellation" });
-    await stopped(first.id);
-    assert.equal(classifications.length, 2);
   } else if (scenario === "failure") {
     controls.chat = () => assistant([], "error", "Local provider failure");
     const first = await create("Fail a native model request");
@@ -755,37 +417,19 @@ try {
     assert.match(chats.at(-1).text, /PURE_MEMORY_ASSIGNMENT/);
     assert.equal(classifications.length, 2);
     await assert.rejects(fsp.access(path.join(agentDir, "subagent-sessions")), { code: "ENOENT" });
-  } else if (scenario === "reload") {
-    const first = await create("Persisted original assignment");
-    const initial = await stopped(first.id);
-    await listener(first.socket);
-    assert.ok(sessionManager.getSessionFile(), "the root must be durable");
-    assert.ok(sessionManager.getBranch().some((entry) => entry.type === "custom" && entry.customType === "subagent-job-end"), "the runtime must append its terminal event to the actual root branch");
-    await session.reload();
-    const restored = await item(first.id);
-    assert.equal(restored.id, first.id);
-    assert.deepEqual(restored.history, initial.history);
-    await listener(restored.socket);
-    await call("msg_write", { path: restored.socket, content: "Continue after reload" });
-    await waitFor(() => chats.length === 2, { label: "revive from persisted session" });
-    await stopped(first.id);
-    assert.equal(classifications.length, 2);
-    assert.match(chats[1].text, /Persisted original assignment/);
-    assert.match(chats[1].text, /Continue after reload/);
   } else {
     throw new Error(`Unknown SDK test scenario: ${scenario}`);
   }
+} catch (error) {
+  scenarioError = error;
+  throw error;
 } finally {
-  for (const gate of gates) gate.resolve();
-  await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-  session.dispose();
-  assert.deepEqual(extensionErrors, [], "shutdown errors must not be silently swallowed by the test");
-  assert.deepEqual(networkAttempts, [], "the entire integration scenario must be offline");
-  const sockets = await fsp.readdir(socketDir, { recursive: true }).catch((err) => {
-    if (err.code === "ENOENT") return [];
-    throw err;
-  });
-  assert.equal(sockets.some((file) => file.endsWith(".sock")), false, "shutdown must remove every listener endpoint");
-  assert.equal(process._getActiveHandles().filter((handle) => handle instanceof net.Server && handle.listening).length, 0, "shutdown must not leave listening servers");
+  try {
+    await fixture.close();
+  } catch (cleanupError) {
+    // Preserve the scenario failure while still reporting cleanup failures.
+    if (scenarioError === undefined) throw cleanupError;
+    throw new AggregateError([scenarioError, cleanupError], `SDK scenario ${scenario} failed before cleanup reported additional failures.`);
+  }
 }
 console.log(`SCENARIO_OK:${scenario}`);

@@ -55,6 +55,16 @@ Within a file, tests remain serial unless a parent suite enables concurrency. Th
 
 The scenario cap applies within each of those two files; it is not a global process or CPU cap. Full-suite timing should be compared on the same host because other file workers still run concurrently.
 
+## Native lifecycle model tests
+
+`test/typed/native-lifecycle-model.test.ts` runs generated histories through the real RootService, runtime, Pi SDK, managed IPC, actor storage and durable Job views. The model and shared SDK fixture use strict TypeScript. Each subprocess has private working, agent and socket directories and an eight-second process exit deadline.
+
+Each sample starts one Fresh and one Inherited Actor. `fast-check` generates up to 32 commands: Main writes, native peer tool calls, SDK enqueue-then-throw faults, cancellation, varied provider results, continuation and reload. Expected lifecycle state, accepted messages and Job lineage come from the generated operations. Assertions check actual durable transcripts, sender attribution, terminal results/notices, inherited context and immutable previous Job artifacts. The model contains no copy of the production transition algorithm. Fifty histories run by default; `PI_PBT_RUNS` selects a larger local sample.
+
+`fc.scheduler` varies explicitly scheduled provider-release boundaries when both Actors settle. Native SDK, IPC and filesystem work after those boundaries runs normally; the scheduler does not control arbitrary kernel or timer interleavings. Provider errors, empty replies, thinking-only replies and cancellation are generated outcomes. An unexpected assertion failure remains a failure and is shrunk by `fast-check`.
+
+Failures print a seed, property path and command `replayPath`. Replay with `PI_PBT_SEED=<seed> PI_PBT_PATH=<path> PI_PBT_COMMAND_PATH=<replayPath> node --import tsx --test test/typed/native-lifecycle-model.test.ts`. Keep the printed scheduler expression when reproducing a scheduling-specific failure. Reload uses the existing SessionManager and does not claim fresh-process recovery coverage.
+
 ## 文档与测试登记
 
 `test/contracts.json` 记录行为依据，格式为：

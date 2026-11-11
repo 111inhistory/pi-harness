@@ -29,37 +29,34 @@ import type {
 import { SubagentError } from "../../../src/subagent/runtime.ts";
 import { treeNodes } from "./agent-tree.ts";
 
-/** One scripted provider request recorded by the scenario child process. */
 export interface FixtureChat {
   readonly context: Context;
   readonly options: ModelsSimpleStreamOptions;
   readonly text: string;
 }
 
-/** One scripted classification request recorded by the child process. */
 export interface FixtureClassification {
   readonly context: ClassifierContext;
   readonly options: ClassifierOptions | undefined;
 }
 
-/** The history projection a `subagent_list` item carries for a terminal Job. */
 export interface FixtureHistoryPaths {
   readonly jobId: string;
   readonly summary: string;
   readonly cleanJsonl: string;
+  readonly result?: string;
 }
 
-/** The Actor fields these scenarios observe from real tool results. */
 export interface FixtureActor {
   readonly id: string;
   readonly socket: string;
+  readonly name?: string;
   readonly status?: string;
   readonly history?: FixtureHistoryPaths;
   readonly historyError?: { readonly code: string; readonly message: string };
   readonly warnings?: readonly string[];
 }
 
-/** A cleanup gate that the scenario resolves explicitly. */
 export interface FixtureGate {
   readonly promise: Promise<void>;
   resolve(): void;
@@ -71,18 +68,19 @@ export interface FixtureContent {
 }
 
 /** The real tool result an extension tool returns to this fixture. */
-export interface FixtureToolResult {
+export interface FixtureToolResult<TDetails = unknown> {
   readonly content: readonly FixtureContent[];
-  readonly details?: unknown;
+  readonly details?: TDetails;
   readonly isError?: boolean;
 }
 
-/** One JSON line of a Job's clean native transcript. */
 export interface FixtureTranscriptEvent {
   readonly role?: string;
   readonly type?: string;
   readonly customType?: string;
   readonly toolName?: string;
+  readonly toolCallId?: string;
+  readonly stopReason?: string;
   readonly isError?: boolean;
   readonly content?: unknown;
   readonly details?: unknown;
@@ -143,11 +141,14 @@ export function actorOf(value: unknown): FixtureActor {
     ? item.warnings.filter((warning: unknown): warning is string => typeof warning === "string")
     : undefined;
   const history = historyOf(item.history);
+  const historyError = historyErrorOf(item.historyError);
   return {
     id: item.id,
     socket: item.socket,
+    ...(typeof item.name === "string" ? { name: item.name } : {}),
     ...(typeof item.status === "string" ? { status: item.status } : {}),
     ...(history === undefined ? {} : { history }),
+    ...(historyError === undefined ? {} : { historyError }),
     ...(warnings === undefined ? {} : { warnings }),
   };
 }
@@ -162,7 +163,21 @@ function historyOf(value: unknown): FixtureHistoryPaths | undefined {
   ) {
     throw new Error("Actor history must contain string jobId, summary and cleanJsonl fields.");
   }
-  return { jobId: history.jobId, summary: history.summary, cleanJsonl: history.cleanJsonl };
+  return {
+    jobId: history.jobId,
+    summary: history.summary,
+    cleanJsonl: history.cleanJsonl,
+    ...(typeof history.result === "string" ? { result: history.result } : {}),
+  };
+}
+
+function historyErrorOf(value: unknown): { readonly code: string; readonly message: string } | undefined {
+  if (value === undefined || value === null) return undefined;
+  const error = record(value, "Actor history error");
+  if (typeof error.code !== "string" || typeof error.message !== "string") {
+    throw new Error("Actor history error must contain string code and message fields.");
+  }
+  return { code: error.code, message: error.message };
 }
 
 /** Read registrations from create, which never returns a progress status. */
@@ -205,7 +220,8 @@ export function assertMessageSuccess(result: FixtureToolResult): void {
 }
 
 export function assertMessageSuccessFromMessage(message: ToolResultMessage): void {
-  assertMessageSuccess({ content: message.content, details: message.details, isError: message.isError });
+  const details = message.details === undefined ? undefined : record(message.details, "Tool result details");
+  assertMessageSuccess({ content: message.content, ...(details === undefined ? {} : { details }), isError: message.isError });
 }
 
 export async function deliverToActor(
@@ -258,6 +274,8 @@ function transcriptEvent(value: unknown): FixtureTranscriptEvent {
     ...(typeof event.type === "string" ? { type: event.type } : {}),
     ...(typeof event.customType === "string" ? { customType: event.customType } : {}),
     ...(typeof event.toolName === "string" ? { toolName: event.toolName } : {}),
+    ...(typeof event.toolCallId === "string" ? { toolCallId: event.toolCallId } : {}),
+    ...(typeof event.stopReason === "string" ? { stopReason: event.stopReason } : {}),
     ...(typeof event.isError === "boolean" ? { isError: event.isError } : {}),
     ...("content" in event ? { content: event.content } : {}),
     ...("details" in event ? { details: event.details } : {}),
