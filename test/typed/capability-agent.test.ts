@@ -1,9 +1,13 @@
+/**
+ * Capability discovery engine (`src/capability/agent.ts`): batched local search,
+ * incremental selection, run lifecycle bounds and the model-facing step feedback.
+ */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ExtensionToolContext } from '@earendil-works/pi-coding-agent';
 import { CAPABILITY_DISCOVERY_PROMPT, CAPABILITY_DISCOVERY_SYSTEM_PROMPT,
   createCapabilityDiscovery, providerErrorDetail } from '../../src/capability/agent.ts';
-import type { CapabilityBrokerPort, CapabilityDiscoveryDependencies, CapabilityOpenSessionRequest } from '../../src/capability/agent.ts';
+import type { CapabilityBrokerPort, CapabilityDiscoveryDependencies, CapabilityOpenSessionRequest, CapabilityStepFeedback } from '../../src/capability/agent.ts';
 import type { CapabilityStepParameters } from '../../src/capability/contracts.ts';
 import type { CapabilitySearchHit, CapabilitySearchResult, CapabilitySkillHit } from '../../src/capability/broker.ts';
 import { DEFAULT_HARNESS_CONFIG } from '../../src/harness-config.ts';
@@ -13,10 +17,20 @@ const DISCOVERY_BUDGET = DEFAULT_HARNESS_CONFIG.capability.budget;
 
 const toolHit: CapabilitySearchHit = { ref: 'tool://read', name: 'read', description: 'fixture tool', kind: 'tool', status: 'available', match: 'ref', score: 0, reason: 'fixture' };
 const skillHit: CapabilitySkillHit = { ...toolHit, ref: '/skills/fixture/SKILL.md', name: 'fixture', kind: 'skill', filePath: '/skills/fixture/SKILL.md' };
-function result(hits: CapabilitySearchHit[] = [], warnings: string[] = []): CapabilitySearchResult {
-  return { status: warnings.length ? 'partial' : 'ok', tools: hits.filter(hit => hit.kind !== 'skill' && hit.kind !== 'mcp'),
+const nsInstructions = `GROUP_GUIDANCE ${'long shared guidance '.repeat(400)}`;
+const members = Array.from({ length: 30 }, (_, index) => ({
+  ref: `tool://member_${index}`, name: `member_${index}`,
+  description: `${`MEMBER_DESCRIPTION_${index} `.repeat(20)}`, exposure: 'direct',
+}));
+const largeNamespace: CapabilitySearchHit = {
+  ref: 'namespace://fixture', name: 'fixture', description: 'Fixture namespace for integration',
+  kind: 'namespace', status: 'available', match: 'bm25', score: 0.5, reason: 'BM25 metadata match',
+  namespace: 'fixture', instructions: nsInstructions, toolCount: members.length, tools: members,
+};
+function result(hits: CapabilitySearchHit[] = []): CapabilitySearchResult {
+  return { status: 'ok', tools: hits.filter(hit => hit.kind !== 'skill' && hit.kind !== 'mcp'),
     mcp: hits.filter(hit => hit.kind === 'mcp'), skills: hits.filter((hit): hit is CapabilitySkillHit => hit.kind === 'skill' && hit.filePath !== undefined),
-    remote: [], warnings, missingCapabilities: [] };
+    remote: [], warnings: [], missingCapabilities: [] };
 }
 type Search = Parameters<CapabilityBrokerPort['search']>[0];
 function broker(results: Record<string, CapabilitySearchResult | Error | (() => Promise<CapabilitySearchResult>)> = {}) {
@@ -30,6 +44,16 @@ function broker(results: Record<string, CapabilitySearchResult | Error | (() => 
 }
 const step = (request: CapabilityOpenSessionRequest, params: CapabilityStepParameters) =>
   request.customTools[0]!.execute('step', params, request.signal, undefined, {} as ExtensionToolContext);
+/**
+ * The tool result `content` is what the SDK hands to the provider as the
+ * `capability_step` tool result; parse it exactly as the model receives it.
+ */
+async function stepFeedback(request: CapabilityOpenSessionRequest, params: CapabilityStepParameters) {
+  const result = await step(request, params);
+  const part = result.content[0];
+  assert.ok(part !== undefined && part.type === 'text', 'step content is one text block');
+  return { result, raw: part.text, feedback: JSON.parse(part.text) as CapabilityStepFeedback };
+}
 interface State { prompts: number; opens: number; aborts: number; disposals: number }
 async function discover(options: {
   broker?: CapabilityBrokerPort;
@@ -342,6 +366,93 @@ test('custom capability budget is applied to the discovery session', async () =>
   } });
   assert.equal(output.endReason, 'budget');
   assert.equal(output.status, 'failed');
+});
+
+test('a large namespace reaches the model as intact compact JSON while details keep every member', async () => {
+  let stepResult: Awaited<ReturnType<typeof stepFeedback>> | undefined;
+  const { output } = await discover({ broker: broker({ namespace: result([largeNamespace]) }), behavior: async request => {
+    stepResult = await stepFeedback(request, { queries: ['namespace'] });
+    const searched = stepResult.feedback.searches[0];
+    assert.ok(searched);
+    assert.deepEqual(searched.tools, [{ ref: largeNamespace.ref, name: largeNamespace.name,
+      description: largeNamespace.description, kind: 'namespace', toolCount: members.length }]);
+    assert.deepEqual(searched.mcp, []);
+    assert.deepEqual(searched.skills, []);
+    assert.deepEqual(searched.repeatedRefs, []);
+    assert.deepEqual(searched.warnings, []);
+    assert.deepEqual(searched.missingCapabilities, []);
+    assert.ok(stepResult.raw.length < 1_000, 'feedback omits the long body instead of truncating serialized JSON');
+    assert.doesNotMatch(stepResult.raw, /long shared guidance|MEMBER_DESCRIPTION_|member_\d+/);
+    const raw = stepResult.result.details.searches[0];
+    assert.ok(raw);
+    assert.equal(raw.tools[0]?.instructions, nsInstructions);
+    assert.deepEqual(raw.tools[0]?.tools, members);
+    const finish = await stepFeedback(request, { refs: [largeNamespace.ref], finish: true });
+    assert.equal(finish.result.terminate, true);
+  } });
+  assert.deepEqual(output.tools, [largeNamespace], 'selecting the namespace ref still keeps all original members');
+});
+
+test('duplicate hits within one batch and across steps repeat refs without becoming missing matches', async () => {
+  const found = result([toolHit, skillHit]);
+  const { output } = await discover({ broker: broker({ alpha: found, beta: found }), behavior: async request => {
+    const batch = await stepFeedback(request, { queries: ['alpha', 'beta'] });
+    assert.deepEqual(batch.feedback.searches.map(search => search.query), ['alpha', 'beta']);
+    const [first, second] = batch.feedback.searches;
+    assert.ok(first && second);
+    assert.deepEqual(first.tools.map(hit => hit.ref), [toolHit.ref]);
+    assert.deepEqual(first.skills.map(hit => hit.ref), [skillHit.ref]);
+    assert.deepEqual(second.tools, []);
+    assert.deepEqual(second.skills, []);
+    assert.deepEqual(second.repeatedRefs, [toolHit.ref, skillHit.ref]);
+    assert.deepEqual(second.missingCapabilities, []);
+    assert.equal(second.status, 'ok');
+    const again = await stepFeedback(request, { queries: ['alpha'] });
+    const repeated = again.feedback.searches[0];
+    assert.ok(repeated);
+    assert.deepEqual(repeated.tools, []);
+    assert.deepEqual(repeated.skills, []);
+    assert.deepEqual(repeated.repeatedRefs, [toolHit.ref, skillHit.ref]);
+    assert.deepEqual(repeated.missingCapabilities, []);
+    // Seen and selected stay distinct: repeated refs are still selectable.
+    assert.deepEqual(again.feedback.selection.accepted, []);
+    const finish = await stepFeedback(request, { refs: [toolHit.ref, skillHit.ref], finish: true });
+    assert.deepEqual(finish.feedback.selection.accepted, [toolHit.ref, skillHit.ref]);
+  } });
+  assert.equal(output.status, 'ok');
+  assert.deepEqual(output.tools, [toolHit]);
+  assert.deepEqual(output.skills, [skillHit]);
+  assert.deepEqual(output.missingCapabilities, [], 'duplicates are not reported as absent capabilities');
+});
+
+test('a fresh discovery run shows the compact candidate again', async () => {
+  const searches = broker({ namespace: result([largeNamespace]) });
+  for (const pass of [1, 2]) {
+    const { output } = await discover({ broker: searches, behavior: async request => {
+      const searched = await stepFeedback(request, { queries: ['namespace'] });
+      assert.equal(searched.feedback.searches[0]?.tools.length, 1, `run ${pass} shows the first sighting`);
+      assert.deepEqual(searched.feedback.searches[0]?.repeatedRefs, []);
+      await stepFeedback(request, { refs: [largeNamespace.ref], finish: true });
+    } });
+    assert.deepEqual(output.tools, [largeNamespace]);
+  }
+});
+
+test('one failed query keeps its place in model feedback without dropping independent candidates', async () => {
+  const { output } = await discover({ broker: broker({ broken: new Error('SYNC_FAILURE'), found: result([toolHit]) }), behavior: async request => {
+    const batch = await stepFeedback(request, { queries: ['broken', 'found'] });
+    assert.deepEqual(batch.feedback.searches.map(search => [search.query, search.status]), [['broken', 'failed'], ['found', 'ok']]);
+    const [failed, succeeded] = batch.feedback.searches;
+    assert.deepEqual(failed?.tools, []);
+    assert.ok(failed?.warnings.some(warning => warning.includes('SYNC_FAILURE')));
+    assert.deepEqual(succeeded?.tools.map(hit => hit.ref), [toolHit.ref]);
+    assert.equal(batch.feedback.error, undefined);
+    const details = batch.result.details.searches.map(search => search.status);
+    assert.deepEqual(details, ['failed', 'ok']);
+    await stepFeedback(request, { refs: [toolHit.ref], finish: true });
+  } });
+  assert.equal(output.status, 'partial');
+  assert.deepEqual(output.tools, [toolHit]);
 });
 
 test('providerErrorDetail inspects the final assistant attempt and handles unknown input', () => {
