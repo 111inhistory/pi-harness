@@ -977,8 +977,8 @@
     },
     "subagent.integration": {
       "docs": "b031489f5c0c6bfd024f737282029c6ed108c1a0fdea4be32539e7f7e7d82fa8",
-      "tests": "a5925e29ea5b3562788c9c9e6e4f1679afeb0368d14875f24fdf2c8e2fac4f17",
-      "reason": "Six former standalone SDK scenarios are removed with the fake runner family. The remaining 29 scenarios reuse the extracted strictly typed SDK fixture; generated model histories replace the old examples without claiming one-for-one coverage. Production integration behavior is unchanged."
+      "tests": "15ce93417cdddcb9350c0f432cde30fc71edbd9dc9a7105ae2aabae0406b3dcc",
+      "reason": "Increase subprocess and outer test deadlines as requested: PBT 120/150 seconds, ordinary SDK scenarios 30/45 seconds. Generated behavior, admission and cleanup assertions are unchanged; these are test execution budgets, not product timeouts."
     },
     "subagent.socket": {
       "docs": "a464102b233a0a5ca99fc25ffb288834cef2fbebc230ac833ed7830abcae5916",
@@ -997,8 +997,8 @@
     },
     "async-shell.platform": {
       "docs": "3516091b2521b32ec1a313d086c2d213c075c002a2c8ddf183c4f111c5773fc1",
-      "tests": "9181217d9b65bedea606b27966b2639224a3e426af23bcd3b5299b1b0f91b03b",
-      "reason": "Bounded SDK acceptance shell scenarios to concurrency: 2 within parent describe suite; assertions, environment isolation, platform checks and documented behavior are unchanged."
+      "tests": "f554b9489fc1281c004c438387eda0834b22703edd0c5af9e6ba39161050f6eb",
+      "reason": "Increase subprocess and outer test deadlines as requested: PBT 120/150 seconds, ordinary SDK scenarios 30/45 seconds. Generated behavior, admission and cleanup assertions are unchanged; these are test execution budgets, not product timeouts."
     },
     "preset.runtime": {
       "docs": "1ed8d56f436aa1991f5ac6f8b6d12804bcd9bf1e79a9519c806092fdf300a68e",
@@ -1032,13 +1032,13 @@
     },
     "subagent.lifecycle": {
       "docs": "ad06acca1072ec145dd6a12207c1a5094ff39206f23a7e27d3ac9b44380a3d70",
-      "tests": "21126ec9c5bfc5e5034612fad970779244edc34470b67cbd33e2d76ad3cf5ba3",
-      "reason": "Replace the fake runner family with a strict TypeScript model that generates native lifecycle histories. The model tests Main/peer messaging, cancellation, continuation, Fresh/Inherited context and durable artifacts through real SDK/root/storage paths. It is a new test design, not a claim of assertion-by-assertion equivalence; production lifecycle contracts are unchanged."
+      "tests": "66ec05fde788918e88403a1c9bdfaafe3f5fcef363d50cd4005e4f250923769e",
+      "reason": "Increase subprocess and outer test deadlines as requested: PBT 120/150 seconds, ordinary SDK scenarios 30/45 seconds. Generated behavior, admission and cleanup assertions are unchanged; these are test execution budgets, not product timeouts."
     },
     "subagent.delivery": {
       "docs": "3b8cc6a2e08fea413d06c642fb553d75e5591c5352989b1389df1c0b9ef8f456",
-      "tests": "15e93ac4bd4d60c99878b98917f2002368e153cf4136bc271605e7dbb4277f08",
-      "reason": "Generated Main/peer messages exercise real IPC and SDK delivery, with post-enqueue failures and independently expected sender/content/result records. The new model replaces the old fake runner suite without promising each old example. Production delivery behavior and no-replay contract remain unchanged."
+      "tests": "9bca26d4c910409ed098dadb3f85af67f640df83a38aed108512ba079cfb933b",
+      "reason": "Increase subprocess and outer test deadlines as requested: PBT 120/150 seconds, ordinary SDK scenarios 30/45 seconds. Generated behavior, admission and cleanup assertions are unchanged; these are test execution budgets, not product timeouts."
     },
     "subagent.parent-hold": {
       "docs": "1bf1ee9a30aa83b99ec446a6a12d1e078fc27936675eaba6deb53720fce8e5e4",

@@ -51,13 +51,13 @@ Measure comparable phases and workloads. RSS can remain high after objects are c
 
 Pi Harness uses Node's test runner through `scripts/test.mjs`. Test files already run in separate worker processes, with Node's default concurrency of `max(1, os.availableParallelism() - 1)`. Each worker has its own heap, module cache and environment; filesystem paths, ports and external processes still require explicit isolation.
 
-Within a file, tests remain serial unless a parent suite enables concurrency. The independent subprocess scenarios in `test/subagent-integration-real.test.mjs` and `test/async-shell-sdk.test.mjs` use parent suites capped at two concurrent scenarios. Each scenario owns a temporary working directory, agent directory and IPC namespace. Existing timeouts, assertions and cleanup remain in force. Suites that mutate in-process globals or share fixture resources remain serial within their file.
+Within a file, tests remain serial unless a parent suite enables concurrency. The independent subprocess scenarios in `test/subagent-integration-real.test.mjs` and `test/async-shell-sdk.test.mjs` use parent suites capped at two concurrent scenarios. Each scenario owns a temporary working directory, agent directory and IPC namespace. Assertions and cleanup remain in force. Ordinary SDK subprocesses have a 30-second exit deadline and a 45-second outer deadline. Suites that mutate in-process globals or share fixture resources remain serial within their file.
 
 The scenario cap applies within each of those two files; it is not a global process or CPU cap. Full-suite timing should be compared on the same host because other file workers still run concurrently.
 
 ## Native lifecycle model tests
 
-`test/typed/native-lifecycle-model.test.ts` runs generated histories through the real RootService, runtime, Pi SDK, managed IPC, actor storage and durable Job views. The model and shared SDK fixture use strict TypeScript. Each subprocess has private working, agent and socket directories and an eight-second process exit deadline.
+`test/typed/native-lifecycle-model.test.ts` runs generated histories through the real RootService, runtime, Pi SDK, managed IPC, actor storage and durable Job views. The model and shared SDK fixture use strict TypeScript. Each subprocess has private working, agent and socket directories, a 120-second process exit deadline and a 150-second outer deadline.
 
 Each sample starts one Fresh and one Inherited Actor. `fast-check` generates up to 32 commands: Main writes, native peer tool calls, SDK enqueue-then-throw faults, cancellation, varied provider results, continuation and reload. Expected lifecycle state, accepted messages and Job lineage come from the generated operations. Assertions check actual durable transcripts, sender attribution, terminal results/notices, inherited context and immutable previous Job artifacts. The model contains no copy of the production transition algorithm. Fifty histories run by default; `PI_PBT_RUNS` selects a larger local sample.
 

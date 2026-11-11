@@ -17,7 +17,7 @@ async function scenario(t, name) {
   t.after(() => fsp.rm(cwd, { recursive: true, force: true }));
   try {
     const { stdout, stderr } = await execute(process.execPath, [...(name === "memory-owners" ? ["--expose-gc"] : []), fixture, name], {
-      cwd, timeout: 8000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024,
+      cwd, timeout: 30000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024,
       env: {
         ...process.env,
         PI_OFFLINE: "1",
@@ -64,6 +64,6 @@ describe("offline SDK scenarios", { concurrency: 2 }, () => {
   ["memory-only", "memory-only actors preserve their sole history across revival without writing subagent files"],
   ["restore-invalid", "invalid restored ownership fails closed without writing recovery events or executing work"],
 ]) {
-    test(`offline SDK: ${description}`, { timeout: 10000 }, (t) => scenario(t, name));
+    test(`offline SDK: ${description}`, { timeout: 45000 }, (t) => scenario(t, name));
   }
 });

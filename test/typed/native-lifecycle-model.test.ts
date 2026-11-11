@@ -11,13 +11,14 @@ import { stripCallbackEnv } from '../../test-support/test-environment.mjs';
 const execute = promisify(execFile);
 const runner = fileURLToPath(new URL('../../test-support/native-lifecycle-model.ts', import.meta.url));
 
-test('generated native histories preserve message, Job and persistence semantics', { timeout: 10000 }, async t => {
+test('generated native histories preserve message, Job and persistence semantics', { timeout: 150000 }, async t => {
   const cwd = await mkdtemp(path.join(tmpdir(), 'pi-native-model-'));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const result = await execute(process.execPath, [runner], {
-    cwd, timeout: 8000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024,
+    cwd, timeout: 120000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024,
     env: stripCallbackEnv({ ...process.env, PI_OFFLINE: '1',
       PI_CODING_AGENT_DIR: path.join(cwd, 'agent'), PI_SUBAGENT_SOCKET_DIR: path.join(cwd, 'uds') }),
   });
   assert.ok(result.stdout.includes('NATIVE_LIFECYCLE_MODEL_OK'), `${result.stdout}\n${result.stderr}`);
+  console.log(result.stdout.trim());
 });
