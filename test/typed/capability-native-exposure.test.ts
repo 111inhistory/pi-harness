@@ -15,41 +15,29 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
-  type AgentSession, type ExtensionAPI, type McpTransportFactory,
+  type AgentSession, type ExtensionAPI,
 } from '@earendil-works/pi-coding-agent';
-type McpTransport = ReturnType<McpTransportFactory>;
-type JsonRpcMessage = Parameters<Parameters<McpTransport['onMessage']>[0]>[0];
+import { offlineMcpTransport } from './support/offline-mcp-transport.ts';
 
 import { installCapabilityMcp } from '../../src/capability/native-discovery.ts';
 import { installCapabilityCodemode } from '../../src/capability/codemode.ts';
 import type { AgentTool } from '@earendil-works/pi-agent-core';
 import { waitFor } from '../../test-support/async.ts';
 
-function offlineTransport(server: string, tool: string): McpTransport {
-  const listeners = new Set<(message: JsonRpcMessage) => void>();
-  const closes = new Set<() => void>();
-  return {
-    start: async () => {},
-    close: async () => { for (const listener of closes) listener(); },
-    onMessage: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    onError: () => () => {},
-    onClose: (listener) => { closes.add(listener); return () => { closes.delete(listener); }; },
-    send: async (message) => {
-      if (!('id' in message) || !('method' in message)) return;
-      let result: unknown;
-      if (message.method === 'initialize') {
-        result = { protocolVersion: '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: server, version: '1' } };
-      } else if (message.method === 'tools/list') {
-        result = { tools: [{ name: tool, description: `${server} tool`, inputSchema: { type: 'object', properties: {} } }] };
-      } else if (message.method === 'tools/call') {
-        result = { content: [{ type: 'text', text: 'OK' }] };
-      } else {
-        result = { resources: [], resourceTemplates: [] };
-      }
-      const reply = { jsonrpc: '2.0', id: message.id, result } as JsonRpcMessage;
-      queueMicrotask(() => { for (const listener of listeners) listener(reply); });
-    },
-  };
+function offlineTransport(server: string, tool: string) {
+  return offlineMcpTransport(message => {
+    let result: unknown;
+    if (message.method === 'initialize') {
+      result = { protocolVersion: '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: server, version: '1' } };
+    } else if (message.method === 'tools/list') {
+      result = { tools: [{ name: tool, description: `${server} tool`, inputSchema: { type: 'object', properties: {} } }] };
+    } else if (message.method === 'tools/call') {
+      result = { content: [{ type: 'text', text: 'OK' }] };
+    } else {
+      result = { resources: [], resourceTemplates: [] };
+    }
+    return result;
+  });
 }
 
 test('MCP adapter preserves native tool exposure and keeps tools inactive', async () => {

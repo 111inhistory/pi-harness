@@ -10,9 +10,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import { getCurrentTools, type AssistantMessage } from '@earendil-works/pi-ai';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
-import type { McpTransportFactory } from '@earendil-works/pi-coding-agent';
-type McpTransport = ReturnType<McpTransportFactory>;
-type JsonRpcMessage = Parameters<Parameters<McpTransport['onMessage']>[0]>[0];
+import { offlineMcpTransport } from './support/offline-mcp-transport.ts';
 import capabilityExtension from '../../src/capability/extension.ts';
 import { CAPABILITY_STEP_TOOL_NAME } from '../../src/capability/contracts.ts';
 import type { CapabilityStepFeedback } from '../../src/capability/agent.ts';
@@ -150,42 +148,29 @@ for (const nativeFirst of [false, true]) {
         return stream;
       };
 
-      const transport = (server: string): McpTransport => {
-        const listeners = new Set<(message: JsonRpcMessage) => void>();
-        const closes = new Set<() => void>();
-        return {
-          start: async () => {},
-          close: async () => { for (const listener of closes) listener(); },
-          onMessage: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
-          onError: () => () => {},
-          onClose: (listener) => { closes.add(listener); return () => { closes.delete(listener); }; },
-          send: async (message) => {
-            if (!('id' in message) || !('method' in message)) return;
-            let result: unknown;
-            if (message.method === 'initialize') result = {
-              protocolVersion: '2025-11-25', capabilities: { tools: {}, ...(server === 'no_resources_fixture' ? {} : { resources: {} }) },
-              serverInfo: { name: server, version: '1' }, instructions: `PRIVATE_CATALOG_${server}`,
-            };
-            else if (message.method === 'tools/list') result = { tools: [{
-              name: server === 'selected_fixture' ? 'inspect' : 'unrelated',
-              description: server === 'selected_fixture' ? 'Inspect selected documents' : 'Unrelated private operation',
-              inputSchema: { type: 'object', properties: {} },
-            }] };
-            else if (message.method === 'tools/call') {
-              calls.push(server);
-              result = { content: [{ type: 'text', text: 'MCP_EXECUTED' }] };
-            } else if (message.method === 'resources/read') {
-              resourceReads.push(server);
-              result = { contents: [{ uri: 'memory://fixture', mimeType: 'text/plain', text: `RESOURCE_READ_${server}` }] };
-            } else {
-              calls.push(message.method);
-              result = { resources: [], resourceTemplates: [] };
-            }
-            const reply = { jsonrpc: '2.0', id: message.id, result } as JsonRpcMessage;
-            queueMicrotask(() => { for (const listener of listeners) listener(reply); });
-          },
+      const transport = (server: string) => offlineMcpTransport(message => {
+        let result: unknown;
+        if (message.method === 'initialize') result = {
+          protocolVersion: '2025-11-25', capabilities: { tools: {}, ...(server === 'no_resources_fixture' ? {} : { resources: {} }) },
+          serverInfo: { name: server, version: '1' }, instructions: `PRIVATE_CATALOG_${server}`,
         };
-      };
+        else if (message.method === 'tools/list') result = { tools: [{
+          name: server === 'selected_fixture' ? 'inspect' : 'unrelated',
+          description: server === 'selected_fixture' ? 'Inspect selected documents' : 'Unrelated private operation',
+          inputSchema: { type: 'object', properties: {} },
+        }] };
+        else if (message.method === 'tools/call') {
+          calls.push(server);
+          result = { content: [{ type: 'text', text: 'MCP_EXECUTED' }] };
+        } else if (message.method === 'resources/read') {
+          resourceReads.push(server);
+          result = { contents: [{ uri: 'memory://fixture', mimeType: 'text/plain', text: `RESOURCE_READ_${server}` }] };
+        } else {
+          calls.push(message.method);
+          result = { resources: [], resourceTemplates: [] };
+        }
+        return result;
+      });
       const settingsManager = SettingsManager.inMemory({
         retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: 'off', codemode: { mode: 'only' },
         defaultTools: nativeFirst ? ['+codemode', '+tool_search'] : ['+tool_search'],

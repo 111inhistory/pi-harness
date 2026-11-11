@@ -980,8 +980,8 @@
     },
     "capability.native-exposure": {
       "docs": "ef49dbf8cad3dedd5e0c80e2ce810537fb5b64eeb1665fbac22952643113da63",
-      "tests": "b6af674ad44f7bd4226a91f27caaaeb4db273688a86a91cc8c80921ea2e02246",
-      "reason": "Added a focused Codemode usage-ownership case: accumulation owns a fixed-shape copy and the published result takes its own snapshot, while the injected registry usage object is unchanged. The documented native exposure and Codemode interface behavior is unchanged."
+      "tests": "656bc4d39f224b67db06ec8c03c35f395a0259ed4b46a9b8538811d4b0532032",
+      "reason": "Only duplicate in-process MCP transport listener and microtask response plumbing is shared. All five real-SDK scenarios retain original server-specific capabilities, request responses, call/resource tracking, actual extension installation order, assertions and per-file environment isolation. No protocol or runtime contract changed."
     },
     "capability.activation-reachability": {
       "docs": "a048b5c237c48f51ac8dcdd1fce40a5c2612cfa92e1b6f128c81e44f609e561d",
@@ -1020,8 +1020,8 @@
     },
     "capability.lazy-schemas": {
       "docs": "31dde3f095b94d54a1e62269119eefb18b00c5ed22df53e12eba40cdc872b638",
-      "tests": "91f23b1811d66168987dab384aa96c73a29f0444d026c8a67728bf1cbcd9ae32",
-      "reason": "The codemode-mode test now covers the real loadout declaration mask (hiddenDeclarations + lazySchemas) used by disable; the lazy-schema contract itself is unchanged."
+      "tests": "865e4b858648a9152d3ee7462a99ea138b213da9b7338eb93fad94ac7229bfff",
+      "reason": "Only duplicate in-process MCP transport listener and microtask response plumbing is shared. All five real-SDK scenarios retain original server-specific capabilities, request responses, call/resource tracking, actual extension installation order, assertions and per-file environment isolation. No protocol or runtime contract changed."
     },
     "subagent.lifecycle": {
       "docs": "ad06acca1072ec145dd6a12207c1a5094ff39206f23a7e27d3ac9b44380a3d70",
