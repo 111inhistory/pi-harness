@@ -984,8 +984,8 @@
     },
     "capability.activation-reachability": {
       "docs": "a048b5c237c48f51ac8dcdd1fce40a5c2612cfa92e1b6f128c81e44f609e561d",
-      "tests": "9280499df8858780ef55bc47ae79b5cb39346162403806222bbae4e4ede49088",
-      "reason": "Table-driven overlap rows retain their original names, initial registry/loadout, effects and before/after state checks. Four identical parser assertions are covered by the existing manual parser test and its unique list-active input was moved there. No distinct input, expected outcome or invariant was removed."
+      "tests": "722b6d6e33c13206362117339bb45edb4c12d99d99a7728f5538b1bf56782c6c",
+      "reason": "The existing shared registry fixture replaces identical local host plumbing. All 14 reachability scenarios and assertions remain, including hidden/default-denied precedence, actual discovery and enable entry points, partial results and Skill survival. No contract behavior changed."
     },
     "async-shell.platform": {
       "docs": "3516091b2521b32ec1a313d086c2d213c075c002a2c8ddf183c4f111c5773fc1",

@@ -10,9 +10,10 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { capabilityHost as host, type CapabilityTestTool as FakeTool } from './support/capability-host.ts';
 
 import {
-  activateToolNames, codemodeAvailable, toolReachability, type ActivationHost,
+  activateToolNames, codemodeAvailable, toolReachability,
 } from '../../src/capability/activation.ts';
 import {
   describeEnableSkip, enableCapabilityTargets,
@@ -20,35 +21,6 @@ import {
 import { retainReachableSelectedTools } from '../../src/capability/tool-catalog.ts';
 import { setCapabilityPermissionDefaults } from '../../src/capability/scope.ts';
 import { explicitlyDisabled } from '../../src/capability/tool-permission.ts';
-
-interface FakeTool {
-  name: string;
-  description?: string;
-  exposure?: string;
-  namespace?: { name: string; aliases?: readonly string[] };
-}
-
-type Entry = { type: string; customType: string; data?: unknown };
-
-function host(initial: readonly FakeTool[], active: readonly string[] = []) {
-  const state = {
-    tools: initial.map((tool) => ({ ...tool })),
-    active: new Set(active),
-    entries: [] as Entry[],
-  };
-  const api: ActivationHost & { appendEntry(type: string, data?: unknown): void } = {
-    getAllTools: () => state.tools,
-    getActiveTools: () => [...state.active],
-    setActiveTools(names: string[]) {
-      state.active = new Set(names.filter((name) => state.tools.some(
-        (tool) => tool.name === name && tool.exposure !== 'hidden')));
-    },
-    appendEntry(customType: string, data?: unknown) {
-      state.entries.push({ type: 'custom', customType, data });
-    },
-  };
-  return { api, activeNames: () => [...state.active], entries: () => state.entries };
-}
 
 const baseTools: readonly FakeTool[] = [
   { name: 'deferred_tool', description: 'Deferred', exposure: 'deferred' },
