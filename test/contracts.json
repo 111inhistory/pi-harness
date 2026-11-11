@@ -993,9 +993,9 @@
       "reason": "Only duplicate in-process MCP transport listener and microtask response plumbing is shared. All five real-SDK scenarios retain original server-specific capabilities, request responses, call/resource tracking, actual extension installation order, assertions and per-file environment isolation. No protocol or runtime contract changed."
     },
     "capability.activation-reachability": {
-      "docs": "a048b5c237c48f51ac8dcdd1fce40a5c2612cfa92e1b6f128c81e44f609e561d",
+      "docs": "0214e0cb0dd10c9ecc731941335882aa3446429d4e50020964d712c53e99daff",
       "tests": "722b6d6e33c13206362117339bb45edb4c12d99d99a7728f5538b1bf56782c6c",
-      "reason": "The existing shared registry fixture replaces identical local host plumbing. All 14 reachability scenarios and assertions remain, including hidden/default-denied precedence, actual discovery and enable entry points, partial results and Skill survival. No contract behavior changed."
+      "reason": "The bullet only narrows when MCP startup waiting applies (first request, once per session); activation reachability behavior and its tests are unchanged."
     },
     "async-shell.platform": {
       "docs": "3516091b2521b32ec1a313d086c2d213c075c002a2c8ddf183c4f111c5773fc1",
