@@ -932,7 +932,7 @@
         "test/typed/harness-rpc-transport.test.ts",
         "test/typed/harness-rpc-mode-gate.test.ts",
         "test/typed/harness-rpc-tool-info.test.ts",
-        "test/typed/harness-rpc-subagent.test.ts",
+        "test/typed/rpc-observation-model.test.ts",
         "test/typed/harness-rpc-history.test.ts",
         "test/typed/harness-rpc-stream.test.ts",
         "test/typed/harness-rpc-subprocess.test.ts",
@@ -1106,8 +1106,8 @@
     },
     "harness.rpc-interface": {
       "docs": "594d0ef01f83c003dc7d2479e4d899731b402db84eec8b5fbae215cf42d8c973",
-      "tests": "3b9d6ff526fe2f7b1075f8b82e2bf697104a4ca2b7e5cd1d631b5f23e7ddef76",
-      "reason": "The schema suite now uses the same real running Runtime Job fixture as history, stream and socket tests. Schema validation and null/not-started/error assertions stay local and unchanged; no RPC contract changes."
+      "tests": "830356aa0037bfb1167a7b7e00bb37764c932ef7679f2ca440954589842a466a",
+      "reason": "Replace fake Root/Connection forwarding and subscription examples with generated histories through the published real RPC endpoint, SDK actors, transport, native events and reopened Job intervals. Wire assertions independently track generated output, inputs, Job rounds and per-connection subscription ownership. Existing framing/backpressure, projection, observer-failure and collectability tests remain. No production or protocol behavior changes; current interface sections need no artificial edits."
     },
     "subagent.permission-propagation": {
       "docs": "ff2252d7cce9483604b0eac1be4c744fd85c8819ce4fb98b636eac9d2fb59dc7",

@@ -54,6 +54,7 @@ export interface SdkFixtureOptions {
   readonly scenario: string;
   readonly durable?: boolean;
   readonly systemPrompt?: string;
+  readonly mode?: 'rpc';
   readonly config?: JsonObject;
   readonly routing?: (routing: FixtureRoutingConfig) => void;
 }
@@ -364,6 +365,7 @@ export async function createSdkFixture(options: SdkFixtureOptions): Promise<SdkF
     const uiErrors: Error[] = [];
     const ui: ExtensionUIContext = activeSession.extensionRunner.createContext().ui;
     await activeSession.bindExtensions({
+      ...(options.mode === undefined ? {} : { mode: options.mode }),
       uiContext: {
         ...ui,
         notify(message, level) {
