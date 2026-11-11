@@ -959,8 +959,8 @@
     },
     "async-shell.tasks": {
       "docs": "a79679278808e0384b27c839cdcc6cf11ce8f1bcf92a9278dec13ab2d11c9f7a",
-      "tests": "868047b9a92d56222eb63250a740bf0945989f0638f2de15221101d959db3f8f",
-      "reason": "The new CLI case verifies callback-host unavailability before task allocation; create argv, terminal lifecycle, output, timeout and cancellation contracts remain unchanged. Degraded Harness behavior is documented under Harness integration, paired with the host-surface regression."
+      "tests": "f011888ba1f70ee7f9032f5653ca5993969da85e436fb2e0838b6d757f851741",
+      "reason": "The host-root regression retains all CLI and callback assertions; teardown now waits for monitor release before root removal and restores the process root immediately after Host construction. Public task semantics are unchanged."
     },
     "capability.provider-prefix": {
       "docs": "08743e2b55aa3beece61d6456f52e1db5a79180169cebb0df5a9d95a36772a36",

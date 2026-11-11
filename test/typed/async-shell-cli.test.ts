@@ -356,29 +356,38 @@ test('an ambiguous registration keeps the task directory and never replays it', 
 test('a host-owned task keeps its root when the child changes TMPDIR', options, async (t) => {
   const host = await callbackHost(t);
   const root = await mkdtemp(path.join(tmpdir(), 'async-shell-host-root-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  let shellHost: AsyncShellHost | undefined;
+  t.after(async () => {
+    await shellHost?.close();
+    // A terminal reply precedes monitor cleanup. Release each task before its root.
+    for (const name of await readdir(root)) {
+      if (name.startsWith('job_')) await cancelTask(path.join(root, name), root);
+    }
+    await rm(root, { recursive: true, force: true });
+  });
   const previousRoot = process.env.PI_ASYNC_SHELL_ROOT;
-  process.env.PI_ASYNC_SHELL_ROOT = root;
-  t.after(() => {
+  try {
+    process.env.PI_ASYNC_SHELL_ROOT = root;
+    shellHost = new AsyncShellHost({
+      accepting: () => true,
+      address: () => host.socket,
+      deliver: async () => {},
+      wake: () => {},
+      cancel: (directory, taskRoot) => cancelTask(directory, taskRoot),
+    });
+  } finally {
+    // The host captures its root at construction; later CLI tests keep their own default.
     if (previousRoot === undefined) delete process.env.PI_ASYNC_SHELL_ROOT;
     else process.env.PI_ASYNC_SHELL_ROOT = previousRoot;
-  });
-  const shellHost = new AsyncShellHost({
-    accepting: () => true,
-    address: () => host.socket,
-    deliver: async () => {},
-    wake: () => {},
-    cancel: (directory, taskRoot) => cancelTask(directory, taskRoot),
-  });
-  t.after(() => shellHost.close());
+  }
   const childTmp = await mkdtemp(path.join(tmpdir(), 'async-shell-child-tmp-'));
   t.after(() => rm(childTmp, { recursive: true, force: true }));
 
   const result = await job(['create', '--wait', '10s', '--', ...nodeScript('process.stdout.write("hosted\\n")')], {
     env: { ...shellHost.environment('Main'), TMPDIR: childTmp, TEMP: childTmp, TMP: childTmp },
   });
-  t.after(() => cleanup(taskDirOf(result), root));
 
+  assert.equal(process.env.PI_ASYNC_SHELL_ROOT, previousRoot, 'host construction restores the caller root');
   assert.equal(result.status, 'completed');
   assert.equal(result.output, 'hosted\n');
   assert.equal(path.dirname(result.logPath), path.join(root, result.id), 'the task stays under the host-owned root');
