@@ -191,10 +191,9 @@ func record(value interface{}) (map[string]interface{}, bool) {
 	return m, ok
 }
 
-// jsonStringify is the literal JSON.stringify call site.
-// Known behavior-diff for the verification stage: Node does not escape HTML
-// characters, while encoding/json does by default. Left explicit rather than
-// silently patched during translation.
+// jsonStringify is the JSON.stringify call site. The contract is the parsed
+// object, not the text: key order, HTML escaping and U+2028/2029 escaping are
+// irrelevant because the receiver parses the frame back into the same object.
 func jsonStringify(value interface{}) string {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -247,6 +246,18 @@ func readTaskFile(paths TaskPaths) taskFile {
 		timeoutMs = &value
 	}
 	return taskFile{ID: id, Argv: argv, Cwd: cwd, CreatedAt: int64(createdAtRaw), WaitMs: int64(waitMsRaw), TimeoutMs: timeoutMs}
+}
+
+func safeReadTask(paths TaskPaths) taskFile {
+	var task taskFile
+	_ = caught(func() { task = readTaskFile(paths) })
+	if task.ID == "" {
+		task.ID = PathBasename(paths.Dir)
+	}
+	if task.CreatedAt == 0 {
+		task.CreatedAt = nowMs()
+	}
+	return task
 }
 
 func readStateFile(paths TaskPaths, task taskFile) taskState {
@@ -677,8 +688,18 @@ func writeExit(paths TaskPaths, exit exitFile) {
 }
 
 // RunnerMain is TS runnerMain: the pane process that waits for capture, then runs.
-func RunnerMain(dir string) int {
+// A panic here would otherwise kill the command with no status; the boundary
+// reports it through exit.json so the monitor can finalize a failure.
+func RunnerMain(dir string) (exit int) {
 	paths := taskPaths(dir)
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			message := "internal error: " + messageOf(recovered)
+			_ = caught(func() { writeExit(paths, exitFile{Code: nil, Signal: nil, Error: strPtr(message)}) })
+			ProcessStderrWrite("pi-job: " + message + "\n")
+			exit = 1
+		}
+	}()
 	task := readTaskFile(paths)
 	FsWriteFileSync(paths.RunnerPid, []byte(formatInt(ProcessPid())+"\n"), &FileOptions{Mode: uint32Ptr(0o600)})
 
@@ -722,13 +743,62 @@ func RunnerMain(dir string) int {
 	return child.Wait()
 }
 
-// MonitorMain is TS monitorMain: the detached per-task monitor.
+// MonitorMain is TS monitorMain: the detached per-task monitor. A panic is
+// reported as a failed completion frame (never silent): the boundary records the
+// failure on disk and attempts one `complete` with notify=true, unless a frame
+// was already attempted (unknown delivery is never replayed).
 func MonitorMain(dir string) {
 	paths := taskPaths(dir)
+	frameAttempted := false
+	closedWritten := false
+	var task taskFile
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			safe := safeReadTask(paths)
+			message := "internal error: " + messageOf(recovered)
+			_ = caught(func() {
+				FsAppendFileSync(paths.Filtered, []byte("async-shell: "+message+"\n"), &FileOptions{Mode: uint32Ptr(0o600)})
+			})
+			state := taskState{ID: safe.ID, Status: StatusFailed, ExitCode: nil, CreatedAt: safe.CreatedAt, FinalizedAt: int64Ptr(nowMs())}
+			_ = caught(func() {
+				current := readStateFile(paths, safe)
+				if current.Status == StatusRunning || current.FinalizedAt == nil {
+					writeState(paths, state)
+				} else {
+					state = current
+				}
+			})
+			_ = caught(func() { backend.KillServer(dir) })
+			// TODO(harness-protocol): the TypeScript reference had no
+			// monitor-internal-error category, and ShellResult carries no
+			// error/reason field. A panic is therefore reported as
+			// status=failed with the detail only in output.log; it is not
+			// structurally distinguishable from a command failure. Coordinate
+			// with the Harness protocol/host (validateAsyncShellFrame /
+			// AsyncShellHost) before adding a structured failure reason or a
+			// distinct status.
+			if !frameAttempted {
+				var callback *CallbackTarget
+				_ = caught(func() { callback = CallbackFromEnv(ProcessEnv()) })
+				if callback != nil {
+					frameAttempted = true
+					var result ShellResult
+					_ = caught(func() { result = statusResult(paths, state) })
+					_ = caught(func() {
+						sendFrame(*callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, Token: callback.Token, Operation: "complete", ID: state.ID, Notify: true, Result: result})
+					})
+				}
+			}
+			if !closedWritten {
+				closedWritten = true
+				_ = caught(func() { FsWriteFileSync(paths.Closed, []byte{}, &FileOptions{Mode: uint32Ptr(0o600)}) })
+			}
+		}
+	}()
 	if exists(paths.Closed) {
 		return
 	}
-	task := readTaskFile(paths)
+	task = readTaskFile(paths)
 	writeState(paths, taskState{ID: task.ID, Status: StatusRunning, ExitCode: nil, CreatedAt: task.CreatedAt, FinalizedAt: nil})
 
 	filter := NewOutputFilter()
@@ -852,11 +922,13 @@ func MonitorMain(dir string) {
 			if decision == "async" {
 				result = consumeOutput(paths, state)
 			}
+			frameAttempted = true
 			_ = caught(func() {
 				sendFrame(*callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, Token: callback.Token, Operation: "complete", ID: task.ID, Notify: decision == "async", Result: result})
 			})
 		}
 		FsWriteFileSync(paths.Closed, []byte{}, &FileOptions{Mode: uint32Ptr(0o600)})
+		closedWritten = true
 	}
 
 	for {

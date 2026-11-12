@@ -2,6 +2,7 @@ package asyncshell
 
 import (
 	"encoding/hex"
+	"math"
 	"regexp"
 	"strconv"
 )
@@ -19,6 +20,18 @@ func parseInt64(value string) (int64, error) { return strconv.ParseInt(value, 10
 func isSafeInteger(value int64) bool {
 	const max = int64(1) << 53
 	return value < max && value > -max
+}
+
+// parseFloatDigits is Number.parseInt's digit prefix, kept as a JS-number
+// (float64) so huge values overflow to +Inf instead of being silently clamped.
+func parseFloatDigits(value string) float64 {
+	parsed, _ := strconv.ParseFloat(value, 64)
+	return parsed
+}
+
+// isSafeIntegerFloat is Number.isSafeInteger on a JS number.
+func isSafeIntegerFloat(value float64) bool {
+	return !math.IsInf(value, 0) && !math.IsNaN(value) && math.Trunc(value) == value && math.Abs(value) <= 9007199254740991
 }
 
 func int64Ptr(value int64) *int64  { return &value }

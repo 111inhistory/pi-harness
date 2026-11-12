@@ -24,6 +24,9 @@ const (
 )
 
 // ShellResult is TS `interface ShellResult`.
+// TODO(harness-protocol): the reference shape has no error/reason field, so a
+// task failure is distinguishable only by status + exitCode + output.log text.
+// See the monitor panic TODO in tmux.go before extending this wire type.
 type ShellResult struct {
 	ID        string      `json:"id"`
 	Status    ShellStatus `json:"status"`

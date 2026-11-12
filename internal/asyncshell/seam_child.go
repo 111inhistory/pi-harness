@@ -33,6 +33,11 @@ func SpawnSync(command string, args []string, options *SpawnOptions) SpawnResult
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	result := SpawnResult{Stdout: stdout.String(), Stderr: stderr.String()}
+	// Node spawnSync reports a timeout as an ETIMEDOUT error with no status.
+	if ctx.Err() == context.DeadlineExceeded {
+		result.Error = coded(ctx.Err(), "ETIMEDOUT")
+		return result
+	}
 	if err == nil {
 		code := 0
 		result.Status = &code

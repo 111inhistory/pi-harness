@@ -36,12 +36,12 @@ func ParseDuration(value *string) int64 {
 	if match == nil {
 		panic(NewAsyncShellError("invalid_duration", "Not a duration: "+*value))
 	}
-	amount, _ := parseInt64(match[1])
+	amount := parseFloatDigits(match[1])
 	unit := "ms"
 	if match[2] != "" {
 		unit = match[2]
 	}
-	var factor int64
+	var factor float64
 	switch unit {
 	case "ms":
 		factor = 1
@@ -53,10 +53,10 @@ func ParseDuration(value *string) int64 {
 		factor = 3600000
 	}
 	total := amount * factor
-	if !isSafeInteger(total) || total < 0 {
+	if !isSafeIntegerFloat(total) || total < 0 {
 		panic(NewAsyncShellError("invalid_duration", "Not a duration: "+*value))
 	}
-	return total
+	return int64(total)
 }
 
 // parseCursor is TS parseCursor (not exported in TS).
@@ -280,29 +280,32 @@ func Main(fullArgv []string) int {
 		argv = fullArgv[1:]
 	}
 	internal := len(argv) > 0 && (argv[0] == "__run" || argv[0] == "__monitor")
-	code := 0
+	exitCode := 0
 	func() {
 		defer func() {
-			if recovered := recover(); recovered != nil {
-				err, ok := recovered.(*AsyncShellError)
-				if !ok {
-					panic(recovered)
-				}
-				message := err.Message
-				if internal {
-					ProcessStderrWrite("pi-job: " + message + "\n")
-				} else {
-					var usage *string
-					if _, isUsage := usageErrors[err.Code]; isUsage {
-						u := Usage
-						usage = &u
-					}
-					ProcessStderrWrite(FormatError(message, usage))
-				}
-				code = 1
+			recovered := recover()
+			if recovered == nil {
+				return
 			}
+			errorCode := "internal_error"
+			message := "internal error: " + messageOf(recovered)
+			if err, ok := recovered.(*AsyncShellError); ok {
+				errorCode = err.Code
+				message = err.Message
+			}
+			if internal {
+				ProcessStderrWrite("pi-job: " + message + "\n")
+			} else {
+				var usage *string
+				if _, isUsage := usageErrors[errorCode]; isUsage {
+					u := Usage
+					usage = &u
+				}
+				ProcessStderrWrite(FormatError(message, usage))
+			}
+			exitCode = 1
 		}()
 		run(argv)
 	}()
-	return code
+	return exitCode
 }
