@@ -146,15 +146,19 @@ func taskDirectory(id string, root string) string {
 }
 
 // checkedTaskDirectory is TS checkedTaskDirectory: only <root>/<id> is accepted.
-func checkedTaskDirectory(dir string, root string) string {
+func checkedTaskDirectory(dir string, root string) (string, error) {
 	resolved, err := filepath.Abs(dir)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
-	if !samePath(filepath.Dir(resolved), root) || !IsTaskID(filepath.Base(resolved)) {
-		panic(aserr.New("invalid_directory", "Not an async-shell task directory under "+root+": "+dir))
+	same, err := samePath(filepath.Dir(resolved), root)
+	if err != nil {
+		return "", err
 	}
-	return resolved
+	if !same || !IsTaskID(filepath.Base(resolved)) {
+		return "", aserr.New("invalid_directory", "Not an async-shell task directory under "+root+": "+dir)
+	}
+	return resolved, nil
 }
 
 func taskPaths(dir string) TaskPaths {
@@ -672,7 +676,11 @@ func cancelTask(dir string, rootArg ...string) {
 	} else {
 		root = StateRoot()
 	}
-	paths := taskPaths(checkedTaskDirectory(dir, root))
+	checked, checkErr := checkedTaskDirectory(dir, root)
+	if checkErr != nil {
+		panic(checkErr)
+	}
+	paths := taskPaths(checked)
 	if exists(paths.Closed) {
 		return
 	}

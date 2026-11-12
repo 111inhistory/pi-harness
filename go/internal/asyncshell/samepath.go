@@ -1,26 +1,30 @@
 package asyncshell
 
 import (
+	"fmt"
 	"os"
-	"path/filepath"
 )
 
-// samePath reports whether both paths name the same directory.
+// samePath reports whether two existing paths name the same directory.
 //
-// File identity decides when both exist: Windows can be case-sensitive per
-// directory or SMB share, so folding case is not a valid equivalence rule, and
-// Unicode case folding is not the filesystem's ordinal comparison anyway.
-// A missing path cannot be compared by identity; it falls back to an exact
-// cleaned-string comparison, never a case-folded one.
+// The cancellation root and the task directory both exist by the time this
+// check runs; file identity is the only reliable answer on Windows, where a
+// directory (or share) may be case-sensitive and a lexical lowercase comparison
+// can equate distinct entries. A failed inspection is therefore returned as an
+// error instead of being replaced by a cleaned-string fallback: missing,
+// inaccessible and identity-unknown paths are different failures.
 //
 // This is filesystem identity only. A Named Pipe address is a kernel object
 // name (case-insensitive), not a filesystem path; compare pipes in the IPC
 // adapter, never here.
-func samePath(left string, right string) bool {
-	leftInfo, leftErr := os.Stat(left)
-	rightInfo, rightErr := os.Stat(right)
-	if leftErr == nil && rightErr == nil {
-		return os.SameFile(leftInfo, rightInfo)
+func samePath(left string, right string) (bool, error) {
+	leftInfo, err := os.Stat(left)
+	if err != nil {
+		return false, fmt.Errorf("cannot inspect directory %s: %w", left, err)
 	}
-	return filepath.Clean(left) == filepath.Clean(right)
+	rightInfo, err := os.Stat(right)
+	if err != nil {
+		return false, fmt.Errorf("cannot inspect directory %s: %w", right, err)
+	}
+	return os.SameFile(leftInfo, rightInfo), nil
 }
