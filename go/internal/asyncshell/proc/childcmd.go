@@ -2,11 +2,11 @@ package proc
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
 	"pijob/internal/asyncshell/aserr"
-	"pijob/internal/asyncshell/win32path"
 )
 
 // DefaultPathext is TS DEFAULT_PATHEXT.
@@ -89,7 +89,7 @@ func ChildCommandFor(argv []string, platform string, env map[string]string, cwd 
 	for _, arg := range rest {
 		if strings.ContainsAny(arg, "\r\n") {
 			return ChildCommand{}, aserr.New("unsupported_script_argument",
-				"Cannot pass a line break to "+win32path.Basename(resolved)+": cmd.exe treats it as a command separator.")
+				"Cannot pass a line break to "+filepath.Base(resolved)+": cmd.exe treats it as a command separator.")
 		}
 	}
 	parts := make([]string, 0, len(rest)+1)
@@ -105,19 +105,18 @@ func ChildCommandFor(argv []string, platform string, env map[string]string, cwd 
 	return ChildCommand{File: comspec, Args: []string{"/d", "/s", "/c", line}, Verbatim: true}, nil
 }
 
-// resolveWindowsExecutable is TS resolveWindowsExecutable: find the file the command
-// would run, honouring PATHEXT (uses path.win32 + fs.existsSync seams).
+// resolveWindowsExecutable finds the file the command would run, honouring PATHEXT.
 func resolveWindowsExecutable(file string, env map[string]string, cwd string) string {
 	hasDirectory := strings.ContainsAny(file, `\/`)
 	var absolute string
 	if hasDirectory {
-		absolute = win32path.Resolve(cwd, file)
+		absolute = resolveFrom(cwd, file)
 	} else {
 		absolute = file
 	}
-	basename := win32path.Basename(absolute)
+	basename := filepath.Base(absolute)
 	var names []string
-	if win32path.Extname(basename) == "" {
+	if filepath.Ext(basename) == "" {
 		pathext := DefaultPathext
 		if v, ok := envValue(env, "PATHEXT"); ok {
 			pathext = v
@@ -134,7 +133,7 @@ func resolveWindowsExecutable(file string, env map[string]string, cwd string) st
 	}
 	var directories []string
 	if hasDirectory {
-		directories = []string{win32path.Dirname(absolute)}
+		directories = []string{filepath.Dir(absolute)}
 	} else {
 		directories = append(directories, cwd)
 		if p, ok := envValue(env, "PATH"); ok {
@@ -148,7 +147,7 @@ func resolveWindowsExecutable(file string, env map[string]string, cwd string) st
 	}
 	for _, directory := range directories {
 		for _, name := range names {
-			candidate := win32path.Join(directory, name)
+			candidate := filepath.Join(directory, name)
 			if fileExists(candidate) {
 				return candidate
 			}
@@ -160,4 +159,11 @@ func resolveWindowsExecutable(file string, env map[string]string, cwd string) st
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func resolveFrom(cwd string, file string) string {
+	if filepath.IsAbs(file) {
+		return filepath.Clean(file)
+	}
+	return filepath.Clean(filepath.Join(cwd, file))
 }
