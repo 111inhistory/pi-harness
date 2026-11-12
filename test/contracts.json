@@ -100,7 +100,6 @@
       "tests": [
         "test/typed/capability-broker.test.ts",
         "test/typed/capability-agent.test.ts",
-        "test/typed/capability-step-contract.test.ts",
         "test/capability-skills.test.mjs"
       ]
     },
@@ -120,7 +119,6 @@
       "tests": [
         "test/typed/capability-result.test.ts",
         "test/typed/capability-prompt.test.ts",
-        "test/typed/capability-prompts.test.ts",
         "test/typed/capability-guidance-journal.test.ts"
       ]
     },
@@ -719,7 +717,6 @@
         }
       ],
       "tests": [
-        "test/typed/subagent-tool-policy.test.ts",
         "test/typed/subagent-prompt.test.ts"
       ]
     },
@@ -954,6 +951,16 @@
     }
   ],
   "reviews": {
+    "subagent.storage": {
+      "docs": "ceb6ccfa2ed6c2a112590a5b98785d1c10b4c4ada2f93f44f2821b13b04f35e8",
+      "tests": "f4f60b06bcab48b7fcc678ac17220e89af88b5e2c2920626c59d50c975c82591",
+      "reason": "Delete basic append and field-copy examples duplicated by actual provider payload and inherited SDK tests. Native removal preservation and executable-handle stripping at capture remain. Storage behavior is unchanged."
+    },
+    "subagent.tool-policy": {
+      "docs": "96d59f1f0a09438d172a789201d431ce0174d6029868e9ffb143dee9a5ca9453",
+      "tests": "2fa927941a56f6147b0a4a5e67162c77cf2288e5e19d5dfcc1682bcd7083655d",
+      "reason": "Delete internal tool-policy catalogue and simple prompt/default copies. Surface and native factory tests retain depth and backend transplantability behavior; literal substitution and prompt block ordering stay. No product behavior changes."
+    },
     "provider.transport-tools": {
       "docs": "d2668574f48a8012451c58c685cb80b9732c43d0ec7d00f192b68a88bc89a42d",
       "tests": "b5d2e1dac2d199cd13bb860b10fbc1320f2153895d55bb8f6c721aec05c1e1c5",
@@ -961,13 +968,13 @@
     },
     "capability.search-broker": {
       "docs": "221b5978ff4ff74346731b8f04829f59b4db813f88736ba9d6cb774f2feddb3d",
-      "tests": "ef10565155f435f70a3ee8e41aae0e360123fd16874d282202e9dee04cbb8b7f",
-      "reason": "The agent/step merge retains all 27 scenarios and 165 assertions under one scripted lifecycle; schema and real-SDK units remain separate. The broker concurrency scenario additionally observes all sources before any completes, with a failing serial control. The existing behavior contract is unchanged."
+      "tests": "be5607af3fdd9f6dbc1906ff9e60ab3b74b70909d39200f570839d41f66a076c",
+      "reason": "Delete schema and asset equality pins. Real retrieval SDK, broker and history-model tests retain search and incremental submission behavior. No public contract changes."
     },
     "capability.result-projection": {
       "docs": "8d9764a793666840fba8a4a2073bd3bb602febc2d2978d854671962ab3e8ba8f",
-      "tests": "cfd49a2ec98c4657cc70c925a20e16637feda48d106bd405d5f234d71959bd00",
-      "reason": "Restore diagnostic ranking fields on the shared namespace input so the original recursive public-result stripping assertion still detects outer-group leakage. All ten projection and memory scenarios remain; the documented behavior is unchanged."
+      "tests": "f91379711657b88d570f4a08cad24c88135e77b47e3bc1340aa5dcbb9bc914cb",
+      "reason": "Delete asset-copy assertions that restate prompt loading. Result filtering, namespace guidance and real SDK projection tests remain. No public contract changes."
     },
     "async-shell.tasks": {
       "docs": "a79679278808e0384b27c839cdcc6cf11ce8f1bcf92a9278dec13ab2d11c9f7a",
@@ -976,8 +983,8 @@
     },
     "capability.provider-prefix": {
       "docs": "d2668574f48a8012451c58c685cb80b9732c43d0ec7d00f192b68a88bc89a42d",
-      "tests": "15d9ebd5cf1ef1c27cc569855bca555fc9b488b2ed34e4c75dedaf29de7f87a3",
-      "reason": "Clarify activation-independent sanitation of description-only duplicates. The existing generated Capability history regression disable/describe/enable now passes without changing its commands or assertions; existing provider-prefix and transport tests also pass. No transport flags or execution permissions change, so their test files need no artificial edits."
+      "tests": "e0c393049f0456b8669950517349a3d9fd7fde507b49f48a7ff091c04b4d66cc",
+      "reason": "Delete duplicate Responses declaration examples and compat checks. Real outbound provider adapter tests and generated Capability histories remain; retrieval isolation and model-result compaction tests stay. No cache guarantee changes."
     },
     "ipc.transport": {
       "docs": "3d760ad11a8df876ab92a28a402c111fa1a1ec2230e00588a5d4aff051d4d5b5",
