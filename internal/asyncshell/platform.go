@@ -71,12 +71,12 @@ func PasteLiteral(client ControlClient, dir string, input string, target string)
 // SelfArgv is TS selfArgv adapted to a single native binary: the pane re-runs
 // this executable in an internal mode. Node's `execPath + execArgv + script`
 // shape does not exist in Go, so the binary is its own entry point.
-func SelfArgv(dir string, mode string) []string {
+func SelfArgv(dir string, mode string) ([]string, error) {
 	executable, err := os.Executable()
 	if err != nil || executable == "" {
-		panic(NewAsyncShellError("self_unresolved", "The async-shell CLI cannot locate its own entry point."))
+		return nil, NewAsyncShellError("self_unresolved", "The async-shell CLI cannot locate its own entry point.")
 	}
-	return []string{executable, mode, dir}
+	return []string{executable, mode, dir}, nil
 }
 
 // DefaultPathext is TS DEFAULT_PATHEXT.
@@ -140,26 +140,26 @@ func envValue(env map[string]string, name string) (string, bool) {
 }
 
 // ChildCommandFor is TS childCommand: resolve a task's argv into something a pane can execute.
-func ChildCommandFor(argv []string, platform string, env map[string]string, cwd string) ChildCommand {
+func ChildCommandFor(argv []string, platform string, env map[string]string, cwd string) (ChildCommand, error) {
 	var file string
 	if len(argv) > 0 {
 		file = argv[0]
 	}
 	if file == "" {
-		panic(NewAsyncShellError("invalid_command_args", "create requires a command."))
+		return ChildCommand{}, NewAsyncShellError("invalid_command_args", "create requires a command.")
 	}
 	rest := argv[1:]
 	if platform != "win32" {
-		return ChildCommand{File: file, Args: rest, Verbatim: false}
+		return ChildCommand{File: file, Args: rest, Verbatim: false}, nil
 	}
 	resolved := resolveWindowsExecutable(file, env, cwd)
 	if !regexp.MustCompile(`(?i)\.(bat|cmd)$`).MatchString(resolved) {
-		return ChildCommand{File: resolved, Args: rest, Verbatim: false}
+		return ChildCommand{File: resolved, Args: rest, Verbatim: false}, nil
 	}
 	for _, arg := range rest {
 		if strings.ContainsAny(arg, "\r\n") {
-			panic(NewAsyncShellError("unsupported_script_argument",
-				"Cannot pass a line break to "+Win32PathBasename(resolved)+": cmd.exe treats it as a command separator."))
+			return ChildCommand{}, NewAsyncShellError("unsupported_script_argument",
+				"Cannot pass a line break to "+Win32PathBasename(resolved)+": cmd.exe treats it as a command separator.")
 		}
 	}
 	parts := make([]string, 0, len(rest)+1)
@@ -172,7 +172,7 @@ func ChildCommandFor(argv []string, platform string, env map[string]string, cwd 
 	if !ok {
 		comspec = "cmd.exe"
 	}
-	return ChildCommand{File: comspec, Args: []string{"/d", "/s", "/c", line}, Verbatim: true}
+	return ChildCommand{File: comspec, Args: []string{"/d", "/s", "/c", line}, Verbatim: true}, nil
 }
 
 // resolveWindowsExecutable is TS resolveWindowsExecutable: find the file the command

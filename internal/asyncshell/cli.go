@@ -8,10 +8,9 @@ import (
 
 // cli.go translates src/async-shell/cli.ts.
 //
-// The TS module throws AsyncShellError and relies on a try/catch in main(); the
-// literal Go translation keeps throw sites as panic(AsyncShellError) and catches
-// them with one defer/recover at the Main boundary, preserving the error/catch
-// placement and control flow of the source.
+// Handle-able failures are returned as errors here. The engine still reports a
+// few invalid states with panic; `run` is the one boundary that converts any
+// escaped panic into an error, so the CLI surface never crashes with a stack.
 
 // Usage is TS USAGE.
 var Usage = strings.Join([]string{
@@ -32,13 +31,13 @@ var usageErrors = map[string]struct{}{
 const DefaultWaitMs = 5000
 
 // ParseDuration is TS parseDuration.
-func ParseDuration(value *string) int64 {
+func ParseDuration(value *string) (int64, error) {
 	if value == nil {
-		panic(NewAsyncShellError("invalid_duration", "A duration value is required."))
+		return 0, NewAsyncShellError("invalid_duration", "A duration value is required.")
 	}
 	match := durationPattern.FindStringSubmatch(*value)
 	if match == nil {
-		panic(NewAsyncShellError("invalid_duration", "Not a duration: "+*value))
+		return 0, NewAsyncShellError("invalid_duration", "Not a duration: "+*value)
 	}
 	amount := parseFloatDigits(match[1])
 	unit := "ms"
@@ -58,21 +57,21 @@ func ParseDuration(value *string) int64 {
 	}
 	total := amount * factor
 	if !isSafeIntegerFloat(total) || total < 0 {
-		panic(NewAsyncShellError("invalid_duration", "Not a duration: "+*value))
+		return 0, NewAsyncShellError("invalid_duration", "Not a duration: "+*value)
 	}
-	return int64(total)
+	return int64(total), nil
 }
 
 // parseCursor is TS parseCursor (not exported in TS).
-func parseCursor(value *string) *int64 {
+func parseCursor(value *string) (*int64, error) {
 	if value == nil {
-		return nil
+		return nil, nil
 	}
 	if !cursorPattern.MatchString(*value) {
-		panic(NewAsyncShellError("invalid_cursor", "Not a byte cursor: "+*value))
+		return nil, NewAsyncShellError("invalid_cursor", "Not a byte cursor: "+*value)
 	}
 	n, _ := parseInt64(*value)
-	return &n
+	return &n, nil
 }
 
 // CreateArgs is TS CreateArgs.
@@ -84,12 +83,12 @@ type CreateArgs struct {
 }
 
 // ParseCreateArgs is TS parseCreateArgs.
-func ParseCreateArgs(tokens []string) CreateArgs {
+func ParseCreateArgs(tokens []string) (CreateArgs, error) {
 	waitMs := int64(DefaultWaitMs)
 	var timeoutMs *int64
 	cwd, err := os.Getwd()
 	if err != nil {
-		panic(err)
+		return CreateArgs{}, err
 	}
 	index := 0
 	for ; index < len(tokens); index++ {
@@ -107,14 +106,21 @@ func ParseCreateArgs(tokens []string) CreateArgs {
 			if index+1 < len(tokens) {
 				next = &tokens[index+1]
 			}
-			waitMs = ParseDuration(next)
+			waitMs, err = ParseDuration(next)
+			if err != nil {
+				return CreateArgs{}, err
+			}
 			index++
 		case "--timeout":
 			var next *string
 			if index+1 < len(tokens) {
 				next = &tokens[index+1]
 			}
-			timeoutMs = int64Ptr(ParseDuration(next))
+			duration, err := ParseDuration(next)
+			if err != nil {
+				return CreateArgs{}, err
+			}
+			timeoutMs = &duration
 			index++
 		case "--cwd":
 			value := ""
@@ -122,39 +128,46 @@ func ParseCreateArgs(tokens []string) CreateArgs {
 				value = tokens[index+1]
 			}
 			if value == "" {
-				panic(NewAsyncShellError("invalid_command_args", "--cwd requires a directory."))
+				return CreateArgs{}, NewAsyncShellError("invalid_command_args", "--cwd requires a directory.")
 			}
 			cwd = value
 			index++
 		default:
-			panic(NewAsyncShellError("invalid_command_args", "Unknown create option: "+token))
+			return CreateArgs{}, NewAsyncShellError("invalid_command_args", "Unknown create option: "+token)
 		}
 	}
 	argv := tokens[index:]
 	if len(argv) == 0 {
-		panic(NewAsyncShellError("invalid_command_args", "create requires a command after --."))
+		return CreateArgs{}, NewAsyncShellError("invalid_command_args", "create requires a command after --.")
 	}
-	return CreateArgs{Argv: argv, Cwd: cwd, WaitMs: waitMs, TimeoutMs: timeoutMs}
+	return CreateArgs{Argv: argv, Cwd: cwd, WaitMs: waitMs, TimeoutMs: timeoutMs}, nil
 }
 
 // readStdin is TS readStdin: all of stdin, byte for byte, bounded while reading.
-func readStdin(maxBytes int) string {
+func readStdin(maxBytes int) (string, error) {
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
 	if len(data) > maxBytes {
-		panic(NewAsyncShellError("input_too_large", "Input must not exceed "+formatInt(maxBytes)+" bytes."))
+		return "", NewAsyncShellError("input_too_large", "Input must not exceed "+formatInt(maxBytes)+" bytes.")
 	}
-	return string(data)
+	return string(data), nil
 }
 
-func report(result ShellResult) {
-	os.Stdout.WriteString(FormatResult(result))
+func report(result ShellResult) error {
+	_, err := os.Stdout.WriteString(FormatResult(result))
+	return err
 }
 
-// run is TS run(): dispatch one verb. Errors are panicked (TS: thrown).
-func run(argv []string) {
+// run is TS run(): dispatch one verb. Handle-able failures return an error; an
+// escaped engine panic is converted at this single boundary.
+func run(argv []string) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = asError(recovered)
+		}
+	}()
 	var verb string
 	var rest []string
 	if len(argv) > 0 {
@@ -163,26 +176,63 @@ func run(argv []string) {
 	}
 	switch verb {
 	case "create":
-		parsed := ParseCreateArgs(rest)
+		parsed, parseErr := ParseCreateArgs(rest)
+		if parseErr != nil {
+			return parseErr
+		}
 		options := CreateTaskOptions{
 			Argv: parsed.Argv, Cwd: parsed.Cwd, TimeoutMs: parsed.TimeoutMs, WaitMs: parsed.WaitMs,
 			Callback: CallbackFromEnv(),
 		}
-		report(CreateTask(options))
+		result, taskErr := CreateTask(options)
+		if taskErr != nil {
+			return taskErr
+		}
+		return report(result)
 	case "poll":
 		id := ""
 		if len(rest) > 0 {
 			id = rest[0]
 		}
-		cursor := readCursorOption(rest[1:])
-		report(PollTask(TaskDirectory(requireId(id, "poll"), StateRoot()), cursor))
+		cursor, cursorErr := readCursorOption(rest[1:])
+		if cursorErr != nil {
+			return cursorErr
+		}
+		taskID, idErr := requireId(id, "poll")
+		if idErr != nil {
+			return idErr
+		}
+		dir, dirErr := TaskDirectory(taskID, StateRoot())
+		if dirErr != nil {
+			return dirErr
+		}
+		result, taskErr := PollTask(dir, cursor)
+		if taskErr != nil {
+			return taskErr
+		}
+		return report(result)
 	case "read":
 		id := ""
 		if len(rest) > 0 {
 			id = rest[0]
 		}
-		cursor := readCursorOption(rest[1:])
-		report(ReadTask(TaskDirectory(requireId(id, "read"), StateRoot()), cursor))
+		cursor, cursorErr := readCursorOption(rest[1:])
+		if cursorErr != nil {
+			return cursorErr
+		}
+		taskID, idErr := requireId(id, "read")
+		if idErr != nil {
+			return idErr
+		}
+		dir, dirErr := TaskDirectory(taskID, StateRoot())
+		if dirErr != nil {
+			return dirErr
+		}
+		result, taskErr := ReadTask(dir, cursor)
+		if taskErr != nil {
+			return taskErr
+		}
+		return report(result)
 	case "send":
 		enter := false
 		var positional []string
@@ -195,16 +245,32 @@ func run(argv []string) {
 		}
 		for _, token := range positional {
 			if strings.HasPrefix(token, "-") {
-				panic(NewAsyncShellError("invalid_command_args", "Unknown send option: "+token))
+				return NewAsyncShellError("invalid_command_args", "Unknown send option: "+token)
 			}
 		}
 		if len(positional) != 1 {
-			panic(NewAsyncShellError("invalid_command_args", "send takes one task id."))
+			return NewAsyncShellError("invalid_command_args", "send takes one task id.")
 		}
-		dir := TaskDirectory(requireId(positional[0], "send"), StateRoot())
-		input := readStdin(MaxSendBytes)
-		SendInput(dir, input, enter)
-		report(PollTask(dir, nil))
+		taskID, idErr := requireId(positional[0], "send")
+		if idErr != nil {
+			return idErr
+		}
+		dir, dirErr := TaskDirectory(taskID, StateRoot())
+		if dirErr != nil {
+			return dirErr
+		}
+		input, stdinErr := readStdin(MaxSendBytes)
+		if stdinErr != nil {
+			return stdinErr
+		}
+		if err := SendInput(dir, input, enter); err != nil {
+			return err
+		}
+		result, taskErr := PollTask(dir, nil)
+		if taskErr != nil {
+			return taskErr
+		}
+		return report(result)
 	case "key":
 		var id, key string
 		var extra []string
@@ -218,14 +284,27 @@ func run(argv []string) {
 			extra = rest[2:]
 		}
 		if len(extra) != 0 {
-			panic(NewAsyncShellError("invalid_command_args", "key takes one task id and one key name."))
+			return NewAsyncShellError("invalid_command_args", "key takes one task id and one key name.")
 		}
-		dir := TaskDirectory(requireId(id, "key"), StateRoot())
+		taskID, idErr := requireId(id, "key")
+		if idErr != nil {
+			return idErr
+		}
+		dir, dirErr := TaskDirectory(taskID, StateRoot())
+		if dirErr != nil {
+			return dirErr
+		}
 		if key == "" {
-			panic(NewAsyncShellError("invalid_command_args", "key requires a key name."))
+			return NewAsyncShellError("invalid_command_args", "key requires a key name.")
 		}
-		SendKey(dir, key)
-		report(PollTask(dir, nil))
+		if err := SendKey(dir, key); err != nil {
+			return err
+		}
+		result, taskErr := PollTask(dir, nil)
+		if taskErr != nil {
+			return taskErr
+		}
+		return report(result)
 	case "cancel":
 		var id string
 		var extra []string
@@ -236,83 +315,107 @@ func run(argv []string) {
 			extra = rest[1:]
 		}
 		if len(extra) != 0 {
-			panic(NewAsyncShellError("invalid_command_args", "cancel takes one task id."))
+			return NewAsyncShellError("invalid_command_args", "cancel takes one task id.")
 		}
-		dir := TaskDirectory(requireId(id, "cancel"), StateRoot())
-		CancelTask(dir)
-		report(PollTask(dir, nil))
+		taskID, idErr := requireId(id, "cancel")
+		if idErr != nil {
+			return idErr
+		}
+		dir, dirErr := TaskDirectory(taskID, StateRoot())
+		if dirErr != nil {
+			return dirErr
+		}
+		if err := CancelTask(dir); err != nil {
+			return err
+		}
+		result, taskErr := PollTask(dir, nil)
+		if taskErr != nil {
+			return taskErr
+		}
+		return report(result)
 	case "__run":
-		os.Exit(RunnerMain(requireDirectory(rest)))
+		directory, dirErr := requireDirectory(rest)
+		if dirErr != nil {
+			return dirErr
+		}
+		os.Exit(RunnerMain(directory))
+		return nil
 	case "__monitor":
-		MonitorMain(requireDirectory(rest))
+		directory, dirErr := requireDirectory(rest)
+		if dirErr != nil {
+			return dirErr
+		}
+		MonitorMain(directory)
+		return nil
 	default:
-		panic(NewAsyncShellError("invalid_command_args", Usage))
+		return NewAsyncShellError("invalid_command_args", Usage)
 	}
 }
 
-func requireId(value string, verb string) string {
+func requireId(value string, verb string) (string, error) {
 	if value == "" {
-		panic(NewAsyncShellError("invalid_command_args", verb+" requires a task id."))
+		return "", NewAsyncShellError("invalid_command_args", verb+" requires a task id.")
 	}
-	return value
+	return value, nil
 }
 
-func requireDirectory(rest []string) string {
+func requireDirectory(rest []string) (string, error) {
 	value := ""
 	if len(rest) > 0 {
 		value = rest[0]
 	}
 	if value == "" {
-		panic(NewAsyncShellError("invalid_command_args", "Internal mode requires a task directory."))
+		return "", NewAsyncShellError("invalid_command_args", "Internal mode requires a task directory.")
 	}
-	return value
+	return value, nil
 }
 
-func readCursorOption(options []string) *int64 {
+func readCursorOption(options []string) (*int64, error) {
 	if len(options) == 0 {
-		return nil
+		return nil, nil
 	}
 	if len(options) == 2 && options[0] == "--cursor" {
 		return parseCursor(&options[1])
 	}
-	panic(NewAsyncShellError("invalid_command_args", "Unknown option: "+options[0]))
+	return nil, NewAsyncShellError("invalid_command_args", "Unknown option: "+options[0])
 }
 
 // Main is TS main(): Node's argv is [execPath, script, ...]; Go's is
-// [executable, ...], so the verb starts at argv[1] here. The rest of the
-// dispatch and the try/catch boundary are unchanged.
-func Main(fullArgv []string) int {
+// [executable, ...], so the verb starts at argv[1] here.
+func Main(fullArgv []string) (exitCode int) {
 	var argv []string
 	if len(fullArgv) > 1 {
 		argv = fullArgv[1:]
 	}
 	internal := len(argv) > 0 && (argv[0] == "__run" || argv[0] == "__monitor")
-	exitCode := 0
-	func() {
-		defer func() {
-			recovered := recover()
-			if recovered == nil {
-				return
-			}
-			errorCode := "internal_error"
-			message := "internal error: " + messageOf(recovered)
-			if err, ok := recovered.(*AsyncShellError); ok {
-				errorCode = err.Code
-				message = err.Message
-			}
-			if internal {
-				os.Stderr.WriteString("pi-job: " + message + "\n")
-			} else {
-				var usage *string
-				if _, isUsage := usageErrors[errorCode]; isUsage {
-					u := Usage
-					usage = &u
-				}
-				os.Stderr.WriteString(FormatError(message, usage))
-			}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			writeMainError(internal, asError(recovered))
 			exitCode = 1
-		}()
-		run(argv)
+		}
 	}()
-	return exitCode
+	if err := run(argv); err != nil {
+		writeMainError(internal, err)
+		return 1
+	}
+	return 0
+}
+
+func writeMainError(internal bool, err error) {
+	errorCode := "internal_error"
+	message := err.Error()
+	if typed, ok := err.(*AsyncShellError); ok {
+		errorCode = typed.Code
+		message = typed.Message
+	}
+	if internal {
+		os.Stderr.WriteString("pi-job: " + message + "\n")
+		return
+	}
+	var usage *string
+	if _, isUsage := usageErrors[errorCode]; isUsage {
+		u := Usage
+		usage = &u
+	}
+	os.Stderr.WriteString(FormatError(message, usage))
 }

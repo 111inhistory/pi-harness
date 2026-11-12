@@ -73,18 +73,18 @@ func runCommand(command string, args []string, options commandOptions) commandRe
 }
 
 // startDetached starts the per-task monitor in its own session/process group.
-func startDetached(command string, args []string, env map[string]string) *int {
+func startDetached(command string, args []string, env map[string]string) (*int, error) {
 	cmd := exec.Command(command, args...)
 	if env != nil {
 		cmd.Env = envSlice(env)
 	}
 	applyDetached(cmd)
 	if err := cmd.Start(); err != nil {
-		panic(err)
+		return nil, err
 	}
 	pid := cmd.Process.Pid
 	_ = cmd.Process.Release()
-	return &pid
+	return &pid, nil
 }
 
 func envSlice(env map[string]string) []string {
