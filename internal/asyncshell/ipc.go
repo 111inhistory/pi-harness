@@ -8,12 +8,12 @@ import (
 	"time"
 )
 
-// seam_ipc.go implements the IPC write used for register/complete frames.
+// ipc.go implements the NDJSON frame write used for register/complete.
 
 const socketWriteTimeout = 5 * time.Second
 
-// WriteSocket is writeSocket(socketPath, payload): NDJSON out, acknowledgements back.
-func WriteSocket(socketPath string, payload interface{}) error {
+// writeSocket sends NDJSON and waits for the receiver's acknowledgements.
+func writeSocket(socketPath string, payload interface{}) error {
 	text := ""
 	if value, ok := payload.(string); ok {
 		text = value

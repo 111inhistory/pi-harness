@@ -10,8 +10,7 @@ import (
 )
 
 // platform_posix.go translates src/async-shell/platform-posix.ts (+ the POSIX half
-// of platform.ts). Control commands and process probes go through the SpawnSync
-// seam; this mirrors the TS call sites literally.
+// of platform.ts). Control commands and process probes use os/exec.
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
@@ -36,13 +35,11 @@ func (PosixBackend) Kind() string { return "posix" }
 func (PosixBackend) Run(dir string, args []string, stdin *string) CommandResult {
 	full := append([]string{"-S", socketOf(dir)}, args...)
 	timeout := ControlTimeoutMs
-	encoding := "utf8"
-	options := &SpawnOptions{Encoding: &encoding, TimeoutMs: &timeout, Input: stdin}
-	result := SpawnSync("tmux", full, options)
+	result := runCommand("tmux", full, commandOptions{TimeoutMs: &timeout, Input: stdin})
 	if result.Error != nil {
 		panic(NewAsyncShellError("tmux_unavailable", describePosix(result.Error)))
 	}
-	return CommandResult{Code: result.Status, Stdout: result.Stdout, Stderr: result.Stderr}
+	return CommandResult{Code: result.Code, Stdout: result.Stdout, Stderr: result.Stderr}
 }
 
 func (PosixBackend) RunOk(dir string, args []string, code string, stdin *string) CommandResult {
@@ -66,9 +63,8 @@ func (PosixBackend) AssertAvailable() {
 		panic(NewAsyncShellError("unsupported_platform", "The POSIX tmux backend is not available on Windows."))
 	}
 	timeout := ControlTimeoutMs
-	encoding := "utf8"
-	probe := SpawnSync("tmux", []string{"-V"}, &SpawnOptions{Encoding: &encoding, TimeoutMs: &timeout})
-	if probe.Error != nil || probe.Status == nil || *probe.Status != 0 {
+	probe := runCommand("tmux", []string{"-V"}, commandOptions{TimeoutMs: &timeout})
+	if probe.Error != nil || probe.Code == nil || *probe.Code != 0 {
 		panic(NewAsyncShellError("tmux_unavailable", "tmux is required for async shell tasks and was not found."))
 	}
 }
@@ -109,20 +105,19 @@ func (PosixBackend) PaneGone(dir string) bool {
 
 func (PosixBackend) OwnsProcess(pid int, marker string, dir string) bool {
 	timeout := ControlTimeoutMs
-	encoding := "utf8"
-	probe := SpawnSync("ps", []string{"-o", "command=", "-p", strconv.Itoa(pid)}, &SpawnOptions{Encoding: &encoding, TimeoutMs: &timeout})
+	probe := runCommand("ps", []string{"-o", "command=", "-p", strconv.Itoa(pid)}, commandOptions{TimeoutMs: &timeout})
 	if probe.Error != nil {
 		panic(NewAsyncShellError("process_inspection_failed", "Could not inspect pid "+strconv.Itoa(pid)+": "+describePosix(probe.Error)))
 	}
 	command := strings.TrimSpace(probe.Stdout)
-	if probe.Status == nil || *probe.Status != 0 {
+	if probe.Code == nil || *probe.Code != 0 {
 		// POSIX ps exits 1 with no output for a pid that does not exist.
-		if probe.Status != nil && *probe.Status == 1 && command == "" && strings.TrimSpace(probe.Stderr) == "" {
+		if probe.Code != nil && *probe.Code == 1 && command == "" && strings.TrimSpace(probe.Stderr) == "" {
 			return false
 		}
 		statusText := "unknown"
-		if probe.Status != nil {
-			statusText = strconv.Itoa(*probe.Status)
+		if probe.Code != nil {
+			statusText = strconv.Itoa(*probe.Code)
 		}
 		panic(NewAsyncShellError("process_inspection_failed", "Could not inspect pid "+strconv.Itoa(pid)+": ps exited "+statusText+" "+strings.TrimSpace(probe.Stderr)))
 	}

@@ -10,8 +10,7 @@ import (
 )
 
 // platform_windows.go translates src/async-shell/platform-windows.ts (+ the
-// Windows half of platform.ts). Control/process calls go through the SpawnSync
-// seam, mirroring the TS call sites literally.
+// Windows half of platform.ts). Control/process calls use os/exec.
 
 const psmuxBinary = "psmux.exe"
 
@@ -51,13 +50,11 @@ func (WindowsBackend) Kind() string { return "windows" }
 func (WindowsBackend) Run(dir string, args []string, stdin *string) CommandResult {
 	full := append([]string{"-L", labelOf(dir)}, args...)
 	timeout := ControlTimeoutMs
-	encoding := "utf8"
-	options := &SpawnOptions{Encoding: &encoding, TimeoutMs: &timeout, Input: stdin, WindowsHide: true}
-	result := SpawnSync(psmuxBinary, full, options)
+	result := runCommand(psmuxBinary, full, commandOptions{TimeoutMs: &timeout, Input: stdin, Hide: true})
 	if result.Error != nil {
 		panic(NewAsyncShellError("psmux_unavailable", describeWin(result.Error)))
 	}
-	return CommandResult{Code: result.Status, Stdout: result.Stdout, Stderr: result.Stderr}
+	return CommandResult{Code: result.Code, Stdout: result.Stdout, Stderr: result.Stderr}
 }
 
 func (WindowsBackend) RunOk(dir string, args []string, code string, stdin *string) CommandResult {
@@ -112,9 +109,8 @@ func (WindowsBackend) AssertAvailable() {
 		panic(NewAsyncShellError("unsupported_platform", "The psmux backend is only available on Windows."))
 	}
 	timeout := ControlTimeoutMs
-	encoding := "utf8"
-	probe := SpawnSync(psmuxBinary, []string{"-V"}, &SpawnOptions{Encoding: &encoding, TimeoutMs: &timeout, WindowsHide: true})
-	if probe.Error != nil || probe.Status == nil || *probe.Status != 0 {
+	probe := runCommand(psmuxBinary, []string{"-V"}, commandOptions{TimeoutMs: &timeout, Hide: true})
+	if probe.Error != nil || probe.Code == nil || *probe.Code != 0 {
 		panic(NewAsyncShellError("psmux_unavailable", "psmux 3.4.0 or newer is required for async shell tasks and was not found on PATH."))
 	}
 	version := parseVersion(probe.Stdout + "\n" + probe.Stderr)
@@ -170,8 +166,8 @@ func (WindowsBackend) PaneGone(dir string) bool {
 func shellForQuery() []string {
 	for _, candidate := range []string{"pwsh", "powershell"} {
 		timeout := 5000
-		probe := SpawnSync(candidate, []string{"-NoProfile", "-NonInteractive", "-Command", "exit 0"}, &SpawnOptions{TimeoutMs: &timeout, WindowsHide: true})
-		if probe.Error == nil && probe.Status != nil && *probe.Status == 0 {
+		probe := runCommand(candidate, []string{"-NoProfile", "-NonInteractive", "-Command", "exit 0"}, commandOptions{TimeoutMs: &timeout, Hide: true})
+		if probe.Error == nil && probe.Code != nil && *probe.Code == 0 {
 			return []string{candidate, "-NoProfile", "-NonInteractive", "-Command"}
 		}
 	}
@@ -193,15 +189,14 @@ func (WindowsBackend) OwnsProcess(pid int, marker string, dir string) bool {
 	}, "; ")
 	args := append(append([]string{}, shell[1:]...), script)
 	timeout := ownershipTimeoutMs
-	encoding := "utf8"
-	probe := SpawnSync(shell[0], args, &SpawnOptions{Encoding: &encoding, TimeoutMs: &timeout, WindowsHide: true})
+	probe := runCommand(shell[0], args, commandOptions{TimeoutMs: &timeout, Hide: true})
 	if probe.Error != nil {
 		panic(NewAsyncShellError("process_inspection_failed", "Could not inspect pid "+strconv.Itoa(pid)+": "+describeWin(probe.Error)))
 	}
-	if probe.Status == nil || *probe.Status != 0 {
+	if probe.Code == nil || *probe.Code != 0 {
 		statusText := "unknown"
-		if probe.Status != nil {
-			statusText = strconv.Itoa(*probe.Status)
+		if probe.Code != nil {
+			statusText = strconv.Itoa(*probe.Code)
 		}
 		panic(NewAsyncShellError("process_inspection_failed", "Could not inspect pid "+strconv.Itoa(pid)+": the process query exited "+statusText+" "+strings.TrimSpace(probe.Stderr)))
 	}

@@ -4,38 +4,14 @@ package asyncshell
 
 import (
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 )
 
-// signalFor maps a Node signal name to its POSIX signal.
-func signalFor(name string) os.Signal {
-	switch name {
-	case "SIGKILL":
-		return syscall.SIGKILL
-	case "SIGHUP":
-		return syscall.SIGHUP
-	case "SIGINT":
-		return syscall.SIGINT
-	default:
-		return syscall.SIGTERM
-	}
-}
+// proc_posix.go: process control primitives for POSIX.
 
-// detachedSysProcAttr starts the monitor in its own session.
-func detachedSysProcAttr() *syscall.SysProcAttr { return &syscall.SysProcAttr{Setsid: true} }
-
-// exitSignal is the terminating signal reported by ProcessState, if any.
-func exitSignal(state *os.ProcessState) *string {
-	if status, ok := state.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-		name := status.Signal().String()
-		return &name
-	}
-	return nil
-}
-
-// ProcessKill is process.kill(pid, signal); "" is the 0 liveness probe.
-func ProcessKill(pid int, signal string) error {
+func killProcess(pid int, signal string) error {
 	number := syscall.Signal(0)
 	switch signal {
 	case "":
@@ -55,22 +31,41 @@ func ProcessKill(pid int, signal string) error {
 	return nil
 }
 
-// ProcessOnSignal is process.on(signal, handler).
-func ProcessOnSignal(name string, handler func(signal string)) {
+func terminateSignal() os.Signal { return syscall.SIGTERM }
+
+func installStopHandlers(handler func(signal string)) {
 	channel := make(chan os.Signal, 1)
-	var target os.Signal
-	switch name {
-	case "SIGHUP":
-		target = syscall.SIGHUP
-	case "SIGINT":
-		target = syscall.SIGINT
-	default:
-		target = syscall.SIGTERM
-	}
-	signal.Notify(channel, target)
+	signal.Notify(channel, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
 	go func() {
-		for range channel {
+		for received := range channel {
+			name := "SIGTERM"
+			switch received {
+			case syscall.SIGHUP:
+				name = "SIGHUP"
+			case syscall.SIGINT:
+				name = "SIGINT"
+			}
 			handler(name)
 		}
 	}()
+}
+
+func applyDetached(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+}
+
+func applyVerbatim(cmd *exec.Cmd, file string, args []string) {}
+
+func applyHidden(cmd *exec.Cmd) {}
+
+func describeExit(state *os.ProcessState) (*int, *string) {
+	if status, ok := state.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		name := status.Signal().String()
+		return nil, &name
+	}
+	code := state.ExitCode()
+	if code >= 0 {
+		return &code, nil
+	}
+	return nil, nil
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -440,7 +441,7 @@ func sleep(ms int) {
 }
 
 func alive(pid int) bool {
-	err := ProcessKill(pid, "")
+	err := killProcess(pid, "")
 	if err == nil {
 		return true
 	}
@@ -486,7 +487,7 @@ func readDelivery(paths TaskPaths, timeoutMs int) string {
 }
 
 func sendFrame(target CallbackTarget, frame interface{}) {
-	if err := WriteSocket(target.Socket, frame); err != nil {
+	if err := writeSocket(target.Socket, frame); err != nil {
 		code := "callback_failed"
 		if errorCode(err) == "registration_rejected" {
 			code = "registration_rejected"
@@ -580,10 +581,9 @@ func CreateTask(options CreateTaskOptions) ShellResult {
 		if err != nil {
 			panic(err)
 		}
-		monitor := SpawnDetached(executable, monitorArgs, SpawnDetachedOptions{Detached: true, StdioIgnore: true})
-		monitor.Unref()
-		if monitor.Pid != nil {
-			writePrivateFile(paths.MonitorPid, []byte(strconv.Itoa(*monitor.Pid)+"\n"))
+		monitorPid := startDetached(executable, monitorArgs, nil)
+		if monitorPid != nil {
+			writePrivateFile(paths.MonitorPid, []byte(strconv.Itoa(*monitorPid)+"\n"))
 		}
 	})
 	if r != nil {
@@ -708,7 +708,7 @@ func CancelTask(dir string, rootArg ...string) {
 		return
 	}
 	if ours && monitorPid != nil {
-		_ = caught(func() { _ = ProcessKill(*monitorPid, "SIGKILL") })
+		_ = caught(func() { _ = killProcess(*monitorPid, "SIGKILL") })
 		if waitForClose(paths, 2000) {
 			return
 		}
@@ -772,34 +772,48 @@ func RunnerMain(dir string) (exit int) {
 		sleep(40)
 	}
 
-	var child ChildProcess
+	var child *exec.Cmd
 	r := caught(func() {
 		command := ChildCommandFor(task.Argv, runtime.GOOS, environ(), task.Cwd)
-		child = SpawnInherit(command.File, command.Args, SpawnInheritOptions{Cwd: task.Cwd, StdioInherit: true, WindowsVerbatimArguments: command.Verbatim})
+		child = exec.Command(command.File, command.Args...)
+		child.Stdin = os.Stdin
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		child.Dir = task.Cwd
+		if command.Verbatim {
+			applyVerbatim(child, command.File, command.Args)
+		}
+		if err := child.Start(); err != nil {
+			panic(err)
+		}
 	})
 	if r != nil {
 		writeExit(paths, exitFile{Code: nil, Signal: nil, Error: strPtr(messageOf(r))})
 		return 1
 	}
-	if child.Pid != nil {
-		writePrivateFile(paths.ChildPid, []byte(strconv.Itoa(*child.Pid)+"\n"))
+	if child.Process != nil {
+		writePrivateFile(paths.ChildPid, []byte(strconv.Itoa(child.Process.Pid)+"\n"))
 	}
 
 	stopped := func(signal string) {
-		if child.Pid != nil {
-			_ = caught(func() { child.Kill("SIGTERM") })
+		if child.Process != nil {
+			_ = caught(func() { _ = child.Process.Signal(terminateSignal()) })
 		}
 		writeExit(paths, exitFile{Code: nil, Signal: &signal, Error: nil})
 		sleep(150)
 		os.Exit(0)
 	}
-	ProcessOnSignal("SIGTERM", stopped)
-	ProcessOnSignal("SIGHUP", stopped)
-	ProcessOnSignal("SIGINT", stopped)
+	installStopHandlers(stopped)
 
-	child.OnceExit(func(code *int, signal *string) { writeExit(paths, exitFile{Code: code, Signal: signal, Error: nil}) })
-	child.OnceError(func(err error) { writeExit(paths, exitFile{Code: nil, Signal: nil, Error: strPtr(messageOf(err))}) })
-	return child.Wait()
+	waitErr := child.Wait()
+	state := child.ProcessState
+	if state == nil {
+		writeExit(paths, exitFile{Code: nil, Signal: nil, Error: strPtr(messageOf(waitErr))})
+		return 1
+	}
+	code, signal := describeExit(state)
+	writeExit(paths, exitFile{Code: code, Signal: signal, Error: nil})
+	return 0
 }
 
 // MonitorMain is TS monitorMain: the detached per-task monitor. A panic is
