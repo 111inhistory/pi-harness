@@ -3,12 +3,12 @@
 package backend
 
 import (
-	"pijob/internal/asyncshell/aserr"
-	"pijob/internal/asyncshell/proc"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
+
+	"pijob/internal/asyncshell/aserr"
+	"pijob/internal/asyncshell/proc"
 )
 
 // platform_windows.go translates src/async-shell/platform-windows.ts (+ the
@@ -107,9 +107,6 @@ func atLeast(found [3]int, wanted [3]int) bool {
 }
 
 func (WindowsBackend) AssertAvailable() {
-	if runtime.GOOS != "windows" {
-		panic(aserr.New("unsupported_platform", "The psmux backend is only available on Windows."))
-	}
 	timeout := ControlTimeoutMs
 	probe := proc.Run(psmuxBinary, []string{"-V"}, proc.Options{TimeoutMs: &timeout, Hide: true})
 	if probe.Error != nil || probe.Code == nil || *probe.Code != 0 {

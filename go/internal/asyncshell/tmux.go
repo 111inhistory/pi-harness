@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -177,18 +176,6 @@ func environ() map[string]string {
 		}
 	}
 	return env
-}
-
-func samePath(left string, right string) bool {
-	leftResolved, leftErr := filepath.Abs(left)
-	rightResolved, rightErr := filepath.Abs(right)
-	if leftErr != nil || rightErr != nil {
-		return false
-	}
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(leftResolved, rightResolved)
-	}
-	return leftResolved == rightResolved
 }
 
 func fileExists(path string) bool {
@@ -772,7 +759,7 @@ func RunnerMain(dir string) (exit int) {
 
 	var child *exec.Cmd
 	r := caught(func() {
-		command, commandErr := proc.ChildCommandFor(task.Argv, runtime.GOOS, environ(), task.Cwd)
+		command, commandErr := proc.ChildCommandFor(task.Argv, environ(), task.Cwd)
 		if commandErr != nil {
 			panic(commandErr)
 		}

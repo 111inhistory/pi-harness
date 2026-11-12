@@ -4,11 +4,11 @@ package backend
 
 import (
 	"path/filepath"
-	"pijob/internal/asyncshell/aserr"
-	"pijob/internal/asyncshell/proc"
-	"runtime"
 	"strconv"
 	"strings"
+
+	"pijob/internal/asyncshell/aserr"
+	"pijob/internal/asyncshell/proc"
 )
 
 // platform_posix.go translates src/async-shell/platform-posix.ts (+ the POSIX half
@@ -61,9 +61,6 @@ func (PosixBackend) RunOk(dir string, args []string, code string, stdin *string)
 }
 
 func (PosixBackend) AssertAvailable() {
-	if runtime.GOOS == "windows" {
-		panic(aserr.New("unsupported_platform", "The POSIX tmux backend is not available on Windows."))
-	}
 	timeout := ControlTimeoutMs
 	probe := proc.Run("tmux", []string{"-V"}, proc.Options{TimeoutMs: &timeout})
 	if probe.Error != nil || probe.Code == nil || *probe.Code != 0 {
