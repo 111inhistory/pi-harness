@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     defaults:
@@ -32,11 +32,16 @@ jobs:
         with:
           node-version: '24.22.2'
           cache: npm
+      - if: runner.os == 'macOS'
+        run: brew install tmux
       - run: npm ci
       # check:rpc-schema regenerates ignored JSON only after its bytes match the
       # tracked SHA256SUMS. Never use schema:rpc here: CI must not update hashes.
       - run: npm run check
-      - run: sha256sum --check schemas/SHA256SUMS
+      - if: runner.os != 'macOS'
+        run: sha256sum --check schemas/SHA256SUMS
+      - if: runner.os == 'macOS'
+        run: shasum -a 256 --check schemas/SHA256SUMS
       - run: npm run check:docs && npm run check:json
       - uses: actions/upload-artifact@v7
         if: runner.os == 'Linux'

@@ -57,7 +57,7 @@ No additional Harness adaptation is implemented for this gap, and no online cach
 - **Capability lazy schema**：离线 SDK 用例验证命中组 schema 不进入独立声明也不进入 Codemode 目录、`describeTool` 可取完整接口且脚本可执行、后续内部继承检索不重发这些 schema。真实提供方缓存命中、多轮模型遵循和长期保持未验收。
 - **模型 Preset**：`/preset`、`--preset` 的模型切换、thinking、工具修饰符基于稳定基线、instructions 段落投影、分支指令快照恢复、`codemode.mode` 生效覆盖已有离线单测与离线 SDK 冒烟；真实 TUI 下的 `/preset` 选择器与 `--preset` 命令交互、真实提供方的模型切换与在线缓存仍未验收。
 - **异步 Shell**：Linux tmux 与原生 Windows psmux 已通过真实 SDK 的离线回归，Windows 覆盖 Bash／PowerShell 入口、Main／Subagent 回调和取消清理。真实提供方多轮运行、长时压力与 Windows 进程查询不可用的故障注入仍未验收。Windows SDK 用例曾出现未完成首轮让出的偶发失败：固定 3 秒轮询把子会话启动、Shell 启动与 CLI 延迟混在一起，而产品契约并未承诺 3 秒；场景现以实际模型回调的 Shell 结果轮次作为让出信号，外层测试、子进程与命令期限保持不变。同一次全量中的 Bash 用例还留下一次 `connect ENOENT` 注册拒绝记录，其管道可用性原因尚未证明，也不因场景同步改动而修复。历史记录见[平台验收记录](reviews/async-shell-platform-acceptance.md)。
-- **平台与用户边界**：当前改写的 Linux 与原生 Windows 完整离线门禁均已通过；平台跳过项、具体版本与验证范围见[审计记录](reviews/rpc-permission-audit.md)。macOS 实机、多用户切换与管道权限隔离尚未验收。
+- **平台与用户边界**：当前改写的 Linux 与原生 Windows 完整离线门禁均已通过；平台跳过项、具体版本与验证范围见[审计记录](reviews/rpc-permission-audit.md)。CI 已加入 `macos-latest` 执行同一套离线门禁，配置加入不等于运行验收通过。macOS 实机、多用户切换与管道权限隔离尚未验收。
 
 现有在线样本只证明记录中的具体场景，不替代当前调用链的完整验收。
 
