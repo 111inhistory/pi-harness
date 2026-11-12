@@ -983,8 +983,8 @@
     },
     "async-shell.tasks": {
       "docs": "a79679278808e0384b27c839cdcc6cf11ce8f1bcf92a9278dec13ab2d11c9f7a",
-      "tests": "f011888ba1f70ee7f9032f5653ca5993969da85e436fb2e0838b6d757f851741",
-      "reason": "The host-root regression retains all CLI and callback assertions; teardown now waits for monitor release before root removal and restores the process root immediately after Host construction. Public task semantics are unchanged."
+      "tests": "ee7a51382e7ffb265a0e6f0cb8a048f9c391c35e2256f9c9e0478bd3664e5a7f",
+      "reason": "the CLI behavioral test only switches the built artifact from the pi-job.mjs bundle to the native Go binary; no documented behavior changed"
     },
     "capability.provider-prefix": {
       "docs": "d2668574f48a8012451c58c685cb80b9732c43d0ec7d00f192b68a88bc89a42d",

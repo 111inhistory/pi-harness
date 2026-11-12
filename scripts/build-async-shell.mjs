@@ -1,31 +1,26 @@
 /**
- * Build the async-shell CLI into one runnable file.
+ * Build the async-shell CLI as one native Go binary.
  *
  * Usage: `node scripts/build-async-shell.mjs [outfile]`, default
- * `dist/pi-job.mjs`. Tests build their own copy into a temporary directory, so a
- * full run never has two processes writing or executing the same bundle.
- *
- * The result is an ESM bundle with a Node shebang, so the installation step only
- * has to put it on PATH. Node builtins stay external; the bundle carries the
- * task backend, the protocol and the IPC write path.
+ * `dist/pi-job` (`dist/pi-job.exe` on Windows). Tests build their own copy into a
+ * temporary directory, so a full run never executes the same artifact twice.
  */
 import { chmodSync, mkdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { build } from 'esbuild';
 
 const root = path.resolve(import.meta.dirname, '..');
-const outfile = path.resolve(root, process.argv[2] ?? path.join('dist', 'pi-job.mjs'));
+const defaultName = process.platform === 'win32' ? path.join('dist', 'pi-job.exe') : path.join('dist', 'pi-job');
+const outfile = path.resolve(root, process.argv[2] ?? defaultName);
 
 mkdirSync(path.dirname(outfile), { recursive: true });
-await build({
-  entryPoints: [path.join(root, 'src', 'async-shell', 'cli.ts')],
-  outfile,
-  bundle: true,
-  platform: 'node',
-  format: 'esm',
-  target: 'node22',
-  logLevel: 'warning',
-  banner: { js: '#!/usr/bin/env node\n// pi-harness: pi-job CLI' },
-});
-chmodSync(outfile, 0o755);
+const build = spawnSync('go', ['build', '-o', outfile, './cmd/pi-job'], { cwd: root, stdio: 'inherit' });
+if (build.error) {
+  console.error(build.error.message);
+  process.exit(1);
+}
+if (build.status !== 0) {
+  process.exit(build.status ?? 1);
+}
+if (process.platform !== 'win32') chmodSync(outfile, 0o755);
 process.stdout.write(`${outfile}\n`);

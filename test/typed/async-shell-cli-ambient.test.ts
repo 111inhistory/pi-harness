@@ -28,7 +28,7 @@ let bundleDir = '';
 test.before(async () => {
   if (!backendAvailable) return;
   bundleDir = await mkdtemp(path.join(tmpdir(), 'async-shell-ambient-bundle-'));
-  bundle = path.join(bundleDir, 'pi-job.mjs');
+  bundle = path.join(bundleDir, process.platform === 'win32' ? 'pi-job.exe' : 'pi-job');
   const build = spawnSync(process.execPath, [path.join(ROOT, 'scripts/build-async-shell.mjs'), bundle], { encoding: 'utf8' });
   assert.equal(build.status, 0, `the async-shell bundle must build: ${build.stderr}`);
 });

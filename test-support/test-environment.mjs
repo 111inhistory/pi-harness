@@ -32,7 +32,7 @@ export function testEnvironment(env = process.env, explicit = {}) {
 
 /** Run the standalone CLI with the sanitized environment every CLI test uses. */
 export function runCli(bundle, args, settings = {}) {
-  const child = spawn(process.execPath, [bundle, ...args], {
+  const child = spawn(bundle, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: testEnvironment(process.env, settings.env),
   });

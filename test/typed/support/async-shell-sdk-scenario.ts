@@ -24,7 +24,7 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
   const executable = process.env.PI_ASYNC_SHELL_CLI;
   assert.ok(executable);
   const quote = shellName === 'powershell' ? powerShellQuote : posixQuote;
-  const command = (args: string[]) => `${shellName === 'powershell' ? '& ' : ''}${[process.execPath.replaceAll('\\', '/'), executable.replaceAll('\\', '/'), ...args].map(quote).join(' ')}`;
+  const command = (args: string[]) => `${shellName === 'powershell' ? '& ' : ''}${[executable, ...args].map(quote).join(' ')}`;
   const started = path.join(fixture.cwd, 'async-started.json');
   const release = path.join(fixture.cwd, 'async-release');
   const marker = 'ASYNC_PTY_RESULT';

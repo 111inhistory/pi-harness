@@ -22,7 +22,7 @@ describe('Async shell SDK scenarios', { concurrency: 2 }, () => {
     }, async t => {
       const cwd = await fsp.mkdtemp(path.join(os.tmpdir(), 'pi-shell-sdk-'));
       t.after(() => fsp.rm(cwd, { recursive: true, force: true }));
-      const cli = path.join(cwd, 'pi-job.mjs');
+      const cli = path.join(cwd, process.platform === 'win32' ? 'pi-job.exe' : 'pi-job');
       await execute(process.execPath, [build, cli]);
       try {
         const { stdout, stderr } = await execute(process.execPath, [fixture, scenario], {
