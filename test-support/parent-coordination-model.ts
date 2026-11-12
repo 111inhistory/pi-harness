@@ -30,7 +30,7 @@ interface NodeReal {
 }
 interface JobData { agentId: string; jobId: string; continuedFromJobId: string | null }
 interface Delivery { source: string; sourceId: string; jobId?: string; status?: string }
-interface Notice { sender: number; jobId: string; status: string; text?: string; consumed: boolean }
+interface Notice { sender: number; jobId: string; status: string; text?: string; consumed: boolean; pending: boolean; required: boolean }
 interface Real { fx: SdkFixture; nodes: NodeReal[]; notices: Notice[]; scheduler: Scheduler }
 const task = (slot: number) => `COORD_NODE_${slot}_END`;
 const freshReal = (): NodeReal => ({ initialIds: new Set(), calls: 0, holdNext: false });
@@ -87,6 +87,7 @@ async function terminal(model: Model, real: Real, slot: number, status: string, 
   assert.match(await fs.readFile(view.history.summary, 'utf8'), new RegExp('`' + status + '`'));
   const parent = model.nodes[slot]!.parent;
   real.notices.push({ sender: slot, jobId: job.jobId, status,
+    pending: parent !== null && model.nodes[parent]!.busy, required: true,
     consumed: parent !== null && model.nodes[parent]!.alive, ...(text === undefined ? {} : { text }) });
   model.nodes[slot]!.alive = false;
   model.nodes[slot]!.busy = false;
@@ -97,6 +98,10 @@ async function settleParents(model: Model, real: Real) {
     if (!parent.alive || parent.busy) continue;
     await idle(real, slot);
     if (children(model, slot).every(child => !model.nodes[child]!.alive)) await terminal(model, real, slot, 'completed');
+  }
+  for (const notice of real.notices) {
+    const parent = model.nodes[notice.sender]!.parent;
+    if (parent !== null && !model.nodes[parent]!.busy) notice.pending = false;
   }
 }
 async function wake(model: Model, real: Real, slot: number, marker: string) {
@@ -210,6 +215,11 @@ class Command implements AsyncCommand<Model, Real> {
       for (const child of recipients) if (model.nodes[child]!.parent !== null) await waitFor(() => real.nodes[child]!.pending, { label: 'broadcast child running' });
     } else if (this.action === 'cancel') {
       for (const delivery of node!.inbox) if (delivery.round === node!.round) delivery.required = false;
+      // A held provider has not consumed its queued steer notices. Cancellation
+      // may discard them; already drained notices remain required exactly once.
+      for (const notice of real.notices) if (notice.pending && model.nodes[notice.sender]!.parent === this.slot) {
+        notice.required = false; notice.consumed = false; notice.pending = false;
+      }
       await real.fx.call('subagent_stop', { id: actual!.actor!.id });
       await terminal(model, real, this.slot, 'cancelled');
     } else if (this.action === 'finish') await finish(model, real, this.slot, this.outcome);
@@ -315,8 +325,9 @@ async function sample(initial: number[], commands: Iterable<AsyncCommand<Model, 
       const parent = model.nodes[notice.sender]!.parent;
       for (let target = 0; target < targets.length; target++) {
         const matches = targets[target]!.filter(entry => entry.details.jobId === notice.jobId && entry.details.source === 'host');
-        assert.equal(matches.length, target === (parent === null ? 0 : parent + 1) ? 1 : 0,
-          'one terminal notice reaches exactly the direct parent');
+        const intended = target === (parent === null ? 0 : parent + 1);
+        if (intended && !notice.required) assert.ok(matches.length <= 1, 'interrupted notices never duplicate');
+        else assert.equal(matches.length, intended ? 1 : 0, 'one terminal notice reaches exactly the direct parent');
         if (matches.length) {
           assert.equal(matches[0]!.details.sourceId, real.nodes[notice.sender]!.actor!.id);
           assert.equal(matches[0]!.details.status, notice.status);

@@ -2,6 +2,14 @@
 
 本页归档已修复问题、已完成迁移和已落实的设计边界。尚未实现或验收的工作见[已知问题与验收边界](../known-issues.md)。本页的局部验证记录不代表完整平台或所有模型路径已通过验收。
 
+## Parent PBT cancellation oracle
+
+The generated parent-coordination model incorrectly required every child terminal notice to reach durable parent history, including a notice queued as native steer while the parent provider was held and then cancelled. The existing [notification contract](../interface-contract.md#自动完成通知) follows Pi steer interruption semantics and does not add notification-specific recovery.
+
+The original local stress failure used seed `1002`, 100 runs, command limit 128 and fast-check's default generation size. It failed after 19 histories and shrank eight times to `hold(1), finish-pair, cancel(1)` with one child per parent. Property path: `18:6:5:6:6:6:6:8:8`; command replay path: `AAAAY:V`. A diagnostic confirmed the child notice was in the parent's SDK steer queue before cancellation. This is an oracle error, not a production delivery defect.
+
+The model now distinguishes notices still pending behind a held provider from notices drained by the parent. Cancelling that parent permits only its pending notices to be absent, retaining at-most-once and direct-recipient assertions. Previously drained notices remain required exactly once; notices delivered after cancellation still use the existing retained-history path. Interrupted notices no longer require proof of model consumption. The exact original replay passes after this test-only correction; production behavior and generated operations are unchanged.
+
 ## Windows 聊天框命令选错 Shell
 
 已修复。Windows 的聊天框 `!`／`!!` 命令用 PowerShell AST 检查，通过后交给 SDK 原生 PowerShell operations 执行，不再回退到 Bash。Agent 工具调用仍按 `bash`／`powershell` 分别检查。
