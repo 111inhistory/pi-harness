@@ -24,8 +24,12 @@ export async function runModelSubprocess(t: TestContext, runner: URL, success: s
   console.log(result.stdout.trim());
 }
 
-export function commandReplay() {
-  return process.env.PI_PBT_COMMAND_PATH === undefined ? {} : { replayPath: process.env.PI_PBT_COMMAND_PATH };
+export function commandOptions(defaultMaxCommands: number) {
+  return {
+    maxCommands: Number(process.env.PI_PBT_MAX_COMMANDS ?? defaultMaxCommands),
+    ...(process.env.PI_PBT_COMMAND_SIZE === 'max' ? { size: 'max' as const } : {}),
+    ...(process.env.PI_PBT_COMMAND_PATH === undefined ? {} : { replayPath: process.env.PI_PBT_COMMAND_PATH }),
+  };
 }
 
 /** Leave generation, shrinking and replay with fast-check; report its actual outcome. */

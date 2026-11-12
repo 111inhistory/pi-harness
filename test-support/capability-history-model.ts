@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import fc, { type AsyncCommand } from 'fast-check';
-import { checkProperty, commandReplay } from './pbt.ts';
+import { checkProperty, commandOptions } from './pbt.ts';
 import { fauxProvider, InMemoryCredentialStore, getCurrentTools, type AssistantMessage, type Api, type Message, type Model } from '@earendil-works/pi-ai';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
@@ -215,7 +215,7 @@ export async function runCapabilityHistoryModel() {
     fc.tuple(fc.constantFrom<Action>('describe', 'schema', 'enable', 'disable', 'reset', 'discover', 'execute', 'compact', 'reopen', 'request'),
       fc.integer({ min: 0, max: 1 }), fc.string({ minLength: 1, maxLength: 40 }), fc.integer({ min: 0, max: 3 }))
       .map(args => new Command(...args)),
-  ], { maxCommands: 24, ...commandReplay() });
+  ], commandOptions(24));
   await checkProperty(fc.asyncProperty(commands, async history => {
     const world = await fixture();
     const state: State = { tools: world.metadata.map((spec, slot) => ({ ...spec, permission: 'unmanaged', active: slot === 0, discovered: false, used: false })), turn: 0 };

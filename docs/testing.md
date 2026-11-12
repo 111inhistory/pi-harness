@@ -55,7 +55,7 @@ Within a file, tests remain serial unless a parent suite enables concurrency. Th
 
 The scenario cap applies within each of those two files; it is not a global process or CPU cap. Full-suite timing should be compared on the same host because other file workers still run concurrently.
 
-The three generated models share [PBT execution support](../test-support/pbt.ts) for private subprocess environments, deadlines, run/seed/replay controls and native fast-check reports. Each model retains its own subprocess and domain state; SDK imports occur after the child environment is installed. Arbitraries, command limits, scheduling boundaries and assertions remain with the owning model.
+The three generated models share [PBT execution support](../test-support/pbt.ts) for private subprocess environments, deadlines, run/seed/replay controls and native fast-check reports. Each model retains its own subprocess and domain state; SDK imports occur after the child environment is installed. Arbitraries, default command limits, scheduling boundaries and assertions remain with the owning model. `PI_PBT_MAX_COMMANDS` explicitly overrides the command limit for local stress runs, and `PI_PBT_COMMAND_SIZE=max` lets generation use that full range instead of fast-check's default small size; without it the standard suite remains at 32 native commands and 24 parent/Capability commands, with 50 histories each. Failing histories must be replayed with the same command limit and generation size as well as the printed seed/path. Keep local stress runs within the existing process deadlines by selecting batches before execution; do not retry failures or relax deadlines to obtain a pass.
 
 ## Native lifecycle model tests
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import fc, { type AsyncCommand, type Scheduler } from 'fast-check';
-import { checkProperty, commandReplay } from './pbt.ts';
+import { checkProperty, commandOptions } from './pbt.ts';
 import { AgentSession, type CustomEntry, type CustomMessageEntry, type SessionManager } from '@earendil-works/pi-coding-agent';
 import type { JobRequest } from '../src/subagent/runtime.ts';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
@@ -276,7 +276,7 @@ export async function runLifecycleModel() {
       fc.array(fc.constantFrom('hello', '中文', '\n', '"', '$()', '🙂'), { maxLength: 6 }).map(parts => parts.join('')))
       .map(([action, slot, result, payload]) => new Command(action, slot, result, payload)),
     fc.constantFrom<Action>('reload', 'finish-both').map(action => new Command(action)),
-  ], { maxCommands: 32, ...commandReplay() });
+  ], commandOptions(32));
   await checkProperty(fc.asyncProperty(commands, fc.scheduler(), sample));
 }
 

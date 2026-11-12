@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { setImmediate as turn } from 'node:timers/promises';
 import fc, { type AsyncCommand, type Scheduler } from 'fast-check';
-import { checkProperty, commandReplay } from './pbt.ts';
+import { checkProperty, commandOptions } from './pbt.ts';
 import { AgentSession, SessionManager, type CustomEntry, type CustomMessageEntry } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import { getBroadcastSocketPath } from '../src/ipc/socket.ts';
@@ -344,9 +344,6 @@ const commands = fc.commands([fc.tuple(
   fc.integer({ min: -1, max: 7 }), fc.integer({ min: 1, max: 2 }), fc.boolean(),
   fc.constantFrom<Outcome>('text', 'empty', 'error'),
   fc.array(fc.constantFrom('hello', '中文', '\n', '"', '$()', '🙂'), { maxLength: 5 }).map(parts => parts.join('')),
-).map(args => new Command(...args))], {
-  maxCommands: 24,
-  ...commandReplay(),
-});
+).map(args => new Command(...args))], commandOptions(24));
 await checkProperty(fc.asyncProperty(fc.array(fc.integer({ min: 1, max: 2 }), { minLength: 2, maxLength: 2 }), commands, fc.scheduler(), sample));
 console.log('PARENT_COORDINATION_MODEL_OK');
