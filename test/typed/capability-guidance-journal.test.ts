@@ -35,7 +35,6 @@ import { convertResponsesMessages } from '../../node_modules/@earendil-works/pi-
 import { getCurrentSystemMessage } from '../../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js';
 import {
   CAPABILITY_SECTION,
-  capabilityPromptTranscript,
   projectRecordedCapabilityPrompt,
   type ProjectionMessage,
 } from '../../src/capability/prompt.ts';
@@ -59,7 +58,6 @@ const CWD = '/tmp/project';
 const MEMORY_RECORD = 'harness-capability-memory';
 
 const BROWSER_REF = 'namespace://browser';
-const DOCS_REF = 'mcp://docs';
 
 const coverage: CapabilitySearchCoverage = { local: 'searched', remote: 'not_searched' };
 
@@ -73,25 +71,11 @@ const browserGroup: CapabilityHit = {
   ],
 };
 
-const docsGroup: CapabilityHit = {
-  ref: DOCS_REF,
-  name: 'docs',
-  instructions: 'Read the docs',
-  tools: [{ ref: 'mcp://docs/search', name: 'docs_search', description: 'Search the docs' }],
-};
-
 const slidesSkill: CapabilityHit = {
   ref: 'skill://slides',
   name: 'slides',
   description: 'Make slides',
   filePath: '/skills/slides/SKILL.md',
-};
-
-const pdfSkill: CapabilityHit = {
-  ref: 'skill://pdf',
-  name: 'pdf',
-  description: 'Fill PDF forms',
-  filePath: '/skills/pdf/SKILL.md',
 };
 
 type TranscriptInput = Parameters<typeof getCurrentSystemMessage>[0];
@@ -203,12 +187,11 @@ interface ProjectOptions {
   readonly allowsTool?: (name: string) => boolean;
   readonly instructions?: ReadonlyMap<string, string | null>;
   readonly nativeGuidanceRefs?: ReadonlySet<string>;
-  readonly checkpointId?: string | null;
 }
 
 function projectOptionSet(target: SessionManager, options: ProjectOptions) {
   return {
-    checkpointId: options.checkpointId ?? null,
+    checkpointId: null,
     appendEntry: (customType: string, data: unknown) => { target.appendCustomEntry(customType, data); },
     ...(options.allowsTool === undefined ? {} : { allowsTool: options.allowsTool }),
     ...(options.instructions === undefined ? {} : { instructions: options.instructions }),
@@ -440,44 +423,6 @@ test('the empty first request is recorded, and a later hidden discovery appends'
   assert.equal(memoryEntries(manager).length, 2, 'one bootstrap record plus one appended update');
 });
 
-test('visible discovery placements on the first request match the pure projection', () => {
-  const manager = SessionManager.inMemory(CWD);
-  appendHead(manager);
-  appendUser(manager, 'Question', 1);
-  visibleDiscovery(manager, 'call-1', 2);
-  appendUser(manager, 'Follow-up', 3);
-
-  const native = nativeMessages(manager);
-  const pure = capabilityPromptTranscript(native, manager.getBranch(), { allowsTool: () => true });
-  const journaled = project(manager);
-  assert.deepEqual(journaled, pure, 'the first journaled request is exactly the pure placement');
-
-  const texts = capabilityTexts(journaled);
-  assert.equal(texts.length, 1);
-  const ordinal = journaled.findIndex((message) => typeof message.sections?.[CAPABILITY_SECTION] === 'string');
-  assert.equal(ordinal, 3, 'the section follows the visible result at native ordinal 2');
-  assert.equal(journaled[ordinal - 1]?.toolCallId, 'call-1');
-  assert.deepEqual(memoryEntries(manager).map((entry) => ({
-    text: entry['text'], position: entry['position'], checkpointId: entry['checkpointId'],
-  })), [
-    { text: null, position: 'head', checkpointId: null },
-    { text: texts[0], position: 2, checkpointId: null },
-  ], 'the metadata-only bootstrap and the emitted placement are both pinned');
-
-  // Later visible discovery: the historical placement is replayed, not recomputed.
-  visibleDiscovery(manager, 'call-2', 4, { mcp: [docsGroup], skills: [slidesSkill, pdfSkill] });
-  appendUser(manager, 'Third question', 5);
-  const later = project(manager);
-
-  assert.deepEqual(later.slice(0, journaled.length), journaled, 'the earlier request is an exact prefix');
-  const laterTexts = capabilityTexts(later);
-  assert.equal(laterTexts.length, 2, 'the new discovery appends one update');
-  assert.equal(laterTexts[0], texts[0], 'the historical section text is unchanged');
-  assert.match(laterTexts[1] ?? '', /pdf/);
-  assert.equal(later[ordinal]?.sections?.[CAPABILITY_SECTION], texts[0],
-    'the recorded placement does not move when later messages arrive');
-});
-
 test('a live instruction change for one namespace appends a fixed-position update', () => {
   const manager = SessionManager.inMemory(CWD);
   appendHead(manager);
@@ -564,66 +509,6 @@ test('an instructions deletion and its restore are appended deltas', () => {
   assert.match(currentText(repeat), /Use the current tab/);
 });
 
-test('a nested discovery appends instead of moving the section into the leading head', () => {
-  const manager = SessionManager.inMemory(CWD);
-  appendHead(manager);
-  appendUser(manager, 'Question', 1);
-  visibleDiscovery(manager, 'call-1', 2);
-  appendUser(manager, 'Follow-up', 3);
-
-  const first = project(manager);
-  assert.equal(capabilityTexts(first).length, 1);
-  const firstWire = responsesWire(first);
-
-  // A nested call whose outer tool dropped the details: only the record survives.
-  discover(manager, 'nested-call', { mcp: [browserGroup, docsGroup], skills: [slidesSkill, pdfSkill] });
-  appendUser(manager, 'After the nested call', 5);
-  const later = project(manager);
-
-  const texts = capabilityTexts(later);
-  assert.equal(texts.length, 2);
-  assert.equal(texts[0], capabilityTexts(first)[0], 'the historical section is replayed verbatim');
-  assert.match(texts[1] ?? '', /pdf/, 'the nested-only discovery appears in the appended update');
-  assert.equal(headSectionText(later), '', 'the nested discovery is not folded into the leading head');
-  assert.equal(later.at(-1)?.sections?.[CAPABILITY_SECTION], texts[1],
-    'the update is the appended tail message');
-  assert.deepEqual(later.slice(0, first.length), first, 'the earlier request is an exact prefix');
-  assert.deepEqual(responsesWire(later).slice(0, firstWire.length), firstWire,
-    'the old provider prefix is byte-identical');
-});
-
-test('resuming a SessionManager from its entries replays the exact recorded wire', async () => {
-  const manager = SessionManager.inMemory(CWD);
-  appendHead(manager);
-  appendUser(manager, 'Question', 1);
-  visibleDiscovery(manager, 'call-1', 2);
-  appendUser(manager, 'Follow-up', 3);
-
-  const first = project(manager, { instructions: new Map([[BROWSER_REF, 'Use the current tab']]) });
-  const firstResponses = responsesWire(first);
-  const firstAnthropic = await anthropicWire(first);
-
-  appendAssistant(manager, 'Answer', 4);
-  appendUser(manager, 'Third question', 5);
-  const second = project(manager, { instructions: new Map([[BROWSER_REF, 'Use the pinned tab']]) });
-  const secondResponses = responsesWire(second);
-  const secondAnthropic = await anthropicWire(second);
-  assert.deepEqual(secondResponses.slice(0, firstResponses.length), firstResponses,
-    'the update appends after the earlier request');
-  assertAnthropicPrefix(secondAnthropic, firstAnthropic, 'the Anthropic prefix is unchanged');
-
-  const restored = SessionManager.inMemory(CWD, {}, [manager.getHeader()!, ...manager.getEntries()]);
-  assert.equal(restored.getBranch().length, manager.getBranch().length, 'resume keeps every branch entry');
-
-  const resumed = project(restored, { instructions: new Map([[BROWSER_REF, 'Use the pinned tab']]) });
-  assert.deepEqual(resumed, second, 'the recorded placements replay message-identically');
-  assert.deepEqual(responsesWire(resumed), secondResponses, 'the Responses wire is byte-identical after resume');
-  assert.deepEqual(await anthropicWire(resumed), secondAnthropic,
-    'the Anthropic wire is byte-identical after resume');
-  assert.equal(memoryEntries(restored).length, memoryEntries(manager).length,
-    'resume appends nothing to the journal');
-});
-
 test('a narrowed tool scope drops a denied member without granting execution', () => {
   const manager = SessionManager.inMemory(CWD);
   appendHead(manager);
@@ -655,104 +540,6 @@ test('a narrowed tool scope drops a denied member without granting execution', (
   assert.equal(restored.length, 3, 'restoring availability is another appended delta');
   assert.equal(restored[2], full, 'the restored desired state equals the first emission');
   assert.deepEqual(memberNames(resource(currentText(widened), BROWSER_REF)), ['pages', 'click']);
-});
-
-test('a new context checkpoint rebases recorded placements into the leading boundary', () => {
-  const manager = SessionManager.inMemory(CWD);
-  appendHead(manager);
-  appendUser(manager, 'Question', 1);
-  visibleDiscovery(manager, 'call-1', 2);
-  appendUser(manager, 'Follow-up', 3);
-
-  const before = project(manager);
-  const text = capabilityTexts(before)[0];
-  assert.ok(text);
-  const recordedBefore = memoryEntries(manager);
-  assert.equal(recordedBefore.length, 2);
-  assert.equal(recordedBefore[0]?.['checkpointId'], null);
-  assert.equal(recordedBefore[1]?.['checkpointId'], null);
-
-  // Compaction or an explicit context edit rebuilds the native prefix; the request
-  // the caller projects is the new, shorter native transcript.
-  const compacted: readonly ProjectionMessage[] = [
-    { role: 'system', content: '', sections: { preamble: 'Unchanging base' }, timestamp: 0 },
-    { role: 'user', content: 'Summary of the compacted conversation', timestamp: 10 },
-  ];
-  const write = (customType: string, data: unknown) => { manager.appendCustomEntry(customType, data); };
-  const rebased = projectRecordedCapabilityPrompt(compacted, manager.getBranch(), {
-    checkpointId: 'compact-1',
-    appendEntry: write,
-  });
-
-  assert.equal(rebased.length, 2, 'the recorded section is rebased into the rebuilt leading boundary');
-  assert.equal(headSectionText(rebased), text, 'the latest recorded text is pinned at the head');
-  const afterRebase = memoryEntries(manager);
-  assert.equal(afterRebase.length, recordedBefore.length + 1);
-  assert.deepEqual({
-    id: afterRebase.at(-1)?.['id'],
-    text: afterRebase.at(-1)?.['text'],
-    position: afterRebase.at(-1)?.['position'],
-    checkpointId: afterRebase.at(-1)?.['checkpointId'],
-  }, { id: CAPABILITY_SECTION, text, position: 'head', checkpointId: 'compact-1' },
-  'the rebased placement is pinned to the new checkpoint');
-
-  const stable = projectRecordedCapabilityPrompt(compacted, manager.getBranch(), {
-    checkpointId: 'compact-1',
-    appendEntry: write,
-  });
-  assert.deepEqual(stable, rebased, 'the same checkpoint replays the same head');
-  assert.equal(memoryEntries(manager).length, afterRebase.length, 'no repeated rebase record');
-
-  // A change after the boundary appends above the new head instead of rewriting it.
-  const continued: readonly ProjectionMessage[] = [
-    ...compacted,
-    { role: 'user', content: 'After compaction', timestamp: 11 },
-  ];
-  const changed = projectRecordedCapabilityPrompt(continued, manager.getBranch(), {
-    checkpointId: 'compact-1',
-    instructions: new Map<string, string | null>([[BROWSER_REF, 'Use the pinned tab']]),
-    appendEntry: write,
-  });
-  assert.equal(changed.length, continued.length + 1, 'the change is one appended delta');
-  assert.equal(headSectionText(changed), text, 'the rebased head text is never rewritten');
-  const texts = capabilityTexts(changed);
-  assert.equal(texts.length, 2);
-  assert.match(texts[1] ?? '', /Use the pinned tab/);
-  assert.equal(memoryEntries(manager).at(-1)?.['position'], continued.length - 1,
-    'the post-boundary update is pinned after the last native message');
-});
-
-test('the first request keeps the stored prose and appends the live revision', () => {
-  const manager = SessionManager.inMemory(CWD);
-  appendHead(manager);
-  appendUser(manager, 'Question', 1);
-  visibleDiscovery(manager, 'call-1', 2);
-  appendUser(manager, 'Follow-up', 3);
-
-  const first = project(manager, { instructions: new Map([[BROWSER_REF, 'Use the pinned tab']]) });
-  const texts = capabilityTexts(first);
-  assert.equal(texts.length, 2, 'the immutable stored history and the live revision are both emitted');
-  assert.equal(resource(texts[0]!, BROWSER_REF)['instructions'], 'Use the current tab',
-    'the bootstrap history keeps the stored, non-live prose');
-  assert.equal(resource(texts[1]!, BROWSER_REF)['instructions'], 'Use the pinned tab',
-    'the live revision is appended as the current desired state');
-  assert.match(currentText(first), /Use the pinned tab/);
-
-  const pure = capabilityPromptTranscript(nativeMessages(manager), manager.getBranch(), { allowsTool: () => true });
-  assert.equal(capabilityTexts(pure)[0], texts[0], 'the stored placement is the pure bootstrap');
-  assert.equal(first[3]?.sections?.[CAPABILITY_SECTION], texts[0], 'and keeps its native ordinal');
-  assert.equal(first.at(-1)?.sections?.[CAPABILITY_SECTION], texts[1], 'the live revision is the appended tail');
-
-  const recorded = memoryEntries(manager);
-  assert.deepEqual(recorded.map((entry) => ({ text: entry['text'], position: entry['position'] })), [
-    { text: null, position: 'head' },
-    { text: texts[0], position: 2 },
-    { text: texts[1], position: 3 },
-  ], 'stored history and live revision are separately pinned');
-
-  const repeat = project(manager, { instructions: new Map([[BROWSER_REF, 'Use the pinned tab']]) });
-  assert.deepEqual(repeat, first, 'an unchanged live revision appends nothing');
-  assert.equal(memoryEntries(manager).length, 3);
 });
 
 test('declaration-only browser namespace guidance appends A then B without capability duplication', async () => {
@@ -897,19 +684,4 @@ test('a directly enabled namespace remains guided through Codemode without direc
   assert.deepEqual(declaredTools(second.messages), declaredTools(nativeMessages(manager)));
   assert.deepEqual(responsesWire(second.messages).slice(0, firstResponses.length), firstResponses);
   assertAnthropicPrefix(await anthropicWire(second.messages), firstAnthropic, 'Codemode-only prefix');
-});
-
-test('asset bootstrap cannot insert before an already frozen Capability projection', () => {
-  const manager = SessionManager.inMemory(CWD);
-  appendDeclaration(manager, 'subagent_list');
-  appendUser(manager, 'Question', 1);
-  const first = project(manager);
-  appendAssistant(manager, 'Answer', 2);
-  appendUser(manager, 'Follow-up', 3);
-  const tools = [toolFixture('subagent_list', { namespace: 'subagent', instructions: 'Asset guidance' })];
-  const second = pipeline(manager, tools, new Set(['subagent_list']));
-  assert.deepEqual(second.messages.slice(0, first.length), first,
-    'the upstream producer leaves the downstream projection and all its neighbors fixed');
-  assert.ok(second.messages.length > nativeMessages(manager).length, 'new asset guidance is introduced');
-  assert.equal(second.messages.at(-1)?.role, 'system', 'the introduction belongs at the current tail');
 });

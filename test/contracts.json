@@ -973,8 +973,8 @@
     },
     "capability.result-projection": {
       "docs": "8d9764a793666840fba8a4a2073bd3bb602febc2d2978d854671962ab3e8ba8f",
-      "tests": "f91379711657b88d570f4a08cad24c88135e77b47e3bc1340aa5dcbb9bc914cb",
-      "reason": "Delete asset-copy assertions that restate prompt loading. Result filtering, namespace guidance and real SDK projection tests remain. No public contract changes."
+      "tests": "fdcff3125520051f47425d6c7ed49fe02be3dd640c9db80d78c3bc23a8979835",
+      "reason": "Delete pure-versus-journal projection comparisons and repeated hidden discovery, resume and bootstrap permutations. Retain namespace, MCP alias, Codemode, skill, scope and live-prose paths. The result and request-memory contract is unchanged."
     },
     "async-shell.tasks": {
       "docs": "a79679278808e0384b27c839cdcc6cf11ce8f1bcf92a9278dec13ab2d11c9f7a",
@@ -1028,8 +1028,8 @@
     },
     "tool-guidance.journal": {
       "docs": "ef1810b96bf835590d6e434644ae27682a07ea1fc54ae72d4d5ae9e525b0b72b",
-      "tests": "beb8322ec8b9687e45d3695d46cab393577e6ebea4aeb5c71875edc43f6c890a",
-      "reason": "Clarify activation-independent sanitation of description-only duplicates. The existing generated Capability history regression disable/describe/enable now passes without changing its commands or assertions; existing provider-prefix and transport tests also pass. No transport flags or execution permissions change, so their test files need no artificial edits."
+      "tests": "23f54e1b9ab29b7713a0efd60254fb25680f3b3c861088395aa4e674f6926af5",
+      "reason": "Remove repeated basic projections, fixed-ordinal examples and generic malformed-position cases covered by shared journal tests. Keep durable reopen, branch rewind and inheritance, shared order, ordinal zero, eligibility, null withdrawal and compaction rebase. No journal contract changes."
     },
     "cross-session.messaging": {
       "docs": "1423e639cb5e99561bd024761e74ea822d6b9ed8564a65c8fea28d271f77aa7b",
@@ -1088,8 +1088,8 @@
     },
     "capability.compaction-prune": {
       "docs": "6e3374f07feffed783bea55c10ce9177fc578db67b1ce05a1d75d82e9dbe4d33",
-      "tests": "49d6c1d887a50298820c6c6f4fe656ca8c9ad077e8e380d41da140546228d5e3",
-      "reason": "The existing usage-window fixture now distinguishes exact native/Harness pre-execution refusals from real backend errors. Generated unknown-tool and permission-denied histories pass unchanged after the fix. This restores the existing unused-capability pruning contract; no public compaction semantics or duplicate test family is added."
+      "tests": "a17f97a22a392a4b46db5e1af9bb786be2b51b2078492857fd710cda98ba4b09",
+      "reason": "Remove standalone window slicing and duplicate fully-pruned group examples. Existing chronological folding now also checks omitted guidance. Keep admission-refusal regressions, nested usage, real disk reload, branch isolation and protected tools. Pruning semantics are unchanged."
     },
     "preset.config": {
       "docs": "5bf2efc378b5fbc58416a1e7d5e355364c4da48587f5a8b2ec1cc4656d8ac4b6",

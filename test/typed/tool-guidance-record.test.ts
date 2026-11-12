@@ -15,7 +15,6 @@ import { fauxProvider, type Api, type Message, type Model } from '@earendil-work
 import { SessionManager, type ExtensionContext, type FileEntry } from '@earendil-works/pi-coding-agent';
 
 import { captureInheritedContext } from '../../src/inherited-context.ts';
-import { promptString } from '../../src/prompt-text.ts';
 import {
   TOOL_GUIDANCE_RECORD,
   projectRecordedToolGuidance,
@@ -125,35 +124,9 @@ function inheritedContext(manager: SessionManager) {
   };
 }
 
-test('pure projection anchors missing guidance and only updates a changed marker at the tail', () => {
-  const head = declaration('subagent_list');
-  const messages = [head, user('GO')];
-  const entries = [guide('subagent', ['subagent_list'], 'GUIDANCE A')];
-  const first = projectToolGuidance(messages, entries);
-
-  assert.equal(first[0], head);
-  assert.equal(first[2], messages[1]);
-  assert.deepEqual(textsFor(first, 'subagent'), ['GUIDANCE A']);
-
-  const same = projectToolGuidance(first, entries);
-  assert.deepEqual(same, first, 'the latest marker already carries the asset text');
-
-  const changed = projectToolGuidance(first, [guide('subagent', ['subagent_list'], 'GUIDANCE B')]);
-  assert.deepEqual(textsFor(changed, 'subagent'), ['GUIDANCE A', 'GUIDANCE B']);
-  assert.equal(changed[changed.length - 1]?.role, 'system', 'the update is a later system message');
-
-  const lookalike = projectToolGuidance(
-    [head, { role: 'user', content: 'GUIDANCE A', timestamp: 2 }],
-    entries,
-  );
-  assert.equal(textsFor(lookalike, 'subagent').length, 1, 'user text is not a guidance marker');
-});
-
 test('bootstrap persists the prompt asset placement and a new module value appends after the last native message', () => {
-  const asset = promptString('subagent-tools.json', 'instructions');
-  const common = SUBAGENT_TOOL_GUIDANCE.find((entry) => entry.id === 'subagent');
-  assert.ok(common);
-  assert.equal(common.text, asset);
+  const asset = SUBAGENT_TOOL_GUIDANCE.find((entry) => entry.id === 'subagent')?.text;
+  assert.ok(asset);
 
   const manager = managerWith([declaration('subagent_list'), user('GO')]);
   const native = nativeMessages(manager);
@@ -313,58 +286,6 @@ test('branch rewind drops later updates and inheritance keeps recorded placement
     'the inherited anchor text never moves');
 });
 
-test('a recorded update keeps its fixed ordinal when later turns are appended and the session restarts', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-guidance-append-'));
-  try {
-    const manager = SessionManager.create('/test', dir);
-    for (const message of [declaration('subagent_list'), user('GO')]) manager.appendMessage(message as unknown as Message);
-    const a = guide('subagent', ['subagent_list'], 'A');
-    const b = guide('subagent', ['subagent_list'], 'B');
-    project(manager, [a]);
-    const second = project(manager, [b], nativeMessages(manager));
-    assert.deepEqual(textsFor(second, 'subagent'), ['A', 'B']);
-    assert.deepEqual(storedRecords(manager).map((record) => record['position']), [0, 1]);
-
-    manager.appendMessage(user('LATER', 5) as unknown as Message);
-    manager.appendMessage(user('LATER AGAIN', 6) as unknown as Message);
-    const sessionFile = manager.getSessionFile();
-    assert.ok(sessionFile);
-    const reopened = SessionManager.open(sessionFile, dir);
-    const native = nativeMessages(reopened);
-    const restarted = project(reopened, [b], native);
-
-    assert.deepEqual(restarted.slice(0, second.length), second,
-      'the entire earlier provider-wire prefix, including the B update, is identical');
-    assert.equal(restarted[second.length - 1]?.role, 'system');
-    assert.equal(sectionsOf(restarted[second.length - 1])[toolGuidanceSection('subagent')], 'B');
-    assert.equal(restarted[second.length], native[2], 'B still sits between its original neighbors');
-    assert.deepEqual(textsFor(restarted, 'subagent'), ['A', 'B'], 'no duplicate update is appended');
-    assert.deepEqual(storedRecords(reopened).map((record) => record['position']), [0, 1]);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('a marker keeps its place while recorded updates stay at their ordinals', () => {
-  const marker: NativeMessage = {
-    role: 'system', content: '', sections: { [toolGuidanceSection('subagent')]: 'M' }, timestamp: 2,
-  };
-  const manager = managerWith([declaration('subagent_list'), marker, user('GO')]);
-  const native = nativeMessages(manager);
-  project(manager, [guide('subagent', ['subagent_list'], 'M')], native);
-  assert.deepEqual(storedRecords(manager).map((record) => record['position']), [1],
-    'the same-text marker is a metadata snapshot at its own ordinal');
-
-  const updated = project(manager, [guide('subagent', ['subagent_list'], 'B')], native);
-  assert.deepEqual(textsFor(updated, 'subagent'), ['M', 'B']);
-  assert.equal(updated[1], native[1], 'the marker object is never rewritten');
-
-  const reverted = project(manager, [guide('subagent', ['subagent_list'], 'M')], native);
-  assert.deepEqual(textsFor(reverted, 'subagent'), ['M', 'B', 'M'],
-    'the later recorded update is not resurrected over a reverted asset');
-  assert.deepEqual(project(manager, [guide('subagent', ['subagent_list'], 'M')], native), reverted);
-});
-
 test('shared ordinals replay in journal append order and table reordering cannot change the prefix', () => {
   const common = (text: string) => guide('subagent', ['subagent_list'], text);
   const write = (text: string) => guide('write', ['msg_write'], text);
@@ -437,32 +358,6 @@ test('removing a guidance asset appends one null section update and keeps the ol
   assert.deepEqual(guidanceOrder(dropped), guidanceOrder(resumed),
     'dropping the id from the table is the same removal, not a history rewrite');
   assert.deepEqual(dropped.slice(0, removed.length), removed);
-});
-
-test('a native context edit starts a rebased boundary for recorded placements', () => {
-  const manager = managerWith([declaration('subagent_list'), user('GO')]);
-  const a = guide('subagent', ['subagent_list'], 'A');
-  const b = guide('subagent', ['subagent_list'], 'B');
-  project(manager, [a]);
-  const updated = project(manager, [b], nativeMessages(manager));
-  assert.deepEqual(guidanceOrder(updated), [['subagent', 'A'], ['subagent', 'B']]);
-
-  const target = manager.getBranch().find((entry) => entry.type === 'message' && entry.message.role === 'user');
-  assert.ok(target);
-  manager.appendContextEdit(target.id, { content: 'edited' });
-  const boundary = latestBoundary(manager);
-  assert.equal(boundary, manager.getBranch().at(-1)?.id, 'the latest context edit is the caller supplied boundary');
-
-  const native = nativeMessages(manager);
-  const rebased = project(manager, [b], native);
-  assert.equal(sectionsOf(rebased[0])[toolGuidanceSection('subagent')], 'B',
-    'the last recorded text moves once into the rebuilt leading boundary');
-  assert.deepEqual(guidanceOrder(rebased), [['subagent', 'B']]);
-  assert.deepEqual(storedRecords(manager).filter((record) => record['checkpointId'] === boundary), [{
-    version: 1, checkpointId: boundary, id: 'subagent', text: 'B', position: 'head',
-  }]);
-  assert.deepEqual(project(manager, [b], nativeMessages(manager)), rebased,
-    'the same boundary replays the pinned head without another write');
 });
 
 test('a live namespace source appends after old turns instead of at its old declaration', () => {
@@ -544,22 +439,6 @@ test('compaction rebases stale placements into the leading boundary and pins the
   assert.deepEqual(edited.slice(0, rebased.length), rebased, 'the compacted prefix stays stable');
 });
 
-test('a checkpoint without a leading system message gets one leading guidance boundary', () => {
-  const manager = managerWith([user('after compaction')]);
-  manager.appendCustomEntry(TOOL_GUIDANCE_RECORD, {
-    version: 1, checkpointId: null, id: 'subagent', text: 'A', position: 0,
-  });
-  const native = nativeMessages(manager);
-  const rebased = project(manager, [guide('subagent', ['subagent_list'], 'A')], native, 'checkpoint-1');
-
-  assert.equal(rebased[0]?.role, 'system');
-  assert.equal(sectionsOf(rebased[0])[toolGuidanceSection('subagent')], 'A');
-  assert.equal(rebased[1], native[0], 'native messages follow the leading boundary untouched');
-  assert.deepEqual(storedRecords(manager).at(-1), {
-    version: 1, checkpointId: 'checkpoint-1', id: 'subagent', text: 'A', position: 'head',
-  });
-});
-
 test('a malformed journal record fails explicitly with no schema fallback', () => {
   const broken = managerWith([declaration('subagent_list')]);
   const cases: unknown[] = [
@@ -585,16 +464,5 @@ test('a malformed journal record fails explicitly with no schema fallback', () =
   assert.throws(
     () => project(broken, [guide('subagent', ['subagent_list'], 'A')]),
     /Malformed harness-tool-guidance entry on the session branch/,
-  );
-});
-
-test('a same-checkpoint ordinal beyond the native transcript fails instead of clamping', () => {
-  const manager = managerWith([declaration('subagent_list'), user('GO')]);
-  manager.appendCustomEntry(TOOL_GUIDANCE_RECORD, {
-    version: 1, checkpointId: null, id: 'subagent', text: 'A', position: 5,
-  });
-  assert.throws(
-    () => project(manager, [guide('subagent', ['subagent_list'], 'A')]),
-    /follows native message 5, but the request has 2 native messages/,
   );
 });

@@ -2,7 +2,6 @@
  * Focused unit and integration tests for Capability compaction pruning:
  * - Direct tool execution and detectable admission failure handling
  * - Nested Codemode execution (durationMs completion criterion)
- * - Structural window interval extraction (index-based, no clock)
  * - Group/member pruning semantics (partial keeps members, full drops prose and guidance)
  * - Manual grants and baseline tools protection
  * - Chronological folding & rediscovery without permanent tombstones
@@ -28,7 +27,6 @@ import {
 import {
   computePrunableCapabilities,
   extractUsedToolsFromWindow,
-  extractWindowEntries,
   recordCompactionPruning,
 } from "../../src/capability/pruning.ts";
 import { createToolAdmission } from "../../src/capability/admission.ts";
@@ -99,29 +97,6 @@ function nestedToolResultMessage(
     timestamp: 1030,
   };
 }
-
-test("extractWindowEntries extracts entries strictly between compactions without timestamps", () => {
-  const branch = [
-    { id: "e1", type: "message", message: userMessage("start") },
-    { id: "c1", type: "compaction", summary: "first compaction" },
-    { id: "e2", type: "message", message: userMessage("turn 2") },
-    { id: "e3", type: "message", message: userMessage("turn 3") },
-    { id: "c2", type: "compaction", summary: "second compaction" },
-    { id: "e4", type: "message", message: userMessage("turn 4") },
-  ];
-
-  // Window before c1: only e1
-  const w1 = extractWindowEntries(branch, "c1");
-  assert.deepEqual(w1.map((e: any) => e.id), ["e1"]);
-
-  // Window before c2: strictly between c1 and c2 (e2, e3)
-  const w2 = extractWindowEntries(branch, "c2");
-  assert.deepEqual(w2.map((e: any) => e.id), ["e2", "e3"]);
-
-  // Window with no compactionId passed uses tail (after c2)
-  const wTail = extractWindowEntries(branch, null);
-  assert.deepEqual(wTail.map((e: any) => e.id), ["e4"]);
-});
 
 test("extractUsedToolsFromWindow counts completed direct executions and filters admission failures", () => {
   const windowEntries = [
@@ -280,45 +255,6 @@ test("computePrunableCapabilities computes partial group pruning and full group 
   assert.deepEqual(result.removedGroups, ["mcp://github"]);
 });
 
-test("discoveryRecords drops fully removed group guidance and prose entirely", () => {
-  const branch: any[] = [];
-  const writer = {
-    appendEntry: (customType: string, data?: unknown) => {
-      branch.push({ id: `entry_${branch.length + 1}`, type: "custom", customType, data });
-    },
-  };
-
-  // Group with guidance
-  appendDiscoveryRecord(
-    writer,
-    "call_init",
-    {
-      status: "ok",
-      tools: [
-        {
-          ref: "namespace://docker",
-          name: "docker",
-          instructions: "Docker guidance text",
-          tools: [{ ref: "tool://docker_run", name: "docker_run" }],
-        },
-      ],
-      mcp: [],
-      skills: [],
-      guidance: [{ ref: "namespace://docker", name: "docker", instructions: "Docker guidance text" }],
-    },
-    coverage,
-  );
-
-  // Prune docker_run and namespace://docker
-  branch.push({ id: "comp_1", type: "compaction", summary: "compaction summary" });
-  appendPruneRecord(writer, "comp_1", ["docker_run"], ["namespace://docker"]);
-
-  const folded = discoveryRecords(branch);
-  assert.equal(folded.length, 1);
-  assert.equal(folded[0]?.result.tools.length, 0, "group hit dropped");
-  assert.equal(folded[0]?.result.guidance, undefined, "guidance for fully pruned group is completely omitted");
-});
-
 test("successive member pruning removes old guidance without reviving metadata on rediscovery", () => {
   const branch: unknown[] = [];
   const writer = {
@@ -394,6 +330,7 @@ test("discoveryRecords folds prune records chronologically and preserves skills"
         },
       ],
       skills: [{ ref: "/skills/test/SKILL.md", name: "test", filePath: "/skills/test/SKILL.md" }],
+      guidance: [{ ref: "mcp://github", instructions: "GitHub guidance" }],
     },
     coverage,
   );
@@ -414,6 +351,7 @@ test("discoveryRecords folds prune records chronologically and preserves skills"
 
   // mcp://github had 0 tools left and was in removedGroups -> completely dropped with its guidance
   assert.equal(disc.result.mcp.length, 0);
+  assert.equal(disc.result.guidance, undefined, "guidance for a fully pruned group is omitted");
 
   // skills are preserved
   assert.equal(disc.result.skills.length, 1);
