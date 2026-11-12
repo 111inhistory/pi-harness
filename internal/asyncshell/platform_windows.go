@@ -214,3 +214,6 @@ func (WindowsBackend) OwnsProcess(pid int, marker string, dir string) bool {
 	command := strings.TrimPrefix(answer, "cmd:")
 	return strings.Contains(command, marker) && strings.Contains(command, dir)
 }
+
+// defaultBackend is tmux.ts's `backend` selection for Windows builds.
+func defaultBackend() ShellBackend { return WindowsBackend{} }

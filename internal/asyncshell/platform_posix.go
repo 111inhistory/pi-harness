@@ -136,3 +136,6 @@ func codeOrUnknown(code *int) string {
 	}
 	return strconv.Itoa(*code)
 }
+
+// defaultBackend is tmux.ts's `backend` selection for POSIX builds.
+func defaultBackend() ShellBackend { return PosixBackend{} }

@@ -25,3 +25,25 @@ func int64Ptr(value int64) *int64 { return &value }
 func intPtr(value int) *int       { return &value }
 func formatInt(value int) string  { return strconv.Itoa(value) }
 func hexEncode(data []byte) string { return hex.EncodeToString(data) }
+
+// parseIntPrefix mirrors Number.parseInt(value, 10): optional sign + leading digits.
+func parseIntPrefix(value string) (int64, bool) {
+	index := 0
+	for index < len(value) && (value[index] == ' ' || value[index] == '\t' || value[index] == '\n' || value[index] == '\r') {
+		index++
+	}
+	start := index
+	if index < len(value) && (value[index] == '+' || value[index] == '-') {
+		index++
+	}
+	digits := 0
+	for index < len(value) && value[index] >= '0' && value[index] <= '9' {
+		index++
+		digits++
+	}
+	if digits == 0 {
+		return 0, false
+	}
+	parsed, err := strconv.ParseInt(value[start:index], 10, 64)
+	return parsed, err == nil
+}

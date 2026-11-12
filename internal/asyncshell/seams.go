@@ -218,3 +218,65 @@ func EnsurePrivateDirectory(directory string) error {
 func SamePath(left string, right string) bool {
 	panic("TODO(language-adaptation): fs-path samePath")
 }
+
+// ---- child_process / process.kill / process.on seams for the runner ----
+
+// ProcessKill is process.kill(pid, signal); signal "" means the 0 liveness probe.
+func ProcessKill(pid int, signal string) error {
+	panic("TODO(language-adaptation): process.kill")
+}
+
+// ProcessOnSignal is process.on(signal, handler) for the runner's stop handlers.
+func ProcessOnSignal(signal string, handler func(signal string)) {
+	panic("TODO(language-adaptation): process.on(signal)")
+}
+
+// SpawnInheritOptions is the spawn options used by runnerMain.
+type SpawnInheritOptions struct {
+	Cwd                      string
+	Env                      map[string]string
+	StdioInherit             bool
+	WindowsVerbatimArguments bool
+}
+
+// ChildProcess models the node ChildProcess events runnerMain uses.
+type ChildProcess struct {
+	Pid *int
+}
+
+// Kill is child.kill(signal).
+func (c ChildProcess) Kill(signal string) {}
+
+// OnceExit is child.once("exit", handler).
+func (c ChildProcess) OnceExit(handler func(code *int, signal *string)) {}
+
+// OnceError is child.once("error", handler).
+func (c ChildProcess) OnceError(handler func(err error)) {}
+
+// Wait blocks until the exit or error handler fired; 0 for exit, 1 for error.
+func (c ChildProcess) Wait() int { panic("TODO(language-adaptation): ChildProcess.Wait") }
+
+// SpawnInherit is child_process.spawn(...) for the runner (stdio inherited).
+func SpawnInherit(file string, args []string, options SpawnInheritOptions) ChildProcess {
+	panic("TODO(language-adaptation): child_process.spawn")
+}
+
+// SpawnDetachedOptions is the detached monitor spawn options.
+type SpawnDetachedOptions struct {
+	Detached    bool
+	StdioIgnore bool
+	Env         map[string]string
+}
+
+// DetachedChild is the monitor ChildProcess subset (pid + unref).
+type DetachedChild struct {
+	Pid *int
+}
+
+// Unref is child.unref().
+func (c DetachedChild) Unref() {}
+
+// SpawnDetached is child_process.spawn(..., { detached: true, stdio: "ignore" }).
+func SpawnDetached(command string, args []string, options SpawnDetachedOptions) DetachedChild {
+	panic("TODO(language-adaptation): detached spawn")
+}
