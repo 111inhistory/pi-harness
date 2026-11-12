@@ -12,21 +12,21 @@ const AsyncShellKind = "async-shell"
 // (TS: MAX_RESULT_BYTES = 32 * 1024).
 const MaxResultBytes = 32 * 1024
 
+const InternalErrorMessage = "pi-job encountered an internal error. Cleanup is best effort; do not assume the command has stopped or cleanup is complete. Inspect the task before taking further action."
+
 // ShellStatus is TS `type ShellStatus`.
 type ShellStatus string
 
 const (
-	StatusRunning   ShellStatus = "running"
-	StatusCompleted ShellStatus = "completed"
-	StatusFailed    ShellStatus = "failed"
-	StatusCancelled ShellStatus = "cancelled"
-	StatusTimedOut  ShellStatus = "timed_out"
+	StatusRunning       ShellStatus = "running"
+	StatusCompleted     ShellStatus = "completed"
+	StatusFailed        ShellStatus = "failed"
+	StatusInternalError ShellStatus = "internal_error"
+	StatusCancelled     ShellStatus = "cancelled"
+	StatusTimedOut      ShellStatus = "timed_out"
 )
 
 // ShellResult is TS `interface ShellResult`.
-// TODO(harness-protocol): the reference shape has no error/reason field, so a
-// task failure is distinguishable only by status + exitCode + output.log text.
-// See the monitor panic TODO in tmux.go before extending this wire type.
 type ShellResult struct {
 	ID        string      `json:"id"`
 	Status    ShellStatus `json:"status"`
@@ -35,6 +35,7 @@ type ShellResult struct {
 	Cursor    int64       `json:"cursor"`
 	LogPath   string      `json:"logPath"`
 	Truncated bool        `json:"truncated"`
+	Message   string      `json:"message,omitempty"`
 }
 
 // AsyncShellRegisterFrame is TS `interface AsyncShellRegisterFrame`.

@@ -2,9 +2,9 @@
  * Wire contract between the async-shell CLI/monitor and the Harness host.
  *
  * The host owns admission: it hands the CLI a per-Actor token in the
- * environment, tracks outstanding tasks, and treats `complete` as the only
- * unregistration. Frames travel over the existing managed NDJSON endpoint with
- * `writeSocket`; an empty response line is the acknowledgement, and an unknown
+ * environment and tracks outstanding tasks. `complete` ends result waiting;
+ * internal_error retains its resource lease for existing owner cleanup. Frames
+ * travel over the existing managed NDJSON endpoint with `writeSocket`; an empty response line is the acknowledgement, and an unknown
  * handoff result is never replayed by the sender.
  *
  * `ShellResult.cursor` is the byte offset just past the text this result carried,
@@ -25,7 +25,7 @@ const MAX_ID_CHARS = 12;
 const MAX_TOKEN_CHARS = 512;
 const MAX_PATH_CHARS = 4096;
 
-export type ShellStatus = "running" | "completed" | "failed" | "cancelled" | "timed_out";
+export type ShellStatus = "running" | "completed" | "failed" | "internal_error" | "cancelled" | "timed_out";
 
 
 export interface ShellResult {
@@ -40,6 +40,8 @@ export interface ShellResult {
   readonly logPath: string;
   /** More filtered output remains after `cursor`; read on from there. */
   readonly truncated: boolean;
+  /** Internal-error reminder; output and cursor retain their normal log semantics. */
+  readonly message?: string;
 }
 
 export interface AsyncShellRegisterFrame {
@@ -56,7 +58,7 @@ export interface AsyncShellCompleteFrame {
   readonly token: string;
   readonly operation: "complete";
   readonly id: string;
-  /** Whether the host should notify the Actor; unregistration happens either way. */
+  /** Whether the host should notify the Actor; internal errors retain cleanup ownership. */
   readonly notify: boolean;
   readonly result: ShellResult;
 }
@@ -88,6 +90,7 @@ function status(value: unknown): ShellStatus {
     case "running":
     case "completed":
     case "failed":
+    case "internal_error":
     case "cancelled":
     case "timed_out":
       return value;
@@ -132,6 +135,8 @@ function shellResult(value: unknown, id: string): ShellResult {
     cursor: cursor(value["cursor"]),
     logPath: text(value["logPath"], "result.logPath", MAX_PATH_CHARS),
     truncated: value["truncated"],
+    ...(reported === "internal_error"
+      ? { message: text(value["message"], "result.message", 4096) } : {}),
   };
 }
 

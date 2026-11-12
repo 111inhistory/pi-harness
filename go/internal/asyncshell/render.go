@@ -21,7 +21,11 @@ func FormatResult(result ShellResult) string {
 		head = append(head, "more output pending")
 	}
 	head = append(head, "log "+result.LogPath)
-	return strings.Join(head, "  ") + "\n\noutput:\n" + result.Output
+	message := ""
+	if result.Message != "" {
+		message = "\n" + result.Message
+	}
+	return strings.Join(head, "  ") + message + "\n\noutput:\n" + result.Output
 }
 
 // FormatError is TS formatError: `pi-job: <message>`, with the usage overview when provided.

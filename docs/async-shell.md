@@ -39,6 +39,8 @@ pi-job cancel TASK_ID
 
 `poll` 不等待新输出，默认读取尚未返回的增量。结果包含 `id`、`status`、`exitCode`、`output`、`cursor`、`logPath` 和 `truncated`。游标是过滤后日志的 UTF-8 字节偏移。每次 `output` 最多 32 KiB，累计日志保留；`truncated` 表示本次没有容纳全部输出，可继续查询或读取日志文件。任务已进入终态时，也应继续读取尚未返回的输出。
 
+`internal_error` 表示 pi-job 自身发生内部异常，与命令返回非零的 `failed` 区分。结果的 `message` 提醒模型：清理仅尽力而为，不应假定命令已停止或资源已清理，应先检查任务再采取行动。
+
 `create`、`poll`、`send`、`key`、`cancel` 和自动完成通知共享默认消费游标，回调或其他调用可能先取走输出。需要独立回读时使用 `read --cursor OFFSET`；`read` 不推进默认游标。`cancel` 返回当次尚未消费的输出，清理失败时返回非零退出码；无法确认资源退出时，宿主继续保留归属围栏。
 
 任务状态、原始 PTY 日志与过滤后的文本日志保存在任务根目录下的 `<任务ID>/`。默认根目录为 `os.tmpdir()/pi-async-shell-<uid>/`；连接宿主时，CLI 沿用宿主分配的固定根目录，子进程修改 `TMPDIR`／`TEMP` 不改变任务定位。Windows 通常使用 `%TEMP%/pi-async-shell-0/<任务ID>/`，其中 `0` 是缺少 Unix UID 时的目录后缀。每个任务使用独立 tmux server 或 psmux `-L pi-job-<任务ID>` 命名空间，不使用当前用户正在操作的会话。
@@ -97,6 +99,8 @@ wrapper 从环境读取回调地址。注册与完成事件进入同一个 Actor
 Native Bash and PowerShell execution remains available when the managed callback host cannot initialize. The wrapper clears inherited callback leases and marks the callback host unavailable. In this state, `pi-job create` reports the failure before allocating a task or starting a command; ordinary shell execution and queries of existing tasks remain available. Standalone CLI use outside the Harness retains its existing behavior.
 
 Subagent 有未完成 Shell 任务时，Runner 保留当前 Job 和会话，并暂停活动时间预算计时；完成结果先入队，再释放等待。子会话关闭会撤销其执行标识并停止所属任务。根会话切换、分叉、重载或关闭时，旧宿主停止所持任务并保留资源围栏，直到清理结束。
+
+`internal_error` 结束结果等待，资源归属仍保留到原有关闭清理入口；不新增自动恢复或重试。panic 诊断和回调同样尽力而为，不保证异常后一定收到通知。
 
 IPC 投递失败或超时不证明结果未入队，因此不会自动重发未知结果。明确拒收的注册不发送完成回调；注册结果未知时保留原有清理围栏。CLI 的日志可用于后续人工查询。
 

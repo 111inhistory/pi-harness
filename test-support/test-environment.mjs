@@ -55,7 +55,8 @@ export function parseJobOutput(stdout) {
   const head = (split === -1 ? stdout : stdout.slice(0, split)).replace(/\n$/, '');
   const rest = split === -1 ? '' : stdout.slice(split + 2);
   const body = rest.startsWith('output:\n') ? rest.slice('output:\n'.length) : rest;
-  const fields = /^(job_[0-9a-f]{8}) {2}(\w+)(?: {2}exit (-?\d+))? {2}cursor (\d+)( {2}more output pending)? {2}log (.+)$/.exec(head);
+  const [metadata, ...message] = head.split('\n');
+  const fields = /^(job_[0-9a-f]{8}) {2}(\w+)(?: {2}exit (-?\d+))? {2}cursor (\d+)( {2}more output pending)? {2}log (.+)$/.exec(metadata);
   if (fields === null) throw new Error(`not a pi-job result:\n${stdout}`);
   return {
     id: fields[1],
@@ -65,5 +66,6 @@ export function parseJobOutput(stdout) {
     truncated: fields[5] !== undefined,
     output: body,
     logPath: fields[6],
+    ...(message.length > 0 ? { message: message.join('\n') } : {}),
   };
 }

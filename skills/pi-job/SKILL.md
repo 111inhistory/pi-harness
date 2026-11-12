@@ -37,7 +37,7 @@ Task IDs use `job_<8 lowercase hex digits>`, for example `job_1234cdef`. Use the
 
 `poll` returns immediately with new output and current status. Use it when a progress check will inform your next action; wait for the completion event otherwise.
 
-Results contain `id`, `status`, `exitCode`, `output`, `cursor`, `logPath`, and `truncated`. Check status and exit code before treating the command as successful. Terminal states are `completed`, `failed`, `cancelled`, and `timed_out`.
+Results contain `id`, `status`, `exitCode`, `output`, `cursor`, `logPath`, and `truncated`. Check status and exit code before treating the command as successful. Terminal states are `completed`, `failed`, `cancelled`, `timed_out`, and `internal_error`. An `internal_error` result includes a `message` reminder: cleanup is best effort; do not assume the command stopped or cleanup completed. Inspect the task before taking further action.
 
 Default responses consume the next output chunk. Read the same task sequentially so its default cursor remains useful. If `truncated` is true, more output remains; poll again when you need the next chunk. A terminal status can still have unread output.
 

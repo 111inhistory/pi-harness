@@ -52,6 +52,24 @@ test('completion stays owned until its result is queued, then releases the same 
   await host.close();
 });
 
+test('an internal error stops waiting, delivers its reminder, and retains the existing cleanup lease', async () => {
+  const gate = deferred();
+  const { host, events, frame } = fixture({ cancel: () => gate.promise });
+  const register = frame('sub_1');
+  await host.receive('sub_1', register);
+  const failure = { ...result, status: 'internal_error', exitCode: null,
+    message: 'Cleanup is best effort; do not assume the command has stopped or cleanup is complete.' };
+  await host.receive('sub_1', { ...register, operation: 'complete', notify: true, result: failure });
+  assert.equal(host.hasPending('sub_1'), false, 'the model can act on the error without waiting for another result');
+  assert.deepEqual(events, ['deliver:sub_1', 'wake:sub_1'], 'reporting the error does not start automatic recovery');
+  const release = host.release('sub_1');
+  assert.deepEqual(events, ['deliver:sub_1', 'wake:sub_1', 'cancel']);
+  assert.throws(() => host.environment('sub_1'), /still retiring/);
+  gate.resolve();
+  await release;
+  await host.close();
+});
+
 test('a synchronous result releases its task without another completion message', async () => {
   const { host, events, frame } = fixture();
   const register = frame('Main');

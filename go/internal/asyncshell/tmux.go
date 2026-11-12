@@ -94,9 +94,10 @@ type taskState struct {
 
 // exitFile is TS interface ExitFile.
 type exitFile struct {
-	Code   *int    `json:"code"`
-	Signal *string `json:"signal"`
-	Error  *string `json:"error"`
+	Code          *int    `json:"code"`
+	Signal        *string `json:"signal"`
+	Error         *string `json:"error"`
+	InternalError bool    `json:"internalError,omitempty"`
 }
 
 // OutputChunk is TS interface OutputChunk.
@@ -305,7 +306,7 @@ func readStateFile(paths TaskPaths, task taskFile) taskState {
 	if s, ok := m["status"].(string); ok {
 		statusRaw = s
 	}
-	known := statusRaw == "running" || statusRaw == "completed" || statusRaw == "failed" || statusRaw == "cancelled" || statusRaw == "timed_out"
+	known := statusRaw == "running" || statusRaw == "completed" || statusRaw == "failed" || statusRaw == "internal_error" || statusRaw == "cancelled" || statusRaw == "timed_out"
 	status := StatusRunning
 	if known {
 		status = ShellStatus(statusRaw)
@@ -405,7 +406,7 @@ func hasMore(file string, cursor int64) bool {
 
 func resultOf(paths TaskPaths, state taskState, cursor int64) ShellResult {
 	chunk := readOutput(paths.Filtered, cursor)
-	return ShellResult{ID: state.ID, Status: state.Status, ExitCode: state.ExitCode, Output: chunk.Text, Cursor: chunk.Cursor, LogPath: paths.Filtered, Truncated: chunk.Truncated}
+	return ShellResult{ID: state.ID, Status: state.Status, ExitCode: state.ExitCode, Output: chunk.Text, Cursor: chunk.Cursor, LogPath: paths.Filtered, Truncated: chunk.Truncated, Message: resultMessage(state.Status)}
 }
 
 func consumeOutput(paths TaskPaths, state taskState) ShellResult {
@@ -416,7 +417,14 @@ func consumeOutput(paths TaskPaths, state taskState) ShellResult {
 
 func statusResult(paths TaskPaths, state taskState) ShellResult {
 	cursor := readCursor(paths)
-	return ShellResult{ID: state.ID, Status: state.Status, ExitCode: state.ExitCode, Output: "", Cursor: cursor, LogPath: paths.Filtered, Truncated: hasMore(paths.Filtered, cursor)}
+	return ShellResult{ID: state.ID, Status: state.Status, ExitCode: state.ExitCode, Output: "", Cursor: cursor, LogPath: paths.Filtered, Truncated: hasMore(paths.Filtered, cursor), Message: resultMessage(state.Status)}
+}
+
+func resultMessage(status ShellStatus) string {
+	if status == StatusInternalError {
+		return InternalErrorMessage
+	}
+	return ""
 }
 
 func sleep(ms int) {
@@ -747,7 +755,9 @@ func RunnerMain(dir string) (exit int) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			message := "internal error: " + messageOf(recovered)
-			_ = caught(func() { writeExit(paths, exitFile{Code: nil, Signal: nil, Error: strPtr(message)}) })
+			_ = caught(func() {
+				writeExit(paths, exitFile{Code: nil, Signal: nil, Error: strPtr(message), InternalError: true})
+			})
 			os.Stderr.WriteString("pi-job: " + message + "\n")
 			exit = 1
 		}
@@ -812,14 +822,12 @@ func RunnerMain(dir string) (exit int) {
 	return 0
 }
 
-// MonitorMain is TS monitorMain: the detached per-task monitor. A panic is
-// reported as a failed completion frame (never silent): the boundary records the
-// failure on disk and attempts one `complete` with notify=true, unless a frame
-// was already attempted (unknown delivery is never replayed).
+// MonitorMain owns the detached per-task monitor. Panic reporting and cleanup
+// are best effort; internal_error reports failure without claiming cleanup.
+// An unknown delivery outcome is never replayed.
 func MonitorMain(dir string) {
 	paths := taskPaths(dir)
 	frameAttempted := false
-	closedWritten := false
 	var task taskFile
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -828,37 +836,19 @@ func MonitorMain(dir string) {
 			_ = caught(func() {
 				appendPrivateFile(paths.Filtered, []byte("async-shell: "+message+"\n"))
 			})
-			state := taskState{ID: safe.ID, Status: StatusFailed, ExitCode: nil, CreatedAt: safe.CreatedAt, FinalizedAt: int64Ptr(nowMs())}
-			_ = caught(func() {
-				current := readStateFile(paths, safe)
-				if current.Status == StatusRunning || current.FinalizedAt == nil {
-					writeState(paths, state)
-				} else {
-					state = current
-				}
-			})
+			state := taskState{ID: safe.ID, Status: StatusInternalError, ExitCode: nil, CreatedAt: safe.CreatedAt, FinalizedAt: int64Ptr(nowMs())}
+			_ = caught(func() { writeState(paths, state) })
 			_ = caught(func() { backend.KillServer(dir) })
-			// TODO(harness-protocol): the TypeScript reference had no
-			// monitor-internal-error category, and ShellResult carries no
-			// error/reason field. A panic is therefore reported as
-			// status=failed with the detail only in output.log; it is not
-			// structurally distinguishable from a command failure. Coordinate
-			// with the Harness protocol/host (validateAsyncShellFrame /
-			// AsyncShellHost) before adding a structured failure reason or a
-			// distinct status.
 			if !frameAttempted {
 				var callback *CallbackTarget
 				_ = caught(func() { callback = CallbackFromEnv() })
 				if callback != nil {
 					frameAttempted = true
 					var result ShellResult
-					_ = caught(func() { result = statusResult(paths, state) })
-					_ = sendFrame(*callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, Token: callback.Token, Operation: "complete", ID: state.ID, Notify: true, Result: result})
+					if caught(func() { result = statusResult(paths, state) }) == nil {
+						_ = sendFrame(*callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, Token: callback.Token, Operation: "complete", ID: state.ID, Notify: true, Result: result})
+					}
 				}
-			}
-			if !closedWritten {
-				closedWritten = true
-				_ = caught(func() { writePrivateFile(paths.Closed, nil) })
 			}
 		}
 	}()
@@ -970,6 +960,9 @@ func MonitorMain(dir string) {
 			} else {
 				status = StatusFailed
 			}
+			if exit.InternalError {
+				status = StatusInternalError
+			}
 			if exit.Error != nil {
 				appendPrivateFile(paths.Filtered, []byte("async-shell: "+*exit.Error+"\n"))
 			}
@@ -996,7 +989,6 @@ func MonitorMain(dir string) {
 			_ = sendFrame(*callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, Token: callback.Token, Operation: "complete", ID: task.ID, Notify: decision == "async", Result: result})
 		}
 		writePrivateFile(paths.Closed, nil)
-		closedWritten = true
 	}
 
 	for {
@@ -1046,6 +1038,7 @@ func asExitFile(value interface{}) *exitFile {
 		return nil
 	}
 	exit := exitFile{}
+	exit.InternalError, _ = m["internalError"].(bool)
 	if number, ok := m["code"].(float64); ok {
 		v := int(number)
 		exit.Code = &v

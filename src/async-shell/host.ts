@@ -6,7 +6,7 @@ import { validateAsyncShellFrame, type ShellResult } from './protocol.ts';
 
 interface Owner {
   readonly token: string;
-  readonly tasks: Map<string, string>;
+  readonly tasks: Map<string, { directory: string; status: 'running' | 'internal_error' }>;
   retiring: boolean;
   release: Promise<void> | null;
 }
@@ -44,7 +44,12 @@ export class AsyncShellHost {
     };
   }
 
-  hasPending(actorId: string): boolean { return (this.#owners.get(actorId)?.tasks.size ?? 0) > 0; }
+  hasPending(actorId: string): boolean {
+    for (const task of this.#owners.get(actorId)?.tasks.values() ?? []) {
+      if (task.status === 'running') return true;
+    }
+    return false;
+  }
 
   async receive(actorId: string, input: unknown): Promise<void> {
     const frame = validateAsyncShellFrame(input);
@@ -65,16 +70,20 @@ export class AsyncShellHost {
       if (!this.#options.accepting()) refuse('The async shell host is retiring.');
       if (!samePath(frame.directory, taskDirectory(frame.id, this.#root))) refuse('The async shell task directory does not match its ID.');
       if (owner.tasks.has(frame.id)) refuse(`Async shell task ${frame.id} is already registered.`);
-      owner.tasks.set(frame.id, frame.directory);
+      owner.tasks.set(frame.id, { directory: frame.directory, status: 'running' });
       return;
     }
-    if (!owner.tasks.has(frame.id)) throw new Error(`Unknown async shell task ${frame.id}.`);
+    const task = owner.tasks.get(frame.id);
+    if (task === undefined) throw new Error(`Unknown async shell task ${frame.id}.`);
     try {
       // Queue the result before releasing the wait: the runner must observe
       // either an outstanding task or its completion entry, with no gap.
       if (frame.notify && this.#options.accepting()) await this.#options.deliver(actorId, frame.result);
     } finally {
-      owner.tasks.delete(frame.id);
+      // An internal error ends the wait, but does not certify cleanup. The
+      // existing owner release still holds and cancels that resource lease.
+      if (frame.result.status === 'internal_error') task.status = 'internal_error';
+      else owner.tasks.delete(frame.id);
       this.#options.wake(actorId);
     }
   }
@@ -86,7 +95,7 @@ export class AsyncShellHost {
     // Revoke first and keep the resource lease until cancellation finishes.
     owner.retiring = true;
     owner.release = (async () => {
-      const settled = await Promise.allSettled([...owner.tasks.values()].map(directory => this.#options.cancel(directory, this.#root)));
+      const settled = await Promise.allSettled([...owner.tasks.values()].map(({ directory }) => this.#options.cancel(directory, this.#root)));
       this.#options.wake(actorId);
       const failures = settled.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
       if (failures.length > 0) throw new AggregateError(failures.map(result => result.reason), 'Async shell tasks did not all stop.');

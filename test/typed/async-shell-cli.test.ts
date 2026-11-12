@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -409,6 +409,27 @@ test('a host-owned task keeps its root when the child changes TMPDIR', options, 
   assert.equal(shellHost.hasPending('Main'), false, 'the completion unregisters the task');
 });
 
+test('a monitor internal error crosses the native callback with a cleanup reminder', options, async t => {
+  const callback = await callbackHost(t);
+  const root = await mkdtemp(path.join(tmpdir(), 'async-shell-internal-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dir = path.join(root, 'job_11223344');
+  await mkdir(dir, { mode: 0o700 });
+  // Corrupt metadata exercises the actual recovery boundary without a test hook.
+  await writeFile(path.join(dir, 'task.json'), '{}', { mode: 0o600 });
+  await cli(['__monitor', dir], { env: { PI_AGENT_SOCKET: callback.socket, PI_ASYNC_SHELL_TOKEN: 'internal-token', PATH: root } });
+  assert.equal(callback.frames.length, 1, 'panic reporting makes one attempt');
+  const complete = callback.frames[0]!;
+  assert.equal(complete.operation, 'complete');
+  if (complete.operation !== 'complete') assert.fail('expected the existing completion frame');
+  assert.equal(complete.result.status, 'internal_error');
+  assert.equal(complete.result.exitCode, null);
+  assert.match(complete.result.message!, /do not assume the command has stopped or cleanup is complete/);
+  assert.equal(existsSync(path.join(dir, 'closed')), false, 'panic does not certify cleanup');
+  const state = JSON.parse(await readFile(path.join(dir, 'state.json'), 'utf8'));
+  assert.equal(state.status, 'internal_error');
+});
+
 test('a completion frame cannot report a running task', () => {
   const result = { id: 'job_11111111', status: 'running', exitCode: null, output: '', cursor: 0, logPath: '/tmp/job_11111111/output.log', truncated: false };
   const frame = { kind: 'async-shell', token: 'token', operation: 'complete', id: 'job_11111111', notify: true, result };
@@ -417,6 +438,12 @@ test('a completion frame cannot report a running task', () => {
     validateAsyncShellFrame({ ...frame, result: { ...result, status: 'completed' } }).operation,
     'complete',
   );
+  const internal = { ...frame, result: { ...result, status: 'internal_error',
+    message: 'Cleanup is best effort; do not assume complete cleanup.' } };
+  const accepted = validateAsyncShellFrame(internal);
+  assert.equal(accepted.operation, 'complete');
+  if (accepted.operation === 'complete') assert.deepEqual(accepted.result, internal.result);
+  assert.throws(() => validateAsyncShellFrame({ ...internal, result: { ...internal.result, message: '' } }), /result.message/);
 });
 
 // A foreign server on a *socket path* only exists on POSIX; on Windows a task is
