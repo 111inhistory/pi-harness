@@ -28,12 +28,12 @@ async function fixture(t: TestContext, failedAttempts: number) {
     calls,
     budget: createJobBudget({ depth: 1 }),
     config: {
-      version: 2,
+      version: 3,
       classifier: { provider: 'openrouter', id: '~typesafe/jev-latest' },
       instructions: { role: 'Select the executor.', model: 'Select the fixture.' },
-      roles: [{ id: 'executor', instructions: 'Complete the fixture.', excludeTools: [], enableTools: [],
-        candidates: [{ model: 'fixture', thinking: 'medium' }] }],
-      models: [{ id: 'fixture', provider: model.provider, model: model.id, preference: 'Offline fixture.' }],
+      roles: [{ id: 'executor', instructions: 'Complete the fixture.', candidates: { fixture: {
+        model: { provider: model.provider, id: model.id }, thinkingLevel: 'medium', description: 'Offline fixture.',
+      } } }],
     },
   };
 }

@@ -69,3 +69,13 @@ export function applyToolModifiers(base: readonly string[], tokens: readonly Too
   }
   return [...selection];
 }
+
+/** Explicit final removals also fence a Fresh child's execution loadout. */
+export function excludedPresetTools(modifiers: readonly string[] = []): string[] {
+  const excluded = new Set<string>();
+  for (const token of parseToolModifiers(modifiers).tokens) {
+    if (token.op === '-') excluded.add(token.name);
+    else if (token.op === '+') excluded.delete(token.name);
+  }
+  return [...excluded];
+}

@@ -37,12 +37,12 @@ Subagent 会话存储使用增量生命周期事件与独立子会话文件。�
 | `customType` | 写入时机 | 字段 |
 | --- | --- | --- |
 | `subagent-job` | 注册一个 Job | `jobId`、`agentId`、`index`、`createdBy`、`continuedFromJobId`、`spec`、`origin`；首次 Job 另带 `actor: {name, parentAgentId, depth}`，建立 Actor 拓扑 |
-| `subagent-actor` | 身份建立或变化 | `agentId` 与身份补丁：`sessionFile`、`cwd`、`trusted`、`allowInherited`、`systemPrompt`、`roleId`、`roleInstructions`、`model`、`thinkingLevel`、`tools`、`excludedTools`、`assignment`、`routed`；可带 `anchor` |
+| `subagent-actor` | 身份建立或变化 | `agentId` 与身份补丁：`sessionFile`、`cwd`、`trusted`、`allowInherited`、`systemPrompt`、`roleId`、`roleInstructions`、`preset`、`model`、`thinkingLevel`、`tools`、`excludedTools`、`assignment`、`routed`；可带 `anchor` |
 | `subagent-job-start` | 原生 Job 起点建立后 | `jobId`、`startEntryId` |
 | `subagent-job-end` | 视图收尾后统一发布一次 | `jobId`、`status`、`result`、`error`、`history: {startEntryId, endEntryId}`、`budget`；可带 `historyState`、`historyError`，不改写模型结果 |
 | `subagent-anchor` | Job 终态以外的锚点移动 | `agentId`、`anchor` |
 
-`subagent-actor` 不单独创建拓扑。写时复制通过身份补丁记录新 `sessionFile`，不另设重定向事件。身份未变化的字段不重复写入；模型仅保存 provider 和 model id。
+`subagent-actor` 不单独创建拓扑。写时复制通过身份补丁记录新 `sessionFile`，不另设重定向事件。身份未变化的字段不重复写入；模型仅保存 provider 和 model id。`preset` 固定所选名称与命名或临时 Preset 的配置正文，不保存目录、认证或运行句柄；原生子分支的 `preset-state` 固定实际应用的工具基线、Codemode 和指引。续跑使用已有身份与分支快照，不重新读取配置文件。
 
 恢复按当前分支顺序折叠事件，再由 Runtime 统一校验拓扑、Job 所有者、续跑关系和中断裁决。Actor 层只提供原生文件与区间信息，不预先发布终态。默认流程不写周期快照，也不在每次模型回复后写用量事件。
 

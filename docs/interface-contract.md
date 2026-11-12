@@ -225,7 +225,7 @@ Capability 调用仍等待检索完成，再返回筛选后的资源。复用执
 
 ### 子会话
 
-- 子会话不得自行解除祖先限制。根会话把当前 `explicitlyDisabled` 与 `explicitlyEnabled` 都作为 **live denial** 沿作用域父链传播：禁用向子会话生效；显式启用是 root-only，子会话同样不能继承。denial 在每次资格解析时生效，已开始的执行不自动取消。
+- 子会话不得自行解除祖先限制。Fresh 应用命名或临时 Preset 的工具选择时仍需通过祖先资格检查；例如 Preset 保留 `write`，祖先禁用仍会将它排除。Preset 的显式最终减项也作为该 Actor 的执行排除传播给后代。根会话把当前 `explicitlyDisabled` 与 `explicitlyEnabled` 都作为 **live denial** 沿作用域父链传播：禁用向子会话生效；显式启用是 root-only，子会话同样不能继承。denial 在每次资格解析时生效，已开始的执行不自动取消。
 - 已学到的名字不会从子会话记忆中物理删除；denial 在每次解析时覆盖它，所以不能把“已学到”当作仍可使用。
 
 ### 程序接口
@@ -238,7 +238,7 @@ Harness RPC 独立接口提供权限查询与用户管理适配，与用户命�
 
 **配置。** 读取全局 agent 目录的 `presets.json` 与受信项目的 `.pi/presets.json`，项目同名项整体覆盖全局。每项可含 `model`（`provider`＋`id`）、`thinkingLevel`、`tools`、`codemode`（`mode`）与 `instructions`。`tools` 使用原生 `+name`／`-name`／裸名语义，始终基于会话首次启动捕获的初始工具集（原生默认工具、CLI 修饰与默认启用扩展工具，如 `capability`）计算，并记录为 Preset 工具基线；先应用 A 再应用 B 与直接应用 B 得到同一基线，跨 reload 不被前一个 Preset 污染。只有增减修饰符时，另保留当前已激活且有 Capability 发现或显式启用记录的工具；显式减项仍移除对应工具，裸名列表仍完整替换工具选择。保留的动态工具不写入 Preset 基线，继续由压缩淘汰策略管理。前后 Preset 基线比较时，若旧集合有工具不在新集合中，则下一次成功压缩执行淘汰，即使 `capability.pruneOnCompaction` 为 `false`；首次应用与初始基线比较，仅增加工具不触发，不改变全局配置。
 
-**入口。** `/preset` 打开选择器，`/preset NAME` 应用指定项，`/preset clear`（`none`／`off`）停止管理，`--preset NAME` 在启动时应用；状态栏显示当前 Preset。Preset 只作用于当前 Main 会话，不静默改变 Fresh／Inherited Subagent 的路由或模型。
+**入口。** `/preset` 打开选择器，`/preset NAME` 应用指定项，`/preset clear`（`none`／`off`）停止管理，`--preset NAME` 在启动时应用；状态栏显示当前 Preset。这些交互入口只作用于当前 Main。Fresh routing 显式选择命名或临时 Preset，复用配置解析、应用与指引投影；Inherited 保持捕获的模型与分支状态。
 
 **应用与失败。** 先校验模型存在于目录，再 `setModel`；模型不可用则整体不应用并报错，绝不报成功；thinking 与 tools 随后应用。`instructions` 作为独立 system 段落经 `prompt-section-journal` 增量投影并在 resume／tree／fork／reload 回放，不覆盖整份 system prompt。
 
@@ -281,7 +281,7 @@ Enter 提问，Shift+Enter 换行，Ctrl+C 仅取消当前回答（取消完成�
 - 子会话（Subagents）：非叶节点加载 `subagent_create`、`subagent_list`、`subagent_stop`、`capability` 与 `msg_write`；叶节点（`depth === maxDepth`）仅保留 `subagent_list` 与 `msg_write`。所有子节点显式保持激活 `msg_write`。
 - `write` 是 SDK 原生文件工具，完全保持原生行为，不被拦截或覆写，不承担 IPC 消息发送。
 
-Fresh 初始工具按 Pi 默认配置加载，包括已配置的扩展工具与 MCP 后端，并合并角色 `enableTools`。角色 `excludeTools` 通过 SDK 始终排除，`enableTools` 和扩展主动激活都不能绕过。Root 装配入口由子会话 surface 替代，不重复加载。Fresh 与 Inherited 均独立加载已配置的扩展与 MCP 后端（`noExtensions: false`）；Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定底层物理模型（`physicalModelForCall`），避免虚拟模型在子会话中重路由。它恢复捕获的工具白名单、系统提示词与思考强度。白名单仅限可重新创建的文件型扩展工具与 MCP 工具，父会话专属诊断工具不传递。若继承的异步 MCP 尚未完成注册，按 `subagent.inheritedToolWaitMs` 有界等待，默认最多 10 秒。
+Fresh 路由保留角色及其职责提示词，其他执行配置复用命名或临时 Preset。工具以子会话自己的默认集合为基线，应用 Preset 的 `tools` 修饰；显式最终减项通过 SDK 与作用域始终排除，后续激活不能绕过。Preset 的 Codemode 模式与指引使用同一分支记录及投影路径。候选与已解析选择固定在 Actor 身份中，续跑不读取后来编辑的配置。配置格式与离线转换见[Harness 参数配置](harness-configuration.md#fresh-routing-presets)。Root 装配入口由子会话 surface 替代，不重复加载。Fresh 与 Inherited 均独立加载已配置的扩展与 MCP 后端（`noExtensions: false`）；Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定底层物理模型（`physicalModelForCall`），避免虚拟模型在子会话中重路由。它恢复捕获的工具白名单、系统提示词与思考强度。白名单仅限可重新创建的文件型扩展工具与 MCP 工具，父会话专属诊断工具不传递。若继承的异步 MCP 尚未完成注册，按 `subagent.inheritedToolWaitMs` 有界等待，默认最多 10 秒。
 
 Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）、活跃直接子节点上限（Fresh 对应的 `subagent.maxActiveChildren`，默认 4；Inherited 对应的 `subagent.maxActiveInheritedChildren`，默认 3；两类直接子节点使用独立的父节点名额池）以及每层 Budget 通过 `harness.json` 配置，详见[Harness 参数配置](harness-configuration.md)。根服务和子会话使用同一份配置快照，已运行 Job 不受文件修改影响。这些配置不作为公开工具参数。
 
@@ -357,7 +357,7 @@ session 生命周期（创建、恢复、停止、轮询、定时检查）与 `/
 
 ### 思考强度
 
-候选模型直接配置单一 `thinking` 请求级别，例如 `"thinking": "high"`，不通过 Harness 区间计算。请求级别传给 Pi SDK，由原生 `clampThinkingLevel` 调整到模型支持的档位；不支持 reasoning 的模型使用 `off`，路由不因该档位不受支持而拒绝启动。Inherited 模式传入捕获的父会话思考强度，同样由 Pi SDK 按实际模型能力应用。Actor 记录子会话实际生效的强度供续跑使用。
+候选 Preset 使用 `thinkingLevel` 请求级别，例如 `"thinkingLevel": "high"`，未配置则保留子会话默认值，不通过 Harness 区间计算。请求级别传给 Pi SDK，由原生 `clampThinkingLevel` 调整到模型支持的档位；不支持 reasoning 的模型使用 `off`，路由不因该档位不受支持而拒绝启动。Inherited 模式传入捕获的父会话思考强度，同样由 Pi SDK 按实际模型能力应用。Actor 记录子会话实际生效的强度供续跑使用。
 
 ### 任务语言
 
@@ -501,7 +501,7 @@ Harness 为 Pi 原生 RPC 未覆盖的工具信息、子 Agent 控制、消息�
 
 本节指引与其他 namespace、MCP 指引共用分支记录与增量更新规则；会话恢复重放已有正文和落点。
 
-工具提示词应表达上述使用流程和行为边界。提示词正文存放在 `prompts/`，通过 `src/prompt-text.ts` 的类型化缓存 getter 读取；执行代码保留数据装配、参数结构和权限判断。角色说明与路由偏好仍来自 `subagent-routing.json`，不新增模板框架或静默回退正文。
+工具提示词应表达上述使用流程和行为边界。提示词正文存放在 `prompts/`，通过 `src/prompt-text.ts` 的类型化缓存 getter 读取；执行代码保留数据装配、参数结构和权限判断。角色说明来自 `subagent-routing.json`，候选偏好使用所引用或临时 Preset 的 description，不新增模板框架或静默回退正文。
 
 ### Subagent 提示词装配
 

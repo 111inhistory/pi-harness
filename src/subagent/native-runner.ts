@@ -28,6 +28,7 @@ import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-age
 import { capabilityAllowsTool, capabilityAvailableTools } from "../capability/scope.ts";
 import { getAgentSocketPath } from "../ipc/socket.ts";
 import { installModelCallBudget } from "./pi-job-budget.ts";
+import { excludedPresetTools } from '../preset/modifiers.ts';
 import { SHELL_APPROVAL_WAIT } from '../shell-approval/bridge.ts';
 import { resolveSessionCacheKey } from "../session-cache-runtime.ts";
 import { childContext, childPromptBlocks, composeAssignment, continuationControlPrompt } from './prompt.ts';
@@ -361,7 +362,7 @@ export class NativeJobRunner {
       let model: Model<Api> | null = retained?.model ?? null;
       let thinkingLevel = retained?.thinkingLevel ?? null;
       let plannedTools: readonly string[] | null = retained?.tools ?? null;
-      let enabledTools: readonly string[] = [];
+      let preset = retained?.preset ?? null;
       const retainedRole = retained?.roleId ?? null;
       let excludedTools: readonly string[] | null = retained?.excludedTools
         ?? (retainedRole !== null && retainedRole !== ""
@@ -396,6 +397,7 @@ export class NativeJobRunner {
         const routed = await deps.routing.route({
           task: specTextField(routingSpec, "task"),
           context: specTextField(routingSpec, "context"),
+          cwd, trusted,
           signal: live.abort.signal,
           budget: request.budget,
         });
@@ -404,8 +406,8 @@ export class NativeJobRunner {
         roleInstructions = routed.instructions;
         model = routed.model;
         thinkingLevel = routed.thinkingLevel;
-        excludedTools = [...routed.excludeTools];
-        enabledTools = [...routed.enableTools];
+        preset = routed.preset;
+        excludedTools = excludedPresetTools(preset.config.tools);
         identitySettled = true;
       }
 
@@ -441,6 +443,7 @@ export class NativeJobRunner {
           systemPrompt,
           roleId,
           roleInstructions,
+          preset,
           modelRef: modelRefOf(effective.model ?? model),
           model: effective.model ?? model,
           thinkingLevel: effective.thinkingLevel ?? thinkingLevel,
@@ -462,6 +465,7 @@ export class NativeJobRunner {
       if (snapshot !== null) delete snapshot["entries"];
 
       const opened = await deps.sessions.open({
+        ...(preset !== null && plannedTools === null ? { preset } : {}),
         ...(roleId === null && plannedTools !== null ? { inheritedTools: plannedTools } : {}),
         agentId: request.agentId,
         cwd,
@@ -505,7 +509,6 @@ export class NativeJobRunner {
       throwIfBudgetFailed(request.budget);
       plannedTools = [...new Set([
         ...(plannedTools ?? native.session.getActiveToolNames()),
-        ...enabledTools,
         ...harnessToolsForDepth(depth, maxDepth),
       ])];
       native.session.setActiveToolsByName(

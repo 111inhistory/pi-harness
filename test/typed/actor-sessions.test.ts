@@ -280,6 +280,8 @@ function validRecord(overrides: Record<string, unknown> = {}): Record<string, un
     allowInherited: false,
     roleId: "reviewer",
     roleInstructions: "Review carefully.",
+    preset: { name: 'review', config: { model: { provider: 'fake', id: 'model-1' },
+      thinkingLevel: 'high', instructions: 'PRESET_RETAINED_GUIDANCE', tools: ['-bash'] } },
     model: { provider: "fake", id: "model-1" },
     thinkingLevel: "high",
     tools: ["read", "grep"],
@@ -309,6 +311,10 @@ test("restoreIdentity validates a routed record and resolves its model", (t) => 
   assert.equal(descriptor.model?.id, "model-1");
   assert.deepEqual(descriptor.tools, ["read", "grep"]);
   assert.equal(descriptor.assignment, "Review the change.");
+  assert.deepEqual(descriptor.preset, { name: 'review', config: {
+    model: { provider: 'fake', id: 'model-1' }, thinkingLevel: 'high',
+    instructions: 'PRESET_RETAINED_GUIDANCE', tools: ['-bash'],
+  } });
   // An inherited Actor's prompt is recorded once with its seed; the record may
   // carry none, and the seed's captured prompt is the fallback. A recorded
   // prompt wins over the seed's captured one.
@@ -445,7 +451,8 @@ test("retain checkpoints only the identity fields that changed", (t) => {
   assert.equal(h.appends.length, 1);
   const created = h.appends[0];
   assert.ok(created !== undefined && created.customType === "subagent-actor");
-  assert.equal(Object.keys(created.patch).length, 12);
+  assert.equal(created.patch.roleId, 'reviewer');
+  assert.equal(created.patch.preset, null);
   assert.equal(created.anchor, "leaf-1");
 
   // The same identity with only a moved anchor is not a new identity record.

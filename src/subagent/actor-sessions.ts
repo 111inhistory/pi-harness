@@ -34,6 +34,8 @@
  */
 
 import { existsSync } from "node:fs";
+import { validatePreset } from '../preset/config.ts';
+import type { RoutedPreset } from './routing.ts';
 
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -113,6 +115,7 @@ export interface ActorIdentityRecord {
   readonly allowInherited: boolean;
   readonly roleId: string | null;
   readonly roleInstructions: string | null;
+  readonly preset?: RoutedPreset | null;
   readonly model: NativeModelRef | null;
   readonly thinkingLevel: string | null;
   readonly tools: readonly string[] | null;
@@ -245,6 +248,7 @@ export class ActorSessionStore implements NativeActorStore {
       systemPrompt: nullableText(agentId, record, "systemPrompt") ?? seedSystemPrompt(input.seed),
       roleId: nullableText(agentId, record, "roleId"),
       roleInstructions: nullableText(agentId, record, "roleInstructions"),
+      preset: actorPreset(agentId, record.preset),
       modelRef,
       model: this.#model(modelRef),
       thinkingLevel: nullableText(agentId, record, "thinkingLevel"),
@@ -536,6 +540,7 @@ function identityRecordOf(descriptor: NativeRetainedActor, sessionFile: string):
     allowInherited: descriptor.allowInherited,
     roleId: descriptor.roleId,
     roleInstructions: descriptor.roleInstructions,
+    preset: descriptor.preset ?? null,
     model: modelRef === null ? null : { provider: modelRef.provider, id: modelRef.id },
     thinkingLevel: descriptor.thinkingLevel,
     tools: descriptor.tools === null ? null : [...descriptor.tools],
@@ -552,6 +557,7 @@ interface MutableIdentityPatch {
   allowInherited?: boolean;
   roleId?: string | null;
   roleInstructions?: string | null;
+  preset?: RoutedPreset | null;
   model?: NativeModelRef | null;
   thinkingLevel?: string | null;
   tools?: readonly string[] | null;
@@ -572,6 +578,7 @@ function changedIdentity(next: ActorIdentityRecord, previous: ActorIdentityRecor
   if (next.allowInherited !== previous.allowInherited) patch.allowInherited = next.allowInherited;
   if (next.roleId !== previous.roleId) patch.roleId = next.roleId;
   if (next.roleInstructions !== previous.roleInstructions) patch.roleInstructions = next.roleInstructions;
+  if (next.preset !== previous.preset) patch.preset = next.preset ?? null;
   if (!sameModelRef(next.model, previous.model)) patch.model = next.model;
   if (next.thinkingLevel !== previous.thinkingLevel) patch.thinkingLevel = next.thinkingLevel;
   if (!sameLoadout(next.tools, previous.tools)) patch.tools = next.tools;
@@ -593,6 +600,16 @@ function sameLoadout(next: readonly string[] | null, previous: readonly string[]
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function actorPreset(agentId: string, value: unknown): RoutedPreset | null {
+  if (value === undefined || value === null) return null;
+  const wrapper = requireRecord(agentId, value);
+  const name = requireText(agentId, wrapper, 'name');
+  const parsed = validatePreset(wrapper.config);
+  if ('errors' in parsed) throw new SubagentStoreError('storage_corrupt',
+    `Actor ${agentId} records a malformed preset: ${parsed.errors.join('; ')}`, { agentId });
+  return { name, config: parsed.preset };
 }
 
 function requireRecord(agentId: string, value: unknown): Record<string, unknown> {

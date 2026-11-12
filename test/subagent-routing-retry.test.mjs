@@ -7,7 +7,7 @@ const CLASSIFIER = { type: "classifier", provider: "openrouter", id: "~typesafe/
 const GEMINI = { type: "chat", provider: "openrouter", id: "~google/gemini-pro-latest" };
 
 const CONFIG = {
-  version: 2,
+  version: 3,
   classifier: { provider: "openrouter", id: "~typesafe/jev-latest" },
   instructions: {
     role: "Select the role for delegated_assignment.",
@@ -16,13 +16,8 @@ const CONFIG = {
   roles: [{
     id: "executor",
     instructions: "EXECUTOR INSTRUCTIONS",
-    excludeTools: [],
-    enableTools: [],
-    candidates: [{ model: "gemini", thinking: "medium" }],
+    candidates: { gemini: { model: { provider: GEMINI.provider, id: GEMINI.id }, thinkingLevel: "medium" } },
   }],
-  models: [
-    { id: "gemini", provider: "openrouter", model: "~google/gemini-pro-latest", preference: "GEMINI PREFERENCE" },
-  ],
 };
 
 function stoppedRole() {

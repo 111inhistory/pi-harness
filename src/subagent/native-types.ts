@@ -17,6 +17,7 @@ import type { Agent } from '@earendil-works/pi-agent-core';
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
 
+import type { RoutedPreset } from './routing.ts';
 import type { CapabilityToolCatalog } from "../capability/scope.ts";
 import type { HarnessConfig } from "../harness-config.ts";
 import type { InheritedContext, JobBudgetPort, StartedJobHandle } from "./runtime.ts";
@@ -46,6 +47,7 @@ export interface NativeRetainedActor {
   readonly systemPrompt: string | null;
   readonly roleId: string | null;
   readonly roleInstructions: string | null;
+  readonly preset?: RoutedPreset | null;
   readonly modelRef: NativeModelRef | null;
   readonly model: Model<Api> | null;
   readonly thinkingLevel: string | null;
@@ -123,9 +125,8 @@ export interface NativeRouteResult {
   readonly roleId: string;
   readonly instructions: string;
   readonly model: Model<Api>;
-  readonly thinkingLevel: string;
-  readonly excludeTools: readonly string[];
-  readonly enableTools: readonly string[];
+  readonly thinkingLevel: string | null;
+  readonly preset: RoutedPreset;
 }
 
 /** Fresh routing; the closure owns the registry and the config path. */
@@ -133,6 +134,8 @@ export interface NativeRoutingPort {
   route(input: {
     readonly task: string;
     readonly context: string;
+    readonly cwd: string;
+    readonly trusted: boolean;
     readonly signal: AbortSignal;
     readonly budget: JobBudgetPort;
   }): Promise<NativeRouteResult>;
@@ -261,6 +264,7 @@ export interface NativeExecution {
 /** Everything the child session factory needs for one Job. */
 export interface NativeSessionRequest {
   readonly inheritedTools?: readonly string[];
+  readonly preset?: RoutedPreset;
   readonly agentId: string;
   readonly cwd: string;
   readonly trusted: boolean;

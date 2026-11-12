@@ -82,7 +82,7 @@ Pi 会在用户设置的 `packages` 中登记该目录。更新仓库后，重�
 
 ### 配置独立子任务的模型
 
-独立开始的子任务（Fresh）需要 `subagent-routing.json`。将 [路由示例](config/subagent-routing.json) 作为模板，放入 Pi 用户目录，并把分类器、角色和候选模型改成你实际可用的配置。已有文件时直接编辑，不要覆盖自己的设置。
+独立开始的子任务（Fresh）需要 `subagent-routing.json`。将 [路由示例](config/subagent-routing.json) 作为模板，放入 Pi 用户目录，并把分类器、角色和候选 Preset 改成你实际可用的配置。候选可引用已有 Preset，也可内联同格式的临时定义；旧版配置的离线转换见[配置说明](docs/harness-configuration.md#fresh-routing-presets)。已有文件时直接编辑，不要覆盖自己的设置。
 
 Pi 用户目录默认为 `~/.pi/agent/`；设置 `PI_CODING_AGENT_DIR` 时使用指定目录。仓库示例不会在配置缺失时自动代替用户配置。
 

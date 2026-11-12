@@ -16,6 +16,8 @@
  */
 
 import type { SystemMessage } from '@earendil-works/pi-ai';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { restorePresetSnapshot } from './state.ts';
 
 import type { TranscriptMessageLike } from '../session-transcript.ts';
 import {
@@ -36,12 +38,23 @@ export interface PresetInstructionJournal {
   appendEntry(customType: string, data: unknown): void;
 }
 
+/** Install the same branch instruction projection in Main and child sessions. */
+export function installPresetInstruction(pi: ExtensionAPI): void {
+  pi.on('context_with_system', (event, ctx) => {
+    const branch = ctx.sessionManager.getBranch();
+    const checkpoint = branch.findLast(entry => entry.type === 'compaction' || entry.type === 'context_edit');
+    return { messages: projectPresetInstruction(
+      event.messages as readonly TranscriptMessageLike[],
+      restorePresetSnapshot(branch)?.instructions ?? null,
+      { branch, checkpointId: checkpoint?.id ?? null,
+        appendEntry: (type, data) => pi.appendEntry(type, data) },
+    ) as typeof event.messages };
+  });
+}
+
 /**
- * Project the current instruction text onto the request.
- *
- * `instructions` is the desired section body, or null to withdraw it (a clear).
- * The returned messages replace the input transcript for this request; journal
- * records are appended as needed through `journal.appendEntry`.
+ * Project the desired instruction section, or withdraw it when null.
+ * Journal records preserve placements across requests and branch restoration.
  */
 export function projectPresetInstruction<M extends TranscriptMessageLike>(
   messages: readonly M[],

@@ -106,7 +106,7 @@ function isCodemodeMode(value: unknown): value is CodemodeMode {
  * carrying any invalid field is rejected as a whole rather than partially
  * applied, so an apply never silently drops one of the author's intent fields.
  */
-function validatePreset(raw: unknown): { preset: PresetConfig } | { errors: readonly string[] } {
+export function validatePreset(raw: unknown): { preset: PresetConfig } | { errors: readonly string[] } {
   if (!isRecord(raw)) return { errors: ['preset must be an object'] };
   const errors: string[] = [];
   const known = new Set(['description', 'model', 'thinkingLevel', 'tools', 'codemode', 'instructions']);
