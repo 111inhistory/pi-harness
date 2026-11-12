@@ -1,5 +1,5 @@
 import path from "node:path";
-import { parseCreateArgs } from "../async-shell/cli.ts";
+import { parseCreateArgs } from "../async-shell/create-args.ts";
 
 /** Extracted approval action representing a command that requires approval review. */
 export interface JobApprovalAction {

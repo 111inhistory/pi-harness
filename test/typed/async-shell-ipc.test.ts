@@ -5,7 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { AgentListeners } from '../../src/subagent/listeners.ts';
 import { getAgentSocketPath, getBroadcastSocketPath, writeSocket } from '../../src/ipc/socket.ts';
-import { taskDirectory } from '../../src/async-shell/tmux.ts';
+import { taskDirectory } from '../../src/async-shell/task-path.ts';
 import { AsyncShellHost } from '../../src/async-shell/host.ts';
 
 // The callback uses the owning endpoint without entering Agent message admission.

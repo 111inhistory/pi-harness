@@ -473,8 +473,7 @@
       "tests": [
         "test/typed/async-shell-cli.test.ts",
         "test/typed/async-shell-cli-ambient.test.ts",
-        "test/typed/async-shell-id.test.ts",
-        "test/typed/async-shell-render.test.ts"
+        "test/typed/async-shell-id.test.ts"
       ]
     },
     {
@@ -491,7 +490,6 @@
         }
       ],
       "tests": [
-        "test/typed/async-shell-platform.test.ts",
         "test/async-shell-sdk.test.mjs"
       ]
     },
@@ -983,8 +981,18 @@
     },
     "async-shell.tasks": {
       "docs": "a79679278808e0384b27c839cdcc6cf11ce8f1bcf92a9278dec13ab2d11c9f7a",
-      "tests": "ee7a51382e7ffb265a0e6f0cb8a048f9c391c35e2256f9c9e0478bd3664e5a7f",
-      "reason": "the CLI behavioral test only switches the built artifact from the pi-job.mjs bundle to the native Go binary; no documented behavior changed"
+      "tests": "5ca2a2ca2bf94e152516a5289045992ba5a1d852815c442b3f6525ebb8aa3485",
+      "reason": "Task assertions are unchanged; the TS CLI tests now cancel through the native CLI and take paths from task-path.ts, while render/ID/parse coverage moved to Go unit tests."
+    },
+    "async-shell.platform": {
+      "docs": "0f5a2b00929ad00b60d19dc87037bc341a3adc34fe2d4a403634d45eab71110e",
+      "tests": "16e547f00c1b6616ea5441f018954fd677701afbd7292b8f3d43c146fe93671f",
+      "reason": "The TS backend unit test was removed with the TS engine; POSIX/Windows backend behavior is covered by the native CLI E2E suite and the Go backend implementation. Documented install and limitations behavior is unchanged."
+    },
+    "async-shell.host": {
+      "docs": "f1a3517c6af04e00f3c15f1ea81e5b6148852602e7bbeb185c62813a687bb2af",
+      "tests": "4df574f931c806745dbad7758431334d2d42287d00d15831f240c055752a8bc8",
+      "reason": "Only the IPC test taskDirectory import moved to task-path.ts; host admission, callback routing and assertions are unchanged."
     },
     "capability.provider-prefix": {
       "docs": "d2668574f48a8012451c58c685cb80b9732c43d0ec7d00f192b68a88bc89a42d",
@@ -1020,11 +1028,6 @@
       "docs": "0214e0cb0dd10c9ecc731941335882aa3446429d4e50020964d712c53e99daff",
       "tests": "722b6d6e33c13206362117339bb45edb4c12d99d99a7728f5538b1bf56782c6c",
       "reason": "The bullet only narrows when MCP startup waiting applies (first request, once per session); activation reachability behavior and its tests are unchanged."
-    },
-    "async-shell.platform": {
-      "docs": "3516091b2521b32ec1a313d086c2d213c075c002a2c8ddf183c4f111c5773fc1",
-      "tests": "f554b9489fc1281c004c438387eda0834b22703edd0c5af9e6ba39161050f6eb",
-      "reason": "Increase subprocess and outer test deadlines as requested: PBT 120/150 seconds, ordinary SDK scenarios 30/45 seconds. Generated behavior, admission and cleanup assertions are unchanged; these are test execution budgets, not product timeouts."
     },
     "preset.runtime": {
       "docs": "1ed8d56f436aa1991f5ac6f8b6d12804bcd9bf1e79a9519c806092fdf300a68e",
@@ -1082,9 +1085,9 @@
       "reason": "test seed switched from legacy capability-discovery manual to a canonical enabled permission record; the authorized-tool visibility contract is unchanged"
     },
     "capability.tool-permission": {
-      "docs": "0654a9a2c59dc9cdbbaddd112fd63733d7becb422b0fa8114b7a5ebc719cf660",
+      "docs": "ce57f786adce547ee4297afe7689f18b6b3e0886c2ece23132e1dd4ed8c6a6f9",
       "tests": "3cdebb6ee648ad662df3a0ba9217cabc9726824c2a2023d18ed42b23a2c7659d",
-      "reason": "Use shared PBT execution support for existing Capability generated histories. Permission commands, schema generation, real SDK effects and the independent permission oracle remain unchanged. No permission contract changes."
+      "reason": "The architecture ownership table now names the native Go async-shell modules; tool-permission behavior, interfaces and tests are unchanged."
     },
     "capability.manual-enable": {
       "docs": "e4e5e4b4c213f9d9dd36e9cee79a0643aaea294f9710e790c9bba83820105bc4",

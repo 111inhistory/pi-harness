@@ -1,15 +1,10 @@
 import assert from 'node:assert/strict';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { AsyncShellHost } from '../../src/async-shell/host.ts';
-import { createTask, taskDirectory } from '../../src/async-shell/tmux.ts';
-import { validateAsyncShellFrame } from '../../src/async-shell/protocol.ts';
-import { createOwnedNdjsonServer } from '../../src/ipc/socket.ts';
-import { pipePath } from '../../src/ipc/address.ts';
+import { taskDirectory } from '../../src/async-shell/task-path.ts';
 
 function rootFixture(t: test.TestContext): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'async-shell-id-'));
@@ -43,44 +38,4 @@ test('host task lookup and retirement retain the assigned root when ambient stat
   await host.release('Main');
   assert.deepEqual(canceled, [[directory, root]]);
   await host.close();
-});
-
-const backendAvailable = spawnSync(process.platform === 'win32' ? 'psmux' : 'tmux', ['-V']).status === 0;
-
-test('an ID collision preserves the existing task and explicit refusal sends no completion', {
-  skip: !backendAvailable, timeout: 20_000,
-}, async t => {
-  const root = rootFixture(t);
-  const existing = taskDirectory('job_11111111');
-  fs.mkdirSync(existing, { mode: 0o700 });
-  fs.writeFileSync(path.join(existing, 'task.json'), 'existing task\n');
-  const frames: string[] = [];
-  const socket = process.platform === 'win32' ? pipePath(root, 'host') : path.join(root, 'host.sock');
-  const server = createOwnedNdjsonServer({
-    address: socket, root,
-    onMessage(input) {
-      const frame = validateAsyncShellFrame(input);
-      frames.push(frame.operation);
-      throw Object.assign(new Error('Fixture refused registration.'), { code: 'registration_rejected' });
-    },
-    onError() {},
-  });
-  await server.ready;
-  t.after(() => server.close());
-  const ids = ['11111111', '22222222'];
-  t.mock.method(crypto, 'randomBytes', (size: number) => {
-    assert.equal(size, 4);
-    const next = ids.shift();
-    assert.ok(next, 'allocation must finish after the free ID');
-    return Buffer.from(next, 'hex');
-  });
-  await assert.rejects(createTask({
-    argv: [process.execPath, '-e', 'throw new Error("must not run")'],
-    cwd: root, waitMs: 0, timeoutMs: null, callback: { socket, token: 'fixture-token' },
-  }), /Fixture refused registration/);
-  assert.equal(fs.readFileSync(path.join(existing, 'task.json'), 'utf8'), 'existing task\n');
-  const allocated = taskDirectory('job_22222222');
-  assert.equal(JSON.parse(fs.readFileSync(path.join(allocated, 'task.json'), 'utf8')).id, 'job_22222222');
-  assert.equal(fs.existsSync(path.join(allocated, 'closed')), true);
-  assert.deepEqual(frames, ['register'], 'a proven refusal has no task to unregister');
 });

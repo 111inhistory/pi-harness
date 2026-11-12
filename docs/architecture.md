@@ -34,9 +34,9 @@
 | `inherited-context.ts` | 共享分支捕获，在清理未决工具前锁定物理模型，并捕获独立的出站缓存标识 | 伪造身份或跨分支泄漏 |
 | `provider-session.ts`、`session-transcript.ts` | 按明确模型能力判断原生追加路径，组装尾部指令与工具声明；请求编码交给 Pi | 路由、执行授权、手写协议请求 |
 | `session-cache.ts`、`session-cache-runtime.ts` | Main 最终 payload 缓存标识观察、Responses 继承适配、原生分支记录与生命周期围栏 | 改写本地 Session ID、账号路由或保证缓存命中 |
-| `async-shell/cli.ts`、`async-shell/tmux.ts`、`async-shell/output.ts` | 异步命令接口、每任务终端资源、完整 PTY 日志、增量过滤输出和完成回调 | Agent 拓扑、模型轮次或执行授权 |
-| `async-shell/platform*.ts` | POSIX tmux Socket／Windows psmux label、终端启动与输入、进程归属查询、Windows batch 参数传输 | 任务状态、输出游标或通知路由 |
-| `async-shell/host.ts`、`async-shell/surface.ts` | 每次 Shell 的调用者环境、执行代次归属、未完成任务登记与取消 | tmux 状态机、消息工具授予或跨主机调度 |
+| `go/internal/asyncshell/{cli,tmux,output}.go` | 异步命令接口、每任务终端资源、完整 PTY 日志、增量过滤输出和完成回调 | Agent 拓扑、模型轮次或执行授权 |
+| `go/internal/asyncshell/{backend,ipc,proc,private}/*` | POSIX tmux Socket／Windows psmux label、终端启动与输入、进程归属查询、Windows batch 参数传输、命名管道与私有目录校验 | 任务状态、输出游标或通知路由 |
+| `async-shell/{host,surface}.ts`、`async-shell/{task-path,executable,cancel,create-args}.ts` | 每次 Shell 的调用者环境、执行代次归属、未完成任务登记与取消；TS 侧只保留路径/可执行文件/取消/审批参数桥 | tmux 状态机、消息工具授予或跨主机调度 |
 | `prompt-section-journal.ts`、`tool-guidance.ts`、`tool-prompt-updates.ts`、`capability/tool-instructions.ts` | 初始指引随工具声明投影；分支记录保存正文与落点，变更在上下文尾部追加系统更新 | 用最新资产覆盖历史指引、授予执行权限或移除工具 |
 
 `subagent_create` 在本批 Runner 本地就绪后返回。本地就绪包括路由完成、会话创建、扩展与工具配置完成、初始输入就绪和 IPC 监听就绪。返回项包含 `id`、`socket`、`role` 与 `model`。它不等待首次模型流分发，也不把 `running` 当作启动成功证明。注册后的启动失败不会撤销同批其他节点，也不自动重试。运行时 Job 注册和执行状态仍由 Runtime 独立管理。

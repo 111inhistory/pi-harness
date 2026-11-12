@@ -1,4 +1,4 @@
-import { stateRoot, taskDirectory } from './tmux.ts';
+import { stateRoot, taskDirectory } from './task-path.ts';
 import { samePath } from '../fs-path.ts';
 import { randomBytes } from 'node:crypto';
 import { AsyncShellError } from './errors.ts';

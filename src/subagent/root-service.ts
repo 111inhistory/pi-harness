@@ -2,7 +2,7 @@ import path from 'node:path';
 import { AsyncShellHost } from '../async-shell/host.ts';
 import { installAsyncShellSurface } from '../async-shell/surface.ts';
 import { installInheritedShellChecks } from '../shell-approval/bridge.ts';
-import { cancelTask } from '../async-shell/tmux.ts';
+import { cancelTask } from '../async-shell/cancel.ts';
 import type { ShellResult } from '../async-shell/protocol.ts';
 import { existsSync } from 'node:fs';
 import { temporaryResultDirectory } from './temporary-results.ts';

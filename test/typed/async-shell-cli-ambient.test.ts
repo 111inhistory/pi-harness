@@ -12,10 +12,16 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { cancelTask, stateRoot } from '../../src/async-shell/tmux.ts';
+import { stateRoot } from '../../src/async-shell/task-path.ts';
 import type { ShellResult } from '../../src/async-shell/protocol.ts';
 import { pipePath } from '../../src/ipc/address.ts';
 import { parseJobOutput, runCli } from '../../test-support/test-environment.mjs';
+
+/** Cancel through the native CLI, the same entry point production uses. */
+async function cancelTask(dir: string, root = stateRoot()): Promise<void> {
+  const result = await runCli(bundle, ['cancel', path.basename(dir)], { env: { PI_ASYNC_SHELL_ROOT: root } });
+  if (result.code !== 0) throw new Error(result.stderr.trim() || `pi-job cancel exited ${result.code}`);
+}
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const posix = process.platform !== 'win32';

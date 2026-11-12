@@ -18,7 +18,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { cancelTask, stateRoot } from '../../src/async-shell/tmux.ts';
+import { stateRoot } from '../../src/async-shell/task-path.ts';
 import { AsyncShellHost } from '../../src/async-shell/host.ts';
 import { pipePath } from '../../src/ipc/address.ts';
 import { validateAsyncShellFrame, type AsyncShellFrame, type ShellResult } from '../../src/async-shell/protocol.ts';
@@ -47,7 +47,7 @@ let bundleDir = '';
 test.before(async () => {
   if (!backendAvailable) return;
   bundleDir = await mkdtemp(path.join(tmpdir(), 'async-shell-bundle-'));
-  bundle = path.join(bundleDir, process.platform === 'win32' ? 'pi-job.exe' : 'pi-job');
+  bundle = path.join(bundleDir, 'pi-job.mjs');
   const build = spawnSync(process.execPath, [path.join(ROOT, 'scripts/build-async-shell.mjs'), bundle], { encoding: 'utf8' });
   assert.equal(build.status, 0, `the async-shell bundle must build: ${build.stderr}`);
 });
@@ -74,6 +74,13 @@ async function job(args: readonly string[], settings: { input?: string; env?: No
 
 function taskDirOf(result: ShellResult): string {
   return path.dirname(result.logPath);
+}
+
+/** Cancel through the native CLI, the same entry point production uses. */
+async function cancelTask(dir: string, root = stateRoot()): Promise<void> {
+  if (!existsSync(dir)) return;
+  const result = await runCli(bundle, ['cancel', path.basename(dir)], { env: { PI_ASYNC_SHELL_ROOT: root } });
+  if (result.code !== 0) throw new Error(result.stderr.trim() || `pi-job cancel exited ${result.code}`);
 }
 
 /** Remove one test task after it is stopped, so no state outlives the run. */
