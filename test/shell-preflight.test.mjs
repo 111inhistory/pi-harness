@@ -44,14 +44,14 @@ test(
       command: '$变量 = "中文"; Get-ChildItem',
       executable: powershellPath,
     });
-    assert.equal(valid.ok, true);
+    assert.equal(valid.ok, true, JSON.stringify({ platform: process.platform, node: process.version, ...valid }));
 
     const invalid = await checkShellSyntax({
       command: '$变量 = "中文"; if ($true) {',
       executable: powershellPath,
     });
     assert.equal(invalid.ok, false);
-    assert.equal(invalid.code, "syntax_error");
+    assert.equal(invalid.code, "syntax_error", JSON.stringify({ platform: process.platform, node: process.version, ...invalid }));
     assert.ok(invalid.diagnostic.length > 0);
   },
 );

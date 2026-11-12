@@ -951,6 +951,11 @@
     }
   ],
   "reviews": {
+    "shell.preflight": {
+      "docs": "ef0d1761bb256efe51f2bb912bd0b277f233ac382f0d64fcb230d106eb795517",
+      "tests": "eab4e99d01d75cd7df6ba8ff4d15e76be56341c2e138888b8fb957d423959699",
+      "reason": "Add full failure context to the existing PowerShell assertions and record the Ubuntu CI failure without claiming a root cause. Inputs, expectations, parser deadline and availability rules are unchanged. Active PowerShell validation is deferred by user instruction."
+    },
     "subagent.storage": {
       "docs": "ceb6ccfa2ed6c2a112590a5b98785d1c10b4c4ada2f93f44f2821b13b04f35e8",
       "tests": "6ccaa7cef0df8d8ba955c38244f38fb266a141a018dc3ae67a0860838b612f0a",

@@ -14,6 +14,16 @@ Capability 按实际激活集筛选公开结果，返回失败或部分成功。
 
 这项缺陷尚未修复，也不是 `harness.json` 中的可选策略。修复需要明确 SDK 激活资格或调整记录协议；当前没有激活探针、回滚或补偿状态机。
 
+## Known environment failures
+
+### PowerShell syntax checking on Ubuntu CI
+
+The [Ubuntu job in run 43154191240](https://github.com/111inhistory/pi-harness/actions/runs/43154191240/job/130970182267) failed at revision `1f35ba2c` in `checks PowerShell through its AST parser when available`. That test runs whenever `pwsh` or `powershell` is found, including Linux. A valid Unicode PowerShell command returned `ok: false`; the job reported 1,033 passes, one failure and nine skips. The Windows job in the same run passed. The local Linux environment had no PowerShell executable and skipped this case, so its green result did not cover this path.
+
+The failing check took 5,035 ms against a 5,000 ms parser deadline. A startup/check timeout is plausible, but the original assertion printed only `false !== true`, without the result code or diagnostic. The exact cause is unconfirmed: the log cannot distinguish `checker_timeout`, startup failure or parser rejection. This is a Linux/PowerShell environment investigation, not evidence that the command is invalid or that all PowerShell use on Linux is unsupported.
+
+Failure assertions now include the platform, Node version, selected executable, shell type, result code and parser diagnostic. No timeout, availability rule or production behavior changed. Further reproduction and active validation of this path are deferred at the user's request; this diagnostic improvement does not resolve the recorded failure.
+
 ## 待处理设计问题
 
 ### Provider request ownership and compat-driven thinking changes
