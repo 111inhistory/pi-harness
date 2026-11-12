@@ -23,6 +23,8 @@ import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-s
 import subagentExtension from '../../src/subagent/extension.ts';
 import { setToolPermission } from '../../src/capability/tool-permission.ts';
 import { deferred } from '../../test-support/async.ts';
+import { restorePresetSnapshot } from '../../src/preset/state.ts';
+import { readCodemodeModeOverride } from '../../src/capability/codemode-mode.ts';
 
 function usage(): Usage {
   return {
@@ -66,16 +68,20 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
   runtime.getAuth = async () => ({ auth: { apiKey: 'offline-fixture' }, env: {} });
   runtime.hasConfiguredAuth = () => true;
   await writeFile(path.join(agentDir, 'subagent-routing.json'), JSON.stringify({
-    version: 2,
+    version: 3,
     classifier: { provider: 'openrouter', id: '~typesafe/jev-latest' },
     instructions: { role: 'Select the executor role.', model: 'Select the only configured model.' },
     roles: [{
       id: 'executor',
-      excludeTools: [],
       instructions: 'Complete the delegated assignment.',
-      candidates: [{ model: 'fixture', thinking: 'low' }],
+      candidates: { fixture: 'nested-worker' },
     }],
-    models: [{ id: 'fixture', provider: faux.provider.id, model: model.id, preference: 'The only offline fixture candidate.' }],
+  }));
+  await writeFile(path.join(agentDir, 'presets.json'), JSON.stringify({
+    'nested-worker': {
+      model: { provider: faux.provider.id, id: model.id }, thinkingLevel: 'low',
+      tools: ['-bash'], codemode: { mode: 'only' }, instructions: 'PRESET_NESTED_GUIDANCE',
+    },
   }));
   runtime.classify = async (classifier, context) => {
     const key = Object.keys(context.questions)[0];
@@ -98,6 +104,7 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
   const childReady = deferred();
   const releaseChild = deferred();
   const grandchildReady = deferred();
+  const grandchildRequests: { text: string; thinking: unknown }[] = [];
   const scriptErrors: string[] = [];
   const turns = new Map<string, number>();
   const childSessions = new Set<string>();
@@ -120,6 +127,7 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
           message = answer([{ type: 'text', text: 'child completed' }], 'stop');
         }
       } else if (text.includes('NESTED_MARKER')) {
+        grandchildRequests.push({ text: JSON.stringify(context.messages), thinking: streamOptions?.reasoning });
         grandchildReady.resolve();
         message = answer([{ type: 'text', text: 'grandchild completed' }], 'stop');
       } else if (childSessions.has(sessionId)) {
@@ -148,7 +156,7 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
       factory(api) { rootApi = api; subagentExtension(api); },
     }],
   });
-  const prompted: { text: string; tools: string[] }[] = [];
+  const prompted: { text: string; tools: string[]; preset: string | undefined; mode: unknown; thinking: string }[] = [];
   const originalPrompt = AgentSession.prototype.prompt;
   let session: AgentSession | undefined;
   try {
@@ -160,7 +168,9 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
     }));
     await session.bindExtensions({ onError: (error) => extensionErrors.push(error) });
     AgentSession.prototype.prompt = async function (...args: Parameters<AgentSession['prompt']>) {
-      prompted.push({ text: String(args[0]), tools: this.getActiveToolNames() });
+      const branch = this.sessionManager.getBranch();
+      prompted.push({ text: String(args[0]), tools: this.getActiveToolNames(),
+        preset: restorePresetSnapshot(branch)?.name, mode: readCodemodeModeOverride(branch), thinking: this.thinkingLevel });
       return originalPrompt.apply(this, args);
     };
 
@@ -190,6 +200,14 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
     assert.equal(grandchildPrompt.tools.includes('write'), false,
       'a root denial applies to the loadout of a grandchild created after it');
     assert.ok(grandchildPrompt.tools.includes('edit'), 'an unmanaged sibling tool stays available');
+    assert.equal(grandchildPrompt.tools.includes('bash'), false, 'the named Preset removes bash from the real child');
+    assert.equal(grandchildPrompt.preset, 'nested-worker');
+    assert.equal(grandchildPrompt.mode, 'only', 'the shared Preset application writes the child Codemode override');
+    assert.equal(grandchildPrompt.thinking, 'low');
+    assert.match(grandchildRequests[0]!.text, /PRESET_NESTED_GUIDANCE/,
+      'Preset instructions reach the actual child model request');
+    assert.match(grandchildRequests[0]!.text, /Complete the delegated assignment\./,
+      'role instructions remain separate from Preset instructions');
     assert.deepEqual(extensionErrors, []);
     assert.deepEqual(scriptErrors, []);
   } finally {

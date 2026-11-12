@@ -12,27 +12,22 @@ const GEMINI = { type: "chat", provider: "openrouter", id: "~google/gemini-pro-l
 const DEEPSEEK = { type: "chat", provider: "openrouter", id: "~deepseek/deepseek-pro-latest" };
 
 const CONFIG = {
-  version: 2,
+  version: 3,
   classifier: { provider: "openrouter", id: "~typesafe/jev-latest" },
   instructions: {
     role: "Select the role for delegated_assignment.",
     model: "Select the model for delegated_assignment under selected_role.",
   },
-  roles: [
-    { id: "researcher", instructions: "RESEARCH INSTRUCTIONS", excludeTools: ["edit", "write", "grep", "find", "ls"], enableTools: ["msg_write"] },
-    { id: "executor", instructions: "EXECUTOR INSTRUCTIONS", excludeTools: ["grep", "find", "ls"], enableTools: [] },
-    { id: "reviewer", instructions: "REVIEWER INSTRUCTIONS", excludeTools: ["bash", "edit", "write", "grep", "find", "ls"], enableTools: ["msg_write"] },
-  ].map((role) => ({
-    ...role,
-    candidates: [
-      { model: "gemini", thinking: role.id === "executor" ? "medium" : (role.id === "researcher" ? "medium" : "high") },
-      { model: "deepseek", thinking: role.id === "executor" ? "high" : (role.id === "researcher" ? "medium" : "high") },
-    ],
+  roles: ['researcher', 'executor', 'reviewer'].map(id => ({
+    id, instructions: ({ researcher: 'RESEARCH', executor: 'EXECUTOR', reviewer: 'REVIEWER' })[id] + ' INSTRUCTIONS',
+    candidates: {
+      gemini: { model: { provider: GEMINI.provider, id: GEMINI.id },
+        description: 'GEMINI PREFERENCE', thinkingLevel: id === 'reviewer' ? 'high' : 'medium' },
+      deepseek: { model: { provider: DEEPSEEK.provider, id: DEEPSEEK.id },
+        description: 'DEEPSEEK PREFERENCE', thinkingLevel: id === 'researcher' ? 'medium' : 'high',
+        tools: ['-grep', '-find', '-ls'] },
+    },
   })),
-  models: [
-    { id: "gemini", provider: "openrouter", model: "~google/gemini-pro-latest", preference: "GEMINI PREFERENCE" },
-    { id: "deepseek", provider: "openrouter", model: "~deepseek/deepseek-pro-latest", preference: "DEEPSEEK PREFERENCE" },
-  ],
 };
 
 function choice(selected, probabilities) {
@@ -121,8 +116,8 @@ test("routes with exactly two classifier calls over the full assignment", async 
   assert.equal(result.instructions, "EXECUTOR INSTRUCTIONS");
   assert.equal(result.model, DEEPSEEK);
   assert.equal(result.thinkingLevel, "high");
-  assert.deepEqual(result.excludeTools, ["grep", "find", "ls"]);
-  assert.deepEqual(result.enableTools, []);
+  assert.deepEqual(result.preset.config.tools, ["-grep", "-find", "-ls"]);
+  assert.equal(result.preset.name, "routing:executor/deepseek");
   assert.equal("tools" in result, false);
 });
 
@@ -174,10 +169,7 @@ test("uses the selected candidate's direct thinking level", async () => {
 
 test("the chosen candidate's direct level decides thinking for a multi-model pool", async () => {
   const config = structuredClone(CONFIG);
-  config.roles.find((role) => role.id === "executor").candidates = [
-    { model: "gemini", thinking: "low" },
-    { model: "deepseek", thinking: "high" },
-  ];
+  config.roles.find((role) => role.id === "executor").candidates.gemini.thinkingLevel = "low";
   const registry = createRegistry({ responses: [
     stopped({ role: choice("executor", { researcher: 0.1, executor: 0.8, reviewer: 0.1 }) }),
     stopped({ model: choice("deepseek", { gemini: 0.2, deepseek: 0.8 }) }),
@@ -343,125 +335,75 @@ test("a selected candidate missing from the catalog or not a chat model fails in
   );
 });
 
-test("a malformed config fails before any classifier call", async () => {
-  const registry = createRegistry();
-  const budget = createBudget();
-
-  const badThinking = structuredClone(CONFIG);
-  badThinking.roles[0].candidates[0].thinking = "max";
-  await assert.rejects(
-    routeSubagent({ registry, budget, task: "TASK", config: badThinking }),
-    routingError("routing_invalid_config"),
-  );
-
-  const noCandidates = { ...CONFIG, models: [] };
-  await assert.rejects(
-    routeSubagent({ registry, budget, task: "TASK", config: noCandidates }),
-    routingError("routing_invalid_config"),
-  );
-
-  for (const patch of [{ tools: ["read"] }, { excludeTools: undefined }, { enableTools: "msg_write" }, { enableTools: ["*"] }]) {
-    const config = structuredClone(CONFIG);
-    Object.assign(config.roles[0], patch);
-    await assert.rejects(routeSubagent({ registry, budget, task: "TASK", config }), routingError("routing_invalid_config"));
-  }
-  assert.equal(registry.calls.length, 0);
-  assert.deepEqual(budget.debits, []);
-});
-
-test("the shipped template loads from an explicit config path and drives both calls", async () => {
-  const config = JSON.parse(readFileSync(new URL("../config/subagent-routing.json", import.meta.url), "utf8"));
-  const [role] = config.roles;
-  const [candidate] = config.models;
-  const classifier = { type: "classifier", provider: config.classifier.provider, id: config.classifier.id };
-  const model = { type: "chat", provider: candidate.provider, id: candidate.model };
-  const votes = (ids, winner) => Object.fromEntries(ids.map((id) => [id, id === winner ? 0.9 : 0.1 / (ids.length - 1)]));
-  const registry = createRegistry({
-    classifier,
-    models: new Map([[candidate.model, model]]),
-    responses: [
-      stopped({ role: choice(role.id, votes(config.roles.map((entry) => entry.id), role.id)) }),
-      stopped({ model: choice(candidate.id, votes(role.candidates.map((entry) => entry.model), candidate.id)) }),
-    ],
-  });
-
-  const result = await routeSubagent({ registry, budget: createBudget(), task: "TASK", configPath: fileURLToPath(new URL("../config/subagent-routing.json", import.meta.url)) });
-  assert.equal(registry.calls.length, 2);
-  assert.equal(registry.calls[0].model, classifier);
-  assert.equal(result.roleId, role.id);
-  assert.equal(result.instructions, role.instructions);
-  assert.equal(result.model, model);
-});
-
-test("Pi user routing config is re-read and never falls back to the bundled template", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-user-routing-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const configPath = join(dir, "subagent-routing.json");
-  const registry = createRegistry();
-  const budget = createBudget();
-  await assert.rejects(routeSubagent({ registry, budget, task: "TASK", configPath }), (error) => error.code === "routing_invalid_config" && error.message.includes(configPath));
-  assert.equal(registry.calls.length, 0);
-  assert.deepEqual(budget.debits, []);
-  writeFileSync(configPath, JSON.stringify(CONFIG));
-  assert.deepEqual(loadSubagentRoutingConfig(configPath), CONFIG);
-  const changed = structuredClone(CONFIG);
-  changed.models[1].provider = "deepseek";
-  changed.models[1].model = "deepseek-flash";
-  writeFileSync(configPath, JSON.stringify(changed));
-  assert.deepEqual(loadSubagentRoutingConfig(configPath), changed, "config changes need no module reload");
-  writeFileSync(configPath, "{");
-  assert.throws(() => loadSubagentRoutingConfig(configPath), (error) => error.code === "routing_invalid_config");
-});
-
-test("reviewer has only Sol; its direct high thinking skips model classification", async () => {
-  const config = loadSubagentRoutingConfig(fileURLToPath(new URL("../config/subagent-routing.json", import.meta.url)));
-  const sol = { type: "chat", provider: "openai-codex", id: "gpt-6.1-sol" };
-  const registry = createRegistry({ models: new Map([[sol.id, sol]]), responses: [stopped({ role: choice("reviewer", { researcher: 0.1, executor: 0.1, reviewer: 0.8 }) })] });
-  const budget = createBudget();
-  const result = await routeSubagent({ registry, budget, task: "Independently review", config });
-  assert.equal(result.model, sol);
-  assert.equal(result.thinkingLevel, "high");
-  assert.equal(registry.calls.length, 1);
-  assert.deepEqual(budget.debits, [1]);
-});
-
-test("role pools share global Preferences and constrain model classification", async () => {
-  const config = structuredClone(CONFIG);
-  config.models.push({ id: "sol", provider: "openai-codex", model: "gpt-6.1-sol", preference: "GENERAL SOL PREFERENCE" });
-  config.roles.find((role) => role.id === "executor").candidates = [
-    { model: "gemini", thinking: "low" },
-    { model: "sol", thinking: "high" },
-  ];
-  const registry = createRegistry({ responses: [
-    stopped({ role: choice("executor", { researcher: 0.1, executor: 0.8, reviewer: 0.1 }) }),
-    stopped({ model: choice("gemini", { gemini: 0.9, sol: 0.1 }) }),
-  ] });
-  const result = await routeSubagent({ registry, budget: createBudget(), task: "TASK", config });
-  assert.deepEqual(registry.calls[1].context.questions.model.criteria, { gemini: "GEMINI PREFERENCE", sol: "GENERAL SOL PREFERENCE" });
-  assert.equal(result.thinkingLevel, "low", "same global model can have a different direct role-local level");
-  const outside = createRegistry({ responses: [
-    stopped({ role: choice("executor", { researcher: 0.1, executor: 0.8, reviewer: 0.1 }) }),
-    stopped({ model: choice("deepseek", { gemini: 0.1, sol: 0.1, deepseek: 0.8 }) }),
-  ] });
-  await assert.rejects(routeSubagent({ registry: outside, budget: createBudget(), task: "TASK", config }), routingError("routing_invalid_answer"));
-});
-
-test("a missing singleton model fails without switching to another role's models", async () => {
-  const config = loadSubagentRoutingConfig(fileURLToPath(new URL("../config/subagent-routing.json", import.meta.url)));
-  const registry = createRegistry({ responses: [stopped({ role: choice("reviewer", { researcher: 0.1, executor: 0.1, reviewer: 0.8 }) })] });
-  await assert.rejects(routeSubagent({ registry, budget: createBudget(), task: "Review", config }), routingError("routing_model_unavailable"));
-  assert.equal(registry.calls.length, 1);
-});
-
-test("empty, duplicate, unknown and inverted role pool entries fail before classification", async () => {
-  for (const pool of [[], [{ model: "missing", thinking: "high" }],
-    [{ model: "gemini", thinking: { min: "low", max: "high" } }],
-    [{ model: "gemini", thinking: "max" }],
-    [{ model: "gemini", thinking: "high" }, { model: "gemini", thinking: "high" }]]) {
-    const config = structuredClone(CONFIG);
-    config.roles[0].candidates = pool;
+test("malformed temporary presets and retired routing fields fail before classification", async () => {
+  const bad = structuredClone(CONFIG);
+  bad.roles[0].candidates.gemini.thinkingLevel = 'invented';
+  const retired = structuredClone(CONFIG);
+  retired.roles[0].excludeTools = [];
+  for (const config of [bad, retired, { ...CONFIG, version: 2 }, { ...CONFIG, models: [] },
+    { ...CONFIG, roles: [{ id: 'executor', instructions: 'Run', candidates: {} }] }]) {
     const registry = createRegistry();
-    await assert.rejects(routeSubagent({ registry, budget: createBudget(), task: "TASK", config }), routingError("routing_invalid_config"));
+    await assert.rejects(routeSubagent({ registry, budget: createBudget(), task: 'TASK', config }), routingError('routing_invalid_config'));
     assert.equal(registry.calls.length, 0);
+  }
+});
+
+test("the shipped template loads and singleton roles skip model classification", async () => {
+  const configPath = fileURLToPath(new URL('../config/subagent-routing.json', import.meta.url));
+  const config = loadSubagentRoutingConfig(configPath);
+  const role = config.roles.find(role => role.id === 'reviewer');
+  const preset = Object.values(role.candidates)[0];
+  const model = { type: 'chat', ...preset.model };
+  const classifier = { type: 'classifier', ...config.classifier };
+  const registry = createRegistry({ classifier, models: new Map([[model.id, model]]), responses: [
+    stopped({ role: choice('reviewer', { researcher: .1, executor: .1, reviewer: .8 }) }),
+  ] });
+  const result = await routeSubagent({ registry, budget: createBudget(), task: 'Review', configPath });
+  assert.equal(registry.calls.length, 1);
+  assert.equal(result.model, model);
+  assert.equal(result.thinkingLevel, 'high');
+  assert.deepEqual(result.preset.config.tools, ['-edit', '-write', '-grep', '-find', '-ls', '+msg_write']);
+});
+
+test("Pi user routing config is re-read and never falls back to the bundled template", async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-user-routing-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = join(dir, 'subagent-routing.json');
+  const registry = createRegistry();
+  await assert.rejects(routeSubagent({ registry, budget: createBudget(), task: 'TASK', configPath }),
+    error => error.code === 'routing_invalid_config' && error.message.includes(configPath));
+  writeFileSync(configPath, JSON.stringify(CONFIG));
+  assert.equal(loadSubagentRoutingConfig(configPath).roles[0].candidates.gemini.thinkingLevel, 'medium');
+  const changed = structuredClone(CONFIG);
+  changed.roles[0].candidates.gemini.thinkingLevel = 'max';
+  writeFileSync(configPath, JSON.stringify(changed));
+  assert.equal(loadSubagentRoutingConfig(configPath).roles[0].candidates.gemini.thinkingLevel, 'max');
+  writeFileSync(configPath, '{');
+  assert.throws(() => loadSubagentRoutingConfig(configPath), routingError('routing_invalid_config'));
+});
+
+test("named Presets and temporary Presets share selection and carry the full configuration", async () => {
+  const config = structuredClone(CONFIG);
+  config.roles.find(role => role.id === 'executor').candidates = { shared: 'coding', temporary: CONFIG.roles[0].candidates.gemini };
+  const preset = { description: 'CODE PREFERENCE', model: { provider: DEEPSEEK.provider, id: DEEPSEEK.id },
+    thinkingLevel: 'max', tools: ['-write', '+msg_write'], codemode: { mode: 'only' }, instructions: 'MODEL GUIDANCE' };
+  const registry = createRegistry({ responses: [
+    stopped({ role: choice('executor', { researcher: .1, executor: .8, reviewer: .1 }) }),
+    stopped({ model: choice('shared', { shared: .9, temporary: .1 }) }),
+  ] });
+  const result = await routeSubagent({ registry, budget: createBudget(), task: 'Code', config, presets: new Map([['coding', preset]]) });
+  assert.deepEqual(registry.calls[1].context.questions.model.criteria, { shared: 'CODE PREFERENCE', temporary: 'GEMINI PREFERENCE' });
+  assert.equal(result.instructions, 'EXECUTOR INSTRUCTIONS');
+  assert.equal(result.model, DEEPSEEK);
+  assert.deepEqual(result.preset, { name: 'coding', config: preset });
+  assert.equal(result.thinkingLevel, 'max');
+});
+
+test("missing named Presets and model-free Presets fail without choosing another candidate", async () => {
+  for (const definition of ['missing', { thinkingLevel: 'high' }]) {
+    const config = { ...CONFIG, roles: [{ id: 'executor', instructions: 'Run', candidates: { only: definition } }] };
+    const registry = createRegistry({ responses: [stopped({ role: choice('executor', { executor: 1 }) })] });
+    await assert.rejects(routeSubagent({ registry, budget: createBudget(), task: 'Run', config }), routingError('routing_invalid_config'));
+    assert.equal(registry.calls.length, 1);
   }
 });

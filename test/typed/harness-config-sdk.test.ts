@@ -180,18 +180,13 @@ async function startScenario(options: ScenarioOptions): Promise<Scenario> {
   runtime.hasConfiguredAuth = () => true;
 
   await writeFile(path.join(agentDir, 'subagent-routing.json'), JSON.stringify({
-    version: 2,
+    version: 3,
     classifier: { provider: 'openrouter', id: '~typesafe/jev-latest' },
     instructions: { role: 'Select the executor role.', model: 'Select the only configured model.' },
     roles: [{
       id: 'executor',
-      excludeTools: [],
       instructions: 'Complete the delegated assignment.',
-      candidates: [{ model: 'fixture', thinking: 'low' }],
-    }],
-    models: [{
-      id: 'fixture', provider: faux.provider.id, model: model.id,
-      preference: 'The only offline fixture candidate.',
+      candidates: { fixture: { model: { provider: faux.provider.id, id: model.id }, thinkingLevel: 'low' } },
     }],
   }));
 

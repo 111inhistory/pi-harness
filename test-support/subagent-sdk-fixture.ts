@@ -26,28 +26,7 @@ import {
 } from "../test/typed/support/subagent-sdk-fixture.ts";
 import { deferred, waitFor } from "./async.ts";
 
-interface FixtureRoutingRole {
-  readonly id?: string;
-  instructions?: string;
-  excludeTools?: string[];
-  enableTools?: string[];
-  readonly [key: string]: unknown;
-}
-
-interface FixtureRoutingModel {
-  provider?: string;
-  model?: string;
-  readonly [key: string]: unknown;
-}
-
-interface FixtureRoutingConfig {
-  readonly version?: number;
-  readonly classifier?: unknown;
-  readonly instructions?: unknown;
-  readonly roles: FixtureRoutingRole[];
-  readonly models: FixtureRoutingModel[];
-  readonly [key: string]: unknown;
-}
+type FixtureRoutingConfig = import('../src/subagent/routing.ts').RoutingConfig;
 
 /** Options for building one real SDK root. */
 export interface SdkFixtureOptions {
@@ -193,7 +172,10 @@ export async function createSdkFixture(options: SdkFixtureOptions): Promise<SdkF
     // Isolated Pi user config: no dependency on the real user's routing file or
     // third-party Antigravity extension. All calls use the scripted runtime below.
     const routing = JSON.parse(await fsp.readFile(new URL("../config/subagent-routing.json", import.meta.url), "utf8")) as FixtureRoutingConfig;
-    for (const candidate of routing.models) Object.assign(candidate, { provider: fixtureModel.provider, model: fixtureModel.id });
+    for (const role of routing.roles) for (const preset of Object.values(role.candidates)) {
+      assert.notEqual(typeof preset, "string", "the shipped fixture uses temporary presets");
+      Object.assign(preset, { model: { provider: fixtureModel.provider, id: fixtureModel.id } });
+    }
     options.routing?.(routing);
     await fsp.writeFile(path.join(agentDir, "subagent-routing.json"), JSON.stringify(routing));
     await fsp.writeFile(path.join(agentDir, "harness.json"), JSON.stringify(options.config ?? {}));

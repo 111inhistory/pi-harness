@@ -577,6 +577,10 @@
       "docs": [
         {
           "path": "docs/harness-configuration.md",
+          "heading": "### Fresh routing Presets"
+        },
+        {
+          "path": "docs/harness-configuration.md",
           "heading": "## Subagent"
         },
         {
@@ -593,6 +597,7 @@
         "test/subagent-routing-retry.test.mjs",
         "test/typed/subagent-routing-config.test.ts",
         "test/typed/subagent-runtime-config.test.ts",
+        "test/typed/root-service-propagation.test.ts",
         "test/typed/subagent-model-runtime.test.ts",
         "test/typed/runtime-domain-contract.test.ts"
       ]
@@ -997,14 +1002,14 @@
       "reason": "Remove only an extra trailing empty line from the directory regression file; all behavior and assertions are unchanged."
     },
     "subagent.surface": {
-      "docs": "959442ab10ee5bbdf2ca96be157b88b13131f2f06a42d5563ad72ee671eeb69d",
+      "docs": "0e7e2ac82417d5cfc571f11e21d43f6b07ea6e25f7335f3e8bd48f1380add40c",
       "tests": "510f36c19e7249177a04b35073ef450bc974f61184f7fd2e5f3f657e0ff840a8",
-      "reason": "Delete copied prompt metadata, default leaf, no-session-tool and simple send assertions. Keep configured depth, native serialization, managed ownership rejection, per-execution host isolation and actual inherited capture. Surface behavior is unchanged."
+      "reason": "The public subagent tool schemas, batch admission and response shape are unchanged. The changed paragraph describes internal Fresh configuration; real RootService child creation and ancestor-denial behavior are tested in root-service-propagation, and existing surface tests passed."
     },
     "subagent.integration": {
-      "docs": "b031489f5c0c6bfd024f737282029c6ed108c1a0fdea4be32539e7f7e7d82fa8",
+      "docs": "75ecc6bad5ac09a6ac03463bf9d9ca7678029c2f976470a09e474c65f80298da",
       "tests": "4f2738db954e14eee243ae0b66060e172b7ce1667de9a0f4ce8501980694cbc8",
-      "reason": "Remove the three old parent/upstream/broadcast scenario entries and their dedicated helpers. Generated coordination histories now own that combined behavior under the parent-hold and delivery associations; the remaining SDK scenario roster and product interfaces are unchanged."
+      "reason": "The documented Fresh configuration and actor identity now include the chosen Preset. Existing offline SDK scenarios and three default PBT models passed through the updated routing fixture without weakened assertions. New named-Preset application is covered by real RootService grandchild creation; integration tool and delivery protocols are unchanged."
     },
     "subagent.socket": {
       "docs": "a464102b233a0a5ca99fc25ffb288834cef2fbebc230ac833ed7830abcae5916",
@@ -1027,9 +1032,9 @@
       "reason": "Increase subprocess and outer test deadlines as requested: PBT 120/150 seconds, ordinary SDK scenarios 30/45 seconds. Generated behavior, admission and cleanup assertions are unchanged; these are test execution budgets, not product timeouts."
     },
     "preset.runtime": {
-      "docs": "1ed8d56f436aa1991f5ac6f8b6d12804bcd9bf1e79a9519c806092fdf300a68e",
+      "docs": "c45579af22042555801e090274dfc8a8f7f9284bd3343cecef199ead61d65a0d",
       "tests": "c8c7eb8bdf114761f34486e9f60e41bf98098bd320887c30c0097878cccd351a",
-      "reason": "Delete fake apply, instruction and codemode happy paths already exercised by real SDK sessions. Keep authentication failure, unavailable-host warning, persisted malformed input, branch restore and catalog-obstructed clear. Runtime behavior is unchanged."
+      "reason": "Main Preset commands, apply ordering and branch restore remain unchanged. The instruction hook is shared with child creation; existing Preset SDK and extension tests passed. Routed child application and instruction delivery are tested through the real RootService propagation case, also associated with routing."
     },
     "tool-guidance.journal": {
       "docs": "ef1810b96bf835590d6e434644ae27682a07ea1fc54ae72d4d5ae9e525b0b72b",
@@ -1057,9 +1062,9 @@
       "reason": "Only duplicate in-process MCP transport listener and microtask response plumbing is shared. All five real-SDK scenarios retain original server-specific capabilities, request responses, call/resource tracking, actual extension installation order, assertions and per-file environment isolation. No protocol or runtime contract changed."
     },
     "subagent.lifecycle": {
-      "docs": "ad06acca1072ec145dd6a12207c1a5094ff39206f23a7e27d3ac9b44380a3d70",
+      "docs": "08416509175ae5b2dcdbc7d2898ede41f04a7915b3d4b0f8cd056241407e0fd9",
       "tests": "bad2f9f01c6f1321fd8eb789863a09ac9f217b79690f65aa21d46405a36cb8f5",
-      "reason": "Extract identical subprocess isolation and fast-check controls/reporting from the three models. Native command generation, scheduler argument order, assertions and 120/150-second deadlines remain unchanged. No lifecycle contract changes."
+      "reason": "Fresh routing now applies a Preset before readiness, while Job admission, interruption, cancellation, ownership and resource release stay with existing owners. Both Native lifecycle and Parent coordination PBT passed unchanged oracles; the two original startup-failure seeds were replayed successfully after removing duplicate same-model selection."
     },
     "subagent.delivery": {
       "docs": "3b8cc6a2e08fea413d06c642fb553d75e5591c5352989b1389df1c0b9ef8f456",
@@ -1082,9 +1087,9 @@
       "reason": "test seed switched from legacy capability-discovery manual to a canonical enabled permission record; the authorized-tool visibility contract is unchanged"
     },
     "capability.tool-permission": {
-      "docs": "0654a9a2c59dc9cdbbaddd112fd63733d7becb422b0fa8114b7a5ebc719cf660",
+      "docs": "a7172c13cc4c9882a90ff58e3e302fa20d342068af8ac147fe3bfe8d0e7b6cd6",
       "tests": "3cdebb6ee648ad662df3a0ba9217cabc9726824c2a2023d18ed42b23a2c7659d",
-      "reason": "Use shared PBT execution support for existing Capability generated histories. Permission commands, schema generation, real SDK effects and the independent permission oracle remain unchanged. No permission contract changes."
+      "reason": "The child-permission paragraph clarifies Preset loadout selection versus existing ancestor denials. Permission targets, precedence, persistence and root-only explicit enables are unchanged. Real RootService propagation now additionally asserts a named Preset cannot reintroduce a root-disabled tool; existing permission suites passed."
     },
     "capability.manual-enable": {
       "docs": "e4e5e4b4c213f9d9dd36e9cee79a0643aaea294f9710e790c9bba83820105bc4",
@@ -1112,9 +1117,9 @@
       "reason": "The pi-job fixtures now shell-quote literal arguments instead of relying on JSON escaping, and a Windows-only real-parser case asserts that a native bare -- PowerShell command stays opaque and is denied as the whole command; the approval ordering, extraction and fail-closed contracts are unchanged."
     },
     "inherited.capture": {
-      "docs": "0386f1ee279a7d3a24d9892d6c7fc4de63da737e4776c211d6c1484da8015751",
+      "docs": "9371c4089685ad4e47b101ca42c249d3c4bc22b38289c62b71cd15e19de2a179",
       "tests": "12bcba09d8b16eb7339db08d2f4449413f340a616b7d44ce93ea216196366fe5",
-      "reason": "Remove repeated field-copy and helper-only capture assertions; retain shared immutable history with private containers, capture once per batch, inherited provider prefixes, backend failure and configured-depth capture. File-backed MCP eligibility is checked through the existing capture test. No inheritance semantics change."
+      "reason": "The changed architecture paragraph describes Fresh routing through Presets and the child-owned Preset projection. Captured inherited model, prompt, tools, cache key and source history are unchanged; existing real Responses and Anthropic inherited prefix tests and native factory tests passed."
     },
     "harness.rpc-interface": {
       "docs": "594d0ef01f83c003dc7d2479e4d899731b402db84eec8b5fbae215cf42d8c973",
@@ -1133,8 +1138,8 @@
     },
     "config.resolve": {
       "docs": "edf77e31dbe00a54ecb6d1d77f7c647f643621bf7d40a887402be41b48c3e23b",
-      "tests": "5471b6151898f248321ebe00e7f4bf618784e1151b10f632c44c9f1b52d94ec3",
-      "reason": "Delete duplicated child cache scenarios only. Cwd/trust settings, configured extension loading and thinking fallback remain tested in the factory. Configuration behavior is unchanged."
+      "tests": "b8a7b0a7f2224d734af283ec9e35c3bc34971e121fc815d5fe0e69c4320539ed",
+      "reason": "Only the offline routing configuration fixture in harness-config-sdk changes to version 3. Harness config locations, trust layering, snapshot timing and parameter resolution are unchanged; the existing real SDK assertions passed in the full suite."
     }
   }
 }

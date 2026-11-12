@@ -26,8 +26,7 @@ import { resolvePreset } from '../src/preset/resolve.ts';
 import { applyPresetPlan, clearActivePreset, type PresetApplyHost } from '../src/preset/apply.ts';
 import { parsePresetCommand } from '../src/preset/command.ts';
 import { appendPresetBase, readPresetBase, restorePresetSnapshot } from '../src/preset/state.ts';
-import { projectPresetInstruction } from '../src/preset/instruction.ts';
-import type { TranscriptMessageLike } from '../src/session-transcript.ts';
+import { installPresetInstruction } from '../src/preset/instruction.ts';
 import { appendCodemodeMode } from '../src/capability/codemode-mode.ts';
 import { branchToolSelection } from '../src/capability/admission.ts';
 import { createToolPermissionResolver } from '../src/capability/tool-permission.ts';
@@ -36,15 +35,6 @@ import { applyToolModifiers, parseToolModifiers } from '../src/preset/modifiers.
 /** `customType` of the applied-preset snapshot on the branch. */
 const PRESET_STATE_RECORD = 'preset-state';
 const PRESET_STATE_VERSION = 1;
-
-function checkpointIdOf(branch: readonly unknown[]): string | null {
-  let checkpoint: string | null = null;
-  for (const entry of branch) {
-    const value = entry as { type?: string; id?: string };
-    if (value.type === 'compaction' || value.type === 'context_edit') checkpoint = value.id ?? null;
-  }
-  return checkpoint;
-}
 
 export default function presetExtension(pi: ExtensionAPI): void {
   pi.registerFlag('preset', { description: 'Preset configuration to apply at startup', type: 'string' });
@@ -173,21 +163,5 @@ export default function presetExtension(pi: ExtensionAPI): void {
     },
   });
 
-  // Project the active preset's instructions as one journaled system section.
-  // Reading the snapshot from the branch (not module state) makes resume, tree,
-  // fork and reload restore the exact recorded placements.
-  pi.on('context_with_system', (event, ctx) => {
-    const branch = ctx.sessionManager.getBranch();
-    const snapshot = restorePresetSnapshot(branch);
-    const projected = projectPresetInstruction(
-      event.messages as unknown as readonly TranscriptMessageLike[],
-      snapshot?.instructions ?? null,
-      {
-        branch,
-        checkpointId: checkpointIdOf(branch),
-        appendEntry: (customType, data) => pi.appendEntry(customType, data),
-      },
-    );
-    return { messages: projected as unknown as typeof event.messages };
-  });
+  installPresetInstruction(pi);
 }

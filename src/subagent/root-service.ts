@@ -18,6 +18,7 @@ import { DEFAULT_HARNESS_CONFIG, type HarnessConfig } from '../harness-config.ts
 import { createSubagentStore, EVENTS, SUBAGENT_SESSIONS_DIR, writeFileAtomic } from './storage.ts';
 import { hasJobView, jobViewPaths, writeJobView, readTranscript } from './view.ts';
 import { routeSubagent } from './routing.ts';
+import { loadPresets } from '../preset/config.ts';
 import { DEFAULT_SOCKET_DIR, deriveSessionUid, getAgentSocketPath } from '../ipc/socket.ts';
 import type { LiveSession } from './session-directory.ts';
 import { SessionPeers, type SessionConnect } from './session-peers.ts';
@@ -707,8 +708,11 @@ export class RootService implements ManagedWriteHost {
   }
 
   #route(input: Parameters<NativeRoutingPort['route']>[0]): Promise<NativeRouteResult> {
+    const loaded = loadPresets({ cwd: input.cwd, agentDir: this.#options.agentDir, projectTrusted: input.trusted });
+    for (const warning of loaded.warnings) this.#options.context.ui?.notify(warning, 'warning');
     return routeSubagent({
       ...input,
+      presets: loaded.presets,
       registry: this.#registry,
       configPath: path.join(this.#options.agentDir, 'subagent-routing.json'),
       retry: this.#options.config.subagent.routingRetry,

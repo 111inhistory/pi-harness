@@ -47,7 +47,7 @@ Runtime 的 `job.status` 是领域事实。Runner 的输入准入栅栏表示原
 
 ## 创建、执行与恢复
 
-Fresh 在自己的 Job Budget 内路由。初始工具使用 Pi 默认工具与已配置扩展，并合并路由角色的 `enableTools`；`excludeTools` 始终排除，不另设内置工具白名单。Fresh 与 Inherited 均独立加载已配置的扩展与 MCP 后端（`noExtensions: false`），并运行扩展的启动与关闭钩子，仅排除 `subagent.ts`、`capability.ts`、`btw.ts` 根注册入口，由子会话自己的 surface 与 Capability 装配替代；结果渲染入口可继续加载。子会话的资源过滤保留用户与项目设置各自的路径作用域，不写回配置文件。
+Fresh 在自己的 Job Budget 内选择角色及其候选 Preset。候选引用已有 Preset 或使用同格式的临时定义；角色只持有职责 instructions。子会话复用 Preset 的解析、应用和分支指引，工具修饰以自己的默认工具与已配置扩展为基线；显式最终减项作为 Actor 执行排除，不另设角色工具配置。Fresh 与 Inherited 均独立加载已配置的扩展与 MCP 后端（`noExtensions: false`），并运行扩展的启动与关闭钩子，排除 `subagent.ts`、`capability.ts`、`btw.ts`、`shell-preflight.ts` 与 `preset.ts` 根注册入口，由子会话自己的 surface 与 Capability 装配替代；结果渲染入口可继续加载。子会话的资源过滤保留用户与项目设置各自的路径作用域，不写回配置文件。
 
 Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定底层物理模型（`physicalModelForCall`），避免虚拟模型在子会话中重路由。Inherited 独立加载配置的扩展与 MCP 后端。它恢复捕获的工具白名单、系统提示词与思考强度。白名单仅限可重新创建的文件型扩展工具与 MCP 工具，父会话专属诊断工具不传递。若继承的 MCP 工具尚未完成异步注册，按 `subagent.inheritedToolWaitMs` 有界等待，默认最多 10 秒，超时则抛出 `inherited_tool_unavailable`。路由完成的 Actor 在续跑时沿用已记录身份，不重新选择角色。
 

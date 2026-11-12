@@ -1,10 +1,6 @@
 /**
- * Routing configuration validation and the candidate-level thinking decision.
- *
- * A Fresh route selects a role and then a model from that role's candidate
- * pool. Each candidate owns its final thinking level directly; there is no
- * role default and no min/max band to clamp. Choosing a model from a pool with
- * differing candidate levels therefore also chooses the thinking level.
+ * Routing owns role selection and its instructions. Each role's candidates
+ * reference named Presets or carry temporary definitions using the same schema.
  */
 
 import { readFileSync } from 'node:fs';
@@ -13,9 +9,10 @@ import { composeAssignment } from './prompt.ts';
 import { isRetryableAssistantError, retryDelayMs, type Api, type Model, type ClassifierApi, type ClassifierModel, type ClassifierContext, type ClassifierChoiceQuestion } from '@earendil-works/pi-ai';
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
 import type { JobBudgetPort } from './job-budget.ts';
+import { validatePreset, type PresetCatalog, type PresetConfig } from '../preset/config.ts';
 
-export const ROUTING_THINKING_LEVELS = ["low", "medium", "high"] as const;
-export type RoutingThinkingLevel = (typeof ROUTING_THINKING_LEVELS)[number];
+/** An existing named preset, or a temporary preset with the same schema. */
+export type RoutingPreset = string | PresetConfig;
 
 export interface RoutingClassifierConfig {
   provider: string;
@@ -27,32 +24,24 @@ export interface RoutingInstructions {
   model: string;
 }
 
-export interface RoutingCandidate {
-  model: string;
-  thinking: RoutingThinkingLevel;
-}
-
 export interface RoutingRole {
   id: string;
   instructions: string;
-  excludeTools: string[];
-  enableTools?: string[];
-  candidates: RoutingCandidate[];
-}
-
-export interface RoutingModel {
-  id: string;
-  provider: string;
-  model: string;
-  preference: string;
+  /** Labels are classifier choices; values are named or temporary presets. */
+  candidates: Readonly<Record<string, RoutingPreset>>;
 }
 
 export interface RoutingConfig {
-  version: 2;
+  version: 3;
   classifier: RoutingClassifierConfig;
   instructions: RoutingInstructions;
   roles: RoutingRole[];
-  models: RoutingModel[];
+}
+
+/** The selected definition is frozen into the actor, independent of later file edits. */
+export interface RoutedPreset {
+  readonly name: string;
+  readonly config: PresetConfig;
 }
 
 export class RoutingConfigError extends Error {
@@ -76,21 +65,14 @@ function filled(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
 }
 
-function exactToolNames(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((name) => filled(name) && !/[?*]/.test(name));
-}
-
-export function isRoutingThinkingLevel(value: unknown): value is RoutingThinkingLevel {
-  return typeof value === "string" && (ROUTING_THINKING_LEVELS as readonly string[]).includes(value);
-}
-
-/**
- * Validate routing configuration with thinking defined only by each candidate.
- */
+/** Routing owns role selection; all execution fields use the Preset schema. */
 export function validateRoutingConfig(value: unknown): RoutingConfig {
   const config = record(value);
-  if (config === null || config.version !== 2) invalid("must be a version 2 JSON object");
-
+  if (config === null || config.version !== 3) invalid("must be a version 3 JSON object");
+  for (const key of Object.keys(config)) {
+    if (!['version', 'classifier', 'instructions', 'roles'].includes(key)) invalid(
+      'unknown routing field "' + key + '"');
+  }
   const classifier = record(config.classifier);
   if (classifier === null || !filled(classifier.provider) || !filled(classifier.id)) {
     invalid("classifier needs a provider and an id");
@@ -100,82 +82,36 @@ export function validateRoutingConfig(value: unknown): RoutingConfig {
     invalid("instructions need the role and model text");
   }
   if (!Array.isArray(config.roles) || config.roles.length === 0) invalid("roles must be a non-empty array");
-  if (!Array.isArray(config.models) || config.models.length === 0) invalid("models must be a non-empty array");
-
-  const modelIds = new Set<string>();
-  const models: RoutingModel[] = [];
-  for (const [index, raw] of (config.models as unknown[]).entries()) {
-    const model = record(raw);
-    if (model === null || !filled(model.id) || modelIds.has(model.id)) invalid(`models[${index}] needs a unique id`);
-    if (!filled(model.provider) || !filled(model.model) || !filled(model.preference)) {
-      invalid(`models[${index}] needs provider, model and preference`);
-    }
-    modelIds.add(model.id);
-    models.push({
-      id: model.id,
-      provider: model.provider,
-      model: model.model,
-      preference: model.preference,
-    });
-  }
-
-  const roleIds: string[] = [];
-  const roles: RoutingRole[] = [];
-  for (const [index, raw] of (config.roles as unknown[]).entries()) {
+  const ids = new Set<string>();
+  const roles: RoutingRole[] = config.roles.map((raw, index) => {
     const role = record(raw);
-    if (role === null || !filled(role.id) || roleIds.includes(role.id)) invalid(`roles[${index}] needs a unique id`);
-    if (!filled(role.instructions)) invalid(`roles[${index}] needs instructions`);
-    if (Object.hasOwn(role, "tools")) invalid(`roles[${index}].tools is no longer supported; use excludeTools`);
-    if (!exactToolNames(role.excludeTools)) invalid(`roles[${index}].excludeTools must be exact tool names`);
-    if (role.enableTools !== undefined && !exactToolNames(role.enableTools)) {
-      invalid(`roles[${index}].enableTools must be exact tool names`);
+    if (role === null || !filled(role.id) || ids.has(role.id)) invalid(
+      'roles[' + index + '] needs a unique id');
+    ids.add(role.id);
+    for (const key of Object.keys(role)) {
+      if (!['id', 'instructions', 'candidates'].includes(key)) invalid(
+        'roles[' + index + '] has unknown field "' + key + '"; execution settings belong in its presets');
     }
-    if (!Array.isArray(role.candidates) || role.candidates.length === 0) {
-      invalid(`roles[${index}].candidates must be non-empty`);
-    }
-
-    const poolIds = new Set<string>();
-    const candidates: RoutingCandidate[] = [];
-    for (const rawCandidate of role.candidates as unknown[]) {
-      const candidate = record(rawCandidate);
-      if (candidate === null || !filled(candidate.model) || !modelIds.has(candidate.model) || poolIds.has(candidate.model)) {
-        invalid(`roles[${index}].candidates needs unique refs to global models`);
+    if (!filled(role.instructions)) invalid('roles[' + index + '] needs instructions');
+    const candidates = record(role.candidates);
+    if (candidates === null || Object.keys(candidates).length === 0) invalid(
+      'roles[' + index + '].candidates must be a non-empty object');
+    const normalized: Record<string, RoutingPreset> = Object.create(null);
+    for (const [label, candidate] of Object.entries(candidates)) {
+      if (!filled(label)) invalid('candidate labels must be non-empty');
+      if (typeof candidate === 'string') {
+        if (!filled(candidate)) invalid('candidate preset names must be non-empty');
+        normalized[label] = candidate;
+      } else {
+        const parsed = validatePreset(candidate);
+        if ('errors' in parsed) invalid('roles[' + index + '].candidates.' + label + ': ' + parsed.errors.join('; '));
+        normalized[label] = parsed.preset;
       }
-      if (!isRoutingThinkingLevel(candidate.thinking)) {
-        invalid(`roles[${index}].candidates thinking must be low, medium or high`);
-      }
-      poolIds.add(candidate.model);
-      candidates.push({ model: candidate.model, thinking: candidate.thinking });
     }
-
-    roleIds.push(role.id);
-    const validated: RoutingRole = {
-      id: role.id,
-      instructions: role.instructions,
-      excludeTools: [...role.excludeTools],
-      candidates,
-    };
-    if (role.enableTools !== undefined) validated.enableTools = [...role.enableTools];
-    roles.push(validated);
-  }
-
-  const classifierConfig: RoutingClassifierConfig = {
-    provider: classifier.provider,
-    id: classifier.id,
-  };
-  const instructionConfig: RoutingInstructions = {
-    role: instructions.role,
-    model: instructions.model,
-  };
-  return { version: 2, classifier: classifierConfig, instructions: instructionConfig, roles, models };
-}
-
-/** The selected candidate is the only source of a Fresh route's thinking level. */
-export function candidateThinking(candidate: RoutingCandidate): RoutingThinkingLevel {
-  if (!isRoutingThinkingLevel(candidate.thinking)) {
-    throw new RoutingConfigError("candidate thinking must be low, medium or high");
-  }
-  return candidate.thinking;
+    return { id: role.id, instructions: role.instructions, candidates: normalized };
+  });
+  return { version: 3, classifier: { provider: classifier.provider, id: classifier.id },
+    instructions: { role: instructions.role, model: instructions.model }, roles };
 }
 
 export interface RouteSubagentInput {
@@ -186,6 +122,7 @@ export interface RouteSubagentInput {
   readonly budget: Pick<JobBudgetPort, 'beginModelCall'>;
   readonly configPath?: string;
   readonly config?: unknown;
+  readonly presets?: PresetCatalog;
   /** The root's resolved classifier retry policy; defaults to the built-in one. */
   readonly retry?: RoutingRetryConfig;
 }
@@ -193,9 +130,8 @@ export interface SubagentRoute {
   readonly roleId: string;
   readonly instructions: string;
   readonly model: Model<Api>;
-  readonly thinkingLevel: RoutingThinkingLevel;
-  readonly excludeTools: readonly string[];
-  readonly enableTools: readonly string[];
+  readonly thinkingLevel: string | null;
+  readonly preset: RoutedPreset;
 }
 /** Harness-owned routing error with a stable machine-readable code. */
 export class SubagentRoutingError extends Error {
@@ -218,8 +154,7 @@ function invalidConfigError(message: string): SubagentRoutingError {
 }
 
 /**
- * Validate the parsed routing config inline. Unknown fields are ignored, but
- * each candidate carries its final thinking level directly.
+ * Validate the parsed routing config through the shared Preset schema.
  */
 function validateConfig(value: unknown): RoutingConfig {
   try {
@@ -254,19 +189,19 @@ function resolveClassifier(registry: RouteSubagentInput['registry'], classifier:
   return model;
 }
 
-function resolveChatModel(registry: RouteSubagentInput['registry'], candidate: RoutingModel): Model<Api> {
-  const model = registry.find(candidate.provider, candidate.model);
+function resolveChatModel(registry: RouteSubagentInput['registry'], candidate: NonNullable<PresetConfig['model']>): Model<Api> {
+  const model = registry.find(candidate.provider, candidate.id);
   if (!model) {
     throw new SubagentRoutingError(
       "routing_model_unavailable",
-      `Selected model ${candidate.provider}/${candidate.model} is not in the model catalog.`,
+      `Selected model ${candidate.provider}/${candidate.id} is not in the model catalog.`,
       { candidate: candidate.id },
     );
   }
   if (model.type !== undefined && model.type !== "chat") {
     throw new SubagentRoutingError(
       "routing_model_invalid",
-      `Selected model ${candidate.provider}/${candidate.model} is a ${model.type} model, not a chat model.`,
+      `Selected model ${candidate.provider}/${candidate.id} is a ${model.type} model, not a chat model.`,
       { candidate: candidate.id },
     );
   }
@@ -418,9 +353,10 @@ async function classifyChoice({ stage, key, registry, classifier, signal, budget
 }
 
 /**
- * Route one Job: classify the role over `delegated_assignment`; a multi-model
- * role pool adds one model call over the assignment plus selected role text.
- * Global models own Preferences; role pool entries own thinking levels.
+ * Route one Job: classify the role over `delegated_assignment`; a multi-preset
+ * pool asks a second choice question using the candidate Preset descriptions.
+ * A singleton skips that question. The chosen definition is carried unchanged
+ * to the child, where the shared Preset resolver applies its execution settings.
  *
  * @param {object} input
  * @param {object} input.registry Model registry with findOfType/classify/find.
@@ -431,10 +367,10 @@ async function classifyChoice({ stage, key, registry, classifier, signal, budget
  * @param {string} [input.configPath] Pi user routing config path, supplied by the adapter.
  * @param {object} [input.config] Parsed config for tests/internal callers.
  * @param {object} [input.retry] The root's resolved classifier retry policy.
- * @returns {Promise<{roleId: string, instructions: string, model: object, thinkingLevel: string, excludeTools: string[], enableTools: string[]}>}
+ * @returns {Promise<SubagentRoute>} The role, selected model and Preset definition.
  */
 export async function routeSubagent({
-  registry, task, context = "", signal, budget, config, configPath,
+  registry, task, context = "", signal, budget, config, configPath, presets = new Map(),
   retry = DEFAULT_HARNESS_CONFIG.subagent.routingRetry,
 }: RouteSubagentInput): Promise<SubagentRoute> {
   const routing = config === undefined ? loadSubagentRoutingConfig(configPath) : validateConfig(config);
@@ -445,7 +381,6 @@ export async function routeSubagent({
   const delegatedAssignment = composeAssignment(task, batchContext);
   const classifier = resolveClassifier(registry, routing.classifier);
   const roleById = new Map(routing.roles.map((role) => [role.id, role]));
-  const modelById = new Map(routing.models.map((model) => [model.id, model]));
 
   const roleId = await classifyChoice({
     stage: 1,
@@ -464,8 +399,13 @@ export async function routeSubagent({
   });
   const role = roleById.get(roleId)!;
 
-  const pool = role.candidates;
-  const modelId = pool.length === 1 ? pool[0]!.model : await classifyChoice({
+  const pool = Object.entries(role.candidates).map(([id, definition]) => {
+    const config = typeof definition === 'string' ? presets.get(definition) : definition;
+    if (config === undefined) throw invalidConfigError('Unknown preset "' + definition + '" for role ' + roleId + '.');
+    if (config.model === undefined) throw invalidConfigError('Preset "' + id + '" needs an explicit model for Fresh routing.');
+    return { id, name: typeof definition === 'string' ? definition : 'routing:' + roleId + '/' + id, config };
+  });
+  const modelId = pool.length === 1 ? pool[0]!.id : await classifyChoice({
     stage: 2,
     key: "model",
     registry,
@@ -480,21 +420,17 @@ export async function routeSubagent({
     question: {
       type: "choice",
       instructions: routing.instructions.model,
-      criteria: Object.fromEntries(pool.map((candidate) => [candidate.model, modelById.get(candidate.model)!.preference])),
+      criteria: Object.fromEntries(pool.map((candidate) => [candidate.id,
+        candidate.config.description || candidate.name])),
     },
   });
-  const candidate = pool.find((entry) => entry.model === modelId)!;
-  const model = modelById.get(modelId)!;
-  const chatModel = resolveChatModel(registry, model);
-  // Pi applies model-specific thinking fallback when it creates the child session.
-  const thinkingLevel = candidateThinking(candidate);
-
+  const candidate = pool.find((entry) => entry.id === modelId)!;
+  const chatModel = resolveChatModel(registry, candidate.config.model!);
   return {
     roleId,
     instructions: role.instructions,
     model: chatModel,
-    thinkingLevel,
-    excludeTools: [...role.excludeTools],
-    enableTools: [...(role.enableTools ?? [])],
+    thinkingLevel: candidate.config.thinkingLevel ?? null,
+    preset: { name: candidate.name, config: candidate.config },
   };
 }

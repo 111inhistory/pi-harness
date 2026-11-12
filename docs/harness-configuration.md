@@ -1,6 +1,6 @@
 # Harness 参数配置
 
-Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的指定提示词段落。路由角色、模型、thinking 与角色工具策略继续使用 `subagent-routing.json`。Pi 原生设置继续使用 Pi 的配置入口。
+Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的指定提示词段落。`subagent-routing.json` 配置角色及其候选 Preset；模型、thinking、工具与 Codemode 配置复用 Preset。Pi 原生设置继续使用 Pi 的配置入口。
 
 配置示例见 [`config/harness.json`](../config/harness.json)。数值、列表配置采用当前默认值；`prompts.common` 与 `prompts.inherited` 的空对象表示不修改内置正文，并非展开后的默认正文。生产默认值统一定义在 `src/harness-config.ts`。仓库里的示例不会自动写入用户目录。
 
@@ -148,6 +148,44 @@ Fresh 与 Inherited 直接子节点在同一 Subagent 树内使用独立的父�
 该配置仅在 Codemode 已启用且生效模式为 `only` 时生效；Codemode 未启用或为 `on` 模式时配置保留但不生效，沿用原生声明方式。生效模式可以来自 Pi 设置，也可由模型 Preset 通过分支记录覆盖（见下节）。命中组的成员仍以名称出现在发现结果与 `describeNamespace` 中，但参数与返回值 schema 不进入原生工具声明，也不内联进 Codemode 描述；模型通过 `describeTool` 读取完整接口后经 Codemode 执行。命中组中 model-only 工具不能经 Codemode 调用，配置命中时应显式报告而不能隐藏其声明。命中组的内部继承检索同样不重发这些 schema。模式切换只改变声明投影，不改变启用集合、授权记录或工具 exposure。未生效的配置本身不是拒绝理由。
 
 `describeTool` 接受工具原名或 Codemode 调用标识，返回参数类型、工具指引与返回值类型；没有输出 schema 的工具声明为 `Promise<string>`，与脚本实际收到的文本一致。MCP 工具保留其原生结果对象类型，包括结构化输出。
+
+### Fresh routing Presets
+
+`subagent-routing.json` 使用 version 3。每个 role 只包含 `id`、角色 `instructions` 和 `candidates`。候选标签用于分类器选择；值为已有 Preset 名称，或遵循相同 schema 的临时 Preset：
+
+```json
+{
+  "version": 3,
+  "classifier": { "provider": "fake-provider", "id": "fake-classifier" },
+  "instructions": { "role": "Select the role.", "model": "Select the execution preset." },
+  "roles": [{
+    "id": "executor",
+    "instructions": "Complete the authorized change.",
+    "candidates": {
+      "standard": "coding",
+      "quick": {
+        "description": "Small changes with an explicit implementation plan.",
+        "model": { "provider": "fake-provider", "id": "fake-model" },
+        "thinkingLevel": "medium",
+        "tools": ["-write", "+msg_write"],
+        "codemode": { "mode": "only" }
+      }
+    }
+  }]
+}
+```
+
+命名 Preset 从 Pi 用户目录的 `presets.json` 与受信任工作目录的 `.pi/presets.json` 加载，项目同名项整体替换全局项。候选必须指定 model；可省略 thinkingLevel，由 SDK 使用该子会话的默认强度。单候选跳过第二次分类；多候选使用 Preset 的 description，未配置时使用候选 Preset 名称。角色 instructions 仍独立提供职责，Preset instructions 提供执行指引。
+
+工具配置使用现有 Preset 的 `tools` 修饰语法；基线为子会话自己的默认工具与扩展。显式最终减项同时作为该 Actor 的执行排除，后续激活不能绕过；祖先权限与深度限制仍生效。模型、thinking、工具、Codemode 与 Preset 指引通过公共 Preset 解析和应用路径设置，结果与所选定义保存在原生分支和 Actor 身份中；续跑不重新选择或读取变更后的 Preset。子会话不执行 Main 的 `--preset` 启动标志。
+
+旧版 `models`、candidate `thinking` 和 role `enableTools`／`excludeTools` 不再读取。离线转换保留角色和候选选择，将执行配置变成临时 Preset，输出必须是新文件：
+
+```sh
+node --import tsx scripts/migrate-subagent-routing.mjs subagent-routing.json subagent-routing-v3.json
+```
+
+检查输出后再由用户替换自己的配置；运行时不迁移配置。
 
 ### 搜索
 
