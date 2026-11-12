@@ -1111,8 +1111,8 @@
     },
     "shell.job-command": {
       "docs": "a9eb0b176830fe17f593e9901dd5ce9ceca87108aaeb604a8038394095868ef9",
-      "tests": "06dbe87d0e07c357cdc8bcf6626c0e644ea5c90192e296e03f8b9212a1a6c116",
-      "reason": "Bash cases now state platform posix because a POSIX shell resolves POSIX paths regardless of host OS; pi-job extraction, Windows wrapper resolution and fail-closed fallback contracts are unchanged and still asserted."
+      "tests": "4c4043872f2265a183f0b8d75f9dd935d64e3ede7b791697635f035f9a81c75b",
+      "reason": "The retired node/pi-job.mjs launch form is no longer recognized; the current native pi-job invocation contract and docs are unchanged, and the test now asserts rejection."
     },
     "shell.approval": {
       "docs": "53478ad36772f5375a1a883d2f3c6b82aa2cdb4d33a405fca171975a9dccedf7",

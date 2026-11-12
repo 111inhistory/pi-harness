@@ -111,7 +111,7 @@ test("--cwd resolution: relative, absolute, omitted, and ignoring --cwd after --
   assert.deepEqual(resAfterDash.actions[0]!.argv, ["my-tool", "--cwd", "other"]);
 });
 
-test("Windows platform resolution and Windows wrappers", async (t) => {
+test("Windows platform resolution and retired wrapper rejection", async (t) => {
   if (!requireSubmodule(t)) return;
 
   // pi-job.exe with windows relative --cwd
@@ -128,7 +128,7 @@ test("Windows platform resolution and Windows wrappers", async (t) => {
   assert.equal(resExe.actions[0]!.cwd, "C:\\projects\\app\\relative\\sub");
   assert.deepEqual(resExe.actions[0]!.argv, ["dir"]);
 
-  // node wrapper executing pi-job.mjs
+  // the retired node wrapper is not a pi-job invocation
   const resNode = await extractJobCommands({
     shell: "pwsh",
     command: "node dist/pi-job.mjs create '--cwd' 'sub' '--' Get-Process",
@@ -137,9 +137,9 @@ test("Windows platform resolution and Windows wrappers", async (t) => {
   });
   assert.equal(resNode.kind, "extracted");
   if (resNode.kind !== "extracted") return;
-  assert.equal(resNode.containsPiJob, true);
-  assert.equal(resNode.actions[0]!.cwd, "C:\\projects\\app\\sub");
-  assert.deepEqual(resNode.actions[0]!.argv, ["Get-Process"]);
+  assert.equal(resNode.containsPiJob, false);
+  assert.equal(resNode.actions.length, 1);
+  assert.equal(resNode.actions[0]!.isJob, false);
 });
 
 test("compound command preserves unrelated dangerous sibling commands", async (t) => {

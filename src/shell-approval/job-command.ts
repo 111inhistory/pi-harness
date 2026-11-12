@@ -142,7 +142,6 @@ const PI_JOB_COMMAND_NAMES = new Set([
   "pi-job.exe",
   "pi-job.cmd",
   "pi-job.bat",
-  "pi-job.mjs",
 ]);
 
 const RECOGNIZED_PI_JOB_SUBCOMMANDS = new Set([
@@ -166,11 +165,6 @@ function parsePiJobInvocation(argv: readonly string[]): {
   let subIndex = -1;
   if (PI_JOB_COMMAND_NAMES.has(firstBase)) {
     subIndex = 1;
-  } else if ((firstBase === "node" || firstBase === "node.exe") && argv.length > 1) {
-    const secondBase = crossPlatformBasename(argv[1]!).toLowerCase();
-    if (secondBase === "pi-job.mjs" || secondBase === "pi-job") {
-      subIndex = 2;
-    }
   }
 
   if (subIndex === -1) {
