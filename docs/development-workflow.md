@@ -1,6 +1,6 @@
 # Development workflow
 
-Start with the existing architecture, choose the responsibility and algorithm, then write production code. Apply the repository's current scope and freeze first. Use one coherent change as the unit of work; an exploratory probe may precede the design, but does not establish a new production boundary by itself.
+Start with the existing architecture, choose the responsibility and algorithm, then write production code. Apply the repository's current scope and any active restrictions first. Use one coherent change as the unit of work; an exploratory probe may precede the design, but does not establish a new production boundary by itself.
 
 ## 1. Understand the existing responsibility
 

@@ -173,15 +173,17 @@ The opt-in creation benchmark runs nine isolated samples per checkout using the 
 
 ### Authorization and freeze boundary
 
-The user has requested a rewrite plan and a feature freeze until the rewrite is complete. This section is the active execution plan; the preceding findings remain the evidence ledger. The follow-up inputs are [permission algorithm review](capability-permission-algorithm-review.md) and [memory retention review](memory-retention-review.md). Their suggestions require verification; their severity labels and proposed mechanisms are not implementation instructions.
+The rewrite feature freeze is closed with user authorization after recording the Ubuntu PowerShell failure with richer diagnostics and adding macOS to the standard CI matrix. The user explicitly deferred active PowerShell reproduction. The latest completed Linux baseline at `9d735062` has 1,033 passes, zero failures and ten skips; the three PBT models also passed 1,000 local histories each with command limit 128 and `size=max`. The reported Ubuntu CI failure at `1f35ba2c` remains unresolved, and adding macOS CI is not macOS acceptance. Active-root migration deferrals, provider-cache design gaps and untested environments remain recorded in [known issues](../known-issues.md); closure does not mark them fixed or approve deferred feature proposals.
 
-During the freeze:
+The following plan and freeze rules are historical execution evidence, not an active feature restriction. The preceding findings remain the evidence ledger. The follow-up inputs were [permission algorithm review](capability-permission-algorithm-review.md) and [memory retention review](memory-retention-review.md). Their suggestions require verification; their severity labels and proposed mechanisms are not implementation instructions.
+
+During the former freeze:
 
 - Preserve the agreed product scope. Work on audit, correctness fixes, simplification, removal of production compatibility, ownership/lifecycle fixes, and the tests/docs needed to verify those changes.
 - Add no new commands, RPC methods, permission states, protocol capabilities, SDKs, backends or diagnostic product surfaces. Do not implement the archived proposals' future interface lists.
 - The CPU/memory benchmark already drafted is optional diagnostic tooling, outside the default test suite. Keep its narrow coverage explicit. Defer additional benchmark scenarios until the corresponding rewritten paths and contracts are stable; no expansion of the performance framework is part of this plan.
 - Continue Windows synchronization and verification as acceptance work, not as a reason to skip failures. Keep the VM's user-managed lock state unchanged. Do not claim complete Windows support from transport-only checks.
-- Freeze remains in effect until the exit criteria below are met and the user explicitly lifts it. A green test run, merged commit or archived proposal does not lift the freeze.
+- The freeze required explicit user authorization to lift it. Green tests, merged commits and archived proposals did not themselves lift it.
 
 ### Current worktree and baseline
 
@@ -319,4 +321,4 @@ Before declaring the rewrite complete:
 2. Remove whole-history defensive cloning in the reviewed creation path, or document a demonstrated writer requiring bounded effective-context copying. Do not treat append-container mutation as message-body mutation.
 3. Verify production supports only current formats, with any migration completely outside production modules.
 4. Pass Linux, Windows, schema/checksum, docs/JSON and staged test-contract checks; inspect complete staged diffs and secret-scan results.
-5. Report tested revision, before/after evidence, memory ownership limits and untested environments. Ask the user to lift the freeze only after presenting this concrete result. Do not automatically restart feature work.
+5. Report tested revision, before/after evidence, memory ownership limits and untested environments. The freeze required a concrete report and user authorization to lift; it did not permit automatically restarting feature work.

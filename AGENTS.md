@@ -6,7 +6,7 @@ Read `LOCAL_AGENTS.md` at the checkout root when it exists for machine-specific 
 
 ## 1. 项目边界与文档地图
 
-- **功能冻结**：RPC／权限／继承与观察链路完成[改写计划](docs/reviews/rpc-permission-audit.md#rewrite-plan-and-feature-freeze)并由用户明确解除冻结前，不添加新功能。期间只推进审计、缺陷修复、必要简化、兼容性清理及对应测试／文档；已起草的性能基准保持可选，不扩展场景或框架。测试通过、提交或归档提案均不自动解除冻结。
+- **Feature scope**: the RPC, permission, inheritance and observation rewrite freeze has been lifted with user authorization; see the [closure record](docs/reviews/rpc-permission-audit.md#authorization-and-freeze-boundary). Remaining defects and acceptance gaps stay in [known issues](docs/known-issues.md). Lifting the freeze does not approve deferred proposals or start new feature work; each change still needs a current user goal and must respect the project boundary.
 - **不要保留兼容性**：重构或演进一次做干净。严禁保留冗余 shim、过渡包装层、兼容别名、旧版格式回退或 `.bak`／`.new` 文件；`src/` 与 `extensions/` 生产代码一律使用严格 TypeScript。必要的迁移仅由 `scripts/` 中显式离线工具执行，生产模块不包含旧格式读取、迁移逻辑或迁移专用导出。
 - **范围**：基于 Pi SDK 的 Coding Agent Harness，包含树状 Subagent 编排、Capability 按需发现与分支记忆、以及本机受管 IPC 通信（Unix Socket / Windows Named Pipe）。不扩展脱离 Harness 的外部调度服务。
 - **文档索引**：
