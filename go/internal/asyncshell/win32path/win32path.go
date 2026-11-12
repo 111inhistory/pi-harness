@@ -1,4 +1,4 @@
-package asyncshell
+package win32path
 
 import (
 	"os"
@@ -10,8 +10,8 @@ import (
 
 func win32IsSep(c byte) bool { return c == '/' || c == '\\' }
 
-// Win32PathBasename is path.win32.basename.
-func Win32PathBasename(value string) string {
+// Basename is path.win32.basename.
+func Basename(value string) string {
 	trimmed := strings.TrimRight(value, "/\\")
 	if trimmed == "" {
 		return ""
@@ -22,9 +22,9 @@ func Win32PathBasename(value string) string {
 	return trimmed
 }
 
-// Win32PathExtname is path.win32.extname.
-func Win32PathExtname(value string) string {
-	base := Win32PathBasename(value)
+// Extname is path.win32.extname.
+func Extname(value string) string {
+	base := Basename(value)
 	if base == "." || base == ".." {
 		return ""
 	}
@@ -35,8 +35,8 @@ func Win32PathExtname(value string) string {
 	return base[dot:]
 }
 
-// Win32PathDirname is path.win32.dirname.
-func Win32PathDirname(value string) string {
+// Dirname is path.win32.dirname.
+func Dirname(value string) string {
 	trimmed := strings.TrimRight(value, "/\\")
 	if trimmed == "" {
 		if value == "" {
@@ -58,8 +58,8 @@ func Win32PathDirname(value string) string {
 	return parent
 }
 
-// Win32PathJoin is path.win32.join.
-func Win32PathJoin(parts ...string) string {
+// Join is path.win32.join.
+func Join(parts ...string) string {
 	nonEmpty := make([]string, 0, len(parts))
 	for _, part := range parts {
 		if part != "" {
@@ -72,8 +72,8 @@ func Win32PathJoin(parts ...string) string {
 	return win32Normalize(strings.Join(nonEmpty, "\\"))
 }
 
-// Win32PathResolve is path.win32.resolve.
-func Win32PathResolve(parts ...string) string {
+// Resolve is path.win32.resolve.
+func Resolve(parts ...string) string {
 	absolute := ""
 	for _, part := range parts {
 		if part == "" {

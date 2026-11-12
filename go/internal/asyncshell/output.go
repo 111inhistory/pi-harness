@@ -103,9 +103,10 @@ func (f *OutputFilter) text(input string) string {
 				f.state = stateText
 			}
 		case stateOSC:
-			if char == belRune {
+			switch char {
+			case belRune:
 				f.state = stateText
-			} else if char == escRune {
+			case escRune:
 				f.state = stateOSCEscape
 			}
 		case stateOSCEscape:

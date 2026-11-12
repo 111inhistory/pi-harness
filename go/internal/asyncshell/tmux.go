@@ -12,6 +12,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"pijob/internal/asyncshell/aserr"
+	shellbackend "pijob/internal/asyncshell/backend"
+	"pijob/internal/asyncshell/private"
+	"pijob/internal/asyncshell/proc"
 )
 
 // tmux.go translates src/async-shell/tmux.ts: the shared async-shell task engine.
@@ -23,7 +28,7 @@ import (
 // throw -> panic(AsyncShellError); try/catch -> caught(func(){...}) (defer/recover).
 
 // backend is tmux.ts's per-platform backend selection.
-var backend ShellBackend = defaultBackend()
+var backend shellbackend.ShellBackend = shellbackend.Default()
 
 const (
 	MonitorTickMs  = 60
@@ -136,7 +141,7 @@ func StateRoot() string {
 // TaskDirectory is TS taskDirectory.
 func taskDirectory(id string, root string) string {
 	if !IsTaskId(id) {
-		panic(NewAsyncShellError("invalid_id", "Not an async-shell task id: "+id))
+		panic(aserr.New("invalid_id", "Not an async-shell task id: "+id))
 	}
 	return filepath.Join(root, id)
 }
@@ -148,7 +153,7 @@ func checkedTaskDirectory(dir string, root string) string {
 		panic(err)
 	}
 	if !samePath(filepath.Dir(resolved), root) || !IsTaskId(filepath.Base(resolved)) {
-		panic(NewAsyncShellError("invalid_directory", "Not an async-shell task directory under "+root+": "+dir))
+		panic(aserr.New("invalid_directory", "Not an async-shell task directory under "+root+": "+dir))
 	}
 	return resolved
 }
@@ -180,7 +185,7 @@ func samePath(left string, right string) bool {
 	if leftErr != nil || rightErr != nil {
 		return false
 	}
-	if runtime.GOOS == "win32" {
+	if runtime.GOOS == "windows" {
 		return strings.EqualFold(leftResolved, rightResolved)
 	}
 	return leftResolved == rightResolved
@@ -206,19 +211,6 @@ func appendPrivateFile(path string, data []byte) {
 	if _, err := file.Write(data); err != nil {
 		panic(err)
 	}
-}
-
-func errorCode(err interface{}) string {
-	if err == nil {
-		return ""
-	}
-	if e, ok := err.(*AsyncShellError); ok {
-		return e.Code
-	}
-	if ce, ok := err.(interface{ ErrorCode() string }); ok {
-		return ce.ErrorCode()
-	}
-	return ""
 }
 
 func messageOf(err interface{}) string {
@@ -264,7 +256,7 @@ func readTaskFile(paths TaskPaths) taskFile {
 	value := readJson(paths.Task)
 	m, ok := record(value)
 	if !ok {
-		panic(NewAsyncShellError("task_missing", "No async-shell task at "+paths.Dir+"."))
+		panic(aserr.New("task_missing", "No async-shell task at "+paths.Dir+"."))
 	}
 	id, idOK := m["id"].(string)
 	argvRaw, argvOK := m["argv"].([]interface{})
@@ -282,17 +274,17 @@ func readTaskFile(paths TaskPaths) taskFile {
 		argv = append(argv, text)
 	}
 	if !idOK || !argvOK || len(argvRaw) == 0 || !argvStrings || !cwdOK || !createdOK || !waitOK {
-		panic(NewAsyncShellError("task_corrupt", "The task file at "+paths.Task+" is not readable."))
+		panic(aserr.New("task_corrupt", "The task file at "+paths.Task+" is not readable."))
 	}
 	timeoutRaw, hasTimeout := m["timeoutMs"]
 	if !hasTimeout {
-		panic(NewAsyncShellError("task_corrupt", "The task file at "+paths.Task+" is not readable."))
+		panic(aserr.New("task_corrupt", "The task file at "+paths.Task+" is not readable."))
 	}
 	var timeoutMs *int64
 	if timeoutRaw != nil {
 		number, ok := timeoutRaw.(float64)
 		if !ok {
-			panic(NewAsyncShellError("task_corrupt", "The task file at "+paths.Task+" is not readable."))
+			panic(aserr.New("task_corrupt", "The task file at "+paths.Task+" is not readable."))
 		}
 		value := int64(number)
 		timeoutMs = &value
@@ -441,11 +433,11 @@ func sleep(ms int) {
 }
 
 func alive(pid int) bool {
-	err := killProcess(pid, "")
+	err := proc.Kill(pid, "")
 	if err == nil {
 		return true
 	}
-	return errorCode(err) == "EPERM"
+	return aserr.Code(err) == "EPERM"
 }
 
 func readPid(file string) *int {
@@ -489,10 +481,10 @@ func readDelivery(paths TaskPaths, timeoutMs int) string {
 func sendFrame(target CallbackTarget, frame interface{}) error {
 	if err := writeSocket(target.Socket, frame); err != nil {
 		code := "callback_failed"
-		if errorCode(err) == "registration_rejected" {
+		if aserr.Code(err) == "registration_rejected" {
 			code = "registration_rejected"
 		}
-		return NewAsyncShellError(code, "The async-shell host did not accept a frame: "+messageOf(err))
+		return aserr.New(code, "The async-shell host did not accept a frame: "+messageOf(err))
 	}
 	return nil
 }
@@ -500,7 +492,7 @@ func sendFrame(target CallbackTarget, frame interface{}) error {
 // CallbackFromEnv is TS callbackFromEnv: null keeps the CLI standalone.
 func CallbackFromEnv() *CallbackTarget {
 	if unavailable := os.Getenv("PI_ASYNC_SHELL_HOST_ERROR"); unavailable != "" {
-		panic(NewAsyncShellError("host_unavailable", "The async-shell callback host is unavailable: "+unavailable))
+		panic(aserr.New("host_unavailable", "The async-shell callback host is unavailable: "+unavailable))
 	}
 	socket := os.Getenv("PI_AGENT_SOCKET")
 	token := os.Getenv("PI_ASYNC_SHELL_TOKEN")
@@ -514,10 +506,10 @@ func CallbackFromEnv() *CallbackTarget {
 func createTask(options CreateTaskOptions) ShellResult {
 	assertSupported()
 	if len(options.Argv) == 0 {
-		panic(NewAsyncShellError("invalid_command_args", "create requires a command."))
+		panic(aserr.New("invalid_command_args", "create requires a command."))
 	}
 	root := StateRoot()
-	if err := ensurePrivateDirectory(root); err != nil {
+	if err := private.EnsureDirectory(root); err != nil {
 		panic(err)
 	}
 	var id string
@@ -537,7 +529,7 @@ func createTask(options CreateTaskOptions) ShellResult {
 			panic(err)
 		}
 	}
-	if err := ensurePrivateDirectory(dir); err != nil {
+	if err := private.EnsureDirectory(dir); err != nil {
 		panic(err)
 	}
 	paths := taskPaths(dir)
@@ -554,10 +546,10 @@ func createTask(options CreateTaskOptions) ShellResult {
 			appendPrivateFile(paths.Filtered, []byte("async-shell: "+messageOf(r)+"\n"))
 			writeState(paths, state)
 			writePrivateFile(paths.Closed, nil)
-			if errorCode(r) != "registration_rejected" {
+			if aserr.Code(r) != "registration_rejected" {
 				_ = sendFrame(*options.Callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, Token: options.Callback.Token, Operation: "complete", ID: id, Notify: false, Result: consumeOutput(paths, state)})
 			}
-			panic(NewAsyncShellError("register_failed", "The async-shell host did not accept the registration of task "+id+": "+messageOf(r)+". The task directory "+dir+" was kept and released; re-running create starts a new task."))
+			panic(aserr.New("register_failed", "The async-shell host did not accept the registration of task "+id+": "+messageOf(r)+". The task directory "+dir+" was kept and released; re-running create starts a new task."))
 		}
 	}
 
@@ -582,7 +574,7 @@ func createTask(options CreateTaskOptions) ShellResult {
 		if err != nil {
 			panic(err)
 		}
-		monitorPid, startErr := startDetached(executable, monitorArgs, nil)
+		monitorPid, startErr := proc.StartDetached(executable, monitorArgs, nil)
 		if startErr != nil {
 			panic(startErr)
 		}
@@ -597,7 +589,7 @@ func createTask(options CreateTaskOptions) ShellResult {
 				panic(sendErr)
 			}
 		}
-		panic(NewAsyncShellError("start_failed", messageOf(r)))
+		panic(aserr.New("start_failed", messageOf(r)))
 	}
 
 	decide := func(mode string, state taskState) ShellResult {
@@ -655,7 +647,7 @@ func readTask(dir string, cursor *int64) ShellResult {
 func requireRunning(paths TaskPaths) taskFile {
 	task := readTaskFile(paths)
 	if readStateFile(paths, task).Status != StatusRunning {
-		panic(NewAsyncShellError("task_finished", "Task "+task.ID+" is no longer running."))
+		panic(aserr.New("task_finished", "Task "+task.ID+" is no longer running."))
 	}
 	return task
 }
@@ -665,7 +657,7 @@ func sendInput(dir string, input string, enter bool) {
 	paths := taskPaths(dir)
 	requireRunning(paths)
 	if len([]byte(input)) > MaxSendBytes {
-		panic(NewAsyncShellError("input_too_large", "Input must not exceed "+formatInt(MaxSendBytes)+" bytes."))
+		panic(aserr.New("input_too_large", "Input must not exceed "+formatInt(MaxSendBytes)+" bytes."))
 	}
 	backend.SendInput(dir, input)
 	if enter {
@@ -680,7 +672,7 @@ func sendKey(dir string, key string) {
 	paths := taskPaths(dir)
 	requireRunning(paths)
 	if !keyPattern.MatchString(key) {
-		panic(NewAsyncShellError("invalid_key", "Not a tmux key name: "+key))
+		panic(aserr.New("invalid_key", "Not a tmux key name: "+key))
 	}
 	backend.SendKey(dir, key)
 }
@@ -704,7 +696,7 @@ func cancelTask(dir string, rootArg ...string) {
 		return
 	}
 	if backend.ServerRunning(paths.Dir) {
-		panic(NewAsyncShellError("cancel_incomplete", "The multiplexer server of task "+task.ID+" did not stop."))
+		panic(aserr.New("cancel_incomplete", "The multiplexer server of task "+task.ID+" did not stop."))
 	}
 
 	// The monitor is the only finalizer; only signal a pid that proves it is ours.
@@ -714,7 +706,7 @@ func cancelTask(dir string, rootArg ...string) {
 		return
 	}
 	if ours && monitorPid != nil {
-		_ = caught(func() { _ = killProcess(*monitorPid, "SIGKILL") })
+		_ = caught(func() { _ = proc.Kill(*monitorPid, "SIGKILL") })
 		if waitForClose(paths, 2000) {
 			return
 		}
@@ -724,10 +716,10 @@ func cancelTask(dir string, rootArg ...string) {
 	}
 
 	if backend.ServerRunning(paths.Dir) {
-		panic(NewAsyncShellError("cancel_incomplete", "The multiplexer server of task "+task.ID+" is still running."))
+		panic(aserr.New("cancel_incomplete", "The multiplexer server of task "+task.ID+" is still running."))
 	}
 	if monitorPid != nil && alive(*monitorPid) && backend.OwnsProcess(*monitorPid, "__monitor", paths.Dir) {
-		panic(NewAsyncShellError("cancel_incomplete", "The monitor of task "+task.ID+" did not report cleanup."))
+		panic(aserr.New("cancel_incomplete", "The monitor of task "+task.ID+" did not report cleanup."))
 	}
 
 	state := readStateFile(paths, task)
@@ -780,7 +772,7 @@ func RunnerMain(dir string) (exit int) {
 
 	var child *exec.Cmd
 	r := caught(func() {
-		command, commandErr := ChildCommandFor(task.Argv, runtime.GOOS, environ(), task.Cwd)
+		command, commandErr := proc.ChildCommandFor(task.Argv, runtime.GOOS, environ(), task.Cwd)
 		if commandErr != nil {
 			panic(commandErr)
 		}
@@ -790,7 +782,7 @@ func RunnerMain(dir string) (exit int) {
 		child.Stderr = os.Stderr
 		child.Dir = task.Cwd
 		if command.Verbatim {
-			applyVerbatim(child, command.File, command.Args)
+			proc.ApplyVerbatim(child, command.File, command.Args)
 		}
 		if err := child.Start(); err != nil {
 			panic(err)
@@ -806,13 +798,13 @@ func RunnerMain(dir string) (exit int) {
 
 	stopped := func(signal string) {
 		if child.Process != nil {
-			_ = caught(func() { _ = child.Process.Signal(terminateSignal()) })
+			_ = caught(func() { _ = child.Process.Signal(proc.TerminateSignal()) })
 		}
 		writeExit(paths, exitFile{Code: nil, Signal: &signal, Error: nil})
 		sleep(150)
 		os.Exit(0)
 	}
-	installStopHandlers(stopped)
+	proc.InstallStopHandlers(stopped)
 
 	waitErr := child.Wait()
 	state := child.ProcessState
@@ -820,7 +812,7 @@ func RunnerMain(dir string) (exit int) {
 		writeExit(paths, exitFile{Code: nil, Signal: nil, Error: strPtr(messageOf(waitErr))})
 		return 1
 	}
-	code, signal := describeExit(state)
+	code, signal := proc.DescribeExit(state)
 	writeExit(paths, exitFile{Code: code, Signal: signal, Error: nil})
 	return 0
 }
@@ -1108,43 +1100,43 @@ func strPtr(value string) *string { return &value }
 // Public entry points return errors. They are the only bridge that converts a
 // remaining engine panic into an error; the CLI formats it at Main.
 func TaskDirectory(id string, root string) (directory string, err error) {
-	defer recoverError(&err)
+	defer aserr.Recover(&err)
 	directory = taskDirectory(id, root)
 	return directory, nil
 }
 
 func CreateTask(options CreateTaskOptions) (result ShellResult, err error) {
-	defer recoverError(&err)
+	defer aserr.Recover(&err)
 	result = createTask(options)
 	return result, nil
 }
 
 func PollTask(dir string, cursor *int64) (result ShellResult, err error) {
-	defer recoverError(&err)
+	defer aserr.Recover(&err)
 	result = pollTask(dir, cursor)
 	return result, nil
 }
 
 func ReadTask(dir string, cursor *int64) (result ShellResult, err error) {
-	defer recoverError(&err)
+	defer aserr.Recover(&err)
 	result = readTask(dir, cursor)
 	return result, nil
 }
 
 func SendInput(dir string, input string, enter bool) (err error) {
-	defer recoverError(&err)
+	defer aserr.Recover(&err)
 	sendInput(dir, input, enter)
 	return nil
 }
 
 func SendKey(dir string, key string) (err error) {
-	defer recoverError(&err)
+	defer aserr.Recover(&err)
 	sendKey(dir, key)
 	return nil
 }
 
 func CancelTask(dir string, rootArg ...string) (err error) {
-	defer recoverError(&err)
+	defer aserr.Recover(&err)
 	cancelTask(dir, rootArg...)
 	return nil
 }

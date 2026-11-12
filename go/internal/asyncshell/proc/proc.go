@@ -1,10 +1,11 @@
-package asyncshell
+package proc
 
 import (
 	"bytes"
 	"context"
 	"errors"
 	"os/exec"
+	"pijob/internal/asyncshell/aserr"
 	"strings"
 	"time"
 )
@@ -12,14 +13,14 @@ import (
 // command.go runs child processes with the subset of spawn options the engine
 // needs, using os/exec directly.
 
-type commandResult struct {
+type Result struct {
 	Code   *int
 	Stdout string
 	Stderr string
 	Error  error
 }
 
-type commandOptions struct {
+type Options struct {
 	TimeoutMs *int
 	Input     *string
 	Env       map[string]string
@@ -27,7 +28,7 @@ type commandOptions struct {
 	Hide      bool
 }
 
-func runCommand(command string, args []string, options commandOptions) commandResult {
+func Run(command string, args []string, options Options) Result {
 	ctx := context.Background()
 	cancel := func() {}
 	if options.TimeoutMs != nil && *options.TimeoutMs > 0 {
@@ -42,7 +43,7 @@ func runCommand(command string, args []string, options commandOptions) commandRe
 		cmd.Stdin = strings.NewReader(*options.Input)
 	}
 	if options.Verbatim {
-		applyVerbatim(cmd, command, args)
+		ApplyVerbatim(cmd, command, args)
 	}
 	if options.Hide {
 		applyHidden(cmd)
@@ -51,9 +52,9 @@ func runCommand(command string, args []string, options commandOptions) commandRe
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	result := commandResult{Stdout: stdout.String(), Stderr: stderr.String()}
+	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
 	if ctx.Err() == context.DeadlineExceeded {
-		result.Error = coded(ctx.Err(), "ETIMEDOUT")
+		result.Error = aserr.Coded(ctx.Err(), "ETIMEDOUT")
 		return result
 	}
 	if err == nil {
@@ -68,12 +69,12 @@ func runCommand(command string, args []string, options commandOptions) commandRe
 		}
 		return result
 	}
-	result.Error = coded(err, "ENOENT")
+	result.Error = aserr.Coded(err, "ENOENT")
 	return result
 }
 
-// startDetached starts the per-task monitor in its own session/process group.
-func startDetached(command string, args []string, env map[string]string) (*int, error) {
+// StartDetached starts the per-task monitor in its own session/process group.
+func StartDetached(command string, args []string, env map[string]string) (*int, error) {
 	cmd := exec.Command(command, args...)
 	if env != nil {
 		cmd.Env = envSlice(env)

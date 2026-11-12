@@ -3,6 +3,7 @@ package asyncshell
 import (
 	"io"
 	"os"
+	"pijob/internal/asyncshell/aserr"
 	"strings"
 )
 
@@ -33,11 +34,11 @@ const DefaultWaitMs = 5000
 // ParseDuration is TS parseDuration.
 func ParseDuration(value *string) (int64, error) {
 	if value == nil {
-		return 0, NewAsyncShellError("invalid_duration", "A duration value is required.")
+		return 0, aserr.New("invalid_duration", "A duration value is required.")
 	}
 	match := durationPattern.FindStringSubmatch(*value)
 	if match == nil {
-		return 0, NewAsyncShellError("invalid_duration", "Not a duration: "+*value)
+		return 0, aserr.New("invalid_duration", "Not a duration: "+*value)
 	}
 	amount := parseFloatDigits(match[1])
 	unit := "ms"
@@ -57,7 +58,7 @@ func ParseDuration(value *string) (int64, error) {
 	}
 	total := amount * factor
 	if !isSafeIntegerFloat(total) || total < 0 {
-		return 0, NewAsyncShellError("invalid_duration", "Not a duration: "+*value)
+		return 0, aserr.New("invalid_duration", "Not a duration: "+*value)
 	}
 	return int64(total), nil
 }
@@ -68,7 +69,7 @@ func parseCursor(value *string) (*int64, error) {
 		return nil, nil
 	}
 	if !cursorPattern.MatchString(*value) {
-		return nil, NewAsyncShellError("invalid_cursor", "Not a byte cursor: "+*value)
+		return nil, aserr.New("invalid_cursor", "Not a byte cursor: "+*value)
 	}
 	n, _ := parseInt64(*value)
 	return &n, nil
@@ -128,17 +129,17 @@ func ParseCreateArgs(tokens []string) (CreateArgs, error) {
 				value = tokens[index+1]
 			}
 			if value == "" {
-				return CreateArgs{}, NewAsyncShellError("invalid_command_args", "--cwd requires a directory.")
+				return CreateArgs{}, aserr.New("invalid_command_args", "--cwd requires a directory.")
 			}
 			cwd = value
 			index++
 		default:
-			return CreateArgs{}, NewAsyncShellError("invalid_command_args", "Unknown create option: "+token)
+			return CreateArgs{}, aserr.New("invalid_command_args", "Unknown create option: "+token)
 		}
 	}
 	argv := tokens[index:]
 	if len(argv) == 0 {
-		return CreateArgs{}, NewAsyncShellError("invalid_command_args", "create requires a command after --.")
+		return CreateArgs{}, aserr.New("invalid_command_args", "create requires a command after --.")
 	}
 	return CreateArgs{Argv: argv, Cwd: cwd, WaitMs: waitMs, TimeoutMs: timeoutMs}, nil
 }
@@ -150,7 +151,7 @@ func readStdin(maxBytes int) (string, error) {
 		return "", err
 	}
 	if len(data) > maxBytes {
-		return "", NewAsyncShellError("input_too_large", "Input must not exceed "+formatInt(maxBytes)+" bytes.")
+		return "", aserr.New("input_too_large", "Input must not exceed "+formatInt(maxBytes)+" bytes.")
 	}
 	return string(data), nil
 }
@@ -165,7 +166,7 @@ func report(result ShellResult) error {
 func run(argv []string) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = asError(recovered)
+			err = aserr.AsError(recovered)
 		}
 	}()
 	var verb string
@@ -245,11 +246,11 @@ func run(argv []string) (err error) {
 		}
 		for _, token := range positional {
 			if strings.HasPrefix(token, "-") {
-				return NewAsyncShellError("invalid_command_args", "Unknown send option: "+token)
+				return aserr.New("invalid_command_args", "Unknown send option: "+token)
 			}
 		}
 		if len(positional) != 1 {
-			return NewAsyncShellError("invalid_command_args", "send takes one task id.")
+			return aserr.New("invalid_command_args", "send takes one task id.")
 		}
 		taskID, idErr := requireId(positional[0], "send")
 		if idErr != nil {
@@ -284,7 +285,7 @@ func run(argv []string) (err error) {
 			extra = rest[2:]
 		}
 		if len(extra) != 0 {
-			return NewAsyncShellError("invalid_command_args", "key takes one task id and one key name.")
+			return aserr.New("invalid_command_args", "key takes one task id and one key name.")
 		}
 		taskID, idErr := requireId(id, "key")
 		if idErr != nil {
@@ -295,7 +296,7 @@ func run(argv []string) (err error) {
 			return dirErr
 		}
 		if key == "" {
-			return NewAsyncShellError("invalid_command_args", "key requires a key name.")
+			return aserr.New("invalid_command_args", "key requires a key name.")
 		}
 		if err := SendKey(dir, key); err != nil {
 			return err
@@ -315,7 +316,7 @@ func run(argv []string) (err error) {
 			extra = rest[1:]
 		}
 		if len(extra) != 0 {
-			return NewAsyncShellError("invalid_command_args", "cancel takes one task id.")
+			return aserr.New("invalid_command_args", "cancel takes one task id.")
 		}
 		taskID, idErr := requireId(id, "cancel")
 		if idErr != nil {
@@ -348,7 +349,7 @@ func run(argv []string) (err error) {
 		MonitorMain(directory)
 		return nil
 	default:
-		return NewAsyncShellError("invalid_command_args", Usage)
+		return aserr.New("invalid_command_args", Usage)
 	}
 }
 
@@ -361,7 +362,7 @@ func tail(values []string, from int) []string {
 
 func requireId(value string, verb string) (string, error) {
 	if value == "" {
-		return "", NewAsyncShellError("invalid_command_args", verb+" requires a task id.")
+		return "", aserr.New("invalid_command_args", verb+" requires a task id.")
 	}
 	return value, nil
 }
@@ -372,7 +373,7 @@ func requireDirectory(rest []string) (string, error) {
 		value = rest[0]
 	}
 	if value == "" {
-		return "", NewAsyncShellError("invalid_command_args", "Internal mode requires a task directory.")
+		return "", aserr.New("invalid_command_args", "Internal mode requires a task directory.")
 	}
 	return value, nil
 }
@@ -384,7 +385,7 @@ func readCursorOption(options []string) (*int64, error) {
 	if len(options) == 2 && options[0] == "--cursor" {
 		return parseCursor(&options[1])
 	}
-	return nil, NewAsyncShellError("invalid_command_args", "Unknown option: "+options[0])
+	return nil, aserr.New("invalid_command_args", "Unknown option: "+options[0])
 }
 
 // Main is TS main(): Node's argv is [execPath, script, ...]; Go's is
@@ -397,7 +398,7 @@ func Main(fullArgv []string) (exitCode int) {
 	internal := len(argv) > 0 && (argv[0] == "__run" || argv[0] == "__monitor")
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			writeMainError(internal, asError(recovered))
+			writeMainError(internal, aserr.AsError(recovered))
 			exitCode = 1
 		}
 	}()
@@ -411,7 +412,7 @@ func Main(fullArgv []string) (exitCode int) {
 func writeMainError(internal bool, err error) {
 	errorCode := "internal_error"
 	message := err.Error()
-	if typed, ok := err.(*AsyncShellError); ok {
+	if typed, ok := err.(*aserr.Error); ok {
 		errorCode = typed.Code
 		message = typed.Message
 	}

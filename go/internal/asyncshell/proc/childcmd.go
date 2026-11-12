@@ -1,83 +1,13 @@
-package asyncshell
+package proc
 
 import (
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
+
+	"pijob/internal/asyncshell/aserr"
+	"pijob/internal/asyncshell/win32path"
 )
-
-// platform.go translates src/async-shell/platform.ts.
-//
-// Exports map (TS -> Go):
-//
-//	SESSION   -> Session
-//	CONTROL_TIMEOUT_MS -> ControlTimeoutMs
-//	CommandResult -> CommandResult
-//	ShellBackend  -> ShellBackend
-//	ControlClient -> ControlClient
-//	pasteLiteral  -> PasteLiteral
-//	selfArgv      -> SelfArgv
-//	ChildCommand  -> ChildCommand
-//	childCommand  -> ChildCommandFor
-//	escapeCommand -> escapeCommand
-//	escapeArgument-> escapeArgument
-//	envValue      -> envValue
-//	resolveWindowsExecutable -> resolveWindowsExecutable
-//
-// Node builtins (fs/path.win32/process) stay as seams (see seams.go).
-
-// Session is the pane's session name inside a task's own server (TS: SESSION).
-const Session = "task"
-
-// ControlTimeoutMs bounds every control command (TS: CONTROL_TIMEOUT_MS = 20_000).
-const ControlTimeoutMs = 20000
-
-// CommandResult is TS CommandResult. Code is null (nil) on signal/unknown status.
-type CommandResult struct {
-	Code   *int
-	Stdout string
-	Stderr string
-}
-
-// ShellBackend is TS ShellBackend (method names capitalised for Go).
-type ShellBackend interface {
-	Kind() string
-	AssertAvailable()
-	Run(dir string, args []string, stdin *string) CommandResult
-	KillServer(dir string)
-	ServerRunning(dir string) bool
-	Start(dir string, selfArgv []string, rawPath string)
-	SendInput(dir string, input string)
-	SendKey(dir string, key string)
-	PaneGone(dir string) bool
-	OwnsProcess(pid int, marker string, dir string) bool
-}
-
-// ControlClient is TS ControlClient.
-type ControlClient interface {
-	Run(dir string, args []string, stdin *string) CommandResult
-	RunOk(dir string, args []string, code string, stdin *string) CommandResult
-}
-
-// PasteLiteral is TS pasteLiteral: load-buffer (stdin) -> paste-buffer -> delete-buffer.
-func PasteLiteral(client ControlClient, dir string, input string, target string) {
-	buffer := "pi-" + filepath.Base(dir)
-	client.RunOk(dir, []string{"load-buffer", "-b", buffer, "-"}, "send_failed", &input)
-	defer client.Run(dir, []string{"delete-buffer", "-b", buffer}, nil)
-	client.RunOk(dir, []string{"paste-buffer", "-p", "-r", "-b", buffer, "-t", target}, "send_failed", nil)
-}
-
-// SelfArgv is TS selfArgv adapted to a single native binary: the pane re-runs
-// this executable in an internal mode. Node's `execPath + execArgv + script`
-// shape does not exist in Go, so the binary is its own entry point.
-func SelfArgv(dir string, mode string) ([]string, error) {
-	executable, err := os.Executable()
-	if err != nil || executable == "" {
-		return nil, NewAsyncShellError("self_unresolved", "The async-shell CLI cannot locate its own entry point.")
-	}
-	return []string{executable, mode, dir}, nil
-}
 
 // DefaultPathext is TS DEFAULT_PATHEXT.
 const DefaultPathext = ".COM;.EXE;.BAT;.CMD"
@@ -146,10 +76,10 @@ func ChildCommandFor(argv []string, platform string, env map[string]string, cwd 
 		file = argv[0]
 	}
 	if file == "" {
-		return ChildCommand{}, NewAsyncShellError("invalid_command_args", "create requires a command.")
+		return ChildCommand{}, aserr.New("invalid_command_args", "create requires a command.")
 	}
 	rest := argv[1:]
-	if platform != "win32" {
+	if platform != "windows" {
 		return ChildCommand{File: file, Args: rest, Verbatim: false}, nil
 	}
 	resolved := resolveWindowsExecutable(file, env, cwd)
@@ -158,8 +88,8 @@ func ChildCommandFor(argv []string, platform string, env map[string]string, cwd 
 	}
 	for _, arg := range rest {
 		if strings.ContainsAny(arg, "\r\n") {
-			return ChildCommand{}, NewAsyncShellError("unsupported_script_argument",
-				"Cannot pass a line break to "+Win32PathBasename(resolved)+": cmd.exe treats it as a command separator.")
+			return ChildCommand{}, aserr.New("unsupported_script_argument",
+				"Cannot pass a line break to "+win32path.Basename(resolved)+": cmd.exe treats it as a command separator.")
 		}
 	}
 	parts := make([]string, 0, len(rest)+1)
@@ -181,13 +111,13 @@ func resolveWindowsExecutable(file string, env map[string]string, cwd string) st
 	hasDirectory := strings.ContainsAny(file, `\/`)
 	var absolute string
 	if hasDirectory {
-		absolute = Win32PathResolve(cwd, file)
+		absolute = win32path.Resolve(cwd, file)
 	} else {
 		absolute = file
 	}
-	basename := Win32PathBasename(absolute)
+	basename := win32path.Basename(absolute)
 	var names []string
-	if Win32PathExtname(basename) == "" {
+	if win32path.Extname(basename) == "" {
 		pathext := DefaultPathext
 		if v, ok := envValue(env, "PATHEXT"); ok {
 			pathext = v
@@ -204,7 +134,7 @@ func resolveWindowsExecutable(file string, env map[string]string, cwd string) st
 	}
 	var directories []string
 	if hasDirectory {
-		directories = []string{Win32PathDirname(absolute)}
+		directories = []string{win32path.Dirname(absolute)}
 	} else {
 		directories = append(directories, cwd)
 		if p, ok := envValue(env, "PATH"); ok {
@@ -218,11 +148,16 @@ func resolveWindowsExecutable(file string, env map[string]string, cwd string) st
 	}
 	for _, directory := range directories {
 		for _, name := range names {
-			candidate := Win32PathJoin(directory, name)
+			candidate := win32path.Join(directory, name)
 			if fileExists(candidate) {
 				return candidate
 			}
 		}
 	}
 	return absolute
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

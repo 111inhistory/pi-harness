@@ -1,9 +1,11 @@
 //go:build !windows
 
-package asyncshell
+package backend
 
 import (
 	"path/filepath"
+	"pijob/internal/asyncshell/aserr"
+	"pijob/internal/asyncshell/proc"
 	"runtime"
 	"strconv"
 	"strings"
@@ -35,9 +37,9 @@ func (PosixBackend) Kind() string { return "posix" }
 func (PosixBackend) Run(dir string, args []string, stdin *string) CommandResult {
 	full := append([]string{"-S", socketOf(dir)}, args...)
 	timeout := ControlTimeoutMs
-	result := runCommand("tmux", full, commandOptions{TimeoutMs: &timeout, Input: stdin})
+	result := proc.Run("tmux", full, proc.Options{TimeoutMs: &timeout, Input: stdin})
 	if result.Error != nil {
-		panic(NewAsyncShellError("tmux_unavailable", describePosix(result.Error)))
+		panic(aserr.New("tmux_unavailable", describePosix(result.Error)))
 	}
 	return CommandResult{Code: result.Code, Stdout: result.Stdout, Stderr: result.Stderr}
 }
@@ -53,19 +55,19 @@ func (PosixBackend) RunOk(dir string, args []string, code string, stdin *string)
 		if detail == "" {
 			detail = "exit " + codeOrUnknown(result.Code)
 		}
-		panic(NewAsyncShellError(code, "tmux "+first+" failed: "+detail))
+		panic(aserr.New(code, "tmux "+first+" failed: "+detail))
 	}
 	return result
 }
 
 func (PosixBackend) AssertAvailable() {
-	if runtime.GOOS == "win32" {
-		panic(NewAsyncShellError("unsupported_platform", "The POSIX tmux backend is not available on Windows."))
+	if runtime.GOOS == "windows" {
+		panic(aserr.New("unsupported_platform", "The POSIX tmux backend is not available on Windows."))
 	}
 	timeout := ControlTimeoutMs
-	probe := runCommand("tmux", []string{"-V"}, commandOptions{TimeoutMs: &timeout})
+	probe := proc.Run("tmux", []string{"-V"}, proc.Options{TimeoutMs: &timeout})
 	if probe.Error != nil || probe.Code == nil || *probe.Code != 0 {
-		panic(NewAsyncShellError("tmux_unavailable", "tmux is required for async shell tasks and was not found."))
+		panic(aserr.New("tmux_unavailable", "tmux is required for async shell tasks and was not found."))
 	}
 }
 
@@ -105,9 +107,9 @@ func (PosixBackend) PaneGone(dir string) bool {
 
 func (PosixBackend) OwnsProcess(pid int, marker string, dir string) bool {
 	timeout := ControlTimeoutMs
-	probe := runCommand("ps", []string{"-o", "command=", "-p", strconv.Itoa(pid)}, commandOptions{TimeoutMs: &timeout})
+	probe := proc.Run("ps", []string{"-o", "command=", "-p", strconv.Itoa(pid)}, proc.Options{TimeoutMs: &timeout})
 	if probe.Error != nil {
-		panic(NewAsyncShellError("process_inspection_failed", "Could not inspect pid "+strconv.Itoa(pid)+": "+describePosix(probe.Error)))
+		panic(aserr.New("process_inspection_failed", "Could not inspect pid "+strconv.Itoa(pid)+": "+describePosix(probe.Error)))
 	}
 	command := strings.TrimSpace(probe.Stdout)
 	if probe.Code == nil || *probe.Code != 0 {
@@ -119,10 +121,10 @@ func (PosixBackend) OwnsProcess(pid int, marker string, dir string) bool {
 		if probe.Code != nil {
 			statusText = strconv.Itoa(*probe.Code)
 		}
-		panic(NewAsyncShellError("process_inspection_failed", "Could not inspect pid "+strconv.Itoa(pid)+": ps exited "+statusText+" "+strings.TrimSpace(probe.Stderr)))
+		panic(aserr.New("process_inspection_failed", "Could not inspect pid "+strconv.Itoa(pid)+": ps exited "+statusText+" "+strings.TrimSpace(probe.Stderr)))
 	}
 	if command == "" {
-		panic(NewAsyncShellError("process_inspection_failed", "Could not read the command line of pid "+strconv.Itoa(pid)+"."))
+		panic(aserr.New("process_inspection_failed", "Could not read the command line of pid "+strconv.Itoa(pid)+"."))
 	}
 	return strings.Contains(command, marker) && strings.Contains(command, dir)
 }
@@ -134,5 +136,5 @@ func codeOrUnknown(code *int) string {
 	return strconv.Itoa(*code)
 }
 
-// defaultBackend is tmux.ts's `backend` selection for POSIX builds.
-func defaultBackend() ShellBackend { return PosixBackend{} }
+// Default is tmux.ts's `backend` selection for POSIX builds.
+func Default() ShellBackend { return PosixBackend{} }

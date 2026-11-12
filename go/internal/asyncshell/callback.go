@@ -3,14 +3,12 @@ package asyncshell
 import (
 	"encoding/json"
 	"errors"
-	"net"
 	"strings"
 	"time"
+
+	"pijob/internal/asyncshell/aserr"
+	"pijob/internal/asyncshell/ipc"
 )
-
-// ipc.go implements the NDJSON frame write used for register/complete.
-
-const socketWriteTimeout = 5 * time.Second
 
 // writeSocket sends NDJSON and waits for the receiver's acknowledgements.
 func writeSocket(socketPath string, payload interface{}) error {
@@ -33,14 +31,14 @@ func writeSocket(socketPath string, payload interface{}) error {
 			expected++
 		}
 	}
-	connection, err := net.DialTimeout("unix", socketPath, socketWriteTimeout)
+	connection, err := ipc.Dial(socketPath)
 	if err != nil {
-		return coded(err, "ECONNREFUSED")
+		return aserr.Coded(err, "ECONNREFUSED")
 	}
 	defer connection.Close()
-	_ = connection.SetDeadline(time.Now().Add(socketWriteTimeout))
+	_ = connection.SetDeadline(time.Now().Add(ipc.Timeout))
 	if _, err := connection.Write([]byte(text)); err != nil {
-		return coded(err, "EPIPE")
+		return aserr.Coded(err, "EPIPE")
 	}
 	decoder := newUTF8Decoder()
 	buffer := ""
@@ -52,7 +50,7 @@ func writeSocket(socketPath string, payload interface{}) error {
 			buffer += decoder.write(chunk[:read])
 		}
 		if readErr != nil {
-			return &codedError{Code: "missing_response", Err: readErr}
+			return &aserr.CodedError{Code: "missing_response", Err: readErr}
 		}
 		for {
 			index := strings.IndexByte(buffer, '\n')
@@ -73,13 +71,13 @@ func writeSocket(socketPath string, payload interface{}) error {
 				Message string `json:"message"`
 			}
 			if err := json.Unmarshal([]byte(line), &parsed); err != nil || parsed.Message == "" {
-				return &codedError{Code: "invalid_response", Err: errors.New("Invalid socket response.")}
+				return &aserr.CodedError{Code: "invalid_response", Err: errors.New("Invalid socket response.")}
 			}
 			code := parsed.Code
 			if code == "" {
 				code = "delivery_failed"
 			}
-			return &codedError{Code: code, Err: errors.New(parsed.Message)}
+			return &aserr.CodedError{Code: code, Err: errors.New(parsed.Message)}
 		}
 	}
 	return nil

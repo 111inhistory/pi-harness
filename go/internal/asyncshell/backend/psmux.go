@@ -1,8 +1,10 @@
 //go:build windows
 
-package asyncshell
+package backend
 
 import (
+	"pijob/internal/asyncshell/aserr"
+	"pijob/internal/asyncshell/proc"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -37,7 +39,7 @@ func labelOf(dir string) string {
 		name = parts[len(parts)-1]
 	}
 	if !psmuxLabelPattern.MatchString(name) {
-		panic(NewAsyncShellError("invalid_task_id", "Not usable as a psmux label: "+name))
+		panic(aserr.New("invalid_task_id", "Not usable as a psmux label: "+name))
 	}
 	return "pi-job-" + name
 }
@@ -50,9 +52,9 @@ func (WindowsBackend) Kind() string { return "windows" }
 func (WindowsBackend) Run(dir string, args []string, stdin *string) CommandResult {
 	full := append([]string{"-L", labelOf(dir)}, args...)
 	timeout := ControlTimeoutMs
-	result := runCommand(psmuxBinary, full, commandOptions{TimeoutMs: &timeout, Input: stdin, Hide: true})
+	result := proc.Run(psmuxBinary, full, proc.Options{TimeoutMs: &timeout, Input: stdin, Hide: true})
 	if result.Error != nil {
-		panic(NewAsyncShellError("psmux_unavailable", describeWin(result.Error)))
+		panic(aserr.New("psmux_unavailable", describeWin(result.Error)))
 	}
 	return CommandResult{Code: result.Code, Stdout: result.Stdout, Stderr: result.Stderr}
 }
@@ -72,7 +74,7 @@ func (WindowsBackend) RunOk(dir string, args []string, code string, stdin *strin
 				detail = "exit " + strconv.Itoa(*result.Code)
 			}
 		}
-		panic(NewAsyncShellError(code, "psmux "+first+" failed: "+detail))
+		panic(aserr.New(code, "psmux "+first+" failed: "+detail))
 	}
 	return result
 }
@@ -105,13 +107,13 @@ func atLeast(found [3]int, wanted [3]int) bool {
 }
 
 func (WindowsBackend) AssertAvailable() {
-	if runtime.GOOS != "win32" {
-		panic(NewAsyncShellError("unsupported_platform", "The psmux backend is only available on Windows."))
+	if runtime.GOOS != "windows" {
+		panic(aserr.New("unsupported_platform", "The psmux backend is only available on Windows."))
 	}
 	timeout := ControlTimeoutMs
-	probe := runCommand(psmuxBinary, []string{"-V"}, commandOptions{TimeoutMs: &timeout, Hide: true})
+	probe := proc.Run(psmuxBinary, []string{"-V"}, proc.Options{TimeoutMs: &timeout, Hide: true})
 	if probe.Error != nil || probe.Code == nil || *probe.Code != 0 {
-		panic(NewAsyncShellError("psmux_unavailable", "psmux 3.4.0 or newer is required for async shell tasks and was not found on PATH."))
+		panic(aserr.New("psmux_unavailable", "psmux 3.4.0 or newer is required for async shell tasks and was not found on PATH."))
 	}
 	version := parseVersion(probe.Stdout + "\n" + probe.Stderr)
 	if version == nil || !atLeast(*version, minPsmuxVersion) {
@@ -119,7 +121,7 @@ func (WindowsBackend) AssertAvailable() {
 		if version != nil {
 			shown = strconv.Itoa(version[0]) + "." + strconv.Itoa(version[1]) + "." + strconv.Itoa(version[2])
 		}
-		panic(NewAsyncShellError("psmux_version", "async shell tasks require psmux 3.4.0 or newer; found "+shown+"."))
+		panic(aserr.New("psmux_version", "async shell tasks require psmux 3.4.0 or newer; found "+shown+"."))
 	}
 }
 
@@ -135,7 +137,7 @@ func (WindowsBackend) ServerRunning(dir string) bool {
 // captureSink is TS captureSink: the server writes the pane's raw bytes; no shell.
 func captureSink(rawPath string) string {
 	if strings.Contains(rawPath, `"`) {
-		panic(NewAsyncShellError("invalid_path", "The capture log path cannot contain a quote: "+rawPath))
+		panic(aserr.New("invalid_path", "The capture log path cannot contain a quote: "+rawPath))
 	}
 	return `cat >> "` + rawPath + `"`
 }
@@ -166,12 +168,12 @@ func (WindowsBackend) PaneGone(dir string) bool {
 func shellForQuery() []string {
 	for _, candidate := range []string{"pwsh", "powershell"} {
 		timeout := 5000
-		probe := runCommand(candidate, []string{"-NoProfile", "-NonInteractive", "-Command", "exit 0"}, commandOptions{TimeoutMs: &timeout, Hide: true})
+		probe := proc.Run(candidate, []string{"-NoProfile", "-NonInteractive", "-Command", "exit 0"}, proc.Options{TimeoutMs: &timeout, Hide: true})
 		if probe.Error == nil && probe.Code != nil && *probe.Code == 0 {
 			return []string{candidate, "-NoProfile", "-NonInteractive", "-Command"}
 		}
 	}
-	panic(NewAsyncShellError("process_inspection_failed",
+	panic(aserr.New("process_inspection_failed",
 		"Neither pwsh nor Windows PowerShell could be started to inspect process ownership; the task fence is kept."))
 }
 
@@ -189,27 +191,27 @@ func (WindowsBackend) OwnsProcess(pid int, marker string, dir string) bool {
 	}, "; ")
 	args := append(append([]string{}, shell[1:]...), script)
 	timeout := ownershipTimeoutMs
-	probe := runCommand(shell[0], args, commandOptions{TimeoutMs: &timeout, Hide: true})
+	probe := proc.Run(shell[0], args, proc.Options{TimeoutMs: &timeout, Hide: true})
 	if probe.Error != nil {
-		panic(NewAsyncShellError("process_inspection_failed", "Could not inspect pid "+strconv.Itoa(pid)+": "+describeWin(probe.Error)))
+		panic(aserr.New("process_inspection_failed", "Could not inspect pid "+strconv.Itoa(pid)+": "+describeWin(probe.Error)))
 	}
 	if probe.Code == nil || *probe.Code != 0 {
 		statusText := "unknown"
 		if probe.Code != nil {
 			statusText = strconv.Itoa(*probe.Code)
 		}
-		panic(NewAsyncShellError("process_inspection_failed", "Could not inspect pid "+strconv.Itoa(pid)+": the process query exited "+statusText+" "+strings.TrimSpace(probe.Stderr)))
+		panic(aserr.New("process_inspection_failed", "Could not inspect pid "+strconv.Itoa(pid)+": the process query exited "+statusText+" "+strings.TrimSpace(probe.Stderr)))
 	}
 	answer := strings.TrimSpace(probe.Stdout)
 	if answer == "absent" {
 		return false
 	}
 	if !strings.HasPrefix(answer, "cmd:") {
-		panic(NewAsyncShellError("process_inspection_failed", "Could not read the command line of pid "+strconv.Itoa(pid)+"."))
+		panic(aserr.New("process_inspection_failed", "Could not read the command line of pid "+strconv.Itoa(pid)+"."))
 	}
 	command := strings.TrimPrefix(answer, "cmd:")
 	return strings.Contains(command, marker) && strings.Contains(command, dir)
 }
 
-// defaultBackend is tmux.ts's `backend` selection for Windows builds.
-func defaultBackend() ShellBackend { return WindowsBackend{} }
+// Default is tmux.ts's `backend` selection for Windows builds.
+func Default() ShellBackend { return WindowsBackend{} }

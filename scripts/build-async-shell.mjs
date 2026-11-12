@@ -10,11 +10,12 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
 const root = path.resolve(import.meta.dirname, '..');
+const moduleRoot = path.join(root, 'go');
 const defaultName = process.platform === 'win32' ? path.join('dist', 'pi-job.exe') : path.join('dist', 'pi-job');
 const outfile = path.resolve(root, process.argv[2] ?? defaultName);
 
 mkdirSync(path.dirname(outfile), { recursive: true });
-const build = spawnSync('go', ['build', '-o', outfile, './cmd/pi-job'], { cwd: root, stdio: 'inherit' });
+const build = spawnSync('go', ['build', '-o', outfile, './cmd/pi-job'], { cwd: moduleRoot, stdio: 'inherit' });
 if (build.error) {
   console.error(build.error.message);
   process.exit(1);

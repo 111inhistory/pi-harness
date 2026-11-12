@@ -1,6 +1,6 @@
 //go:build !windows
 
-package asyncshell
+package aserr
 
 import (
 	"errors"
