@@ -21,9 +21,9 @@ func isSafeInteger(value int64) bool {
 	return value < max && value > -max
 }
 
-func int64Ptr(value int64) *int64 { return &value }
-func intPtr(value int) *int       { return &value }
-func formatInt(value int) string  { return strconv.Itoa(value) }
+func int64Ptr(value int64) *int64  { return &value }
+func intPtr(value int) *int        { return &value }
+func formatInt(value int) string   { return strconv.Itoa(value) }
 func hexEncode(data []byte) string { return hex.EncodeToString(data) }
 
 // parseIntPrefix mirrors Number.parseInt(value, 10): optional sign + leading digits.

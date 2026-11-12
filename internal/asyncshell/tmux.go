@@ -66,12 +66,12 @@ type CallbackTarget struct {
 
 // taskFile is TS interface TaskFile. Field order matches the JSON.stringify order.
 type taskFile struct {
-	ID        string  `json:"id"`
+	ID        string   `json:"id"`
 	Argv      []string `json:"argv"`
-	Cwd       string  `json:"cwd"`
-	CreatedAt int64   `json:"createdAt"`
-	WaitMs    int64   `json:"waitMs"`
-	TimeoutMs *int64  `json:"timeoutMs"`
+	Cwd       string   `json:"cwd"`
+	CreatedAt int64    `json:"createdAt"`
+	WaitMs    int64    `json:"waitMs"`
+	TimeoutMs *int64   `json:"timeoutMs"`
 }
 
 // taskState is TS interface TaskState.
@@ -511,13 +511,9 @@ func CreateTask(options CreateTaskOptions) ShellResult {
 
 	r := caught(func() {
 		backend.Start(dir, SelfArgv(dir, "__run"), paths.Raw)
-		script := ""
-		if argv := ProcessArgv(); len(argv) > 1 {
-			script = PathResolve(argv[1])
-		}
-		monitorArgs := []string{}
-		monitorArgs = append(monitorArgs, ProcessExecArgv()...)
-		monitorArgs = append(monitorArgs, script, "__monitor", dir)
+		// Go equivalent of node execPath + execArgv + script: the binary re-runs
+		// itself with the internal mode and the task directory.
+		monitorArgs := []string{"__monitor", dir}
 		monitor := SpawnDetached(ProcessExecPath(), monitorArgs, SpawnDetachedOptions{Detached: true, StdioIgnore: true, Env: ProcessEnv()})
 		monitor.Unref()
 		if monitor.Pid != nil {

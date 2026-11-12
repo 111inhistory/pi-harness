@@ -271,11 +271,13 @@ func readCursorOption(options []string) *int64 {
 	panic(NewAsyncShellError("invalid_command_args", "Unknown option: "+options[0]))
 }
 
-// Main is TS main(): slice argv[2:], run, and catch thrown AsyncShellErrors.
+// Main is TS main(): Node's argv is [execPath, script, ...]; Go's is
+// [executable, ...], so the verb starts at argv[1] here. The rest of the
+// dispatch and the try/catch boundary are unchanged.
 func Main(fullArgv []string) int {
 	var argv []string
-	if len(fullArgv) > 2 {
-		argv = fullArgv[2:]
+	if len(fullArgv) > 1 {
+		argv = fullArgv[1:]
 	}
 	internal := len(argv) > 0 && (argv[0] == "__run" || argv[0] == "__monitor")
 	code := 0

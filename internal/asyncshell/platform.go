@@ -66,20 +66,15 @@ func PasteLiteral(client ControlClient, dir string, input string, target string)
 	client.RunOk(dir, []string{"paste-buffer", "-p", "-r", "-b", buffer, "-t", target}, "send_failed", nil)
 }
 
-// SelfArgv is TS selfArgv: the argv that runs this same binary in an internal mode.
+// SelfArgv is TS selfArgv adapted to a single native binary: the pane re-runs
+// this executable in an internal mode. Node's `execPath + execArgv + script`
+// shape does not exist in Go, so the binary is its own entry point.
 func SelfArgv(dir string, mode string) []string {
-	script := ""
-	argv := ProcessArgv()
-	if len(argv) > 1 {
-		script = argv[1]
-	}
-	if script == "" {
+	executable := ProcessExecPath()
+	if executable == "" {
 		panic(NewAsyncShellError("self_unresolved", "The async-shell CLI cannot locate its own entry point."))
 	}
-	out := []string{ProcessExecPath()}
-	out = append(out, ProcessExecArgv()...)
-	out = append(out, PathResolve(script), mode, dir)
-	return out
+	return []string{executable, mode, dir}
 }
 
 // DefaultPathext is TS DEFAULT_PATHEXT.
