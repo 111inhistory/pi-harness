@@ -111,7 +111,9 @@ test('standard mode: all tools are folded to top-level request.tools and message
   assert.deepEqual(providerSessionPolicy(model), {
     transport: 'completions',
     midConversationSystemMessages: true,
-    toolSupport: 'none',
+    toolAdditions: false,
+    toolSameNameUpdates: false,
+    midConversationEffort: 'none',
   });
 
   const toolRead = tool('read', 'Read file');
@@ -148,14 +150,14 @@ test('single compat flag is insufficient to enable in-message tool additions', a
 
   // Case 1: only supportsMidConvoSystemMessages: true
   const modelSystemOnly = fixtureModel({ supportsMidConvoSystemMessages: true });
-  assert.equal(providerSessionPolicy(modelSystemOnly).toolSupport, 'none');
+  assert.equal(providerSessionPolicy(modelSystemOnly).toolAdditions, false);
   const payloadSystemOnly = await captureCompletionsWire(modelSystemOnly, messages);
   assert.deepEqual(payloadSystemOnly.tools?.map((t) => t.function?.name), ['read', 'bash']);
   assert.ok(payloadSystemOnly.messages.every((m) => !('tools' in m)));
 
   // Case 2: only supportsMidConvoToolAdditions: true (cannot anchor mid-convo without mid-convo system messages)
   const modelToolOnly = fixtureModel({ supportsMidConvoToolAdditions: true });
-  assert.equal(providerSessionPolicy(modelToolOnly).toolSupport, 'none');
+  assert.equal(providerSessionPolicy(modelToolOnly).toolAdditions, false);
   const payloadToolOnly = await captureCompletionsWire(modelToolOnly, messages);
   assert.deepEqual(payloadToolOnly.tools?.map((t) => t.function?.name), ['read', 'bash']);
   assert.ok(payloadToolOnly.messages.every((m) => !('tools' in m)));
@@ -170,7 +172,9 @@ test('enabled additions: preserves initial top-level tools and previous messages
   assert.deepEqual(providerSessionPolicy(model), {
     transport: 'completions',
     midConversationSystemMessages: true,
-    toolSupport: 'additions',
+    toolAdditions: true,
+    toolSameNameUpdates: false,
+    midConversationEffort: 'none',
   });
 
   const toolRead = tool('read', 'Read file');

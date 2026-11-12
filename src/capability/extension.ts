@@ -230,7 +230,7 @@ export default function capabilityExtension(
       },
     );
     const policy = providerSessionPolicy(ctx.model);
-    const declarations = policy.toolSupport !== "none" ? additiveToolTranscript(messages) : messages;
+    const declarations = policy.toolAdditions ? additiveToolTranscript(messages) : messages;
     return {
       messages: projectCompactionCapabilityNotice(declarations as AgentMessage[], branch),
     };
@@ -794,7 +794,7 @@ async function openInternalSession(
     } };
   });
   const policy = providerSessionPolicy(model);
-  const additive = policy.midConversationSystemMessages && policy.toolSupport !== "none";
+  const additive = policy.midConversationSystemMessages && policy.toolAdditions;
   const inheritedMessages: readonly ProjectionMessage[] = inheritedEntries.flatMap((entry) =>
     entry.type === "message" ? [entry.message as unknown as ProjectionMessage] : []);
   // Pi's ToolDefinition render callbacks are invariant in their parameter type;

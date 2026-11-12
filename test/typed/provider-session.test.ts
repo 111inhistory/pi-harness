@@ -4,11 +4,19 @@ import test from 'node:test';
 import {
   classifyProviderTransport,
   providerSessionPolicy,
+  type ProviderRequestFacts,
   type ProviderSessionPolicy,
 } from '../../src/provider-session.ts';
 
 function responses(compat: Record<string, boolean>): ProviderSessionPolicy {
   return providerSessionPolicy({ api: 'openai-responses', compat });
+}
+
+function effortPolicy(
+  model: Record<string, unknown>,
+  request?: ProviderRequestFacts,
+): ProviderSessionPolicy['midConversationEffort'] {
+  return providerSessionPolicy(model, request).midConversationEffort;
 }
 
 test('classifies only the exact native transport APIs', () => {
@@ -30,22 +38,30 @@ test('Responses derives tool placement from the transport bits', () => {
   assert.deepEqual(responses({ supportsMidConvoSystemMessages: true, supportsAdditionalTools: true }), {
     transport: 'responses',
     midConversationSystemMessages: true,
-    toolSupport: 'changes',
+    toolAdditions: true,
+    toolSameNameUpdates: true,
+    midConversationEffort: 'none',
   });
   assert.deepEqual(responses({ supportsToolSearch: true }), {
     transport: 'responses',
     midConversationSystemMessages: false,
-    toolSupport: 'additions',
+    toolAdditions: true,
+    toolSameNameUpdates: false,
+    midConversationEffort: 'none',
   });
   assert.deepEqual(responses({ supportsMidConvoSystemMessages: true }), {
     transport: 'responses',
     midConversationSystemMessages: true,
-    toolSupport: 'none',
+    toolAdditions: false,
+    toolSameNameUpdates: false,
+    midConversationEffort: 'none',
   });
   assert.deepEqual(responses({}), {
     transport: 'responses',
     midConversationSystemMessages: false,
-    toolSupport: 'none',
+    toolAdditions: false,
+    toolSameNameUpdates: false,
+    midConversationEffort: 'none',
   });
 });
 
@@ -56,7 +72,9 @@ test('Anthropic requires both its mid-conversation bits', () => {
   }), {
     transport: 'anthropic',
     midConversationSystemMessages: true,
-    toolSupport: 'changes',
+    toolAdditions: true,
+    toolSameNameUpdates: true,
+    midConversationEffort: 'none',
   });
   assert.deepEqual(providerSessionPolicy({
     api: 'anthropic-messages',
@@ -64,7 +82,9 @@ test('Anthropic requires both its mid-conversation bits', () => {
   }), {
     transport: 'anthropic',
     midConversationSystemMessages: true,
-    toolSupport: 'none',
+    toolAdditions: false,
+    toolSameNameUpdates: false,
+    midConversationEffort: 'none',
   });
   assert.deepEqual(providerSessionPolicy({
     api: 'anthropic-messages',
@@ -72,7 +92,9 @@ test('Anthropic requires both its mid-conversation bits', () => {
   }), {
     transport: 'anthropic',
     midConversationSystemMessages: false,
-    toolSupport: 'none',
+    toolAdditions: false,
+    toolSameNameUpdates: false,
+    midConversationEffort: 'none',
   });
 });
 
@@ -87,10 +109,12 @@ test('Chat Completions derives additions tool placement strictly from its own bi
   }), {
     transport: 'completions',
     midConversationSystemMessages: true,
-    toolSupport: 'additions',
+    toolAdditions: true,
+    toolSameNameUpdates: false,
+    midConversationEffort: 'none',
   });
 
-  // mid-convo system messages without tool additions allows prompt updates but toolSupport is none
+  // mid-convo system messages without tool additions allows prompt updates but no tool additions
   assert.deepEqual(providerSessionPolicy({
     api: 'openai-completions',
     compat: {
@@ -99,10 +123,12 @@ test('Chat Completions derives additions tool placement strictly from its own bi
   }), {
     transport: 'completions',
     midConversationSystemMessages: true,
-    toolSupport: 'none',
+    toolAdditions: false,
+    toolSameNameUpdates: false,
+    midConversationEffort: 'none',
   });
 
-  // tool additions without mid-convo system messages cannot anchor tools, so toolSupport is none
+  // tool additions without mid-convo system messages cannot anchor tools
   assert.deepEqual(providerSessionPolicy({
     api: 'openai-completions',
     compat: {
@@ -111,7 +137,9 @@ test('Chat Completions derives additions tool placement strictly from its own bi
   }), {
     transport: 'completions',
     midConversationSystemMessages: false,
-    toolSupport: 'none',
+    toolAdditions: false,
+    toolSameNameUpdates: false,
+    midConversationEffort: 'none',
   });
 
   // empty compat defaults to false / none
@@ -121,7 +149,9 @@ test('Chat Completions derives additions tool placement strictly from its own bi
   }), {
     transport: 'completions',
     midConversationSystemMessages: false,
-    toolSupport: 'none',
+    toolAdditions: false,
+    toolSameNameUpdates: false,
+    midConversationEffort: 'none',
   });
 
   // other transports' flags have no effect on completions
@@ -136,6 +166,72 @@ test('Chat Completions derives additions tool placement strictly from its own bi
   }), {
     transport: 'completions',
     midConversationSystemMessages: true,
-    toolSupport: 'none',
+    toolAdditions: false,
+    toolSameNameUpdates: false,
+    midConversationEffort: 'none',
   });
+});
+
+test('Responses effort requires the exact API, effective level, and only official sign-in auth', () => {
+  const customGateway = {
+    api: 'openai-responses',
+    provider: 'custom-gateway',
+    baseUrl: 'https://gateway.invalid/v1',
+    compat: { supportsMidConvoEffort: true },
+  };
+  const officialOpenAI = {
+    api: 'openai-responses',
+    provider: 'openai',
+    baseUrl: 'https://api.openai.com/v1',
+    compat: { supportsMidConvoEffort: true },
+  };
+
+  // A custom OpenAI Responses gateway cannot satisfy the adapter's sign-in predicate.
+  assert.equal(effortPolicy(customGateway), 'unverified');
+  assert.equal(effortPolicy(customGateway, { thinkingLevel: 'low' }), 'responses-configuration-update');
+  assert.equal(
+    effortPolicy(customGateway, { thinkingLevel: 'low', auth: { apiKey: 'not-sk-gateway' } }),
+    'responses-configuration-update',
+  );
+
+  // The official path needs resolved auth; an empty resolved auth object is header-only.
+  assert.equal(effortPolicy(officialOpenAI, { thinkingLevel: 'medium' }), 'unverified');
+  assert.equal(effortPolicy(officialOpenAI, { thinkingLevel: 'medium', auth: {} }), 'responses-configuration-update');
+  assert.equal(
+    effortPolicy(officialOpenAI, { thinkingLevel: 'medium', auth: { apiKey: 'sk-offline' } }),
+    'responses-configuration-update',
+  );
+  assert.equal(
+    effortPolicy(officialOpenAI, { thinkingLevel: 'medium', auth: { apiKey: 'offline-chatgpt-token' } }),
+    'none',
+  );
+
+  // Effective level and the compat bit are independently required.
+  assert.equal(effortPolicy(customGateway, { thinkingLevel: 'off' }), 'none');
+  assert.equal(effortPolicy(customGateway, { thinkingLevel: 'low', auth: {} }), 'responses-configuration-update');
+  assert.equal(effortPolicy({ ...customGateway, compat: {} }, { thinkingLevel: 'low' }), 'none');
+});
+
+test('only openai-responses and enabled Anthropic have native effort encoders', () => {
+  assert.equal(effortPolicy({
+    api: 'azure-openai-responses',
+    compat: { supportsMidConvoEffort: true },
+  }, { thinkingLevel: 'high' }), 'none');
+  assert.equal(effortPolicy({
+    api: 'openai-codex-responses',
+    compat: { supportsMidConvoEffort: true },
+  }, { thinkingLevel: 'high' }), 'none');
+  assert.equal(effortPolicy({
+    api: 'openai-completions',
+    compat: { supportsMidConvoEffort: true },
+  }, { thinkingLevel: 'high' }), 'none');
+
+  const anthropic = {
+    api: 'anthropic-messages',
+    compat: { supportsMidConvoEffort: true },
+  };
+  assert.equal(effortPolicy(anthropic), 'unverified');
+  assert.equal(effortPolicy(anthropic, { thinkingLevel: 'high' }), 'anthropic-effort-markers');
+  assert.equal(effortPolicy(anthropic, { thinkingLevel: 'off' }), 'none');
+  assert.equal(effortPolicy({ ...anthropic, compat: {} }, { thinkingLevel: 'high' }), 'none');
 });

@@ -296,7 +296,9 @@ for (const api of ['openai-responses', 'anthropic-messages'] as const) {
     }), {
       transport: api === 'openai-responses' ? 'responses' : 'anthropic',
       midConversationSystemMessages: true,
-      toolSupport: 'changes',
+      toolAdditions: true,
+      toolSameNameUpdates: true,
+      midConversationEffort: 'none',
     });
 
     const cacheHook = scenario.retrievalHooks[0];

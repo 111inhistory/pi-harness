@@ -263,6 +263,20 @@
       ]
     },
     {
+      "id": "provider.mid-conversation-effort",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/provider-transports.md",
+          "heading": "## 对话中 effort"
+        }
+      ],
+      "tests": [
+        "test/typed/provider-session.test.ts",
+        "test/typed/provider-session-sdk.test.ts"
+      ]
+    },
+    {
       "id": "config.resolve",
       "kind": "design",
       "docs": [
@@ -1000,9 +1014,9 @@
       "reason": "Only the IPC test taskDirectory import moved to task-path.ts; host admission, callback routing and assertions are unchanged."
     },
     "capability.provider-prefix": {
-      "docs": "d2668574f48a8012451c58c685cb80b9732c43d0ec7d00f192b68a88bc89a42d",
+      "docs": "c74a478d332d2e480113230e1669bf4acc9745a50d3a37d7f45afd0e2e30b2f7",
       "tests": "e0c393049f0456b8669950517349a3d9fd7fde507b49f48a7ff091c04b4d66cc",
-      "reason": "Delete duplicate Responses declaration examples and compat checks. Real outbound provider adapter tests and generated Capability histories remain; retrieval isolation and model-result compaction tests stay. No cache guarantee changes."
+      "reason": "The provider transport section adds a clarification that native toolAdditions/toolSameNameUpdates only describe native declarations and text-tool pseudo-additions remain unimplemented; no behavior or existing prefix test changed."
     },
     "ipc.transport": {
       "docs": "3d760ad11a8df876ab92a28a402c111fa1a1ec2230e00588a5d4aff051d4d5b5",
@@ -1040,9 +1054,9 @@
       "reason": "Main Preset commands, apply ordering and branch restore remain unchanged. The instruction hook is shared with child creation; existing Preset SDK and extension tests passed. Routed child application and instruction delivery are tested through the real RootService propagation case, also associated with routing."
     },
     "tool-guidance.journal": {
-      "docs": "ef1810b96bf835590d6e434644ae27682a07ea1fc54ae72d4d5ae9e525b0b72b",
+      "docs": "f15e9720dd2e103753d12542e7ae1c0c77084c790c3a25d522e52f81149bce3a",
       "tests": "5901047d5af9216deb73d0f94ee8d19cb756a7bc27b3eec588b852d672b5ca76",
-      "reason": "The Capability PBT wrapper and run controls now delegate to shared typed execution support. Description history, journal projection and prefix assertions are unchanged; no guidance contract changes."
+      "reason": "The provider transport section only clarifies the native-only tool declaration boundary and does not alter the guidance journal algorithm or its existing tests."
     },
     "cross-session.messaging": {
       "docs": "1423e639cb5e99561bd024761e74ea822d6b9ed8564a65c8fea28d271f77aa7b",
@@ -1086,8 +1100,8 @@
     },
     "capability.scope-admission": {
       "docs": "4393d3c918137e6171a7bd47b85e5d4786688cf2b5a0bbb4b200c761617509d1",
-      "tests": "bd89ca297c7399c5e61e89fc867b02a93fbc454bf320423b30c6b4715de714ce",
-      "reason": "test seed switched from legacy capability-discovery manual to a canonical enabled permission record; the authorized-tool visibility contract is unchanged"
+      "tests": "784d81985fc420e31fbd886094e117f2ca942f6cb927b4770820577d864cdce1",
+      "reason": "Only the provider policy expected object changed from toolSupport to explicit toolAdditions/toolSameNameUpdates plus midConversationEffort; Capability scope and admission behavior are unchanged."
     },
     "capability.tool-permission": {
       "docs": "933c40fa5b88746a4f1f08c966226bdc0951fb0f10948f621b0bd370140572f4",

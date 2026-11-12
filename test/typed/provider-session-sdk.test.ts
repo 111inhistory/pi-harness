@@ -21,7 +21,9 @@ import {
   type Tool,
 } from '@earendil-works/pi-ai';
 import { stream as streamAnthropic } from '@earendil-works/pi-ai/api/anthropic-messages';
+import { stream as streamAzureResponses } from '@earendil-works/pi-ai/api/azure-openai-responses';
 import { stream as streamChatCompletions } from '@earendil-works/pi-ai/api/openai-completions';
+import { stream as streamCodexResponses } from '@earendil-works/pi-ai/api/openai-codex-responses';
 import { stream as streamResponses } from '@earendil-works/pi-ai/api/openai-responses';
 
 import { appendSessionTranscript } from '../../src/session-transcript.ts';
@@ -63,7 +65,10 @@ function user(content: string): Message {
   return { role: 'user', content, timestamp: 1 };
 }
 
-function responsesModel(compat: OpenAIResponsesCompat): Model<'openai-responses'> {
+function responsesModel(
+  compat: OpenAIResponsesCompat,
+  overrides: Partial<Model<'openai-responses'>> = {},
+): Model<'openai-responses'> {
   return {
     id: 'offline-responses',
     name: 'Offline Responses',
@@ -76,10 +81,46 @@ function responsesModel(compat: OpenAIResponsesCompat): Model<'openai-responses'
     contextWindow: 100_000,
     maxTokens: 4096,
     compat,
+    ...overrides,
   };
 }
 
-function anthropicModel(compat: AnthropicMessagesCompat): Model<'anthropic-messages'> {
+function azureResponsesModel(compat: OpenAIResponsesCompat): Model<'azure-openai-responses'> {
+  return {
+    id: 'offline-azure-responses',
+    name: 'Offline Azure Responses',
+    api: 'azure-openai-responses',
+    provider: 'azure',
+    baseUrl: 'https://offline.invalid/openai/v1',
+    input: ['text'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    reasoning: true,
+    contextWindow: 100_000,
+    maxTokens: 4096,
+    compat,
+  };
+}
+
+function codexResponsesModel(compat: OpenAIResponsesCompat): Model<'openai-codex-responses'> {
+  return {
+    id: 'offline-codex-responses',
+    name: 'Offline Codex Responses',
+    api: 'openai-codex-responses',
+    provider: 'openai-codex',
+    baseUrl: 'https://offline.invalid/backend-api',
+    input: ['text'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    reasoning: true,
+    contextWindow: 100_000,
+    maxTokens: 4096,
+    compat,
+  };
+}
+
+function anthropicModel(
+  compat: AnthropicMessagesCompat,
+  overrides: Partial<Model<'anthropic-messages'>> = {},
+): Model<'anthropic-messages'> {
   return {
     id: 'offline-anthropic',
     name: 'Offline Anthropic',
@@ -92,10 +133,14 @@ function anthropicModel(compat: AnthropicMessagesCompat): Model<'anthropic-messa
     contextWindow: 100_000,
     maxTokens: 4096,
     compat,
+    ...overrides,
   };
 }
 
-function chatModel(compat: OpenAICompletionsCompat): Model<'openai-completions'> {
+function chatModel(
+  compat: OpenAICompletionsCompat,
+  overrides: Partial<Model<'openai-completions'>> = {},
+): Model<'openai-completions'> {
   return {
     id: 'offline-chat',
     name: 'Offline Chat Completions',
@@ -108,6 +153,7 @@ function chatModel(compat: OpenAICompletionsCompat): Model<'openai-completions'>
     contextWindow: 100_000,
     maxTokens: 4096,
     compat,
+    ...overrides,
   };
 }
 
@@ -131,6 +177,7 @@ function context(messages: readonly (Message | SystemMessage)[]) {
 interface ResponsesPayload {
   readonly input?: readonly unknown[];
   readonly tools?: readonly unknown[];
+  readonly reasoning?: unknown;
 }
 
 interface AnthropicPayload {
@@ -138,11 +185,33 @@ interface AnthropicPayload {
   readonly messages?: readonly unknown[];
   readonly tools?: readonly unknown[];
   readonly betas?: readonly string[];
+  readonly thinking?: unknown;
+  readonly output_config?: unknown;
 }
 
 interface ChatPayload {
   readonly messages?: readonly unknown[];
   readonly tools?: readonly unknown[];
+  readonly reasoning_effort?: unknown;
+}
+
+function configurationUpdates(payload: ResponsesPayload): UnknownRecord[] {
+  return records(payload.input).filter((item) => item['type'] === 'configuration_update');
+}
+
+function configurationEfforts(payload: ResponsesPayload): unknown[] {
+  return configurationUpdates(payload).map((item) => record(item['reasoning'])?.['effort']);
+}
+
+function responsesReasoningEffort(payload: ResponsesPayload): unknown {
+  return record(payload.reasoning)?.['effort'];
+}
+
+function codexToken(): string {
+  const payload = Buffer.from(JSON.stringify({
+    'https://api.openai.com/auth': { chatgpt_account_id: 'offline-account' },
+  })).toString('base64');
+  return `offline-header.${payload}.offline-signature`;
 }
 
 function names(value: unknown): string[] {
@@ -191,6 +260,14 @@ function blockTypes(blocks: readonly UnknownRecord[]): string[] {
 
 function lastSystemMessage(payload: AnthropicPayload): UnknownRecord | undefined {
   return records(payload.messages).findLast((message) => message['role'] === 'system');
+}
+
+function anthropicEffortMarkers(payload: AnthropicPayload): unknown[] {
+  return records(payload.messages).flatMap((message) => {
+    if (message['role'] !== 'system') return [];
+    const outputConfig = record(message['output_config']);
+    return outputConfig === undefined ? [] : [outputConfig['effort']];
+  });
 }
 
 test('Responses keeps the inherited prefix and appends instructions and same-name updates', async () => {
@@ -390,4 +467,177 @@ test('Chat Completions stays on Pi native behavior without compat mutation', asy
   assert.equal(tail[1]?.['role'], 'system');
   assert.equal(tail[1]?.['content'], 'CHILD INSTRUCTIONS');
   assert.doesNotMatch(JSON.stringify(appended), /tools_removed|tool_removal|toolsRemoved/);
+});
+
+test('Responses managed effort fixes the request effort and updates only the tail configuration item', async () => {
+  const model = responsesModel({ supportsMidConvoEffort: true }, { reasoning: true });
+  const inherited: Message[] = [system('BASE'), user('TASK')];
+  const capture = (reasoningEffort: 'low' | 'high') => capturePayload<ResponsesPayload>((onPayload) => streamResponses(
+    model,
+    context(inherited),
+    { apiKey: 'offline-fixture', fetch: offlineFetch, onPayload, reasoningEffort },
+  ));
+
+  const low = await capture('low');
+  const high = await capture('high');
+
+  assert.equal(responsesReasoningEffort(low), 'medium');
+  assert.equal(responsesReasoningEffort(high), 'medium');
+  assert.deepEqual(configurationEfforts(low), ['low']);
+  assert.deepEqual(configurationEfforts(high), ['high']);
+
+  const lowInput = low.input;
+  const highInput = high.input;
+  assert.ok(Array.isArray(lowInput));
+  assert.ok(Array.isArray(highInput));
+  assert.deepEqual(lowInput.slice(0, -1), highInput.slice(0, -1));
+  assert.deepEqual(lowInput.at(-1), {
+    type: 'configuration_update',
+    reasoning: { effort: 'low' },
+  });
+  assert.deepEqual(highInput.at(-1), {
+    type: 'configuration_update',
+    reasoning: { effort: 'high' },
+  });
+});
+
+test('Responses direct sign-in suppresses the managed effort encoder', async () => {
+  const model = responsesModel(
+    { supportsMidConvoEffort: true },
+    { provider: 'openai', baseUrl: 'https://api.openai.com/v1', reasoning: true },
+  );
+  const inherited: Message[] = [system('BASE'), user('TASK')];
+  const capture = (reasoningEffort: 'low' | 'high') => capturePayload<ResponsesPayload>((onPayload) => streamResponses(
+    model,
+    context(inherited),
+    { apiKey: 'offline-chatgpt-token', fetch: offlineFetch, onPayload, reasoningEffort },
+  ));
+
+  const low = await capture('low');
+  const high = await capture('high');
+
+  assert.deepEqual(configurationUpdates(low), []);
+  assert.deepEqual(configurationUpdates(high), []);
+  assert.equal(responsesReasoningEffort(low), 'low');
+  assert.equal(responsesReasoningEffort(high), 'high');
+  assert.deepEqual(low.input, high.input);
+});
+
+test('Azure Responses has no managed effort encoder and changes the top-level effort', async () => {
+  const model = azureResponsesModel({ supportsMidConvoEffort: true });
+  const inherited: Message[] = [system('BASE'), user('TASK')];
+  const capture = (reasoningEffort: 'low' | 'high') => capturePayload<ResponsesPayload>((onPayload) => streamAzureResponses(
+    model,
+    context(inherited),
+    { apiKey: 'offline-fixture', fetch: offlineFetch, onPayload, reasoningEffort },
+  ));
+
+  const low = await capture('low');
+  const high = await capture('high');
+
+  assert.deepEqual(configurationUpdates(low), []);
+  assert.deepEqual(configurationUpdates(high), []);
+  assert.equal(responsesReasoningEffort(low), 'low');
+  assert.equal(responsesReasoningEffort(high), 'high');
+  assert.deepEqual(low.input, high.input);
+});
+
+test('Codex Responses has no managed effort encoder and changes the top-level effort', async () => {
+  const model = codexResponsesModel({ supportsMidConvoEffort: true });
+  const inherited: Message[] = [system('BASE'), user('TASK')];
+  const capture = (reasoningEffort: 'low' | 'high') => capturePayload<ResponsesPayload>((onPayload) => streamCodexResponses(
+    model,
+    context(inherited),
+    { apiKey: codexToken(), fetch: offlineFetch, onPayload, reasoningEffort },
+  ));
+
+  const low = await capture('low');
+  const high = await capture('high');
+
+  assert.deepEqual(configurationUpdates(low), []);
+  assert.deepEqual(configurationUpdates(high), []);
+  assert.equal(responsesReasoningEffort(low), 'low');
+  assert.equal(responsesReasoningEffort(high), 'high');
+  assert.deepEqual(low.input, high.input);
+});
+
+test('Anthropic managed effort keeps its top-level effort and changes the tail marker', async () => {
+  const model = anthropicModel(
+    { supportsMidConvoEffort: true },
+    { reasoning: true, thinkingLevelMap: { off: 'none' } },
+  );
+  const inherited: Message[] = [system('BASE'), user('TASK')];
+  const capture = (effort: 'low' | 'high') => capturePayload<AnthropicPayload>((onPayload) => streamAnthropic(
+    model,
+    context(inherited),
+    {
+      apiKey: 'offline-fixture',
+      cacheRetention: 'none',
+      fetch: offlineFetch,
+      onPayload,
+      thinkingEnabled: true,
+      effort,
+    },
+  ));
+
+  const low = await capture('low');
+  const high = await capture('high');
+
+  assert.equal(record(low.output_config)?.['effort'], 'low');
+  assert.equal(record(high.output_config)?.['effort'], 'low');
+  assert.equal(record(low.thinking)?.['type'], 'adaptive');
+  assert.equal(record(high.thinking)?.['type'], 'adaptive');
+  assert.deepEqual(anthropicEffortMarkers(low), ['low']);
+  assert.deepEqual(anthropicEffortMarkers(high), ['high']);
+
+  const lowMessages = records(low.messages);
+  const highMessages = records(high.messages);
+  assert.deepEqual(lowMessages.slice(0, -1), highMessages.slice(0, -1));
+  assert.notDeepEqual(lowMessages.at(-1), highMessages.at(-1));
+});
+
+test('Anthropic disabled thinking sends no effort markers', async () => {
+  const model = anthropicModel(
+    { supportsMidConvoEffort: true },
+    { reasoning: true, thinkingLevelMap: { off: 'none' } },
+  );
+  const inherited: Message[] = [system('BASE'), user('TASK')];
+  const payload = await capturePayload<AnthropicPayload>((onPayload) => streamAnthropic(
+    model,
+    context(inherited),
+    {
+      apiKey: 'offline-fixture',
+      cacheRetention: 'none',
+      fetch: offlineFetch,
+      onPayload,
+      thinkingEnabled: false,
+      effort: 'low',
+    },
+  ));
+
+  assert.deepEqual(record(payload.thinking), { type: 'disabled' });
+  assert.equal(payload.output_config, undefined);
+  assert.deepEqual(anthropicEffortMarkers(payload), []);
+});
+
+test('Chat Completions has no managed effort encoder and changes the top-level reasoning effort', async () => {
+  const model = chatModel(
+    { supportsReasoningEffort: true, thinkingFormat: 'openai' },
+    { reasoning: true },
+  );
+  const inherited: Message[] = [system('BASE'), user('TASK')];
+  const capture = (reasoningEffort: 'low' | 'high') => capturePayload<ChatPayload>((onPayload) => streamChatCompletions(
+    model,
+    context(inherited),
+    { apiKey: 'offline-fixture', fetch: offlineFetch, onPayload, reasoningEffort },
+  ));
+
+  const low = await capture('low');
+  const high = await capture('high');
+
+  assert.equal(low.reasoning_effort, 'low');
+  assert.equal(high.reasoning_effort, 'high');
+  assert.doesNotMatch(JSON.stringify(low), /configuration_update/);
+  assert.doesNotMatch(JSON.stringify(high), /configuration_update/);
+  assert.deepEqual(low.messages, high.messages);
 });

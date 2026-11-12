@@ -59,7 +59,7 @@ export async function openBtwConversation(
     } };
   });
   const policy = providerSessionPolicy(snapshot.model);
-  const additive = policy.midConversationSystemMessages && policy.toolSupport !== 'none';
+  const additive = policy.midConversationSystemMessages && policy.toolAdditions;
   const messages = entries.flatMap(entry => entry.type === 'message' ? [entry.message] : []);
   // Only inert declarations are inherited; no parent executable handle is copied.
   const tools: ToolDefinition[] = additive ? firstToolDeclarations(messages).map(tool => ({
