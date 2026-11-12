@@ -32,9 +32,39 @@ jobs:
         with:
           node-version: '24.22.2'
           cache: npm
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tmux
       - if: runner.os == 'macOS'
-        run: brew install tmux
+        run: |
+          brew install tmux
+          # Darwin sockets have a short path limit; use the canonical short temp root.
+          echo 'TMPDIR=/private/tmp' >> "$GITHUB_ENV"
+      - name: Install psmux 3.4.0
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'psmux.zip'
+          $destination = Join-Path $env:RUNNER_TEMP 'psmux'
+          Invoke-WebRequest 'https://github.com/psmux/psmux/releases/download/v3.4.0/psmux-v3.4.0-windows-x64.zip' -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne 'A66B6BE7C13C6FA0DC3660A267B9E34EAA91A4EB7F07FBD55A0468018BD0F721') {
+            throw 'psmux archive checksum mismatch'
+          }
+          Expand-Archive $archive -DestinationPath $destination
+          $binary = Get-ChildItem $destination -Recurse -Filter psmux.exe | Select-Object -First 1
+          if ($null -eq $binary) { throw 'psmux.exe is missing from the archive' }
+          $binary.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Check terminal and PowerShell availability
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then psmux -V; else tmux -V; fi
+          if command -v pwsh >/dev/null; then pwsh -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion'; fi
       - run: npm ci
+      - name: Test and vet native pi-job
+        working-directory: go
+        run: go test ./... -count=1 -timeout 120s && go vet ./...
       # check:rpc-schema regenerates ignored JSON only after its bytes match the
       # tracked SHA256SUMS. Never use schema:rpc here: CI must not update hashes.
       - run: npm run check

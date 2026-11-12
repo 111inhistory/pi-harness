@@ -54,6 +54,8 @@ Check the costs and lifecycle boundaries identified in step 2. Use work counts f
 
 Review the complete diff, including comments and removed callers. Run `npm run check` for code delivery and the affected docs, JSON and contract checks. Repeat passed checks only when further changes, failures or unresolved concerns warrant it. Documentation-only changes use documentation checks; do not manufacture behavior tests for wording.
 
+CI installs the Go toolchain selected by `go/go.mod`, runs `go test` and `go vet`, then runs the Node checks. Terminal coverage uses tmux on Linux/macOS and pinned psmux on Windows. The macOS runner uses `/private/tmp` to keep Unix socket paths short and canonical; passing that environment does not establish compatibility with every macOS temporary directory.
+
 ## 5. Commit and deliver
 
 Group each complete behavior with its necessary tests and contract updates. Separate independent work; check dependency-chain commits without relying on later files. Inspect `git diff --cached --stat`, the full staged diff and the staged contract check before committing.
