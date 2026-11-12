@@ -985,9 +985,9 @@
       "reason": "Task assertions are unchanged; the TS CLI tests now cancel through the native CLI and take paths from task-path.ts, while render/ID/parse coverage moved to Go unit tests."
     },
     "async-shell.platform": {
-      "docs": "0f5a2b00929ad00b60d19dc87037bc341a3adc34fe2d4a403634d45eab71110e",
-      "tests": "16e547f00c1b6616ea5441f018954fd677701afbd7292b8f3d43c146fe93671f",
-      "reason": "The TS backend unit test was removed with the TS engine; POSIX/Windows backend behavior is covered by the native CLI E2E suite and the Go backend implementation. Documented install and limitations behavior is unchanged."
+      "docs": "d64da6b404f36f9b3234ed9e3e71f3531bd58504955db6e8bb0608eb35f84857",
+      "tests": "f18ddaf183c8d2c48ef92feae97c8af1680c64b2c8cc6ca688f87878d9cacbce",
+      "reason": "Windows execution tests and the Go 1.27 requirement were added; async-shell platform behavior and its documented contract are unchanged."
     },
     "async-shell.host": {
       "docs": "f1a3517c6af04e00f3c15f1ea81e5b6148852602e7bbeb185c62813a687bb2af",

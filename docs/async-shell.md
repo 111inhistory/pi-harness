@@ -4,7 +4,7 @@
 
 ## 安装
 
-需要项目要求的 Node.js 版本与 Go 工具链。CLI 是原生 Go 二进制；POSIX 主机使用 tmux，Windows 使用原生 ConPTY 后端 psmux 3.4.0 或更新版本，可通过 winget 安装和更新：
+需要项目要求的 Node.js 版本与 Go 1.27+ 工具链。CLI 是原生 Go 二进制；POSIX 主机使用 tmux，Windows 使用原生 ConPTY 后端 psmux 3.4.0 或更新版本，可通过 winget 安装和更新：
 
 ```powershell
 winget install --id marlocarlo.psmux --exact
