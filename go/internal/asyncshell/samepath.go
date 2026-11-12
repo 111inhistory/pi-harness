@@ -12,6 +12,10 @@ import (
 // Unicode case folding is not the filesystem's ordinal comparison anyway.
 // A missing path cannot be compared by identity; it falls back to an exact
 // cleaned-string comparison, never a case-folded one.
+//
+// This is filesystem identity only. A Named Pipe address is a kernel object
+// name (case-insensitive), not a filesystem path; compare pipes in the IPC
+// adapter, never here.
 func samePath(left string, right string) bool {
 	leftInfo, leftErr := os.Stat(left)
 	rightInfo, rightErr := os.Stat(right)
