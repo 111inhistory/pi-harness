@@ -3,6 +3,8 @@
 package asyncshell
 
 import (
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -16,7 +18,7 @@ func shellQuote(value string) string {
 }
 
 func socketOf(dir string) string {
-	return PathJoin(dir, "tmux.sock")
+	return filepath.Join(dir, "tmux.sock")
 }
 
 func describePosix(err error) string {
@@ -60,7 +62,7 @@ func (PosixBackend) RunOk(dir string, args []string, code string, stdin *string)
 }
 
 func (PosixBackend) AssertAvailable() {
-	if ProcessPlatform() == "win32" {
+	if runtime.GOOS == "win32" {
 		panic(NewAsyncShellError("unsupported_platform", "The POSIX tmux backend is not available on Windows."))
 	}
 	timeout := ControlTimeoutMs

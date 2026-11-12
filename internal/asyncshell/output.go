@@ -6,7 +6,7 @@ import "unicode/utf8"
 //
 // Member map (TS -> Go):
 //
-//	#decoder      -> decoder     (*StringDecoder seam; TODO language-adaptation)
+//	#decoder      -> decoder     (*utf8Decoder, decoder.go)
 //	#state        -> state
 //	#line         -> line
 //	#returned     -> returned
@@ -20,8 +20,8 @@ import "unicode/utf8"
 //	#escape(char) -> escape(char rune) filterState
 //	#visible      -> visible(char rune)
 //
-// The only non-Go dependency is `new StringDecoder("utf8")`, kept as a seam; its
-// semantics are implemented in the language-adaptation stage, not here.
+// Bytes are decoded incrementally by utf8Decoder (decoder.go); an incomplete
+// trailing sequence is held across writes.
 
 const (
 	escRune = '\u001b'
@@ -42,7 +42,7 @@ const (
 
 // OutputFilter is the incremental terminal-transcript filter (TS: OutputFilter).
 type OutputFilter struct {
-	decoder     *StringDecoder // TODO(language-adaptation): new StringDecoder("utf8")
+	decoder     *utf8Decoder
 	state       filterState
 	line        string
 	returned    string
@@ -50,14 +50,14 @@ type OutputFilter struct {
 	pending     string
 }
 
-// NewOutputFilter is TS `new OutputFilter()` (default decoder = StringDecoder("utf8")).
+// NewOutputFilter is TS `new OutputFilter()` (default UTF-8 decoder).
 func NewOutputFilter() *OutputFilter {
-	return &OutputFilter{decoder: NewStringDecoder("utf8")}
+	return &OutputFilter{decoder: newUTF8Decoder()}
 }
 
 // Write feeds raw bytes; returns the transcript text that is ready to append (TS write()).
 func (f *OutputFilter) Write(chunk []byte) string {
-	return f.text(f.decoder.Write(chunk))
+	return f.text(f.decoder.write(chunk))
 }
 
 // Flush emits text that is still waiting for a newline, as the stream has gone quiet (TS flush()).

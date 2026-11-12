@@ -2,31 +2,7 @@ package asyncshell
 
 import "os"
 
-// seam_types.go: shared boundary types for the TS-runtime seams. These keep the
-// translated call sites unchanged while the bodies are implemented in Go.
-
-// FileOptions is the subset of fs write/append options used (mode).
-type FileOptions struct {
-	Mode *uint32
-}
-
-// MkdirOptions is fs mkdir options (recursive, mode).
-type MkdirOptions struct {
-	Recursive bool
-	Mode      *uint32
-}
-
-// Stat is the fs stat subset the sources read.
-type Stat struct {
-	Size   int64
-	IsDir  bool
-	IsFile bool
-	IsLink bool
-	Mode   uint32
-	Uid    int
-	Dev    uint64
-	Ino    uint64
-}
+// seam_types.go: shared boundary types for the remaining exec/IPC seams.
 
 // SpawnOptions is the spawnSync options subset used.
 type SpawnOptions struct {

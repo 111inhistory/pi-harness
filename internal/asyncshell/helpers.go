@@ -16,12 +16,6 @@ var cursorPattern = regexp.MustCompile(`^\d+$`)
 
 func parseInt64(value string) (int64, error) { return strconv.ParseInt(value, 10, 64) }
 
-// isSafeInteger mirrors Number.isSafeInteger (|v| <= 2^53-1).
-func isSafeInteger(value int64) bool {
-	const max = int64(1) << 53
-	return value < max && value > -max
-}
-
 // parseFloatDigits is Number.parseInt's digit prefix, kept as a JS-number
 // (float64) so huge values overflow to +Inf instead of being silently clamped.
 func parseFloatDigits(value string) float64 {
@@ -35,7 +29,6 @@ func isSafeIntegerFloat(value float64) bool {
 }
 
 func int64Ptr(value int64) *int64  { return &value }
-func intPtr(value int) *int        { return &value }
 func formatInt(value int) string   { return strconv.Itoa(value) }
 func hexEncode(data []byte) string { return hex.EncodeToString(data) }
 

@@ -1,9 +1,13 @@
 package asyncshell
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -113,11 +117,19 @@ func assertSupported() {
 
 // StateRoot is TS stateRoot.
 func StateRoot() string {
-	root := ProcessEnv()["PI_ASYNC_SHELL_ROOT"]
+	root := os.Getenv("PI_ASYNC_SHELL_ROOT")
 	if root == "" {
-		root = PathJoin(OsTmpdir(), "pi-async-shell-"+formatInt(ProcessGetuid()))
+		uid := os.Getuid()
+		if uid < 0 {
+			uid = 0
+		}
+		root = filepath.Join(os.TempDir(), "pi-async-shell-"+strconv.Itoa(uid))
 	}
-	return PathResolve(root)
+	resolved, err := filepath.Abs(root)
+	if err != nil {
+		panic(err)
+	}
+	return resolved
 }
 
 // TaskDirectory is TS taskDirectory.
@@ -125,26 +137,73 @@ func TaskDirectory(id string, root string) string {
 	if !IsTaskId(id) {
 		panic(NewAsyncShellError("invalid_id", "Not an async-shell task id: "+id))
 	}
-	return PathJoin(root, id)
+	return filepath.Join(root, id)
 }
 
 // checkedTaskDirectory is TS checkedTaskDirectory: only <root>/<id> is accepted.
 func checkedTaskDirectory(dir string, root string) string {
-	resolved := PathResolve(dir)
-	if !SamePath(PathDirname(resolved), root) || !IsTaskId(PathBasename(resolved)) {
+	resolved, err := filepath.Abs(dir)
+	if err != nil {
+		panic(err)
+	}
+	if !samePath(filepath.Dir(resolved), root) || !IsTaskId(filepath.Base(resolved)) {
 		panic(NewAsyncShellError("invalid_directory", "Not an async-shell task directory under "+root+": "+dir))
 	}
 	return resolved
 }
 
 func taskPaths(dir string) TaskPaths {
-	file := func(name string) string { return PathJoin(dir, name) }
+	file := func(name string) string { return filepath.Join(dir, name) }
 	return TaskPaths{
 		Dir: dir, Task: file("task.json"), State: file("state.json"), Raw: file("raw.log"),
 		Filtered: file("output.log"), CaptureOk: file("capture-ok"), Exit: file("exit.json"),
 		Cancel: file("cancel.requested"), Closed: file("closed"), Delivery: file("delivery.json"),
 		PollCursor: file("poll.cursor"), MonitorPid: file("monitor.pid"), RunnerPid: file("runner.pid"),
 		ChildPid: file("child.pid"),
+	}
+}
+
+func environ() map[string]string {
+	env := make(map[string]string)
+	for _, entry := range os.Environ() {
+		if index := strings.IndexByte(entry, '='); index >= 0 {
+			env[entry[:index]] = entry[index+1:]
+		}
+	}
+	return env
+}
+
+func samePath(left string, right string) bool {
+	leftResolved, leftErr := filepath.Abs(left)
+	rightResolved, rightErr := filepath.Abs(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	if runtime.GOOS == "win32" {
+		return strings.EqualFold(leftResolved, rightResolved)
+	}
+	return leftResolved == rightResolved
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func writePrivateFile(path string, data []byte) {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		panic(err)
+	}
+}
+
+func appendPrivateFile(path string, data []byte) {
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+	if _, err := file.Write(data); err != nil {
+		panic(err)
 	}
 }
 
@@ -169,20 +228,15 @@ func messageOf(err interface{}) string {
 }
 
 func readJson(file string) interface{} {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return nil
+	}
 	var parsed interface{}
-	r := caught(func() { parsed = mustParseJson(FsReadFileSync(file)) })
-	if r != nil {
+	if json.Unmarshal(data, &parsed) != nil {
 		return nil
 	}
 	return parsed
-}
-
-func mustParseJson(text string) interface{} {
-	var value interface{}
-	if err := json.Unmarshal([]byte(text), &value); err != nil {
-		panic(err)
-	}
-	return value
 }
 
 // record is TS `record`: a non-array object.
@@ -191,21 +245,18 @@ func record(value interface{}) (map[string]interface{}, bool) {
 	return m, ok
 }
 
-// jsonStringify is the JSON.stringify call site. The contract is the parsed
-// object, not the text: key order, HTML escaping and U+2028/2029 escaping are
-// irrelevant because the receiver parses the frame back into the same object.
-func jsonStringify(value interface{}) string {
+func writeJsonAtomic(file string, value interface{}) {
+	temporary := file + "." + strconv.Itoa(os.Getpid()) + ".tmp"
 	data, err := json.Marshal(value)
 	if err != nil {
 		panic(err)
 	}
-	return string(data)
-}
-
-func writeJsonAtomic(file string, value interface{}) {
-	temporary := file + "." + formatInt(ProcessPid()) + ".tmp"
-	FsWriteFileSync(temporary, []byte(jsonStringify(value)+"\n"), &FileOptions{Mode: uint32Ptr(0o600)})
-	FsRenameSync(temporary, file)
+	if err := os.WriteFile(temporary, append(data, '\n'), 0o600); err != nil {
+		panic(err)
+	}
+	if err := os.Rename(temporary, file); err != nil {
+		panic(err)
+	}
 }
 
 func readTaskFile(paths TaskPaths) taskFile {
@@ -252,7 +303,7 @@ func safeReadTask(paths TaskPaths) taskFile {
 	var task taskFile
 	_ = caught(func() { task = readTaskFile(paths) })
 	if task.ID == "" {
-		task.ID = PathBasename(paths.Dir)
+		task.ID = filepath.Base(paths.Dir)
 	}
 	if task.CreatedAt == 0 {
 		task.CreatedAt = nowMs()
@@ -323,51 +374,49 @@ func utf8Boundary(buffer []byte, length int) int {
 }
 
 func readOutput(file string, cursor int64) OutputChunk {
-	handle := 0
-	r := caught(func() { handle = FsOpenSync(file, "r") })
-	if r != nil {
-		if errorCode(r) == "ENOENT" {
+	handle, err := os.Open(file)
+	if err != nil {
+		if os.IsNotExist(err) {
 			return OutputChunk{Text: "", Cursor: maxInt64(0, cursor), Truncated: false}
 		}
-		panic(r)
+		panic(err)
 	}
-	defer FsCloseSync(handle)
-	size := FsFstatSync(handle).Size
+	defer handle.Close()
+	info, err := handle.Stat()
+	if err != nil {
+		panic(err)
+	}
+	size := info.Size()
 	start := minInt64(maxInt64(0, cursor), size)
 	if start >= size {
 		return OutputChunk{Text: "", Cursor: start, Truncated: false}
 	}
 	want := minInt64(MaxResultBytes, size-start)
 	buffer := make([]byte, int(want))
-	read := FsReadSync(handle, buffer, 0, int(want), start)
+	read, _ := handle.ReadAt(buffer, start)
 	length := utf8Boundary(buffer, read)
 	next := start + int64(length)
 	return OutputChunk{Text: string(buffer[:length]), Cursor: next, Truncated: next < size}
 }
 
 func readCursor(paths TaskPaths) int64 {
-	var cursor int64
-	r := caught(func() {
-		value, ok := parseIntPrefix(strings.TrimSpace(FsReadFileSync(paths.PollCursor)))
-		if ok && value >= 0 {
-			cursor = value
-		} else {
-			cursor = 0
-		}
-	})
-	if r != nil {
+	data, err := os.ReadFile(paths.PollCursor)
+	if err != nil {
 		return 0
 	}
-	return cursor
+	value, ok := parseIntPrefix(strings.TrimSpace(string(data)))
+	if ok && value >= 0 {
+		return value
+	}
+	return 0
 }
 
 func hasMore(file string, cursor int64) bool {
-	more := false
-	r := caught(func() { more = FsStatSync(file).Size > cursor })
-	if r != nil {
+	info, err := os.Stat(file)
+	if err != nil {
 		return false
 	}
-	return more
+	return info.Size() > cursor
 }
 
 func resultOf(paths TaskPaths, state taskState, cursor int64) ShellResult {
@@ -377,7 +426,7 @@ func resultOf(paths TaskPaths, state taskState, cursor int64) ShellResult {
 
 func consumeOutput(paths TaskPaths, state taskState) ShellResult {
 	result := resultOf(paths, state, readCursor(paths))
-	FsWriteFileSync(paths.PollCursor, []byte(strconv.FormatInt(result.Cursor, 10)+"\n"), &FileOptions{Mode: uint32Ptr(0o600)})
+	writePrivateFile(paths.PollCursor, []byte(strconv.FormatInt(result.Cursor, 10)+"\n"))
 	return result
 }
 
@@ -399,22 +448,20 @@ func alive(pid int) bool {
 }
 
 func readPid(file string) *int {
-	var pid *int
-	r := caught(func() {
-		value, ok := parseIntPrefix(strings.TrimSpace(FsReadFileSync(file)))
-		if ok && value > 0 {
-			v := int(value)
-			pid = &v
-		}
-	})
-	if r != nil {
+	data, err := os.ReadFile(file)
+	if err != nil {
 		return nil
 	}
-	return pid
+	value, ok := parseIntPrefix(strings.TrimSpace(string(data)))
+	if ok && value > 0 {
+		pid := int(value)
+		return &pid
+	}
+	return nil
 }
 
 func exists(file string) bool {
-	return FsExistsSync(file)
+	return fileExists(file)
 }
 
 func readDelivery(paths TaskPaths, timeoutMs int) string {
@@ -449,12 +496,12 @@ func sendFrame(target CallbackTarget, frame interface{}) {
 }
 
 // CallbackFromEnv is TS callbackFromEnv: null keeps the CLI standalone.
-func CallbackFromEnv(env map[string]string) *CallbackTarget {
-	if unavailable := env["PI_ASYNC_SHELL_HOST_ERROR"]; unavailable != "" {
+func CallbackFromEnv() *CallbackTarget {
+	if unavailable := os.Getenv("PI_ASYNC_SHELL_HOST_ERROR"); unavailable != "" {
 		panic(NewAsyncShellError("host_unavailable", "The async-shell callback host is unavailable: "+unavailable))
 	}
-	socket := env["PI_AGENT_SOCKET"]
-	token := env["PI_ASYNC_SHELL_TOKEN"]
+	socket := os.Getenv("PI_AGENT_SOCKET")
+	token := os.Getenv("PI_ASYNC_SHELL_TOKEN")
 	if socket == "" || token == "" {
 		return nil
 	}
@@ -468,41 +515,45 @@ func CreateTask(options CreateTaskOptions) ShellResult {
 		panic(NewAsyncShellError("invalid_command_args", "create requires a command."))
 	}
 	root := StateRoot()
-	if err := EnsurePrivateDirectory(root); err != nil {
+	if err := ensurePrivateDirectory(root); err != nil {
 		panic(err)
 	}
 	var id string
 	var dir string
 	for {
-		id = "job_" + hexEncode(RandomBytes(4))
+		entropy := make([]byte, 4)
+		if _, err := rand.Read(entropy); err != nil {
+			panic(err)
+		}
+		id = "job_" + hexEncode(entropy)
 		dir = TaskDirectory(id, root)
-		r := caught(func() { FsMkdirSync(dir, &MkdirOptions{Mode: uint32Ptr(0o700)}) })
-		if r == nil {
+		err := os.Mkdir(dir, 0o700)
+		if err == nil {
 			break
 		}
-		if errorCode(r) != "EEXIST" {
-			panic(r)
+		if !os.IsExist(err) {
+			panic(err)
 		}
 	}
-	if err := EnsurePrivateDirectory(dir); err != nil {
+	if err := ensurePrivateDirectory(dir); err != nil {
 		panic(err)
 	}
 	paths := taskPaths(dir)
 	createdAt := nowMs()
 	task := taskFile{ID: id, Argv: options.Argv, Cwd: options.Cwd, CreatedAt: createdAt, WaitMs: options.WaitMs, TimeoutMs: options.TimeoutMs}
 	writeJsonAtomic(paths.Task, task)
-	FsWriteFileSync(paths.Raw, []byte{}, &FileOptions{Mode: uint32Ptr(0o600)})
-	FsWriteFileSync(paths.Filtered, []byte{}, &FileOptions{Mode: uint32Ptr(0o600)})
+	writePrivateFile(paths.Raw, nil)
+	writePrivateFile(paths.Filtered, nil)
 
 	if options.Callback != nil {
 		r := caught(func() {
-			sendFrame(*options.Callback, AsyncShellRegisterFrame{Kind: AsyncShellKind, Token: options.Callback.Token, Operation: "register", ID: id, Directory: dir, PID: ProcessPid()})
+			sendFrame(*options.Callback, AsyncShellRegisterFrame{Kind: AsyncShellKind, Token: options.Callback.Token, Operation: "register", ID: id, Directory: dir, PID: os.Getpid()})
 		})
 		if r != nil {
 			state := taskState{ID: id, Status: StatusFailed, ExitCode: nil, CreatedAt: createdAt, FinalizedAt: int64Ptr(nowMs())}
-			FsAppendFileSync(paths.Filtered, []byte("async-shell: "+messageOf(r)+"\n"), &FileOptions{Mode: uint32Ptr(0o600)})
+			appendPrivateFile(paths.Filtered, []byte("async-shell: "+messageOf(r)+"\n"))
 			writeState(paths, state)
-			FsWriteFileSync(paths.Closed, []byte{}, &FileOptions{Mode: uint32Ptr(0o600)})
+			writePrivateFile(paths.Closed, nil)
 			if errorCode(r) != "registration_rejected" {
 				_ = caught(func() {
 					sendFrame(*options.Callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, Token: options.Callback.Token, Operation: "complete", ID: id, Notify: false, Result: consumeOutput(paths, state)})
@@ -515,7 +566,7 @@ func CreateTask(options CreateTaskOptions) ShellResult {
 	failed := func(message string) ShellResult {
 		backend.KillServer(dir)
 		state := taskState{ID: id, Status: StatusFailed, ExitCode: nil, CreatedAt: createdAt, FinalizedAt: int64Ptr(nowMs())}
-		FsAppendFileSync(paths.Filtered, []byte("async-shell: "+message+"\n"), &FileOptions{Mode: uint32Ptr(0o600)})
+		appendPrivateFile(paths.Filtered, []byte("async-shell: "+message+"\n"))
 		writeState(paths, state)
 		return consumeOutput(paths, state)
 	}
@@ -525,10 +576,14 @@ func CreateTask(options CreateTaskOptions) ShellResult {
 		// Go equivalent of node execPath + execArgv + script: the binary re-runs
 		// itself with the internal mode and the task directory.
 		monitorArgs := []string{"__monitor", dir}
-		monitor := SpawnDetached(ProcessExecPath(), monitorArgs, SpawnDetachedOptions{Detached: true, StdioIgnore: true, Env: ProcessEnv()})
+		executable, err := os.Executable()
+		if err != nil {
+			panic(err)
+		}
+		monitor := SpawnDetached(executable, monitorArgs, SpawnDetachedOptions{Detached: true, StdioIgnore: true})
 		monitor.Unref()
 		if monitor.Pid != nil {
-			FsWriteFileSync(paths.MonitorPid, []byte(formatInt(*monitor.Pid)+"\n"), &FileOptions{Mode: uint32Ptr(0o600)})
+			writePrivateFile(paths.MonitorPid, []byte(strconv.Itoa(*monitor.Pid)+"\n"))
 		}
 	})
 	if r != nil {
@@ -541,7 +596,11 @@ func CreateTask(options CreateTaskOptions) ShellResult {
 
 	decide := func(mode string, state taskState) ShellResult {
 		result := consumeOutput(paths, state)
-		FsWriteFileSync(paths.Delivery, []byte(jsonStringify(map[string]string{"mode": mode})+"\n"), &FileOptions{Mode: uint32Ptr(0o600)})
+		delivery, err := json.Marshal(map[string]string{"mode": mode})
+		if err != nil {
+			panic(err)
+		}
+		writePrivateFile(paths.Delivery, append(delivery, '\n'))
 		return result
 	}
 	waitDeadline := task.CreatedAt + task.WaitMs
@@ -570,7 +629,7 @@ func PollTask(dir string, cursor *int64) ShellResult {
 	state := readStateFile(paths, task)
 	if cursor != nil {
 		explicit := resultOf(paths, state, *cursor)
-		FsWriteFileSync(paths.PollCursor, []byte(strconv.FormatInt(explicit.Cursor, 10)+"\n"), &FileOptions{Mode: uint32Ptr(0o600)})
+		writePrivateFile(paths.PollCursor, []byte(strconv.FormatInt(explicit.Cursor, 10)+"\n"))
 		return explicit
 	}
 	return consumeOutput(paths, state)
@@ -599,7 +658,7 @@ func requireRunning(paths TaskPaths) taskFile {
 func SendInput(dir string, input string, enter bool) {
 	paths := taskPaths(dir)
 	requireRunning(paths)
-	if BufferByteLength(input, "utf8") > MaxSendBytes {
+	if len([]byte(input)) > MaxSendBytes {
 		panic(NewAsyncShellError("input_too_large", "Input must not exceed "+formatInt(MaxSendBytes)+" bytes."))
 	}
 	backend.SendInput(dir, input)
@@ -633,7 +692,7 @@ func CancelTask(dir string, rootArg ...string) {
 		return
 	}
 	task := readTaskFile(paths)
-	FsWriteFileSync(paths.Cancel, []byte{}, &FileOptions{Mode: uint32Ptr(0o600)})
+	writePrivateFile(paths.Cancel, nil)
 	backend.KillServer(paths.Dir)
 	if waitForClose(paths, 400) {
 		return
@@ -669,7 +728,7 @@ func CancelTask(dir string, rootArg ...string) {
 	if state.Status == StatusRunning {
 		writeState(paths, taskState{ID: task.ID, Status: StatusCancelled, ExitCode: nil, CreatedAt: task.CreatedAt, FinalizedAt: int64Ptr(nowMs())})
 	}
-	FsWriteFileSync(paths.Closed, []byte{}, &FileOptions{Mode: uint32Ptr(0o600)})
+	writePrivateFile(paths.Closed, nil)
 }
 
 func waitForClose(paths TaskPaths, timeoutMs int) bool {
@@ -696,12 +755,12 @@ func RunnerMain(dir string) (exit int) {
 		if recovered := recover(); recovered != nil {
 			message := "internal error: " + messageOf(recovered)
 			_ = caught(func() { writeExit(paths, exitFile{Code: nil, Signal: nil, Error: strPtr(message)}) })
-			ProcessStderrWrite("pi-job: " + message + "\n")
+			os.Stderr.WriteString("pi-job: " + message + "\n")
 			exit = 1
 		}
 	}()
 	task := readTaskFile(paths)
-	FsWriteFileSync(paths.RunnerPid, []byte(formatInt(ProcessPid())+"\n"), &FileOptions{Mode: uint32Ptr(0o600)})
+	writePrivateFile(paths.RunnerPid, []byte(strconv.Itoa(os.Getpid())+"\n"))
 
 	captureDeadline := nowMs() + CaptureWaitMs
 	for !exists(paths.CaptureOk) {
@@ -709,21 +768,21 @@ func RunnerMain(dir string) (exit int) {
 			writeExit(paths, exitFile{Code: nil, Signal: nil, Error: strPtr("capture did not start")})
 			return 1
 		}
-		ProcessStdoutWrite(CaptureMarker)
+		os.Stdout.WriteString(CaptureMarker)
 		sleep(40)
 	}
 
 	var child ChildProcess
 	r := caught(func() {
-		command := ChildCommandFor(task.Argv, ProcessPlatform(), ProcessEnv(), task.Cwd)
-		child = SpawnInherit(command.File, command.Args, SpawnInheritOptions{Cwd: task.Cwd, Env: ProcessEnv(), StdioInherit: true, WindowsVerbatimArguments: command.Verbatim})
+		command := ChildCommandFor(task.Argv, runtime.GOOS, environ(), task.Cwd)
+		child = SpawnInherit(command.File, command.Args, SpawnInheritOptions{Cwd: task.Cwd, StdioInherit: true, WindowsVerbatimArguments: command.Verbatim})
 	})
 	if r != nil {
 		writeExit(paths, exitFile{Code: nil, Signal: nil, Error: strPtr(messageOf(r))})
 		return 1
 	}
 	if child.Pid != nil {
-		FsWriteFileSync(paths.ChildPid, []byte(formatInt(*child.Pid)+"\n"), &FileOptions{Mode: uint32Ptr(0o600)})
+		writePrivateFile(paths.ChildPid, []byte(strconv.Itoa(*child.Pid)+"\n"))
 	}
 
 	stopped := func(signal string) {
@@ -732,7 +791,7 @@ func RunnerMain(dir string) (exit int) {
 		}
 		writeExit(paths, exitFile{Code: nil, Signal: &signal, Error: nil})
 		sleep(150)
-		ProcessExit(0)
+		os.Exit(0)
 	}
 	ProcessOnSignal("SIGTERM", stopped)
 	ProcessOnSignal("SIGHUP", stopped)
@@ -757,7 +816,7 @@ func MonitorMain(dir string) {
 			safe := safeReadTask(paths)
 			message := "internal error: " + messageOf(recovered)
 			_ = caught(func() {
-				FsAppendFileSync(paths.Filtered, []byte("async-shell: "+message+"\n"), &FileOptions{Mode: uint32Ptr(0o600)})
+				appendPrivateFile(paths.Filtered, []byte("async-shell: "+message+"\n"))
 			})
 			state := taskState{ID: safe.ID, Status: StatusFailed, ExitCode: nil, CreatedAt: safe.CreatedAt, FinalizedAt: int64Ptr(nowMs())}
 			_ = caught(func() {
@@ -779,7 +838,7 @@ func MonitorMain(dir string) {
 			// distinct status.
 			if !frameAttempted {
 				var callback *CallbackTarget
-				_ = caught(func() { callback = CallbackFromEnv(ProcessEnv()) })
+				_ = caught(func() { callback = CallbackFromEnv() })
 				if callback != nil {
 					frameAttempted = true
 					var result ShellResult
@@ -791,7 +850,7 @@ func MonitorMain(dir string) {
 			}
 			if !closedWritten {
 				closedWritten = true
-				_ = caught(func() { FsWriteFileSync(paths.Closed, []byte{}, &FileOptions{Mode: uint32Ptr(0o600)}) })
+				_ = caught(func() { writePrivateFile(paths.Closed, nil) })
 			}
 		}
 	}()
@@ -812,21 +871,24 @@ func MonitorMain(dir string) {
 	closing := false
 
 	pump := func() bool {
-		handle := 0
-		r := caught(func() { handle = FsOpenSync(paths.Raw, "r") })
-		if r != nil {
+		handle, err := os.Open(paths.Raw)
+		if err != nil {
 			return false
 		}
-		defer FsCloseSync(handle)
+		defer handle.Close()
 		grew := false
-		size := FsFstatSync(handle).Size
+		info, err := handle.Stat()
+		if err != nil {
+			return false
+		}
+		size := info.Size()
 		for {
 			if rawOffset >= size {
 				break
 			}
 			want := minInt64(ReadChunkBytes, size-rawOffset)
 			buffer := make([]byte, int(want))
-			read := FsReadSync(handle, buffer, 0, int(want), rawOffset)
+			read, _ := handle.ReadAt(buffer, rawOffset)
 			if read <= 0 {
 				break
 			}
@@ -836,11 +898,11 @@ func MonitorMain(dir string) {
 			probe = lastN(probe+string(chunk), 256)
 			if !captureOk && strings.Contains(probe, CaptureMarker) {
 				captureOk = true
-				FsWriteFileSync(paths.CaptureOk, []byte{}, &FileOptions{Mode: uint32Ptr(0o600)})
+				writePrivateFile(paths.CaptureOk, nil)
 			}
 			text := filter.Write(chunk)
 			if text != "" {
-				FsAppendFileSync(paths.Filtered, []byte(text), &FileOptions{Mode: uint32Ptr(0o600)})
+				appendPrivateFile(paths.Filtered, []byte(text))
 			}
 		}
 		return grew
@@ -852,7 +914,7 @@ func MonitorMain(dir string) {
 		}
 		text := filter.Flush()
 		if text != "" {
-			FsAppendFileSync(paths.Filtered, []byte(text), &FileOptions{Mode: uint32Ptr(0o600)})
+			appendPrivateFile(paths.Filtered, []byte(text))
 		}
 		lastFlush = nowMs()
 	}
@@ -901,13 +963,13 @@ func MonitorMain(dir string) {
 				status = StatusFailed
 			}
 			if exit.Error != nil {
-				FsAppendFileSync(paths.Filtered, []byte("async-shell: "+*exit.Error+"\n"), &FileOptions{Mode: uint32Ptr(0o600)})
+				appendPrivateFile(paths.Filtered, []byte("async-shell: "+*exit.Error+"\n"))
 			}
 			if exit.Signal != nil {
-				FsAppendFileSync(paths.Filtered, []byte("async-shell: terminated by "+*exit.Signal+"\n"), &FileOptions{Mode: uint32Ptr(0o600)})
+				appendPrivateFile(paths.Filtered, []byte("async-shell: terminated by "+*exit.Signal+"\n"))
 			}
 		} else {
-			FsAppendFileSync(paths.Filtered, []byte("async-shell: the task exited without reporting a status\n"), &FileOptions{Mode: uint32Ptr(0o600)})
+			appendPrivateFile(paths.Filtered, []byte("async-shell: the task exited without reporting a status\n"))
 		}
 
 		finalizedAt := nowMs()
@@ -915,7 +977,7 @@ func MonitorMain(dir string) {
 		writeState(paths, state)
 		backend.KillServer(dir)
 
-		callback := CallbackFromEnv(ProcessEnv())
+		callback := CallbackFromEnv()
 		if callback != nil {
 			decision := readDelivery(paths, DecisionWaitMs)
 			result := statusResult(paths, state)
@@ -927,7 +989,7 @@ func MonitorMain(dir string) {
 				sendFrame(*callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, Token: callback.Token, Operation: "complete", ID: task.ID, Notify: decision == "async", Result: result})
 			})
 		}
-		FsWriteFileSync(paths.Closed, []byte{}, &FileOptions{Mode: uint32Ptr(0o600)})
+		writePrivateFile(paths.Closed, nil)
 		closedWritten = true
 	}
 
@@ -1021,7 +1083,5 @@ func lastN(value string, count int) string {
 	}
 	return value[len(value)-count:]
 }
-
-func uint32Ptr(value uint32) *uint32 { return &value }
 
 func strPtr(value string) *string { return &value }

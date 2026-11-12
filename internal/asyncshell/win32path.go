@@ -1,6 +1,9 @@
 package asyncshell
 
-import "strings"
+import (
+	"os"
+	"strings"
+)
 
 // seam_win32.go implements the path.win32 dialect used to stay platform-neutral.
 // Windows backslash/absolute semantics are reproduced for translation fidelity.
@@ -85,7 +88,11 @@ func Win32PathResolve(parts ...string) string {
 		}
 	}
 	if !win32IsAbsolute(absolute) {
-		absolute = strings.ReplaceAll(ProcessCwd(), "/", "\\") + "\\" + absolute
+		cwd, err := os.Getwd()
+		if err != nil {
+			cwd = "."
+		}
+		absolute = strings.ReplaceAll(cwd, "/", "\\") + "\\" + absolute
 	}
 	return win32Normalize(absolute)
 }

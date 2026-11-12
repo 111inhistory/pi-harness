@@ -1,6 +1,10 @@
 package asyncshell
 
-import "strings"
+import (
+	"io"
+	"os"
+	"strings"
+)
 
 // cli.go translates src/async-shell/cli.ts.
 //
@@ -83,7 +87,10 @@ type CreateArgs struct {
 func ParseCreateArgs(tokens []string) CreateArgs {
 	waitMs := int64(DefaultWaitMs)
 	var timeoutMs *int64
-	cwd := ProcessCwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	}
 	index := 0
 	for ; index < len(tokens); index++ {
 		token := tokens[index]
@@ -132,18 +139,18 @@ func ParseCreateArgs(tokens []string) CreateArgs {
 
 // readStdin is TS readStdin: all of stdin, byte for byte, bounded while reading.
 func readStdin(maxBytes int) string {
-	text, err := ProcessStdinRead(maxBytes)
+	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		if e, ok := err.(*AsyncShellError); ok {
-			panic(e)
-		}
+		panic(err)
+	}
+	if len(data) > maxBytes {
 		panic(NewAsyncShellError("input_too_large", "Input must not exceed "+formatInt(maxBytes)+" bytes."))
 	}
-	return text
+	return string(data)
 }
 
 func report(result ShellResult) {
-	ProcessStdoutWrite(FormatResult(result))
+	os.Stdout.WriteString(FormatResult(result))
 }
 
 // run is TS run(): dispatch one verb. Errors are panicked (TS: thrown).
@@ -159,7 +166,7 @@ func run(argv []string) {
 		parsed := ParseCreateArgs(rest)
 		options := CreateTaskOptions{
 			Argv: parsed.Argv, Cwd: parsed.Cwd, TimeoutMs: parsed.TimeoutMs, WaitMs: parsed.WaitMs,
-			Callback: CallbackFromEnv(ProcessEnv()),
+			Callback: CallbackFromEnv(),
 		}
 		report(CreateTask(options))
 	case "poll":
@@ -235,7 +242,7 @@ func run(argv []string) {
 		CancelTask(dir)
 		report(PollTask(dir, nil))
 	case "__run":
-		ProcessExit(RunnerMain(requireDirectory(rest)))
+		os.Exit(RunnerMain(requireDirectory(rest)))
 	case "__monitor":
 		MonitorMain(requireDirectory(rest))
 	default:
@@ -294,14 +301,14 @@ func Main(fullArgv []string) int {
 				message = err.Message
 			}
 			if internal {
-				ProcessStderrWrite("pi-job: " + message + "\n")
+				os.Stderr.WriteString("pi-job: " + message + "\n")
 			} else {
 				var usage *string
 				if _, isUsage := usageErrors[errorCode]; isUsage {
 					u := Usage
 					usage = &u
 				}
-				ProcessStderrWrite(FormatError(message, usage))
+				os.Stderr.WriteString(FormatError(message, usage))
 			}
 			exitCode = 1
 		}()

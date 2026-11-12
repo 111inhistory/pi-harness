@@ -1,6 +1,8 @@
 package asyncshell
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -60,7 +62,7 @@ type ControlClient interface {
 
 // PasteLiteral is TS pasteLiteral: load-buffer (stdin) -> paste-buffer -> delete-buffer.
 func PasteLiteral(client ControlClient, dir string, input string, target string) {
-	buffer := "pi-" + PathBasename(dir)
+	buffer := "pi-" + filepath.Base(dir)
 	client.RunOk(dir, []string{"load-buffer", "-b", buffer, "-"}, "send_failed", &input)
 	defer client.Run(dir, []string{"delete-buffer", "-b", buffer}, nil)
 	client.RunOk(dir, []string{"paste-buffer", "-p", "-r", "-b", buffer, "-t", target}, "send_failed", nil)
@@ -70,8 +72,8 @@ func PasteLiteral(client ControlClient, dir string, input string, target string)
 // this executable in an internal mode. Node's `execPath + execArgv + script`
 // shape does not exist in Go, so the binary is its own entry point.
 func SelfArgv(dir string, mode string) []string {
-	executable := ProcessExecPath()
-	if executable == "" {
+	executable, err := os.Executable()
+	if err != nil || executable == "" {
 		panic(NewAsyncShellError("self_unresolved", "The async-shell CLI cannot locate its own entry point."))
 	}
 	return []string{executable, mode, dir}
@@ -217,7 +219,7 @@ func resolveWindowsExecutable(file string, env map[string]string, cwd string) st
 	for _, directory := range directories {
 		for _, name := range names {
 			candidate := Win32PathJoin(directory, name)
-			if FsExistsSync(candidate) {
+			if fileExists(candidate) {
 				return candidate
 			}
 		}

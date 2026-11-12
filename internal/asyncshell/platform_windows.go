@@ -4,6 +4,7 @@ package asyncshell
 
 import (
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -107,7 +108,7 @@ func atLeast(found [3]int, wanted [3]int) bool {
 }
 
 func (WindowsBackend) AssertAvailable() {
-	if ProcessPlatform() != "win32" {
+	if runtime.GOOS != "win32" {
 		panic(NewAsyncShellError("unsupported_platform", "The psmux backend is only available on Windows."))
 	}
 	timeout := ControlTimeoutMs

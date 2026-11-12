@@ -18,7 +18,11 @@ func WriteSocket(socketPath string, payload interface{}) error {
 	if value, ok := payload.(string); ok {
 		text = value
 	} else {
-		text = jsonStringify(payload)
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		text = string(data)
 	}
 	if !strings.HasSuffix(text, "\n") {
 		text += "\n"
@@ -38,14 +42,14 @@ func WriteSocket(socketPath string, payload interface{}) error {
 	if _, err := connection.Write([]byte(text)); err != nil {
 		return coded(err, "EPIPE")
 	}
-	decoder := NewStringDecoder("utf8")
+	decoder := newUTF8Decoder()
 	buffer := ""
 	received := 0
 	chunk := make([]byte, 4096)
 	for received < expected {
 		read, readErr := connection.Read(chunk)
 		if read > 0 {
-			buffer += decoder.Write(chunk[:read])
+			buffer += decoder.write(chunk[:read])
 		}
 		if readErr != nil {
 			return &codedError{Code: "missing_response", Err: readErr}
@@ -79,12 +83,4 @@ func WriteSocket(socketPath string, payload interface{}) error {
 		}
 	}
 	return nil
-}
-
-// SamePath is samePath(left, right) under the host's default path rules.
-func SamePath(left string, right string) bool {
-	if ProcessPlatform() == "win32" {
-		return strings.ToLower(Win32PathResolve(left)) == strings.ToLower(Win32PathResolve(right))
-	}
-	return PathResolve(left) == PathResolve(right)
 }
