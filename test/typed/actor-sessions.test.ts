@@ -22,7 +22,6 @@ import type {
   ActorIdentityPatch,
   ActorModelLookup,
   ActorSessionStorage,
-  ActorToolScope,
   OpenedActorSession,
 } from "../../src/subagent/actor-sessions.ts";
 import type { NativeModelRef, NativeRetainedActor } from "../../src/subagent/native-types.ts";
@@ -305,38 +304,25 @@ test("restoreIdentity validates a routed record and resolves its model", (t) => 
   assert.equal(descriptor.sessionManager, null);
   assert.equal(descriptor.sessionFile, "/work/agents/s1.jsonl");
   assert.equal(descriptor.anchor, "leaf-7");
-  assert.equal(descriptor.cwd, CWD);
-  assert.equal(descriptor.trusted, true);
-  assert.equal(descriptor.allowInherited, false);
   assert.equal(descriptor.routed, true);
-  assert.equal(descriptor.roleId, "reviewer");
-  assert.equal(descriptor.roleInstructions, "Review carefully.");
   assert.deepEqual(descriptor.modelRef, { provider: "fake", id: "model-1" });
   assert.equal(descriptor.model?.id, "model-1");
-  assert.equal(descriptor.thinkingLevel, "high");
   assert.deepEqual(descriptor.tools, ["read", "grep"]);
-  assert.deepEqual(descriptor.excludedTools, ["bash"]);
   assert.equal(descriptor.assignment, "Review the change.");
   // An inherited Actor's prompt is recorded once with its seed; the record may
-  // carry none, and the seed's captured prompt is the fallback.
+  // carry none, and the seed's captured prompt is the fallback. A recorded
+  // prompt wins over the seed's captured one.
   assert.equal(descriptor.systemPrompt, "captured parent prompt");
-
   assert.equal(h.store.get("s1"), descriptor);
   assert.equal(h.store.durable, true);
-});
 
-test("restoreIdentity keeps a recorded system prompt over the seed's", (t) => {
-  const h = createHarness();
-  t.after(() => h.dispose());
-
-  const descriptor = h.store.restoreIdentity({
-    agentId: "s1",
+  const recorded = h.store.restoreIdentity({
+    agentId: "s2",
     record: validRecord({ systemPrompt: "recorded prompt" }),
     anchor: "leaf-1",
     seed: { systemPrompt: "captured parent prompt" },
   });
-
-  assert.equal(descriptor.systemPrompt, "recorded prompt");
+  assert.equal(recorded.systemPrompt, "recorded prompt");
 });
 
 test("restoreIdentity refuses a malformed persisted identity", async (t) => {
@@ -417,24 +403,6 @@ test("restoreIdentity refuses a malformed persisted identity", async (t) => {
       (error) => isCorrupt(error, "excludedTools"),
     );
   });
-});
-
-test("restoreIdentity accepts a Fresh actor whose routing never settled", (t) => {
-  const h = createHarness();
-  t.after(() => h.dispose());
-
-  const descriptor = h.store.restoreIdentity({
-    agentId: "s2",
-    record: { sessionFile: "/work/agents/s2.jsonl", cwd: CWD, trusted: false, allowInherited: true, routed: false },
-    anchor: "leaf-2",
-    seed: null,
-  });
-
-  assert.equal(descriptor.routed, false);
-  assert.equal(descriptor.modelRef, null);
-  assert.equal(descriptor.model, null);
-  assert.equal(descriptor.tools, null);
-  assert.equal(descriptor.excludedTools, null);
 });
 
 test("restoreIdentity loses a model the catalog cannot answer for", (t) => {
@@ -915,16 +883,4 @@ test("toolScope rebuilds a readonly per-actor loadout snapshot", (t) => {
   assert.deepEqual(next?.tools, ["write"]);
   assert.deepEqual(next?.excludedTools, []);
   assert.deepEqual(scope.tools, ["read", "grep"], "an earlier snapshot is detached");
-});
-
-test("open and restoreLeaf leave the store's own record untouched", (t) => {
-  const h = createHarness();
-  t.after(() => h.dispose());
-
-  const manager = h.store.open({ agentId: "s1", retained: null, seed: null, cwd: CWD });
-  h.store.restoreLeaf({ manager, agentId: "s1", retained: null, seed: null });
-  assert.equal(h.store.get("s1"), null, "opening a session retains nobody");
-  assert.equal(h.store.readInterval({ agentId: "s1", startEntryId: null, endEntryId: null }), null);
-  const scope: ActorToolScope | null = h.store.toolScope("s1");
-  assert.equal(scope, null);
 });

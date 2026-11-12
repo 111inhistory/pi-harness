@@ -953,8 +953,8 @@
   "reviews": {
     "subagent.storage": {
       "docs": "ceb6ccfa2ed6c2a112590a5b98785d1c10b4c4ada2f93f44f2821b13b04f35e8",
-      "tests": "f4f60b06bcab48b7fcc678ac17220e89af88b5e2c2920626c59d50c975c82591",
-      "reason": "Delete basic append and field-copy examples duplicated by actual provider payload and inherited SDK tests. Native removal preservation and executable-handle stripping at capture remain. Storage behavior is unchanged."
+      "tests": "6ccaa7cef0df8d8ba955c38244f38fb266a141a018dc3ae67a0860838b612f0a",
+      "reason": "Delete mechanical restored-field copies and empty-store checks while retaining malformed identity, foreign file ownership, durable anchors, independent sibling containers and actual disk/branch behavior. No storage contract changes."
     },
     "subagent.tool-policy": {
       "docs": "96d59f1f0a09438d172a789201d431ce0174d6029868e9ffb143dee9a5ca9453",
@@ -992,9 +992,9 @@
       "reason": "Remove only an extra trailing empty line from the directory regression file; all behavior and assertions are unchanged."
     },
     "subagent.surface": {
-      "docs": "29c0de3af370c86b37a44de5e55cc78046552ac4891211157c47cd3788c2e77c",
-      "tests": "a997f9abde87e87229e36efc619f4d2c58f3c8523ae0098d1d822316b0391490",
-      "reason": "Precise call-surface section renamed and mapping refined; the surface behavior and tests are unchanged."
+      "docs": "959442ab10ee5bbdf2ca96be157b88b13131f2f06a42d5563ad72ee671eeb69d",
+      "tests": "510f36c19e7249177a04b35073ef450bc974f61184f7fd2e5f3f657e0ff840a8",
+      "reason": "Delete copied prompt metadata, default leaf, no-session-tool and simple send assertions. Keep configured depth, native serialization, managed ownership rejection, per-execution host isolation and actual inherited capture. Surface behavior is unchanged."
     },
     "subagent.integration": {
       "docs": "b031489f5c0c6bfd024f737282029c6ed108c1a0fdea4be32539e7f7e7d82fa8",
@@ -1053,8 +1053,8 @@
     },
     "subagent.lifecycle": {
       "docs": "ad06acca1072ec145dd6a12207c1a5094ff39206f23a7e27d3ac9b44380a3d70",
-      "tests": "66ec05fde788918e88403a1c9bdfaafe3f5fcef363d50cd4005e4f250923769e",
-      "reason": "Increase subprocess and outer test deadlines as requested: PBT 120/150 seconds, ordinary SDK scenarios 30/45 seconds. Generated behavior, admission and cleanup assertions are unchanged; these are test execution budgets, not product timeouts."
+      "tests": "7e94e7973ba5aa0b7f9b1fe0f78bdf8148b75b48ab6b9d3795c15d07824d810a",
+      "reason": "Delete fake-adapter successful registration, revival, notification and broadcast catalogues already exercised by accepted native/parent SDK models. Keep capacity, invalid input, cancelled-before-start seed recovery, registration races, budget faults and persistence failure. No production transition changes or one-for-one coverage claim."
     },
     "subagent.delivery": {
       "docs": "3b8cc6a2e08fea413d06c642fb553d75e5591c5352989b1389df1c0b9ef8f456",
@@ -1108,8 +1108,8 @@
     },
     "inherited.capture": {
       "docs": "0386f1ee279a7d3a24d9892d6c7fc4de63da737e4776c211d6c1484da8015751",
-      "tests": "ce919cfc01d9e7a7fca5b3bc033d0f7a48a366ee183bb134a193b0f2b0080759",
-      "reason": "The native factory test verifies Pi applies requested thinking levels to model capabilities. Inherited snapshot capture, tool whitelist and cache identity are unchanged; thinking behavior is documented in the interface thinking section."
+      "tests": "12bcba09d8b16eb7339db08d2f4449413f340a616b7d44ce93ea216196366fe5",
+      "reason": "Remove repeated field-copy and helper-only capture assertions; retain shared immutable history with private containers, capture once per batch, inherited provider prefixes, backend failure and configured-depth capture. File-backed MCP eligibility is checked through the existing capture test. No inheritance semantics change."
     },
     "harness.rpc-interface": {
       "docs": "594d0ef01f83c003dc7d2479e4d899731b402db84eec8b5fbae215cf42d8c973",
@@ -1123,13 +1123,13 @@
     },
     "session-cache.identity": {
       "docs": "9c69a306080d0d53a5f0f687f4279cda47cf5cc2b524146a2d55ef7225357cbe",
-      "tests": "f1be8371bf4bf7980f713f48710eaef2f50981d77b10e0c1a40f7e24f6143964",
-      "reason": "The native factory test adds SDK thinking fallback assertions only; cache identity, request serialization and inherited cache ownership are unchanged."
+      "tests": "da1428958bcd675d4fcdf6078985c92f918f1146459727d6862da5b167d563b6",
+      "reason": "Remove child factory copies of fresh-default and final-hook priority scenarios. Session-cache runtime tests and Main SDK payload-hook tests retain identity/default/override behavior; inherited factory key propagation stays. No cache contract changes."
     },
     "config.resolve": {
       "docs": "edf77e31dbe00a54ecb6d1d77f7c647f643621bf7d40a887402be41b48c3e23b",
-      "tests": "b3af7bdb0c1cbd69210fc9aaaf92c4f49542aa55dc359cfdb3e1d01fd7279a38",
-      "reason": "The native factory test passes explicit model capabilities and thinking requests; configuration locations, merge precedence and trust resolution are unchanged."
+      "tests": "5471b6151898f248321ebe00e7f4bf618784e1151b10f632c44c9f1b52d94ec3",
+      "reason": "Delete duplicated child cache scenarios only. Cwd/trust settings, configured extension loading and thinking fallback remain tested in the factory. Configuration behavior is unchanged."
     }
   }
 }

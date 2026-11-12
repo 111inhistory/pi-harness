@@ -27,20 +27,12 @@ import { stream as streamChatCompletions } from '@earendil-works/pi-ai/api/opena
 import { convertResponsesMessages } from '../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js';
 import { getAgentSocketPath, type EndpointResolverResult } from "../../src/ipc/socket.ts";
 import {
-  captureContextForChild,
   createSurfaceTools,
   installSessionSurface,
-  SUBAGENT_NAMESPACE,
 } from "../../src/subagent/surface.ts";
 import { SUBAGENT_TOOL_GUIDANCE } from "../../src/subagent/tool-guidance.ts";
 import { projectRecordedToolGuidance, projectToolGuidance, toolGuidanceSection } from "../../src/tool-guidance.ts";
-import {
-  droppedInheritedTools,
-  harnessToolsForDepth,
-  inheritedToolNames,
-  inheritedToolsWarning,
-  transplantableToolNames,
-} from "../../src/subagent/tool-policy.ts";
+import { inheritedToolsWarning } from "../../src/subagent/tool-policy.ts";
 import type {
   SubagentSurfaceApi,
   SubagentSurfaceCreateOptions,
@@ -349,6 +341,12 @@ test("the root surface registers controls and messaging without overriding write
     assert.ok(tool.description.length > 0, "usage guidance travels in the tool declaration");
   }
   assert.ok(!registered.some(tool => tool.name === "write"));
+  const asset = JSON.parse(promptText("subagent-tools.json"));
+  for (const text of [asset.instructions, asset.create.snippet, asset.create.guideline, asset.list.snippet,
+    asset.stop.snippet, asset.msg_write.snippet, ...asset.msg_write.guidelines]) {
+    assert.ok(!registered.some((tool) => tool.description.includes(text)),
+      "guidance is projected as context, not folded into a tool description");
+  }
 
   const create = schemaOf(registered[0] as ToolDefinition);
   assert.deepEqual(create["required"], ["tasks"]);
@@ -368,21 +366,6 @@ test("the root surface registers controls and messaging without overriding write
   assert.deepEqual(stop["required"], ["id"]);
 });
 
-test("the leaf surface keeps list and messaging but no create/stop", () => {
-  const api = new FakeSurfaceApi();
-  const tools = createSurfaceTools({
-    api,
-    resolveHost: async () => new RecordingHost(),
-    scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: MAX_DEPTH },
-  });
-
-  assert.equal(tools.create, null);
-  assert.equal(tools.stop, null);
-  assert.equal(tools.list.name, "subagent_list");
-  assert.equal(tools.msg_write.name, "msg_write");
-  assert.equal("message" in tools, false);
-});
-
 test("the configured maximum depth moves the surface leaf", () => {
   const api = new FakeSurfaceApi();
   const deep = createSurfaceTools({
@@ -399,65 +382,6 @@ test("the configured maximum depth moves the surface leaf", () => {
   });
   assert.equal(shallow.create, null);
   assert.equal(shallow.stop, null);
-});
-
-test("tool-owned parameter labels and descriptions stay on the prompt assets", () => {
-  const asset = JSON.parse(promptText("subagent-tools.json"));
-  const tools = createSurfaceTools({ api: new FakeSurfaceApi(), resolveHost: async () => new RecordingHost(), scope: ROOT_SCOPE });
-  assert.ok(tools.create && tools.stop);
-  assert.equal(tools.create.description, asset.create.description);
-  assert.equal(tools.list.description, asset.list.description);
-  assert.equal(tools.stop.description, asset.stop.description);
-  assert.equal(tools.msg_write.description, asset.msg_write.description);
-  assert.equal(SUBAGENT_NAMESPACE.instructions, asset.instructions, "namespace carries only common instructions");
-  for (const tool of [tools.create, tools.list, tools.stop, tools.msg_write]) {
-    assert.equal(tool.namespace?.instructions, asset.instructions);
-    assert.equal(tool.promptSnippet, undefined);
-    assert.equal(tool.promptGuidelines, undefined);
-  }
-  for (const text of [asset.instructions, asset.create.snippet, asset.create.guideline,
-    asset.list.snippet, asset.stop.snippet, asset.msg_write.snippet, ...asset.msg_write.guidelines]) {
-    assert.ok(![tools.create.description, tools.list.description, tools.stop.description, tools.msg_write.description]
-      .some((description) => description.includes(text)), "guidance is projected as context, not folded into a tool description");
-  }
-
-  assert.deepEqual(SUBAGENT_TOOL_GUIDANCE.map((entry) => entry.id), ["subagent", "subagent_create", "msg_write"]);
-  const common = SUBAGENT_TOOL_GUIDANCE.find((entry) => entry.id === "subagent");
-  assert.ok(common);
-  assert.deepEqual(common.tools, ["subagent_create", "subagent_list", "subagent_stop", "msg_write"]);
-  assert.equal(common.text, asset.instructions);
-  const createGuidance = SUBAGENT_TOOL_GUIDANCE.find((entry) => entry.id === "subagent_create");
-  assert.ok(createGuidance);
-  assert.deepEqual(createGuidance.tools, ["subagent_create"]);
-  assert.equal(createGuidance.text, asset.create.guideline);
-  const messageGuidance = SUBAGENT_TOOL_GUIDANCE.find((entry) => entry.id === "msg_write");
-  assert.ok(messageGuidance);
-  assert.deepEqual(messageGuidance.tools, ["msg_write"]);
-  assert.equal(messageGuidance.text, asset.msg_write.guidelines.join("\n\n"));
-  for (const guideline of asset.msg_write.guidelines) assert.ok(messageGuidance.text.includes(guideline));
-
-  assert.equal("parameters" in asset, false, "parameter labels belong to their tools, not a flat shared map");
-  const create = schemaOf(tools.create);
-  assert.equal(propertyOf(create, "context")["description"], asset.create.parameters.context);
-  const tasks = propertyOf(create, "tasks");
-  assert.equal(tasks["description"], asset.create.parameters.tasks.description);
-  const item = tasks["items"] as Record<string, unknown>;
-  for (const key of ["name", "task", "inheritContext"]) {
-    assert.equal(propertyOf(item, key)["description"], asset.create.parameters.tasks.items[key]);
-  }
-  for (const key of ["all", "id"]) {
-    assert.equal(propertyOf(schemaOf(tools.list), key)["description"], asset.list.parameters[key]);
-  }
-  assert.equal(propertyOf(schemaOf(tools.stop), "id")["description"], asset.stop.parameters.id);
-  for (const key of ["path", "content"]) {
-    assert.equal(propertyOf(schemaOf(tools.msg_write), key)["description"], asset.msg_write.parameters[key]);
-  }
-  const leaf = createSurfaceTools({ api: new FakeSurfaceApi(), resolveHost: async () => new RecordingHost(),
-    scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: MAX_DEPTH } });
-  assert.equal(leaf.create, null);
-  assert.equal(leaf.list.description, asset.list.description);
-  assert.equal(leaf.list.promptSnippet, undefined);
-  assert.equal(leaf.list.promptGuidelines, undefined);
 });
 
 test("tool guidance projects once at first anchors, common before specific", () => {
@@ -643,15 +567,6 @@ test("real Chat Completions serialization keeps guidance through native collapse
   assert.deepEqual(model.compat, compatBefore, "the native Chat adapter receives no compat mutation");
 });
 
-test("the surface registers no session management tool", () => {
-  const tools = createSurfaceTools({
-    api: new FakeSurfaceApi(),
-    resolveHost: async () => new RecordingHost(),
-    scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: 1 },
-  });
-  assert.equal("sessions" in tools, false);
-});
-
 test("the root create tool maps Main to no parent and passes origin and lazy capture", async () => {
   const api = new FakeSurfaceApi();
   api.catalog = [{ name: "read", sourceInfo: { source: "builtin" } }];
@@ -746,28 +661,6 @@ test("list and stop resolve the host with the current execute context", async ()
   assert.ok(tools.stop !== null);
   await tools.stop.execute("s1", { id: "sub_02" }, undefined, undefined, ctxA);
   assert.deepEqual(first.stops, ["sub_02"]);
-});
-
-test("msg_write sends messages and keeps routing metadata internal", async () => {
-  const api = new FakeSurfaceApi();
-  const host = new RecordingHost();
-  const seen: ExtensionContext[] = [];
-  const tools = createSurfaceTools({ api, resolveHost: resolveWith(host, seen), scope: ROOT_SCOPE });
-  const ctx = sdkContext({ cwd: "/tmp/project" });
-
-  const result = await tools.msg_write.execute(
-    "m1",
-    { path: agentAddress("sub_02"), content: "hello agent" },
-    undefined,
-    undefined,
-    ctx,
-  );
-
-  // Endpoint ownership and the send share one resolution for this execution.
-  assert.deepEqual(seen, [ctx]);
-  assert.deepEqual(host.sends, [{ from: "Main", to: "sub_02", content: "hello agent" }]);
-  assert.equal(result.details, undefined);
-  assert.match(JSON.stringify(result.content), /Successfully sent message/);
 });
 
 test("msg_write still rejects a non-IPC path without resolving the host", async () => {
@@ -887,8 +780,10 @@ test("inherited capture warns about non-transplantable parent tools", async () =
   api.catalog = [
     { name: "read", sourceInfo: { source: "builtin" } },
     { name: "extension_tool", sourceInfo: { source: "extension" } },
+    // A file-backed MCP backend can be recreated in the child.
+    { name: "mcp__fixture__inspect", sourceInfo: { source: "local", path: "/tmp/project/extensions/mcp-backend.ts" } },
   ];
-  api.active = ["read", "extension_tool", "subagent_create"];
+  api.active = ["read", "extension_tool", "mcp__fixture__inspect", "subagent_create"];
   const host = new RecordingHost();
   const tools = createSurfaceTools({ api, resolveHost: async () => host, scope: ROOT_SCOPE });
   assert.ok(tools.create !== null);
@@ -900,11 +795,11 @@ test("inherited capture warns about non-transplantable parent tools", async () =
   const snapshot = call.options.captureInheritedContext();
   assert.ok(isRecord(snapshot));
   const record = snapshot;
-  assert.deepEqual(record["tools"], ["read", "extension_tool", "subagent_create"]);
+  assert.deepEqual(record["tools"], ["read", "extension_tool", "mcp__fixture__inspect", "subagent_create"]);
   assert.equal(record["systemPrompt"], "PARENT PROMPT");
   assert.deepEqual(record["warnings"], [
     inheritedToolsWarning(["extension_tool"]),
-  ]);
+  ], "a file-backed MCP registration travels; an extension without a loader path does not");
 });
 
 test("inherited capture uses the resolved host maximum depth", async () => {
@@ -933,46 +828,4 @@ test("inherited capture uses the resolved host maximum depth", async () => {
   assert.deepEqual(snapshot["warnings"], [
     inheritedToolsWarning(["subagent_create", "capability"]),
   ]);
-});
-
-test("transplantability filters built-in and harness tools only", () => {
-  const api = new FakeSurfaceApi();
-  api.catalog = [
-    { name: "read", sourceInfo: { source: "builtin" } },
-    { name: "write", sourceInfo: { source: "builtin" } },
-    { name: "extension_tool", sourceInfo: { source: "extension" } },
-  ];
-
-  assert.deepEqual(
-    [...transplantableToolNames(api.getAllTools(), 0, MAX_DEPTH)].sort(),
-    ["capability", "msg_write", "read", "subagent_create", "subagent_list", "subagent_stop", "write"],
-  );
-  assert.deepEqual(droppedInheritedTools(api.getAllTools(), ["read", "extension_tool", "extension_tool"], 0, MAX_DEPTH), ["extension_tool"]);
-  assert.deepEqual(
-    inheritedToolNames(api.getAllTools(), ["read", "extension_tool", "write"], 0, MAX_DEPTH),
-    ["read", "write", "subagent_create", "subagent_list", "subagent_stop", "capability", "msg_write"],
-  );
-  assert.deepEqual(harnessToolsForDepth(MAX_DEPTH, MAX_DEPTH), ["subagent_list", "msg_write"]);
-  assert.deepEqual(harnessToolsForDepth(MAX_DEPTH - 1, MAX_DEPTH), [
-    "subagent_create",
-    "subagent_list",
-    "subagent_stop",
-    "capability",
-    "msg_write",
-  ]);
-});
-
-test("capture of an empty session adds no warnings and no fabricated fields", () => {
-  // The capture helper is production code; this verifies the exported wrapper
-  // passes the captured snapshot through unchanged when nothing was dropped.
-  const api = new FakeSurfaceApi();
-  api.catalog = [];
-  api.active = [];
-  const ctx = sdkContext({ cwd: "/tmp/project" });
-  const snapshot = captureContextForChild(api, ctx, 1, MAX_DEPTH);
-  assert.ok(isRecord(snapshot));
-  const record = snapshot;
-  assert.deepEqual(record["tools"], []);
-  assert.deepEqual(record["entries"], []);
-  assert.equal(record["warnings"], undefined);
 });
