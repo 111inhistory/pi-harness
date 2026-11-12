@@ -194,7 +194,7 @@ func run(argv []string) (err error) {
 		if len(rest) > 0 {
 			id = rest[0]
 		}
-		cursor, cursorErr := readCursorOption(rest[1:])
+		cursor, cursorErr := readCursorOption(tail(rest, 1))
 		if cursorErr != nil {
 			return cursorErr
 		}
@@ -216,7 +216,7 @@ func run(argv []string) (err error) {
 		if len(rest) > 0 {
 			id = rest[0]
 		}
-		cursor, cursorErr := readCursorOption(rest[1:])
+		cursor, cursorErr := readCursorOption(tail(rest, 1))
 		if cursorErr != nil {
 			return cursorErr
 		}
@@ -350,6 +350,13 @@ func run(argv []string) (err error) {
 	default:
 		return NewAsyncShellError("invalid_command_args", Usage)
 	}
+}
+
+func tail(values []string, from int) []string {
+	if from >= len(values) {
+		return nil
+	}
+	return values[from:]
 }
 
 func requireId(value string, verb string) (string, error) {
