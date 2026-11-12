@@ -3,7 +3,6 @@ import test from 'node:test';
 
 import {
   PRESET_INSTRUCTION_RECORD,
-  PRESET_INSTRUCTION_SECTION,
   projectPresetInstruction,
   type PresetInstructionJournal,
 } from '../../src/preset/instruction.ts';
@@ -21,9 +20,8 @@ import {
 import type { TranscriptMessageLike } from '../../src/session-transcript.ts';
 
 /**
- * One in-memory branch for both preset record domains: the resolved snapshot
- * (including its null clear and captured base) and the instruction section
- * placement are append-only custom entries read back from the same branch.
+ * One in-memory branch for both preset record domains: resolved snapshot/clear
+ * entries and instruction section placements are append-only custom entries.
  */
 function branchLog(): { branch: unknown[]; writer: PresetStateWriter; journal: PresetInstructionJournal } {
   const branch: unknown[] = [];
@@ -68,11 +66,6 @@ test('a null snapshot records a clear', () => {
   assert.equal(restorePresetSnapshot(branch), null);
 });
 
-test('no entries yields null', () => {
-  assert.equal(readPresetState([]), null);
-  assert.equal(restorePresetSnapshot(null), null);
-});
-
 test('an entry with the wrong customType is ignored', () => {
   const branch = [{ type: 'custom', customType: 'something-else', data: { version: 1, snapshot: null } }];
   assert.equal(readPresetState(branch), null);
@@ -108,21 +101,6 @@ test('a malformed entry is a hard error, not a silent skip', () => {
 
 // ---- instruction section placement ----
 
-interface SectionMessage {
-  role?: string;
-  content?: unknown;
-  sections?: Record<string, string | null>;
-}
-
-function findSection(messages: readonly (TranscriptMessageLike | SectionMessage)[]): string | null | undefined {
-  let last: string | null | undefined;
-  for (const message of messages) {
-    const sections = (message as SectionMessage).sections;
-    if (sections && PRESET_INSTRUCTION_SECTION in sections) last = sections[PRESET_INSTRUCTION_SECTION];
-  }
-  return last;
-}
-
 function records(branch: unknown[]): { text: string | null }[] {
   return branch
     .filter((entry): entry is { type: string; customType: string; data: { text: string | null } } => {
@@ -132,27 +110,12 @@ function records(branch: unknown[]): { text: string | null }[] {
     .map((entry) => ({ text: entry.data.text }));
 }
 
-test('emits the instruction section and records one placement', () => {
-  const { branch, journal } = branchLog();
-  const out = projectPresetInstruction([{ role: 'user', content: 'hi' }], 'Be terse.', journal);
-  assert.equal(findSection(out), 'Be terse.');
-  assert.deepEqual(records(branch), [{ text: 'Be terse.' }]);
-});
-
 test('re-projecting the same text does not append another record', () => {
   const { branch, journal } = branchLog();
   projectPresetInstruction([{ role: 'user', content: 'hi' }], 'Be terse.', journal);
   const before = records(branch).length;
   projectPresetInstruction([{ role: 'user', content: 'hi' }], 'Be terse.', journal);
   assert.equal(records(branch).length, before);
-});
-
-test('a null instruction withdraws the section with a null record', () => {
-  const { branch, journal } = branchLog();
-  projectPresetInstruction([{ role: 'user', content: 'hi' }], 'Be terse.', journal);
-  projectPresetInstruction([{ role: 'user', content: 'hi' }], null, journal);
-  const texts = records(branch).map((record) => record.text);
-  assert.ok(texts.includes(null));
 });
 
 test('no instructions and no history is a no-op', () => {

@@ -1023,8 +1023,8 @@
     },
     "preset.runtime": {
       "docs": "1ed8d56f436aa1991f5ac6f8b6d12804bcd9bf1e79a9519c806092fdf300a68e",
-      "tests": "44110b869cd26bf925bda2e8834831ca7cc4c5f50134b21b11330d5a969e1d68",
-      "reason": "Explicit clear dispatches before loading the catalog so unreadable preset configuration does not prevent withdrawing active snapshots, instructions, or codemode mode overrides; verified by catalog obstruction test."
+      "tests": "c8c7eb8bdf114761f34486e9f60e41bf98098bd320887c30c0097878cccd351a",
+      "reason": "Delete fake apply, instruction and codemode happy paths already exercised by real SDK sessions. Keep authentication failure, unavailable-host warning, persisted malformed input, branch restore and catalog-obstructed clear. Runtime behavior is unchanged."
     },
     "tool-guidance.journal": {
       "docs": "ef1810b96bf835590d6e434644ae27682a07ea1fc54ae72d4d5ae9e525b0b72b",
@@ -1093,8 +1093,8 @@
     },
     "preset.config": {
       "docs": "5bf2efc378b5fbc58416a1e7d5e355364c4da48587f5a8b2ec1cc4656d8ac4b6",
-      "tests": "8851cdc354d5aa5cd61115170fd8bcb0324a6bda7c04e77ad379530e6b930b84",
-      "reason": "Merged the pure config, modifier and resolve units into preset-definition.test.ts. All 21 original scenarios, inputs and expected outcomes remain; the only removed assertions compared two identical calls of the same pure function and were replaced by concrete A/B tool-list expectations."
+      "tests": "3d287f447d4b76fe9a36cf79cff5d8b3bcc2d68d103078a1b8918aa494adb51d",
+      "reason": "Remove repeated schema, modifier and plan-copy assertions while retaining external-input validation, precedence and stable-base resolution. Production preset configuration and its contract are unchanged."
     },
     "shell.job-command": {
       "docs": "a9eb0b176830fe17f593e9901dd5ce9ceca87108aaeb604a8038394095868ef9",

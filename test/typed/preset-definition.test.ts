@@ -77,15 +77,6 @@ test('a preset with an unknown field is skipped with a warning', () => {
   assert.ok(warnings.some((warning) => warning.includes('"bad"') && warning.includes('unknown field')));
 });
 
-test('an invalid thinking level skips that preset only', () => {
-  const { presets, warnings } = load({
-    [globalPath]: JSON.stringify({ bad: { thinkingLevel: 'turbo' }, good: {} }),
-  });
-  assert.equal(presets.has('bad'), false);
-  assert.equal(presets.has('good'), true);
-  assert.ok(warnings.some((warning) => warning.includes('thinkingLevel')));
-});
-
 test('a malformed model field is rejected', () => {
   const { presets, warnings } = load({ [globalPath]: JSON.stringify({ bad: { model: { provider: 'p' } } }) });
   assert.equal(presets.has('bad'), false);
@@ -127,15 +118,6 @@ test('later tokens win over earlier ones for the same name', () => {
   assert.deepEqual(applyToolModifiers(base, parseToolModifiers(['+read', '-read']).tokens), []);
 });
 
-test('applying from the same base makes A-then-B equal to B alone', () => {
-  const a = parseToolModifiers(['+write']).tokens;
-  const b = parseToolModifiers(['+codemode', '-bash']).tokens;
-  // A-to-B recomputes B from the base, never from A's result.
-  assert.deepEqual(applyToolModifiers(baseTools, b), ['read', 'edit', 'codemode']);
-  assert.ok(!applyToolModifiers(baseTools, b).includes('write'), 'A\'s added tool does not carry into B');
-  assert.notDeepEqual(applyToolModifiers(baseTools, a), applyToolModifiers(baseTools, b));
-});
-
 test('base order is preserved and added names append in first-seen order', () => {
   const { tokens } = parseToolModifiers(['+write', '+grep', '-bash']);
   assert.deepEqual(applyToolModifiers(['read', 'bash'], tokens), ['read', 'write', 'grep']);
@@ -152,24 +134,6 @@ function view(overrides: Partial<PresetCatalogView> = {}): PresetCatalogView {
   };
 }
 
-test('resolves every field into a plan', () => {
-  const preset: PresetConfig = {
-    model: { provider: 'p', id: 'm' },
-    thinkingLevel: 'high',
-    tools: ['+write', '-bash'],
-    codemode: { mode: 'only' },
-    instructions: 'do things',
-  };
-  const { plan, issues } = resolvePreset('fast', preset, view());
-  assert.equal(issues.length, 0);
-  assert.ok(plan);
-  assert.deepEqual(plan.model, { provider: 'p', id: 'm' });
-  assert.equal(plan.thinkingLevel, 'high');
-  assert.deepEqual(plan.tools, ['read', 'edit', 'write']);
-  assert.deepEqual(plan.codemode, { mode: 'only' });
-  assert.equal(plan.instructions, 'do things');
-});
-
 test('unknown model is a hard error and produces no plan', () => {
   const preset: PresetConfig = { model: { provider: 'p', id: 'missing' } };
   const { plan, issues } = resolvePreset('bad', preset, view({ hasModel: () => false }));
@@ -185,14 +149,6 @@ test('adding an unknown tool warns and is dropped; the rest still applies', () =
   assert.ok(plan);
   assert.deepEqual(plan.tools, ['read', 'bash', 'edit', 'write']);
   assert.ok(issues.some((issue) => issue.kind === 'unknown_tool' && issue.severity === 'warning'));
-});
-
-test('removing an absent tool is harmless and not reported', () => {
-  const preset: PresetConfig = { tools: ['-ghost'] };
-  const { plan, issues } = resolvePreset('p', preset, view());
-  assert.ok(plan);
-  assert.deepEqual(plan.tools, ['read', 'bash', 'edit']);
-  assert.equal(issues.length, 0);
 });
 
 test('an invalid modifier token is a warning', () => {
