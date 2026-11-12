@@ -172,12 +172,16 @@ test('Chat Completions derives additions tool placement strictly from its own bi
   });
 });
 
-test('Responses effort requires the exact API, effective level, and only official sign-in auth', () => {
+test('Responses effort uses the exact API, effective level, and resolved OpenAI auth/baseUrl', () => {
   const customGateway = {
     api: 'openai-responses',
     provider: 'custom-gateway',
     baseUrl: 'https://gateway.invalid/v1',
     compat: { supportsMidConvoEffort: true },
+  };
+  const openAIGateway = {
+    ...customGateway,
+    provider: 'openai',
   };
   const officialOpenAI = {
     api: 'openai-responses',
@@ -186,7 +190,7 @@ test('Responses effort requires the exact API, effective level, and only officia
     compat: { supportsMidConvoEffort: true },
   };
 
-  // A custom OpenAI Responses gateway cannot satisfy the adapter's sign-in predicate.
+  // A non-openai provider cannot satisfy the adapter's sign-in predicate.
   assert.equal(effortPolicy(customGateway), 'unverified');
   assert.equal(effortPolicy(customGateway, { thinkingLevel: 'low' }), 'responses-configuration-update');
   assert.equal(
@@ -194,7 +198,29 @@ test('Responses effort requires the exact API, effective level, and only officia
     'responses-configuration-update',
   );
 
-  // The official path needs resolved auth; an empty resolved auth object is header-only.
+  // provider=openai needs resolved auth even when the catalog URL is custom,
+  // because resolved auth.baseUrl can replace it before the adapter dispatch.
+  assert.equal(effortPolicy(openAIGateway, { thinkingLevel: 'low' }), 'unverified');
+  assert.equal(effortPolicy(openAIGateway, { thinkingLevel: 'low', auth: {} }), 'responses-configuration-update');
+  assert.equal(
+    effortPolicy(openAIGateway, {
+      thinkingLevel: 'low',
+      auth: { baseUrl: 'https://api.openai.com/v1', apiKey: 'offline-chatgpt-token' },
+    }),
+    'none',
+  );
+
+  // The reverse override must also use the resolved URL, not the catalog URL.
+  assert.equal(
+    effortPolicy(officialOpenAI, {
+      thinkingLevel: 'medium',
+      auth: { baseUrl: 'https://gateway.invalid/v1', apiKey: 'offline-chatgpt-token' },
+    }),
+    'responses-configuration-update',
+  );
+
+  // The official resolved path needs resolved auth; an empty resolved auth
+  // object means no override and no API key (header-only).
   assert.equal(effortPolicy(officialOpenAI, { thinkingLevel: 'medium' }), 'unverified');
   assert.equal(effortPolicy(officialOpenAI, { thinkingLevel: 'medium', auth: {} }), 'responses-configuration-update');
   assert.equal(
@@ -204,6 +230,15 @@ test('Responses effort requires the exact API, effective level, and only officia
   assert.equal(
     effortPolicy(officialOpenAI, { thinkingLevel: 'medium', auth: { apiKey: 'offline-chatgpt-token' } }),
     'none',
+  );
+  // Empty auth.baseUrl is not an override, matching the SDK's truthy check.
+  assert.equal(
+    effortPolicy(officialOpenAI, { thinkingLevel: 'medium', auth: { baseUrl: '', apiKey: 'offline-chatgpt-token' } }),
+    'none',
+  );
+  assert.equal(
+    effortPolicy(openAIGateway, { thinkingLevel: 'medium', auth: { baseUrl: '', apiKey: 'offline-chatgpt-token' } }),
+    'responses-configuration-update',
   );
 
   // Effective level and the compat bit are independently required.

@@ -984,9 +984,9 @@
       "reason": "Delete internal tool-policy catalogue and simple prompt/default copies. Surface and native factory tests retain depth and backend transplantability behavior; literal substitution and prompt block ordering stay. No product behavior changes."
     },
     "provider.transport-tools": {
-      "docs": "d2668574f48a8012451c58c685cb80b9732c43d0ec7d00f192b68a88bc89a42d",
-      "tests": "b5d2e1dac2d199cd13bb860b10fbc1320f2153895d55bb8f6c721aec05c1e1c5",
-      "reason": "Clarify activation-independent sanitation of description-only duplicates. The existing generated Capability history regression disable/describe/enable now passes without changing its commands or assertions; existing provider-prefix and transport tests also pass. No transport flags or execution permissions change, so their test files need no artificial edits."
+      "docs": "c74a478d332d2e480113230e1669bf4acc9745a50d3a37d7f45afd0e2e30b2f7",
+      "tests": "b6eefc194398fc23af38259305c69d5246839e4708047c5918342a2a713f13e9",
+      "reason": "The provider effort facts now evaluate the SDK-resolved auth.baseUrl before the native sign-in predicate; tool-addition classification and the existing transport-tool contract are unchanged."
     },
     "capability.search-broker": {
       "docs": "221b5978ff4ff74346731b8f04829f59b4db813f88736ba9d6cb774f2feddb3d",

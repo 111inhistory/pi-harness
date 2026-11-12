@@ -44,17 +44,17 @@ Description-only duplicates are sanitized independently of current activation, i
 
 | 路径 | 条件 | 原生行为 |
 | --- | --- | --- |
-| `openai-responses` | `supportsMidConvoEffort`、有效非 `off` level、非官方 OpenAI sign-in 路径 | 追加 `configuration_update`；请求级 `reasoning.effort` 保持固定 |
-| 官方 OpenAI Responses sign-in | `provider=openai`、官方 `baseUrl`、实际 `apiKey` 不以 `sk-` 开头 | 抑制 `configuration_update`，改为改变请求级 effort |
+| `openai-responses` | `supportsMidConvoEffort`、有效非 `off` level、解析后的请求 URL 不是官方 OpenAI sign-in | 追加 `configuration_update`；请求级 `reasoning.effort` 保持固定 |
+| 官方 OpenAI Responses sign-in | `provider=openai`、解析后的 `baseUrl` 为官方 URL、实际 `apiKey` 不以 `sk-` 开头 | 抑制 `configuration_update`，改为改变请求级 effort |
 | `azure-openai-responses` | 即使 compat 为 true | 没有 `configuration_update` 编码器，改变请求级 effort |
 | `openai-codex-responses` | 即使 compat 为 true | 没有 `configuration_update` 编码器，改变请求级 effort；其 WebSocket continuation 重置是另一项行为 |
 | `anthropic-messages` | `supportsMidConvoEffort` 且 thinking enabled | 历史/尾部 effort marker，请求级 `output_config.effort` 保持固定 |
 | `anthropic-messages` off | thinking disabled | 发送 disabled，不发送 effort marker |
 | `openai-completions` | 任意 | 没有 `supportsMidConvoEffort` 编码器 |
 
-`midConversationEffort` 的 `unverified` 表示该 API 有编码器，但调用方没有提供判定所需的 request facts；消费方必须按不支持处理，直到补充事实后重新求值。缺少 `auth` 与已解析的 `auth: {}` 不同：前者是未知，后者表示已解析但没有 API key（例如 header-only）。只有官方 OpenAI Responses 路径需要实际 auth facts；自定义 OpenAI Responses 网关不满足 sign-in 判定，不需要为了 effort 解析 auth。有效 thinking level 必须由调用方提供，不能用原始请求值代替 SDK clamp 后的值。
+`midConversationEffort` 的 `unverified` 表示该 API 有编码器，但调用方没有提供判定所需的 request facts；消费方必须按不支持处理，直到补充事实后重新求值。缺少整个 `auth` 对象表示尚未解析；已解析的 `auth: {}` 表示没有 `baseUrl` 覆盖且没有 API key（例如 header-only）。实际请求 URL 按 SDK 规则取 truthy 的 `auth.baseUrl` 覆盖 `model.baseUrl`，随后才由原生适配器判定 sign-in。因此 `provider=openai` 的 `openai-responses` 即使目录 URL 是自定义网关，也需要已解析的 auth facts，因为该 URL 可能被覆盖；`provider!=openai` 不可能满足 sign-in 判定，不需要 auth facts。有效 thinking level 必须由调用方提供，不能用原始请求值代替 SDK clamp 后的值。
 
-后续 Capability 消费时，先用继承的有效 thinking 查询；只有 preferCache、`toolAdditions` 和 `unverified` 同时成立时，才允许通过既有公共 `modelRegistry.getApiKeyAndHeaders(model)` 临时取得 auth 后重新求值。不为该判断新增 auth 缓存、存储、stream wrapper 或刷新策略，也不保留或记录凭据；false preference、无工具新增或 off 不需要额外解析 auth。普通 Preset 的显式 thinking 必须按用户选择生效，独立于自动检索降级偏好。
+消费方必须提供 SDK clamp 后的有效 thinking，并在 `provider=openai` 的 `openai-responses` 路径上提供已解析 auth；该层不提供 auth 缓存、存储、stream wrapper 或刷新策略，也不保留或记录凭据。普通 Preset 的显式 thinking 仍必须按用户选择生效，独立于任何自动检索偏好。
 
 ## 缓存标识
 

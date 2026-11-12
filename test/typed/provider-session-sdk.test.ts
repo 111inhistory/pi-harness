@@ -27,6 +27,7 @@ import { stream as streamCodexResponses } from '@earendil-works/pi-ai/api/openai
 import { stream as streamResponses } from '@earendil-works/pi-ai/api/openai-responses';
 
 import { appendSessionTranscript } from '../../src/session-transcript.ts';
+import { providerSessionPolicy } from '../../src/provider-session.ts';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -521,6 +522,50 @@ test('Responses direct sign-in suppresses the managed effort encoder', async () 
   assert.equal(responsesReasoningEffort(low), 'low');
   assert.equal(responsesReasoningEffort(high), 'high');
   assert.deepEqual(low.input, high.input);
+});
+
+test('Resolved auth.baseUrl controls the native sign-in decision in both directions', async () => {
+  const rawGateway = responsesModel(
+    { supportsMidConvoEffort: true },
+    { provider: 'openai', baseUrl: 'https://gateway.invalid/v1', reasoning: true },
+  );
+  const rawOfficial = responsesModel(
+    { supportsMidConvoEffort: true },
+    { provider: 'openai', baseUrl: 'https://api.openai.com/v1', reasoning: true },
+  );
+  const inherited: Message[] = [system('BASE'), user('TASK')];
+  const capture = (model: Model<'openai-responses'>, reasoningEffort: 'low' | 'high') =>
+    capturePayload<ResponsesPayload>((onPayload) => streamResponses(
+      model,
+      context(inherited),
+      { apiKey: 'offline-chatgpt-token', fetch: offlineFetch, onPayload, reasoningEffort },
+    ));
+
+  // Catalog gateway + resolved official URL: the native predicate sees sign-in.
+  assert.equal(providerSessionPolicy(rawGateway, {
+    thinkingLevel: 'low',
+    auth: { baseUrl: 'https://api.openai.com/v1', apiKey: 'offline-chatgpt-token' },
+  }).midConversationEffort, 'none');
+  const resolvedOfficial = { ...rawGateway, baseUrl: 'https://api.openai.com/v1' };
+  const gatewayResolvedLow = await capture(resolvedOfficial, 'low');
+  const gatewayResolvedHigh = await capture(resolvedOfficial, 'high');
+  assert.deepEqual(configurationUpdates(gatewayResolvedLow), []);
+  assert.deepEqual(configurationUpdates(gatewayResolvedHigh), []);
+  assert.equal(responsesReasoningEffort(gatewayResolvedLow), 'low');
+  assert.equal(responsesReasoningEffort(gatewayResolvedHigh), 'high');
+
+  // Catalog official URL + resolved gateway: the native predicate sees a custom URL.
+  assert.equal(providerSessionPolicy(rawOfficial, {
+    thinkingLevel: 'low',
+    auth: { baseUrl: 'https://gateway.invalid/v1', apiKey: 'offline-chatgpt-token' },
+  }).midConversationEffort, 'responses-configuration-update');
+  const resolvedGateway = { ...rawOfficial, baseUrl: 'https://gateway.invalid/v1' };
+  const officialResolvedLow = await capture(resolvedGateway, 'low');
+  const officialResolvedHigh = await capture(resolvedGateway, 'high');
+  assert.deepEqual(configurationEfforts(officialResolvedLow), ['low']);
+  assert.deepEqual(configurationEfforts(officialResolvedHigh), ['high']);
+  assert.equal(responsesReasoningEffort(officialResolvedLow), 'medium');
+  assert.equal(responsesReasoningEffort(officialResolvedHigh), 'medium');
 });
 
 test('Azure Responses has no managed effort encoder and changes the top-level effort', async () => {

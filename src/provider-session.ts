@@ -16,12 +16,14 @@ import type { ModelThinkingLevel } from '@earendil-works/pi-ai';
 export type ProviderTransport = 'responses' | 'anthropic' | 'completions' | 'other';
 
 /**
- * The auth facts the installed adapters actually inspect. Omitted fields mean
- * the caller has not resolved them; an empty object means auth was resolved and
- * no API key is present (for example a header-only request).
+ * The auth facts the installed adapters actually inspect. Omit the whole
+ * `auth` object when auth has not been resolved. A resolved `{}` means no
+ * baseUrl override and no API key (for example a header-only request).
  */
 export interface ProviderRequestAuth {
   readonly apiKey?: string;
+  /** Truthy resolved baseUrl; overrides model.baseUrl exactly as the SDK does. */
+  readonly baseUrl?: string;
 }
 
 export interface ProviderRequestFacts {
@@ -107,13 +109,13 @@ export function classifyProviderTransport(model: unknown): ProviderTransport {
 /**
  * The installed openai-responses adapter suppresses configuration_update items
  * on Sign in with ChatGPT. Its exact predicate is provider `openai`, the
- * official base URL, and a defined apiKey that does not start with `sk-`.
- * Custom openai-responses gateways cannot satisfy that predicate and therefore
- * do not need resolved auth facts.
+ * resolved request base URL, and a defined apiKey that does not start with
+ * `sk-`. A truthy resolved auth.baseUrl replaces model.baseUrl before the
+ * adapter dispatch. Custom gateways therefore still need resolved auth when
+ * the model provider is `openai`, because the URL can be overridden.
  */
-function isOfficialOpenAIResponsesPath(model: unknown): boolean {
-  if (!isRecord(model)) return false;
-  return model['provider'] === 'openai' && model['baseUrl'] === OFFICIAL_OPENAI_BASE_URL;
+function isOfficialOpenAIBaseUrl(value: unknown): boolean {
+  return value === OFFICIAL_OPENAI_BASE_URL;
 }
 
 function openAIResponsesEffort(
@@ -126,11 +128,18 @@ function openAIResponsesEffort(
   if (thinkingLevel === undefined) return 'unverified';
   if (thinkingLevel === 'off') return 'none';
 
-  if (isOfficialOpenAIResponsesPath(model)) {
-    if (request?.auth === undefined) return 'unverified';
+  if (!isRecord(model) || model['provider'] !== 'openai') {
+    // The native sign-in predicate requires provider `openai`; another provider
+    // cannot reach it even if a catalog URL looks official.
+    return 'responses-configuration-update';
+  }
+
+  if (request?.auth === undefined) return 'unverified';
+  const resolvedBaseUrl = request.auth.baseUrl ? request.auth.baseUrl : model['baseUrl'];
+  if (isOfficialOpenAIBaseUrl(resolvedBaseUrl)) {
     const apiKey = request.auth.apiKey;
     // The adapter suppresses configuration_update for non-sk credentials on
-    // this exact path, even if a header-only request later supplies auth.
+    // this exact resolved path.
     if (typeof apiKey === 'string' && !apiKey.startsWith('sk-')) return 'none';
   }
 
