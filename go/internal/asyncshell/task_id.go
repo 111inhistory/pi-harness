@@ -8,7 +8,7 @@ import "regexp"
 
 var taskIDPattern = regexp.MustCompile(`^job_[0-9a-f]{8}$`)
 
-// IsTaskId reports whether value has the public task-id form (TS: isTaskId).
-func IsTaskId(value string) bool {
+// IsTaskID reports whether value has the public task-id form (TS: isTaskId).
+func IsTaskID(value string) bool {
 	return taskIDPattern.MatchString(value)
 }

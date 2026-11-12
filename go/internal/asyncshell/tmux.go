@@ -139,7 +139,7 @@ func StateRoot() string {
 
 // TaskDirectory is TS taskDirectory.
 func taskDirectory(id string, root string) string {
-	if !IsTaskId(id) {
+	if !IsTaskID(id) {
 		panic(aserr.New("invalid_id", "Not an async-shell task id: "+id))
 	}
 	return filepath.Join(root, id)
@@ -151,7 +151,7 @@ func checkedTaskDirectory(dir string, root string) string {
 	if err != nil {
 		panic(err)
 	}
-	if !samePath(filepath.Dir(resolved), root) || !IsTaskId(filepath.Base(resolved)) {
+	if !samePath(filepath.Dir(resolved), root) || !IsTaskID(filepath.Base(resolved)) {
 		panic(aserr.New("invalid_directory", "Not an async-shell task directory under "+root+": "+dir))
 	}
 	return resolved
@@ -207,7 +207,7 @@ func messageOf(err interface{}) string {
 	return fmt.Sprint(err)
 }
 
-func readJson(file string) interface{} {
+func readJSON(file string) interface{} {
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return nil
@@ -225,7 +225,7 @@ func record(value interface{}) (map[string]interface{}, bool) {
 	return m, ok
 }
 
-func writeJsonAtomic(file string, value interface{}) {
+func writeJSONAtomic(file string, value interface{}) {
 	temporary := file + "." + strconv.Itoa(os.Getpid()) + ".tmp"
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -240,7 +240,7 @@ func writeJsonAtomic(file string, value interface{}) {
 }
 
 func readTaskFile(paths TaskPaths) taskFile {
-	value := readJson(paths.Task)
+	value := readJSON(paths.Task)
 	m, ok := record(value)
 	if !ok {
 		panic(aserr.New("task_missing", "No async-shell task at "+paths.Dir+"."))
@@ -292,7 +292,7 @@ func safeReadTask(paths TaskPaths) taskFile {
 }
 
 func readStateFile(paths TaskPaths, task taskFile) taskState {
-	value := readJson(paths.State)
+	value := readJSON(paths.State)
 	m, ok := record(value)
 	if !ok {
 		return taskState{ID: task.ID, Status: StatusRunning, ExitCode: nil, CreatedAt: task.CreatedAt, FinalizedAt: nil}
@@ -324,7 +324,7 @@ func readStateFile(paths TaskPaths, task taskFile) taskState {
 }
 
 func writeState(paths TaskPaths, state taskState) {
-	writeJsonAtomic(paths.State, state)
+	writeJSONAtomic(paths.State, state)
 }
 
 // utf8Boundary is TS utf8Boundary: the last complete UTF-8 boundary at or before length.
@@ -447,7 +447,7 @@ func exists(file string) bool {
 func readDelivery(paths TaskPaths, timeoutMs int) string {
 	deadline := nowMs() + int64(timeoutMs)
 	for {
-		value := readJson(paths.Delivery)
+		value := readJSON(paths.Delivery)
 		if m, ok := record(value); ok {
 			if mode, ok := m["mode"].(string); ok {
 				if mode == "sync" {
@@ -522,7 +522,7 @@ func createTask(options CreateTaskOptions) ShellResult {
 	paths := taskPaths(dir)
 	createdAt := nowMs()
 	task := taskFile{ID: id, Argv: options.Argv, Cwd: options.Cwd, CreatedAt: createdAt, WaitMs: options.WaitMs, TimeoutMs: options.TimeoutMs}
-	writeJsonAtomic(paths.Task, task)
+	writeJSONAtomic(paths.Task, task)
 	writePrivateFile(paths.Raw, nil)
 	writePrivateFile(paths.Filtered, nil)
 
@@ -728,7 +728,7 @@ func waitForClose(paths TaskPaths, timeoutMs int) bool {
 }
 
 func writeExit(paths TaskPaths, exit exitFile) {
-	_ = caught(func() { writeJsonAtomic(paths.Exit, exit) })
+	_ = caught(func() { writeJSONAtomic(paths.Exit, exit) })
 }
 
 // RunnerMain is TS runnerMain: the pane process that waits for capture, then runs.
@@ -953,7 +953,7 @@ func MonitorMain(dir string) {
 			status = StatusCancelled
 		} else if timedOut {
 			status = StatusTimedOut
-		} else if exit := asExitFile(readJson(paths.Exit)); exit != nil {
+		} else if exit := asExitFile(readJSON(paths.Exit)); exit != nil {
 			if exit.Code != nil {
 				exitCode = exit.Code
 			}
@@ -1010,7 +1010,7 @@ func MonitorMain(dir string) {
 		}
 
 		if !closing {
-			exitValue := readJson(paths.Exit)
+			exitValue := readJSON(paths.Exit)
 			reported := false
 			if m, ok := record(exitValue); ok {
 				_, reported = m["code"]
