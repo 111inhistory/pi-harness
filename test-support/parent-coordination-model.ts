@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { setImmediate as turn } from 'node:timers/promises';
 import fc, { type AsyncCommand, type Scheduler } from 'fast-check';
+import { checkProperty, commandReplay } from './pbt.ts';
 import { AgentSession, SessionManager, type CustomEntry, type CustomMessageEntry } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import { getBroadcastSocketPath } from '../src/ipc/socket.ts';
@@ -345,13 +346,7 @@ const commands = fc.commands([fc.tuple(
   fc.array(fc.constantFrom('hello', '中文', '\n', '"', '$()', '🙂'), { maxLength: 5 }).map(parts => parts.join('')),
 ).map(args => new Command(...args))], {
   maxCommands: 24,
-  ...(process.env.PI_PBT_COMMAND_PATH === undefined ? {} : { replayPath: process.env.PI_PBT_COMMAND_PATH }),
+  ...commandReplay(),
 });
-const report = await fc.check(fc.asyncProperty(fc.array(fc.integer({ min: 1, max: 2 }), { minLength: 2, maxLength: 2 }), commands, fc.scheduler(), sample), {
-  numRuns: Number(process.env.PI_PBT_RUNS ?? 50),
-  ...(process.env.PI_PBT_SEED === undefined ? {} : { seed: Number(process.env.PI_PBT_SEED) }),
-  ...(process.env.PI_PBT_PATH === undefined ? {} : { path: process.env.PI_PBT_PATH }),
-});
-console.log(`PBT seed=${report.seed} runs=${report.numRuns} shrinks=${report.numShrinks}`);
-if (report.failed) throw new Error(await fc.asyncDefaultReportMessage(report), { cause: report.errorInstance });
+await checkProperty(fc.asyncProperty(fc.array(fc.integer({ min: 1, max: 2 }), { minLength: 2, maxLength: 2 }), commands, fc.scheduler(), sample));
 console.log('PARENT_COORDINATION_MODEL_OK');

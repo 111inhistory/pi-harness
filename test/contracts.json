@@ -1028,8 +1028,8 @@
     },
     "tool-guidance.journal": {
       "docs": "ef1810b96bf835590d6e434644ae27682a07ea1fc54ae72d4d5ae9e525b0b72b",
-      "tests": "23f54e1b9ab29b7713a0efd60254fb25680f3b3c861088395aa4e674f6926af5",
-      "reason": "Remove repeated basic projections, fixed-ordinal examples and generic malformed-position cases covered by shared journal tests. Keep durable reopen, branch rewind and inheritance, shared order, ordinal zero, eligibility, null withdrawal and compaction rebase. No journal contract changes."
+      "tests": "5901047d5af9216deb73d0f94ee8d19cb756a7bc27b3eec588b852d672b5ca76",
+      "reason": "The Capability PBT wrapper and run controls now delegate to shared typed execution support. Description history, journal projection and prefix assertions are unchanged; no guidance contract changes."
     },
     "cross-session.messaging": {
       "docs": "1423e639cb5e99561bd024761e74ea822d6b9ed8564a65c8fea28d271f77aa7b",
@@ -1053,18 +1053,18 @@
     },
     "subagent.lifecycle": {
       "docs": "ad06acca1072ec145dd6a12207c1a5094ff39206f23a7e27d3ac9b44380a3d70",
-      "tests": "7e94e7973ba5aa0b7f9b1fe0f78bdf8148b75b48ab6b9d3795c15d07824d810a",
-      "reason": "Delete fake-adapter successful registration, revival, notification and broadcast catalogues already exercised by accepted native/parent SDK models. Keep capacity, invalid input, cancelled-before-start seed recovery, registration races, budget faults and persistence failure. No production transition changes or one-for-one coverage claim."
+      "tests": "bad2f9f01c6f1321fd8eb789863a09ac9f217b79690f65aa21d46405a36cb8f5",
+      "reason": "Extract identical subprocess isolation and fast-check controls/reporting from the three models. Native command generation, scheduler argument order, assertions and 120/150-second deadlines remain unchanged. No lifecycle contract changes."
     },
     "subagent.delivery": {
       "docs": "3b8cc6a2e08fea413d06c642fb553d75e5591c5352989b1389df1c0b9ef8f456",
-      "tests": "4ece959a729b5afe1d7b586be5e67c4b012a27b39f9c59e6ee47437089977536",
-      "reason": "The generated parent-child model checks terminal delivery and explicit message recipients through real SDK sessions, managed IPC and reopened durable files. Existing lifecycle tests keep flat actor handoff coverage. Public delivery semantics are unchanged; no duplicate pin catalogue or artificial contract wording is needed."
+      "tests": "f0acb5ed32a5685d273ec6c70105b6baded22e8b5e9338bce8a3505eaad4cc55",
+      "reason": "Share only model launch and fast-check execution plumbing. Parent and native delivery operations and independent oracles remain separate and unchanged. No delivery contract changes."
     },
     "subagent.parent-hold": {
       "docs": "554d0bca470f93c5815877b931f64ff5caf5e23fdc8e86bb87f0ff5acf913739",
-      "tests": "c88a5823d50415fef61d2c96cd14eec9d9f8d4ac491e590b1ce0c177c00acd4a",
-      "reason": "Delete the imperative parent-hold and upstream/broadcast catalogue before introducing generated histories. The new strict TypeScript model observes live-child Job continuity, late notices, explicit revival and direct-recipient routing through the real pipeline. Existing budget tests retain clock contracts. Public hold/wake semantics are unchanged; this is not a one-for-one reproduction of the removed assertions."
+      "tests": "ad36342b662e96167240e40868873d4312b4e26e4f72faacb3f1ea9e6ece0d5f",
+      "reason": "Use shared PBT execution support without combining domain state. Parent commands, topology bounds, release scheduling and hold/notice assertions remain unchanged. No parent-hold contract changes."
     },
     "subagent.retirement": {
       "docs": "2dd9c045b69c0732a0ab414f3922f789600cbeb9a6a44bb145f73843b45e37e9",
@@ -1078,8 +1078,8 @@
     },
     "capability.tool-permission": {
       "docs": "0654a9a2c59dc9cdbbaddd112fd63733d7becb422b0fa8114b7a5ebc719cf660",
-      "tests": "b456c6b4f5d07c91cec4251111dc2e28e9168a18aaeb6db39d86c25a8b955901",
-      "reason": "Add real slash-command permission transitions, SDK backend execution and durable reopen to the generated history model. Execution effects and current registration schema are independent observations. The permission contract is unchanged; production prefix defects found by the model remain unfixed."
+      "tests": "3cdebb6ee648ad662df3a0ba9217cabc9726824c2a2023d18ed42b23a2c7659d",
+      "reason": "Use shared PBT execution support for existing Capability generated histories. Permission commands, schema generation, real SDK effects and the independent permission oracle remain unchanged. No permission contract changes."
     },
     "capability.manual-enable": {
       "docs": "e4e5e4b4c213f9d9dd36e9cee79a0643aaea294f9710e790c9bba83820105bc4",
@@ -1088,8 +1088,8 @@
     },
     "capability.compaction-prune": {
       "docs": "6e3374f07feffed783bea55c10ce9177fc578db67b1ce05a1d75d82e9dbe4d33",
-      "tests": "a17f97a22a392a4b46db5e1af9bb786be2b51b2078492857fd710cda98ba4b09",
-      "reason": "Remove standalone window slicing and duplicate fully-pruned group examples. Existing chronological folding now also checks omitted guidance. Keep admission-refusal regressions, nested usage, real disk reload, branch isolation and protected tools. Pruning semantics are unchanged."
+      "tests": "4f5a0f494911147d3e1a2018fa081d14df08a5978e98d192d37ab9456c651ec0",
+      "reason": "Share the PBT subprocess and fast-check run/replay/report plumbing. Capability commands, maxCommands, reference state, compaction operations and pruning assertions are unchanged. Execution support is documented in docs/testing.md; product compaction semantics need no edit."
     },
     "preset.config": {
       "docs": "5bf2efc378b5fbc58416a1e7d5e355364c4da48587f5a8b2ec1cc4656d8ac4b6",

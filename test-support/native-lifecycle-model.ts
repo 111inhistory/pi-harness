@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import fc, { type AsyncCommand, type Scheduler } from 'fast-check';
+import { checkProperty, commandReplay } from './pbt.ts';
 import { AgentSession, type CustomEntry, type CustomMessageEntry, type SessionManager } from '@earendil-works/pi-coding-agent';
 import type { JobRequest } from '../src/subagent/runtime.ts';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
@@ -275,14 +276,8 @@ export async function runLifecycleModel() {
       fc.array(fc.constantFrom('hello', '中文', '\n', '"', '$()', '🙂'), { maxLength: 6 }).map(parts => parts.join('')))
       .map(([action, slot, result, payload]) => new Command(action, slot, result, payload)),
     fc.constantFrom<Action>('reload', 'finish-both').map(action => new Command(action)),
-  ], { maxCommands: 32, ...(process.env.PI_PBT_COMMAND_PATH === undefined ? {} : { replayPath: process.env.PI_PBT_COMMAND_PATH }) });
-  const report = await fc.check(fc.asyncProperty(commands, fc.scheduler(), sample), {
-    numRuns: Number(process.env.PI_PBT_RUNS ?? 50),
-    ...(process.env.PI_PBT_SEED === undefined ? {} : { seed: Number(process.env.PI_PBT_SEED) }),
-    ...(process.env.PI_PBT_PATH === undefined ? {} : { path: process.env.PI_PBT_PATH }),
-  });
-  console.log(`PBT seed=${report.seed} runs=${report.numRuns} shrinks=${report.numShrinks}`);
-  if (report.failed) throw new Error(await fc.asyncDefaultReportMessage(report), { cause: report.errorInstance });
+  ], { maxCommands: 32, ...commandReplay() });
+  await checkProperty(fc.asyncProperty(commands, fc.scheduler(), sample));
 }
 
 await runLifecycleModel();

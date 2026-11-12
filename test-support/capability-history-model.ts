@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import fc, { type AsyncCommand } from 'fast-check';
+import { checkProperty, commandReplay } from './pbt.ts';
 import { fauxProvider, InMemoryCredentialStore, getCurrentTools, type AssistantMessage, type Api, type Message, type Model } from '@earendil-works/pi-ai';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
@@ -214,21 +215,15 @@ export async function runCapabilityHistoryModel() {
     fc.tuple(fc.constantFrom<Action>('describe', 'schema', 'enable', 'disable', 'reset', 'discover', 'execute', 'compact', 'reopen', 'request'),
       fc.integer({ min: 0, max: 1 }), fc.string({ minLength: 1, maxLength: 40 }), fc.integer({ min: 0, max: 3 }))
       .map(args => new Command(...args)),
-  ], { maxCommands: 24, ...(process.env.PI_PBT_COMMAND_PATH === undefined ? {} : { replayPath: process.env.PI_PBT_COMMAND_PATH }) });
-  const report = await fc.check(fc.asyncProperty(commands, async history => {
+  ], { maxCommands: 24, ...commandReplay() });
+  await checkProperty(fc.asyncProperty(commands, async history => {
     const world = await fixture();
     const state: State = { tools: world.metadata.map((spec, slot) => ({ ...spec, permission: 'unmanaged', active: slot === 0, discovered: false, used: false })), turn: 0 };
     try {
       await new Command('request', 0, '', 0).run(state, world);
       await fc.asyncModelRun(() => ({ model: state, real: world }), history);
     } finally { await world.close(); }
-  }), {
-    numRuns: Number(process.env.PI_PBT_RUNS ?? 50),
-    ...(process.env.PI_PBT_SEED === undefined ? {} : { seed: Number(process.env.PI_PBT_SEED) }),
-    ...(process.env.PI_PBT_PATH === undefined ? {} : { path: process.env.PI_PBT_PATH }),
-  });
-  console.log(`PBT seed=${report.seed} runs=${report.numRuns} shrinks=${report.numShrinks}`);
-  if (report.failed) throw new Error(await fc.asyncDefaultReportMessage(report), { cause: report.errorInstance });
+  }));
 }
 
 await runCapabilityHistoryModel();

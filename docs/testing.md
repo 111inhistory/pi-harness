@@ -55,6 +55,8 @@ Within a file, tests remain serial unless a parent suite enables concurrency. Th
 
 The scenario cap applies within each of those two files; it is not a global process or CPU cap. Full-suite timing should be compared on the same host because other file workers still run concurrently.
 
+The three generated models share [PBT execution support](../test-support/pbt.ts) for private subprocess environments, deadlines, run/seed/replay controls and native fast-check reports. Each model retains its own subprocess and domain state; SDK imports occur after the child environment is installed. Arbitraries, command limits, scheduling boundaries and assertions remain with the owning model.
+
 ## Native lifecycle model tests
 
 `test/typed/native-lifecycle-model.test.ts` runs generated histories through the real RootService, runtime, Pi SDK, managed IPC, actor storage and durable Job views. The model and shared SDK fixture use strict TypeScript. Each subprocess has private working, agent and socket directories, a 120-second process exit deadline and a 150-second outer deadline.

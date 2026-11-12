@@ -1,23 +1,6 @@
-import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
-import { stripCallbackEnv } from '../../test-support/test-environment.mjs';
-
-const execute = promisify(execFile);
-const runner = fileURLToPath(new URL('../../test-support/capability-history-model.ts', import.meta.url));
+import { runModelSubprocess } from '../../test-support/pbt.ts';
 
 test('generated capability histories preserve declarations, permission and checkpoint state', { timeout: 150000 }, async t => {
-  const cwd = await mkdtemp(path.join(tmpdir(), 'pi-capability-model-'));
-  t.after(() => rm(cwd, { recursive: true, force: true }));
-  const result = await execute(process.execPath, [runner], {
-    cwd, timeout: 120000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024,
-    env: stripCallbackEnv({ ...process.env, PI_OFFLINE: '1', PI_CODING_AGENT_DIR: path.join(cwd, 'agent') }),
-  });
-  assert.ok(result.stdout.includes('CAPABILITY_HISTORY_MODEL_OK'), `${result.stdout}\n${result.stderr}`);
-  console.log(result.stdout.trim());
+  await runModelSubprocess(t, new URL('../../test-support/capability-history-model.ts', import.meta.url), 'CAPABILITY_HISTORY_MODEL_OK');
 });
