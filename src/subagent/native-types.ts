@@ -172,7 +172,7 @@ export interface NativeChildSurfaceScope {
   readonly maxDepth: number;
   readonly cwd: string;
   readonly allowInherited: boolean;
-  /** Final exclusion list, including this depth's depth-gated harness tools. */
+  /** Role and current Preset execution denials; ancestry is applied by the parent scope. */
   readonly excludedTools: readonly string[];
 }
 
@@ -273,7 +273,10 @@ export interface NativeSessionRequest {
   readonly model: Model<Api> | null;
   /** A recorded thinking level verbatim; the factory owns SDK narrowing. */
   readonly thinkingLevel: string | null;
+  /** Role and current Preset execution denials. */
   readonly excludedTools: readonly string[];
+  /** Depth-gated harness tools removed from SDK registration; recomputed, not persisted. */
+  readonly fixedExcludedTools: readonly string[];
   readonly sessionManager: SessionManager;
   readonly surface: NativeChildSurfaceScope;
   readonly signal: AbortSignal;

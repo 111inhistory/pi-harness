@@ -1024,14 +1024,14 @@
       "reason": "Remove only an extra trailing empty line from the directory regression file; all behavior and assertions are unchanged."
     },
     "subagent.surface": {
-      "docs": "0e7e2ac82417d5cfc571f11e21d43f6b07ea6e25f7335f3e8bd48f1380add40c",
+      "docs": "6f544422e950a4220e5c1730702107bf25f7d9acde33675402cd7b45b597133c",
       "tests": "510f36c19e7249177a04b35073ef450bc974f61184f7fd2e5f3f657e0ff840a8",
-      "reason": "The public subagent tool schemas, batch admission and response shape are unchanged. The changed paragraph describes internal Fresh configuration; real RootService child creation and ancestor-denial behavior are tested in root-service-propagation, and existing surface tests passed."
+      "reason": "The contract wording now says Preset final removals are execution-scope denials and SDK registration carries fixed depth limits; surface behavior and tests are unchanged."
     },
     "subagent.integration": {
-      "docs": "75ecc6bad5ac09a6ac03463bf9d9ca7678029c2f976470a09e474c65f80298da",
+      "docs": "b90d935ce705b31848fc0d49fa6fb8622b39ec1ea589c4ee17279f9d9d79ad3e",
       "tests": "4f2738db954e14eee243ae0b66060e172b7ce1667de9a0f4ce8501980694cbc8",
-      "reason": "The documented Fresh configuration and actor identity now include the chosen Preset. Existing offline SDK scenarios and three default PBT models passed through the updated routing fixture without weakened assertions. New named-Preset application is covered by real RootService grandchild creation; integration tool and delivery protocols are unchanged."
+      "reason": "The interface wording changes only exclusion ownership; existing integration behavior and tests are unchanged."
     },
     "subagent.socket": {
       "docs": "a464102b233a0a5ca99fc25ffb288834cef2fbebc230ac833ed7830abcae5916",
@@ -1050,8 +1050,8 @@
     },
     "preset.runtime": {
       "docs": "c45579af22042555801e090274dfc8a8f7f9284bd3343cecef199ead61d65a0d",
-      "tests": "c8c7eb8bdf114761f34486e9f60e41bf98098bd320887c30c0097878cccd351a",
-      "reason": "Main Preset commands, apply ordering and branch restore remain unchanged. The instruction hook is shared with child creation; existing Preset SDK and extension tests passed. Routed child application and instruction delivery are tested through the real RootService propagation case, also associated with routing."
+      "tests": "fcb69aebde4a4c1ababe84ae6269472aa9f1e1a75d3568d3754acdf9be1de285",
+      "reason": "The Preset SDK test adds an unrelated named-section assertion to the supported projection path; Preset apply/restore semantics are unchanged."
     },
     "tool-guidance.journal": {
       "docs": "f15e9720dd2e103753d12542e7ae1c0c77084c790c3a25d522e52f81149bce3a",
@@ -1080,8 +1080,8 @@
     },
     "subagent.lifecycle": {
       "docs": "08416509175ae5b2dcdbc7d2898ede41f04a7915b3d4b0f8cd056241407e0fd9",
-      "tests": "bad2f9f01c6f1321fd8eb789863a09ac9f217b79690f65aa21d46405a36cb8f5",
-      "reason": "Fresh routing now applies a Preset before readiness, while Job admission, interruption, cancellation, ownership and resource release stay with existing owners. Both Native lifecycle and Parent coordination PBT passed unchanged oracles; the two original startup-failure seeds were replayed successfully after removing duplicate same-model selection."
+      "tests": "d7e82674f926a6c1bdd999ffd42d99d68b393104b1dd75c02bcd74cbc05b8710",
+      "reason": "The factory test request now carries fixed registration exclusions separately; lifecycle and ownership assertions are unchanged."
     },
     "subagent.delivery": {
       "docs": "3b8cc6a2e08fea413d06c642fb553d75e5591c5352989b1389df1c0b9ef8f456",
@@ -1115,8 +1115,8 @@
     },
     "capability.compaction-prune": {
       "docs": "6e3374f07feffed783bea55c10ce9177fc578db67b1ce05a1d75d82e9dbe4d33",
-      "tests": "4f5a0f494911147d3e1a2018fa081d14df08a5978e98d192d37ab9456c651ec0",
-      "reason": "Share the PBT subprocess and fast-check run/replay/report plumbing. Capability commands, maxCommands, reference state, compaction operations and pruning assertions are unchanged. Execution support is documented in docs/testing.md; product compaction semantics need no edit."
+      "tests": "dd9632dfc5efde81db2c7708b52c5351769a6133918f21ff34ecc8db67919a3b",
+      "reason": "Native session factory tests now pass fixed registration exclusions separately; compaction-prune behavior and its existing assertions are unchanged."
     },
     "preset.config": {
       "docs": "5bf2efc378b5fbc58416a1e7d5e355364c4da48587f5a8b2ec1cc4656d8ac4b6",
@@ -1135,8 +1135,8 @@
     },
     "inherited.capture": {
       "docs": "9371c4089685ad4e47b101ca42c249d3c4bc22b38289c62b71cd15e19de2a179",
-      "tests": "12bcba09d8b16eb7339db08d2f4449413f340a616b7d44ce93ea216196366fe5",
-      "reason": "The changed architecture paragraph describes Fresh routing through Presets and the child-owned Preset projection. Captured inherited model, prompt, tools, cache key and source history are unchanged; existing real Responses and Anthropic inherited prefix tests and native factory tests passed."
+      "tests": "94679a4ea5d94aa163fa881189129325c00469bf79642ad6c3709c0296d806ff",
+      "reason": "The factory test request now carries fixed registration exclusions separately; inherited capture and captured prompt/tool fields are unchanged."
     },
     "harness.rpc-interface": {
       "docs": "594d0ef01f83c003dc7d2479e4d899731b402db84eec8b5fbae215cf42d8c973",
@@ -1150,13 +1150,18 @@
     },
     "session-cache.identity": {
       "docs": "9c69a306080d0d53a5f0f687f4279cda47cf5cc2b524146a2d55ef7225357cbe",
-      "tests": "da1428958bcd675d4fcdf6078985c92f918f1146459727d6862da5b167d563b6",
-      "reason": "Remove child factory copies of fresh-default and final-hook priority scenarios. Session-cache runtime tests and Main SDK payload-hook tests retain identity/default/override behavior; inherited factory key propagation stays. No cache contract changes."
+      "tests": "30173713760491d429a8f97384199cafe348b296b88e7dc8cd8132629d36ff1a",
+      "reason": "Only the native session factory test request shape gained fixed registration exclusions; cache identity and payload assertions are unchanged."
     },
     "config.resolve": {
       "docs": "edf77e31dbe00a54ecb6d1d77f7c647f643621bf7d40a887402be41b48c3e23b",
-      "tests": "b8a7b0a7f2224d734af283ec9e35c3bc34971e121fc815d5fe0e69c4320539ed",
-      "reason": "Only the offline routing configuration fixture in harness-config-sdk changes to version 3. Harness config locations, trust layering, snapshot timing and parameter resolution are unchanged; the existing real SDK assertions passed in the full suite."
+      "tests": "6ce2d34a2dc0ce4b945fe401760e10bab418b13191c24b08f7510d88ed0bdae0",
+      "reason": "The factory test request now carries fixed registration exclusions separately; configuration resolution is unchanged."
+    },
+    "subagent.routing": {
+      "docs": "5f7985e8e485204910c46b8defe449cfee3ce392a6df0a06aa90fbfcd14c752a",
+      "tests": "3961795d07c8169af06f9b01ae632320c2f1c4830d29f7e814ba4f5445d5c567",
+      "reason": "The harness config wording separates Preset execution denials from SDK registration depth limits; routing selection and tests are unchanged."
     }
   }
 }

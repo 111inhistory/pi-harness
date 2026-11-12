@@ -22,75 +22,37 @@ import {
 } from '@earendil-works/pi-coding-agent';
 
 import { loadPresets, type PresetConfig } from '../src/preset/config.ts';
-import { resolvePreset } from '../src/preset/resolve.ts';
-import { applyPresetPlan, clearActivePreset, type PresetApplyHost } from '../src/preset/apply.ts';
+import { clearActivePreset } from '../src/preset/apply.ts';
+import { applyPresetToSession, createPresetApplyHost, ensurePresetBase } from '../src/preset/application.ts';
 import { parsePresetCommand } from '../src/preset/command.ts';
-import { appendPresetBase, readPresetBase, restorePresetSnapshot } from '../src/preset/state.ts';
+import { restorePresetSnapshot } from '../src/preset/state.ts';
 import { installPresetInstruction } from '../src/preset/instruction.ts';
-import { appendCodemodeMode } from '../src/capability/codemode-mode.ts';
-import { branchToolSelection } from '../src/capability/admission.ts';
-import { createToolPermissionResolver } from '../src/capability/tool-permission.ts';
-import { applyToolModifiers, parseToolModifiers } from '../src/preset/modifiers.ts';
-
-/** `customType` of the applied-preset snapshot on the branch. */
-const PRESET_STATE_RECORD = 'preset-state';
-const PRESET_STATE_VERSION = 1;
 
 export default function presetExtension(pi: ExtensionAPI): void {
   pi.registerFlag('preset', { description: 'Preset configuration to apply at startup', type: 'string' });
 
-  // Stable base selection captured once per session: preset tool modifiers are
-  // always computed from this, never from the running (possibly preset-shaped)
-  // selection, so switching A then B lands where applying B directly would.
-  let baseTools: readonly string[] = [];
   let currentName: string | undefined;
+
+  const sessionHost = (ctx: ExtensionContext) => ({
+    pi,
+    getBranch: () => ctx.sessionManager.getBranch(),
+    modelRegistry: ctx.modelRegistry,
+    ui: ctx.ui,
+  });
 
   const renderStatus = (ctx: ExtensionContext): void => {
     ctx.ui.setStatus('preset', currentName === undefined ? undefined : `preset:${currentName}`);
   };
 
-  const host = (ctx: ExtensionContext, modifiers: readonly string[] = []): PresetApplyHost => ({
-    setModel: (provider, id) => {
-      const model = ctx.modelRegistry.find(provider, id);
-      return model === undefined ? Promise.resolve(false) : pi.setModel(model);
-    },
-    setThinkingLevel: (level) => pi.setThinkingLevel(level as unknown as Parameters<typeof pi.setThinkingLevel>[0]),
-    setActiveTools: (tools) => {
-      // Preserve active Capability selections without adding them to the preset
-      // snapshot: only the stable resolved selection is a compaction baseline.
-      const branch = ctx.sessionManager.getBranch();
-      const { selected } = branchToolSelection(branch);
-      const permission = createToolPermissionResolver(pi, pi.getAllTools(), branch);
-      const active = pi.getActiveTools().filter(name => selected.has(name) || permission.enabled(name));
-      // The same native modifiers honor explicit removals and bare-name
-      // replacements; intersecting with active never resurrects an old grant.
-      const retained = applyToolModifiers(active, parseToolModifiers(modifiers).tokens)
-        .filter(name => active.includes(name));
-      pi.setActiveTools([...new Set([...tools, ...retained])]);
-    },
-    appendState: (record) => pi.appendEntry(PRESET_STATE_RECORD, { version: PRESET_STATE_VERSION, ...record }),
-    notify: (message, level) => ctx.ui.notify(message, level),
-    applyCodemodeMode: (mode) => appendCodemodeMode(pi, mode),
-    clearCodemodeMode: () => appendCodemodeMode(pi, null),
-  });
+  const host = (ctx: ExtensionContext) => createPresetApplyHost(sessionHost(ctx));
 
   const apply = async (ctx: ExtensionContext, name: string, preset: PresetConfig): Promise<void> => {
-    const resolution = resolvePreset(name, preset, {
-      hasModel: (provider, id) => ctx.modelRegistry.find(provider, id) !== undefined,
-      allToolNames: () => pi.getAllTools().map((tool) => tool.name),
-      baseToolSet: () => baseTools,
-    });
-    for (const issue of resolution.issues) {
-      ctx.ui.notify(`Preset "${name}": ${issue.detail}`, issue.severity === 'error' ? 'error' : 'warning');
-    }
-    if (resolution.plan === null) {
-      ctx.ui.notify(`Preset "${name}" was not applied.`, 'error');
-      return;
-    }
-    const outcome = await applyPresetPlan(resolution.plan, resolution.issues, host(ctx, preset.tools));
+    const outcome = await applyPresetToSession(sessionHost(ctx), name, preset);
     if (outcome.applied) {
       currentName = name;
       renderStatus(ctx);
+    } else if (outcome.issues.length === 0) {
+      ctx.ui.notify(`Preset "${name}" was not applied.`, 'error');
     }
   };
 
@@ -107,13 +69,7 @@ export default function presetExtension(pi: ExtensionAPI): void {
     // reflects a prior preset then reads the recorded base instead of the live
     // (preset-shaped) active set, so B computes from the same base as a fresh
     // apply and no extension tool is silently dropped.
-    const recordedBase = readPresetBase(ctx.sessionManager.getBranch());
-    if (recordedBase !== undefined) {
-      baseTools = recordedBase;
-    } else {
-      baseTools = pi.getActiveTools();
-      appendPresetBase(pi, baseTools);
-    }
+    ensurePresetBase(sessionHost(ctx));
     currentName = restorePresetSnapshot(ctx.sessionManager.getBranch())?.name;
     const presets = loaded(ctx);
     const flag = pi.getFlag('preset');

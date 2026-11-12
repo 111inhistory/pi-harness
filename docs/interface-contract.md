@@ -281,7 +281,7 @@ Enter 提问，Shift+Enter 换行，Ctrl+C 仅取消当前回答（取消完成�
 - 子会话（Subagents）：非叶节点加载 `subagent_create`、`subagent_list`、`subagent_stop`、`capability` 与 `msg_write`；叶节点（`depth === maxDepth`）仅保留 `subagent_list` 与 `msg_write`。所有子节点显式保持激活 `msg_write`。
 - `write` 是 SDK 原生文件工具，完全保持原生行为，不被拦截或覆写，不承担 IPC 消息发送。
 
-Fresh 路由保留角色及其职责提示词，其他执行配置复用命名或临时 Preset。工具以子会话自己的默认集合为基线，应用 Preset 的 `tools` 修饰；显式最终减项通过 SDK 与作用域始终排除，后续激活不能绕过。Preset 的 Codemode 模式与指引使用同一分支记录及投影路径。候选与已解析选择固定在 Actor 身份中，续跑不读取后来编辑的配置。配置格式与离线转换见[Harness 参数配置](harness-configuration.md#fresh-routing-presets)。Root 装配入口由子会话 surface 替代，不重复加载。Fresh 与 Inherited 均独立加载已配置的扩展与 MCP 后端（`noExtensions: false`）；Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定底层物理模型（`physicalModelForCall`），避免虚拟模型在子会话中重路由。它恢复捕获的工具白名单、系统提示词与思考强度。白名单仅限可重新创建的文件型扩展工具与 MCP 工具，父会话专属诊断工具不传递。若继承的异步 MCP 尚未完成注册，按 `subagent.inheritedToolWaitMs` 有界等待，默认最多 10 秒。
+Fresh 路由保留角色及其职责提示词，其他执行配置复用命名或临时 Preset。工具以子会话自己的默认集合为基线，应用 Preset 的 `tools` 修饰；显式最终减项作为执行作用域 denial 始终排除，后续激活不能绕过。SDK 注册排除只承载固定深度限制，祖先限制继续由作用域父链提供。Preset 的 Codemode 模式与指引使用同一分支记录及投影路径。候选与已解析选择固定在 Actor 身份中，续跑不读取后来编辑的配置。配置格式与离线转换见[Harness 参数配置](harness-configuration.md#fresh-routing-presets)。Root 装配入口由子会话 surface 替代，不重复加载。Fresh 与 Inherited 均独立加载已配置的扩展与 MCP 后端（`noExtensions: false`）；Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定底层物理模型（`physicalModelForCall`），避免虚拟模型在子会话中重路由。它恢复捕获的工具白名单、系统提示词与思考强度。白名单仅限可重新创建的文件型扩展工具与 MCP 工具，父会话专属诊断工具不传递。若继承的异步 MCP 尚未完成注册，按 `subagent.inheritedToolWaitMs` 有界等待，默认最多 10 秒。
 
 Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）、活跃直接子节点上限（Fresh 对应的 `subagent.maxActiveChildren`，默认 4；Inherited 对应的 `subagent.maxActiveInheritedChildren`，默认 3；两类直接子节点使用独立的父节点名额池）以及每层 Budget 通过 `harness.json` 配置，详见[Harness 参数配置](harness-configuration.md)。根服务和子会话使用同一份配置快照，已运行 Job 不受文件修改影响。这些配置不作为公开工具参数。
 

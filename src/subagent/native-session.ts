@@ -36,11 +36,8 @@ import type { CapabilityToolCatalog } from "../capability/scope.ts";
 import { openSubagentExecution } from "./execution.ts";
 import { parentModelRuntime } from "./model-runtime.ts";
 import { SubagentError } from "./runtime.ts";
-import { resolvePreset } from '../preset/resolve.ts';
-import { applyPresetPlan } from '../preset/apply.ts';
-import { appendPresetBase, appendPresetState } from '../preset/state.ts';
+import { applyPresetToSession } from '../preset/application.ts';
 import { installPresetInstruction } from '../preset/instruction.ts';
-import { appendCodemodeMode } from '../capability/codemode-mode.ts';
 import type {
   NativeChildSurfaceScope,
   NativeOpenedSession,
@@ -140,7 +137,8 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
         childApis.push(childPi);
         installPresetInstruction(childPi);
         // The parent is resolved lazily for a revived caller. Role denials and
-        // this depth's harness exclusions are the request's complete list.
+        // The request's execution denials are role/Preset denials; ancestry is
+        // resolved through the parent scope and depth limits stay registration-only.
         setCapabilityParent(
           childPi,
           () => this.#deps.parentCapabilityScope(surface.capabilityParentId),
@@ -208,7 +206,7 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
         modelRuntime,
         ...(request.model !== null ? { model: request.model } : {}),
         ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
-        excludeTools: [...request.excludedTools],
+        excludeTools: [...request.fixedExcludedTools],
         sessionManager: request.sessionManager,
         resourceLoader,
       },
@@ -223,37 +221,31 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
       if (request.preset !== undefined) {
         const { name, config } = request.preset;
         const context = execution.session.extensionRunner.createContext();
-        const base = childPi.getActiveTools();
-        const resolution = resolvePreset(name, config, {
-          hasModel: (provider, id) => context.modelRegistry.find(provider, id) !== undefined,
-          allToolNames: () => childPi.getAllTools().map(tool => tool.name),
-          baseToolSet: () => base,
-        });
-        if (resolution.plan === null) throw new SubagentError('routing_invalid_config',
-          resolution.issues.map(issue => issue.detail).join('; '));
-        for (const issue of resolution.issues) context.ui.notify(issue.detail, issue.severity);
-        appendPresetBase(childPi, base);
-        const outcome = await applyPresetPlan(resolution.plan, resolution.issues, {
-          setModel: async (provider, id) => {
+        const outcome = await applyPresetToSession({
+          pi: childPi,
+          getBranch: () => context.sessionManager.getBranch(),
+          modelRegistry: context.modelRegistry,
+          ui: context.ui,
+          selectModel: async (model) => {
             // Creation already selected this exact routed model. Re-selecting it
             // would duplicate model-change events and authentication work.
             const selected = execution.session.model;
-            if (selected?.provider === provider && selected.id === id) return true;
-            const model = context.modelRegistry.find(provider, id);
-            return model === undefined ? false : childPi.setModel(model);
+            if (selected?.provider === model.provider && selected.id === model.id) return true;
+            return childPi.setModel(model);
           },
-          setThinkingLevel: level => childPi.setThinkingLevel(narrowThinkingLevel(level)!),
-          setActiveTools: tools => childPi.setActiveTools([...tools]),
-          appendState: record => appendPresetState(childPi, { version: 1, ...record }),
-          applyCodemodeMode: mode => appendCodemodeMode(childPi, mode),
-          notify: (message, level) => context.ui.notify(message, level),
-        });
-        if (!outcome.applied) throw new SubagentError('model_unavailable', `Preset ${name} could not be applied.`);
+        }, name, config);
+        if (!outcome.applied) {
+          if (outcome.issues.length > 0) {
+            throw new SubagentError('routing_invalid_config',
+              outcome.issues.map(issue => issue.detail).join('; '));
+          }
+          throw new SubagentError('model_unavailable', `Preset ${name} could not be applied.`);
+        }
       }
       if (inheritedTools !== undefined) {
         const registered = new Map(childPi.getAllTools().map(tool => [tool.name, tool]));
         for (const name of selected) {
-          if (request.excludedTools.includes(name)) continue;
+          if (request.excludedTools.includes(name) || request.fixedExcludedTools.includes(name)) continue;
           const tool = registered.get(name);
           if (tool?.exposure === 'hidden') throw new SubagentError('inherited_tool_unavailable', `Inherited tool ${name} is hidden in this child.`);
           if (tool === undefined) missing.add(name);

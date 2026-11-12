@@ -145,6 +145,7 @@ interface RequestOptions {
   readonly model?: Model<Api> | null;
   readonly thinkingLevel?: string | null;
   readonly excludedTools?: readonly string[];
+  readonly fixedExcludedTools?: readonly string[];
   readonly surface?: NativeChildSurfaceScope;
   readonly signal?: AbortSignal;
   readonly cacheKey?: string | null;
@@ -154,6 +155,7 @@ function request(h: Harness, options: RequestOptions = {}): NativeSessionRequest
   const agentId = options.agentId ?? "sub_1";
   const cwd = options.cwd ?? h.cwd;
   const excludedTools = options.excludedTools ?? ["bash"];
+  const fixedExcludedTools = options.fixedExcludedTools ?? [];
   return {
     agentId,
     ...(options.inheritedTools === undefined ? {} : { inheritedTools: options.inheritedTools }),
@@ -164,6 +166,7 @@ function request(h: Harness, options: RequestOptions = {}): NativeSessionRequest
     model: options.model === undefined ? h.model : options.model,
     thinkingLevel: options.thinkingLevel === undefined ? "high" : options.thinkingLevel,
     excludedTools,
+    fixedExcludedTools,
     sessionManager: SessionManager.inMemory(cwd),
     surface: options.surface ?? {
       senderId: agentId,
@@ -396,7 +399,10 @@ test("the factory bridges the current root registry and refuses an unavailable r
 
 test("open builds the real child Pi, resource loader and capability scope", async () => {
   const h = await harness();
-  const input = request(h, { excludedTools: ["bash", "blocked_child"] });
+  const input = request(h, {
+    excludedTools: ["bash", "blocked_child"],
+    fixedExcludedTools: ["bash", "blocked_child"],
+  });
   const opened = await h.factory.open(input);
   try {
     assert.equal(h.surfaces.length, 1);
@@ -522,6 +528,7 @@ test("Fresh uses default extensions minus exclusions without installing the root
   const opened = await h.factory.open(request(h, {
     systemPrompt: null,
     excludedTools: ["write", "denied_extension"],
+    fixedExcludedTools: ["write", "denied_extension"],
   }));
   try {
     const session = opened.execution.session;
@@ -928,6 +935,25 @@ test("inherited MCP registration waits only the configured timeout", async () =>
     const elapsed = performance.now() - started;
     assert.ok(elapsed < 8_000, `the configured wait replaced the 10s default (elapsed ${Math.round(elapsed)}ms)`);
   } finally {
+    await close(h);
+  }
+});
+
+test("fixed registration exclusions stay separate from execution denials", async () => {
+  const h = await harness();
+  const input = request(h, {
+    excludedTools: ["blocked_child"],
+    fixedExcludedTools: ["bash"],
+  });
+  const opened = await h.factory.open(input);
+  try {
+    const active = opened.execution.session.getActiveToolNames();
+    assert.ok(!active.includes("bash"), "the fixed registration exclusion removes bash");
+    assert.equal(capabilityAllowsTool(opened.capabilityScope, "blocked_child"), false);
+    assert.deepEqual(h.surfaces[0]?.scope.excludedTools, ["blocked_child"],
+      "the child scope carries execution denials, not the fixed registration list");
+  } finally {
+    await opened.execution.dispose();
     await close(h);
   }
 });

@@ -368,6 +368,11 @@ export class NativeJobRunner {
         ?? (retainedRole !== null && retainedRole !== ""
           ? NATIVE_TOOL_NAMES.filter((name) => !plannedTools?.includes(name))
           : []);
+      if (retained?.preset !== null && retained?.preset !== undefined) {
+        // Keep the durable Actor.excludedTools meaning, but evaluate a retained
+        // Preset's current execution exclusions from its recorded config.
+        excludedTools = excludedPresetTools(retained.preset.config.tools);
+      }
       if (retained !== null && retained.routed && retained.modelRef !== null && model === null) {
         const ref = retained.modelRef;
         throw new SubagentError(
@@ -420,9 +425,10 @@ export class NativeJobRunner {
       request.recordStart(boundary);
       const sessionFile = deps.actors.durable ? manager.getSessionFile() ?? null : null;
       const allowInherited = retained === null ? fresh?.inheritContext !== true : retained.allowInherited;
-      const finalExcludedTools = [...(excludedTools ?? []), ...(depth >= maxDepth
+      const fixedExcludedTools = depth >= maxDepth
         ? ["capability", "subagent_create", "subagent_stop"]
-        : [])];
+        : [];
+      const executionExcludedTools = excludedTools ?? [];
 
       // Effective fields are refreshed as soon as the native session exists.
       const effective: {
@@ -483,7 +489,8 @@ export class NativeJobRunner {
         }),
         model,
         thinkingLevel,
-        excludedTools: finalExcludedTools,
+        excludedTools: executionExcludedTools,
+        fixedExcludedTools,
         sessionManager: manager,
         surface: {
           senderId: request.agentId,
@@ -493,7 +500,7 @@ export class NativeJobRunner {
           maxDepth,
           cwd,
           allowInherited,
-          excludedTools: finalExcludedTools,
+          excludedTools: executionExcludedTools,
         },
         signal: live.abort.signal,
         cacheKey: inheritedCacheKey,

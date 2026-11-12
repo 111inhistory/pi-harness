@@ -177,7 +177,7 @@ Fresh 与 Inherited 直接子节点在同一 Subagent 树内使用独立的父�
 
 命名 Preset 从 Pi 用户目录的 `presets.json` 与受信任工作目录的 `.pi/presets.json` 加载，项目同名项整体替换全局项。候选必须指定 model；可省略 thinkingLevel，由 SDK 使用该子会话的默认强度。单候选跳过第二次分类；多候选使用 Preset 的 description，未配置时使用候选 Preset 名称。角色 instructions 仍独立提供职责，Preset instructions 提供执行指引。
 
-工具配置使用现有 Preset 的 `tools` 修饰语法；基线为子会话自己的默认工具与扩展。显式最终减项同时作为该 Actor 的执行排除，后续激活不能绕过；祖先权限与深度限制仍生效。模型、thinking、工具、Codemode 与 Preset 指引通过公共 Preset 解析和应用路径设置，结果与所选定义保存在原生分支和 Actor 身份中；续跑不重新选择或读取变更后的 Preset。子会话不执行 Main 的 `--preset` 启动标志。
+工具配置使用现有 Preset 的 `tools` 修饰语法；基线为子会话自己的默认工具与扩展。显式最终减项作为该 Actor 的执行作用域 denial，后续激活不能绕过；SDK 注册排除只承载固定深度限制，祖先权限与深度限制仍生效。模型、thinking、工具、Codemode 与 Preset 指引通过公共 Preset 解析和应用路径设置，结果与所选定义保存在原生分支和 Actor 身份中；续跑不重新选择或读取变更后的 Preset。子会话不执行 Main 的 `--preset` 启动标志。
 
 旧版 `models`、candidate `thinking` 和 role `enableTools`／`excludeTools` 不再读取。离线转换保留角色和候选选择，将执行配置变成临时 Preset，输出必须是新文件：
 

@@ -71,7 +71,14 @@ test('a preset-state instruction reaches a real offline request as a system sect
     const resourceLoader = new DefaultResourceLoader({
       cwd, agentDir: process.env['PI_CODING_AGENT_DIR']!, settingsManager,
       noExtensions: true, noSkills: true, noContextFiles: true, noPromptTemplates: true, noThemes: true,
-      extensionFactories: [{ name: 'preset', factory: presetExtension }],
+      extensionFactories: [
+        { name: 'preset', factory: presetExtension },
+        { name: 'other-plugin', factory(api) {
+          api.on('before_agent_start', (event) => {
+            event.systemPromptOptions.sections['other-plugin'] = 'OTHER_PLUGIN_SECTION';
+          });
+        } },
+      ],
     });
     await resourceLoader.reload();
     assert.deepEqual(resourceLoader.getExtensions().errors, []);
@@ -89,6 +96,7 @@ test('a preset-state instruction reaches a real offline request as a system sect
     await session.prompt('hello');
     assert.ok(requests.length >= 1, 'the model was called at least once');
     assert.match(JSON.stringify(requests), /PRESET_INSTRUCTION_MARKER/, 'instruction text was projected into the request');
+    assert.match(JSON.stringify(requests), /OTHER_PLUGIN_SECTION/, 'an unrelated named section survives the preset projection');
   } finally {
     if (previousAgentDir === undefined) delete process.env['PI_CODING_AGENT_DIR'];
     else process.env['PI_CODING_AGENT_DIR'] = previousAgentDir;
