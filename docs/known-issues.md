@@ -16,6 +16,18 @@ Capability 按实际激活集筛选公开结果，返回失败或部分成功。
 
 ## Known environment failures
 
+### macOS compatibility is not established
+
+The project must not be described as macOS-compatible. The first two macOS CI jobs, at [af70eeb6](https://github.com/111inhistory/pi-harness/actions/runs/43160777427/job/130991157029) and [e8987153](https://github.com/111inhistory/pi-harness/actions/runs/43160828592/job/130991324504), each reported 993 passes, 41 failures and nine skips out of 1,043 tests. The CI lane exposes compatibility failures; its presence is not a support claim.
+
+The logs establish several failure groups, not 41 independently diagnosed defects:
+
+- Shared SDK fixture setup rejects `PI_CODING_AGENT_DIR` with `must live under the disposable cwd`. It uses a string-prefix check against `process.cwd()`. macOS temporary-directory aliases and canonical paths are a likely explanation, but the failing assertion does not print both values. Native and parent PBT fail during fixture setup, before generated lifecycle operations; those failures do not establish lifecycle counterexamples.
+- The real async-shell test with spaces and non-ASCII characters fails in tmux with `File name too long` under the long native temporary directory. This is an observed socket-path failure, not an optional-backend skip.
+- Managed IPC/session-connect cases fail binding temporary Unix sockets with `listen EINVAL`; other cases cannot observe published session records or the RPC discovery record. Long temporary paths are a candidate cause for the bind failures. The publication/time-out failures have not been independently traced, so they must not be counted as separate confirmed causes or dismissed as fixture-only failures.
+
+No macOS fix or successful end-to-end acceptance has been established. Linux and Windows results cannot substitute for it, and making a short-directory CI configuration pass would not by itself validate normal macOS temporary-directory behavior.
+
 ### PowerShell syntax checking on Ubuntu CI
 
 The [Ubuntu job in run 43154191240](https://github.com/111inhistory/pi-harness/actions/runs/43154191240/job/130970182267) failed at revision `1f35ba2c` in `checks PowerShell through its AST parser when available`. That test runs whenever `pwsh` or `powershell` is found, including Linux. A valid Unicode PowerShell command returned `ok: false`; the job reported 1,033 passes, one failure and nine skips. The Windows job in the same run passed. The local Linux environment had no PowerShell executable and skipped this case, so its green result did not cover this path.
@@ -57,7 +69,7 @@ No additional Harness adaptation is implemented for this gap, and no online cach
 - **Capability lazy schema**：离线 SDK 用例验证命中组 schema 不进入独立声明也不进入 Codemode 目录、`describeTool` 可取完整接口且脚本可执行、后续内部继承检索不重发这些 schema。真实提供方缓存命中、多轮模型遵循和长期保持未验收。
 - **模型 Preset**：`/preset`、`--preset` 的模型切换、thinking、工具修饰符基于稳定基线、instructions 段落投影、分支指令快照恢复、`codemode.mode` 生效覆盖已有离线单测与离线 SDK 冒烟；真实 TUI 下的 `/preset` 选择器与 `--preset` 命令交互、真实提供方的模型切换与在线缓存仍未验收。
 - **异步 Shell**：Linux tmux 与原生 Windows psmux 已通过真实 SDK 的离线回归，Windows 覆盖 Bash／PowerShell 入口、Main／Subagent 回调和取消清理。真实提供方多轮运行、长时压力与 Windows 进程查询不可用的故障注入仍未验收。Windows SDK 用例曾出现未完成首轮让出的偶发失败：固定 3 秒轮询把子会话启动、Shell 启动与 CLI 延迟混在一起，而产品契约并未承诺 3 秒；场景现以实际模型回调的 Shell 结果轮次作为让出信号，外层测试、子进程与命令期限保持不变。同一次全量中的 Bash 用例还留下一次 `connect ENOENT` 注册拒绝记录，其管道可用性原因尚未证明，也不因场景同步改动而修复。历史记录见[平台验收记录](reviews/async-shell-platform-acceptance.md)。
-- **平台与用户边界**：当前改写的 Linux 与原生 Windows 完整离线门禁均已通过；平台跳过项、具体版本与验证范围见[审计记录](reviews/rpc-permission-audit.md)。CI 已加入 `macos-latest` 执行同一套离线门禁，配置加入不等于运行验收通过。macOS 实机、多用户切换与管道权限隔离尚未验收。
+- **平台与用户边界**：当前改写的 Linux 与原生 Windows 完整离线门禁均已通过；平台跳过项、具体版本与验证范围见[审计记录](reviews/rpc-permission-audit.md)。`macos-latest` 已执行离线门禁并失败，具体证据见上面的 macOS 环境故障；项目目前不能宣称兼容 macOS。macOS 实机、多用户切换与管道权限隔离尚未验收。
 
 现有在线样本只证明记录中的具体场景，不替代当前调用链的完整验收。
 

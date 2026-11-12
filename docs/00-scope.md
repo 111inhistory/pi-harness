@@ -57,7 +57,7 @@ Pi Harness 是基于 Pi SDK 构建的 Coding Agent Harness 扩展。项目核心
 
 - 生产代码位于 `src/` 与 `extensions/`，全部采用严格 TypeScript。
 - 当前自动化回归主要基于真实 Pi SDK 与本地模拟模型，验证核心状态机、存储 v2 与进程级 IPC 通信。
-- Linux 与 Windows 的完整离线套件已运行；macOS 实机、多用户切换、管道权限隔离，以及真实提供方多轮在线行为、长时压力与复杂网络波动仍未全面验收，详见[已知问题与验收边界](known-issues.md)。
+- Linux 与 Windows 的完整离线套件已运行。macOS CI 已发现夹具路径、tmux 与 IPC 故障，项目目前不能宣称兼容 macOS。macOS 实机、多用户切换、管道权限隔离，以及真实提供方多轮在线行为、长时压力与复杂网络波动仍未全面验收，详见[已知问题与验收边界](known-issues.md)。
 - SDK `1.5.0` 的 allowlist 差异未解决。严格白名单下可能拒绝激活部分 MCP 工具，导致选择记录与实际激活状态不一致。
 
 ## 文档入口

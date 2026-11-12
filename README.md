@@ -22,6 +22,8 @@ Harness 为 Pi 增加按需工具发现、并行委派和独立问答能力。�
 
 本项目采用 [Mozilla Public License 2.0](LICENSE)。依赖及保留的第三方代码按各自许可证分发。
 
+Platform status: Linux and Windows have offline test evidence. macOS CI currently fails; the project does not claim macOS compatibility. See [known issues](docs/known-issues.md#macos-compatibility-is-not-established).
+
 ## 开始使用
 
 需要 Node.js **22.19.0 或更新版本**。当前适配 Pi **1.5.0**。跨会话协作支持 Linux 和原生 Windows；异步 Shell 在 POSIX 上使用 tmux，在 Windows 上使用 psmux。
