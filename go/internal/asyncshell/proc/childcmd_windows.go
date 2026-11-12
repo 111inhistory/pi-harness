@@ -14,6 +14,10 @@ import (
 // DefaultPathext is TS DEFAULT_PATHEXT.
 const DefaultPathext = ".COM;.EXE;.BAT;.CMD"
 
+// The cmd.exe escaping below is adapted from cross-spawn, as documented in
+// src/async-shell/platform.ts:98-122:
+// https://github.com/moxystudio/node-cross-spawn/blob/master/lib/util/escape.js
+//
 // cmdMeta is the cmd.exe metacharacter set handled by the cross-spawn escaping.
 var cmdMeta = regexp.MustCompile("([()\\]\\[%!^\"`<>&|;, *?])")
 
