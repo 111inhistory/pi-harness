@@ -20,8 +20,9 @@ import "unicode/utf8"
 //	#escape(char) -> escape(char rune) filterState
 //	#visible      -> visible(char rune)
 //
-// Bytes are decoded incrementally by utf8Decoder (decoder.go); an incomplete
-// trailing sequence is held across writes.
+// Bytes are decoded incrementally by utf8Decoder (decoder.go) with Node
+// StringDecoder semantics: an incomplete trailing sequence is held across
+// writes and a completed ill-formed sequence uses U+FFFD replacement.
 
 const (
 	escRune = '\u001b'
