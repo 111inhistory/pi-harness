@@ -82,7 +82,7 @@ function textOf(value: AgentToolResult<unknown>): string {
 
 function declaration(tool: AgentTool, guidelines: readonly string[] = []): Omit<CodemodeTool, 'execute'> {
   return { name: tool.name, description: [tool.description, ...guidelines].join('\n'), inputSchema: tool.parameters as unknown as CodemodeJsonSchema,
-    ...(tool.outputSchema ? { outputSchema: tool.outputSchema as unknown as CodemodeJsonSchema } : {}) };
+    outputSchema: (tool.outputSchema as unknown as CodemodeJsonSchema | undefined) ?? { type: 'string' } };
 }
 
 function argsOf(value: unknown): unknown[] {

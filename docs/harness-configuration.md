@@ -147,6 +147,8 @@ Fresh 与 Inherited 直接子节点在同一 Subagent 树内使用独立的父�
 
 该配置仅在 Codemode 已启用且生效模式为 `only` 时生效；Codemode 未启用或为 `on` 模式时配置保留但不生效，沿用原生声明方式。生效模式可以来自 Pi 设置，也可由模型 Preset 通过分支记录覆盖（见下节）。命中组的成员仍以名称出现在发现结果与 `describeNamespace` 中，但参数与返回值 schema 不进入原生工具声明，也不内联进 Codemode 描述；模型通过 `describeTool` 读取完整接口后经 Codemode 执行。命中组中 model-only 工具不能经 Codemode 调用，配置命中时应显式报告而不能隐藏其声明。命中组的内部继承检索同样不重发这些 schema。模式切换只改变声明投影，不改变启用集合、授权记录或工具 exposure。未生效的配置本身不是拒绝理由。
 
+`describeTool` 接受工具原名或 Codemode 调用标识，返回参数类型、工具指引与返回值类型；没有输出 schema 的工具声明为 `Promise<string>`，与脚本实际收到的文本一致。MCP 工具保留其原生结果对象类型，包括结构化输出。
+
 ### 搜索
 
 `capability.search.bm25` 直接传给 MiniSearch：

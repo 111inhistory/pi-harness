@@ -23,10 +23,11 @@ test('only mode + lazySchemas keeps matched group names but withholds its schema
   const agentDir = path.join(cwd, 'agent');
   process.env['PI_CODING_AGENT_DIR'] = agentDir;
   await mkdir(agentDir, { recursive: true });
-  await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({ capability: { lazySchemas: ['mcp://big'] } }));
+  await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({ capability: { lazySchemas: ['mcp://big', 'namespace://reports'] } }));
   let session: AgentSession | undefined;
   let pi: ExtensionAPI | undefined;
-  const calls: string[] = [];
+  const calls: { server: string; arguments: unknown }[] = [];
+  const reports: unknown[] = [];
   const requests: { messages: { role: string }[] }[] = [];
   const internalToolNames: string[][] = [];
   const errors: unknown[] = [];
@@ -69,7 +70,7 @@ test('only mode + lazySchemas keeps matched group names but withholds its schema
           assert.ok(body?.type === 'text');
           const stepDetails = JSON.parse(body.text) as CapabilityStepFeedback;
           assert.equal(stepDetails.searches[0]?.mcp.length, 1);
-          message = toolCall(CAPABILITY_STEP_TOOL_NAME, { queries: [], refs: ['namespace://mcp__big'], finish: true });
+          message = toolCall(CAPABILITY_STEP_TOOL_NAME, { queries: [], refs: ['namespace://mcp__big', 'namespace://reports'], finish: true });
         } else {
           message = response([{ type: 'text', text: 'done' }], 'stop');
         }
@@ -79,12 +80,13 @@ test('only mode + lazySchemas keeps matched group names but withholds its schema
         if (rootStep % 3 === 1) message = toolCall('capability', {});
         else if (rootStep % 3 === 2) message = toolCall('codemode', { code: `
           const d = await describeTool('mcp__big__search');
-          if (typeof d !== 'string' || !d.includes('mcp__big__search')) throw Error('describeTool missing full interface');
+          const raw = await describeTool('fixture-report');
+          const callable = await describeTool('fixture_report');
           const ns = await describeNamespace('mcp__big');
           if (!ns || !ns.tools || !ns.tools.includes('mcp__big__search')) throw Error('describeNamespace missing member');
-          const out = await tools.mcp__big__search({ q: 'x' });
-          if (!JSON.stringify(out).includes('MCP_EXECUTED')) throw Error('lazy member not callable through Codemode');
-          return 'LAZY_OK';
+          const out = await tools.mcp__big__search({ q: 'x', options: { mode: 'exact' } });
+          const report = await tools.fixture_report({ title: 'Selected document' });
+          return { status: 'LAZY_OK', mcp: d, raw, callable, out, report };
         ` });
         else message = response([{ type: 'text', text: 'Done' }], 'stop');
       }
@@ -101,11 +103,28 @@ test('only mode + lazySchemas keeps matched group names but withholds its schema
       };
       else if (message.method === 'tools/list') result = { tools: [{
         name: 'search', description: 'Search the large service',
-        inputSchema: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
+        inputSchema: {
+          type: 'object',
+          properties: {
+            q: { type: 'string', description: 'The required document query.' },
+            options: { $ref: '#/$defs/SearchOptions' },
+          },
+          required: ['q'],
+          $defs: { SearchOptions: {
+            type: 'object', properties: { mode: { type: 'string', enum: ['exact', 'prefix'] } }, required: ['mode'],
+          } },
+        },
+        outputSchema: {
+          type: 'object', properties: { total: { type: 'integer' }, document: { type: 'string' } }, required: ['total'],
+        },
       }] };
       else if (message.method === 'tools/call') {
-        calls.push(server);
-        result = { content: [{ type: 'text', text: 'MCP_EXECUTED' }] };
+        const params = message.params as { arguments: unknown };
+        calls.push({ server, arguments: params.arguments });
+        result = {
+          content: [{ type: 'text', text: 'MCP_EXECUTED' }],
+          structuredContent: { total: 1, document: 'Selected document' },
+        };
       } else result = { resources: [], resourceTemplates: [] };
       return result;
     });
@@ -118,6 +137,18 @@ test('only mode + lazySchemas keeps matched group names but withholds its schema
       factory(api: ExtensionAPI) {
         pi = api;
         capabilityExtension(api);
+        api.registerTool({
+          name: 'fixture-report', label: 'Fixture report', description: 'Build a selected document report.',
+          namespace: { name: 'reports', description: 'Search document reports' }, defaultActive: false,
+          promptGuidelines: ['REPORT_GUIDELINE: keep the document title.'],
+          parameters: {
+            type: 'object', properties: { title: { type: 'string' }, verbose: { type: 'boolean' } }, required: ['title'],
+          },
+          async execute(_id, input) {
+            reports.push(input);
+            return { content: [{ type: 'text', text: `Report: ${input['title']}` }], details: {} };
+          },
+        });
         installCapabilityMcp(api, {
           loadConfig: () => ({ errors: [], autoEnableCodemode: true, servers: [
             { name: 'big', source: 'test', config: { command: 'unused', exposure: 'codemode' } },
@@ -177,8 +208,36 @@ test('only mode + lazySchemas keeps matched group names but withholds its schema
     const executed = session.messages.findLast((message) => message.role === 'toolResult' && message.toolName === 'codemode');
     assert.ok(executed?.role === 'toolResult');
     assert.equal(executed.isError, false, JSON.stringify(executed.content));
-    assert.match(JSON.stringify(executed.content), /LAZY_OK/);
-    assert.deepEqual(calls, ['big'], 'the lazy member executes through the Codemode sandbox');
+    assert.doesNotMatch(String(codemode.description), /fixture[_-]report|REPORT_GUIDELINE/,
+      'the selected report also requires an on-demand interface lookup');
+    const executedBody = executed.content.find((part) => part.type === 'text');
+    assert.ok(executedBody?.type === 'text');
+    const output = JSON.parse(executedBody.text.split('Output:\n')[1]!) as {
+      status: string; mcp: string; raw: string; callable: string;
+      out: { structuredContent: { total: number; document: string } }; report: string;
+    };
+    assert.equal(output.status, 'LAZY_OK');
+    assert.match(output.mcp, /Search the large service/);
+    assert.match(output.mcp, /mcp__big__search\(args:/);
+    assert.match(output.mcp, /The required document query\./);
+    assert.match(output.mcp, /\bq: string/, 'required input remains required');
+    assert.doesNotMatch(output.mcp, /\bq\?:/);
+    assert.match(output.mcp, /options\?: \{ mode: "exact" \| "prefix"; \}/,
+      'optional local-ref input is expanded into the callable type');
+    assert.match(output.mcp, /total: number/, 'the MCP structured output schema remains available');
+    assert.match(output.mcp, /document\?: string/);
+    assert.equal(output.raw, output.callable, 'raw and script-visible identifiers describe the same tool');
+    assert.match(output.raw, /Build a selected document report\./);
+    assert.match(output.raw, /REPORT_GUIDELINE: keep the document title\./);
+    assert.match(output.raw, /fixture_report\(args: \{ title: string; verbose\?: boolean; \}\)/);
+    assert.match(output.raw, /Promise<string>/,
+      'a tool without a structured output schema is described as the text the sandbox returns');
+    assert.deepEqual(output.out.structuredContent, { total: 1, document: 'Selected document' });
+    assert.equal(output.report, 'Report: Selected document');
+    assert.deepEqual(calls, [{ server: 'big', arguments: { q: 'x', options: { mode: 'exact' } } }],
+      'the described MCP arguments reach the actual server');
+    assert.deepEqual(reports, [{ title: 'Selected document' }],
+      'the advertised identifier executes the selected extension tool');
 
     // A follow-up discovery must not re-send the lazy member's full schema to its
     // internal retrieval model. The inherited declaration was hidden from the
