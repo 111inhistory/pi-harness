@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createSubagentRuntime, SubagentError, type DeliverMessageRequest } from "../../src/subagent/runtime.ts";
-import { ServiceLifecycle } from "../../src/subagent/lifecycle.ts";
+import { ServiceLifecycle } from "../../src/session/service-lifecycle.ts";
 
 interface StartedJobHandle {
   done: Promise<{ result?: unknown; status?: string }>;

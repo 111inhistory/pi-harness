@@ -1,3 +1,4 @@
+import { ServiceLifecycle } from '../../src/session/service-lifecycle.ts';
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -8,7 +9,6 @@ import { sendDelivery, DELIVERY_CUSTOM_TYPE } from "../../src/subagent/delivery.
 
 import { createSubagentRuntime, SubagentError, type DeliverMessageRequest } from "../../src/subagent/runtime.ts";
 import {
-  ServiceLifecycle,
   adjudicateTerminal,
   firstEffectiveStopping,
   takeQueuedMessages,

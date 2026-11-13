@@ -19,7 +19,7 @@
 | `native-session.ts` | Settings、ResourceLoader、子扩展装配及 SDK 会话创建（Fresh／Inherited 均独立加载扩展与 MCP 后端，Inherited 恢复捕获白名单并对异步 MCP 提供有界等待，默认 10 秒） | 路由、任务结果裁决 |
 | `root-service.ts` | 组装上述模块，根事件写入、历史视图、内存超限临时文件管理（进程正常退出清理）、故障锁存，以及把当前根有效黑名单过滤后的作用域交给子会话 | 第二套 Job 状态机 |
 | `session/execution.ts`、`session/model-runtime.ts` | 跨领域 SDK 执行句柄、取消与清理，父模型运行时桥及物理模型解析 | Actor／Job 状态、路由、权限决定 |
-| `session/application.ts`、`session/host.ts`、`subagent/lifecycle.ts` | SDK 根生命周期、领域组合、RPC 连接与代次、退役期限及资源隔离；显式绑定借用的 SDK runtime | 领域状态、伪造物理退出、重跑已结束任务 |
+| `session/application.ts`、`session/host.ts`、`session/service-lifecycle.ts` | SDK 根生命周期、领域组合、RPC 连接与代次、退役期限及资源隔离；显式绑定借用的 SDK runtime | 领域状态、伪造物理退出、重跑已结束任务 |
 | `surface.ts`、`message-write.ts`、`managed-send.ts` | 工具声明、调用方绑定、输入捕获；模型工具与 RPC 共用受管消息发送 | 全局注册表、第二套广播或交接状态 |
 | `command.ts`、`status-view.ts` | `/subagent` 命令注册、参数解析、错误呈现与列表文本渲染 | Job 状态、准入或消息投递 |
 | `capability/command.ts`、`capability/catalog.ts`、`capability/enable.ts`、`capability/activation.ts` | `/capability` 目录浏览与用户启用、按实时注册表解析启用目标、激活与可达性判定（发现、命令与跨会话回复工具加载共用） | 检索会话、路由、Subagent 状态 |

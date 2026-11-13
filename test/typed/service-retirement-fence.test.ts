@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ServiceLifecycle, ServiceRetirementTimeoutError } from '../../src/subagent/lifecycle.ts';
+import { ServiceLifecycle, ServiceRetirementTimeoutError } from '../../src/session/service-lifecycle.ts';
 
 function deferred(): { promise: Promise<void>; resolve(): void } {
   let resolve!: () => void;

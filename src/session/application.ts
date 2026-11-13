@@ -1,6 +1,6 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { harnessConfigFor, type HarnessConfigProvider } from '../harness-config.ts';
-import { ServiceLifecycle } from '../subagent/lifecycle.ts';
+import { ServiceLifecycle } from './service-lifecycle.ts';
 import { RootService } from '../subagent/root-service.ts';
 import { SubagentError } from '../subagent/runtime.ts';
 import { createHarnessSessionHost, harnessSessionHost, type HarnessSessionHost } from './host.ts';
