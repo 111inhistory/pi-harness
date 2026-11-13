@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   AgentSession, createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
 } from '@earendil-works/pi-coding-agent';
@@ -20,13 +21,25 @@ function deferred() {
 }
 
 async function runBoundary({ rejectWrite = false, unlistedModel = false, children = 1,
-  catalogSize = 0, historyTurns = 0, managedTools = false, managedMessageDisabled = false, isolateFailure = false }: {
+  catalogSize = 0, historyTurns = 0, managedTools = false, managedMessageDisabled = false, isolateFailure = false,
+  packageRegistration = false, inheritContext = true }: {
   rejectWrite?: boolean; unlistedModel?: boolean; children?: number;
   catalogSize?: number; historyTurns?: number; managedTools?: boolean; managedMessageDisabled?: boolean; isolateFailure?: boolean;
+  packageRegistration?: boolean; inheritContext?: boolean;
 } = {}): Promise<number> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'root-boundary-'));
   const agentDir = path.join(cwd, 'agent');
   await mkdir(agentDir);
+  if (packageRegistration) {
+    const packageRoot = fileURLToPath(new URL('../../', import.meta.url));
+    const rootEntries = ['harness', 'capability', 'btw', 'preset'].map(name =>
+      fileURLToPath(new URL(`../../extensions/${name}.ts`, import.meta.url)));
+    await writeFile(path.join(agentDir, 'settings.json'), JSON.stringify({
+      packages: [packageRoot],
+      extensions: rootEntries,
+      defaultTools: ['+codemode'],
+    }), 'utf8');
+  }
   const oldAgentDir = process.env['PI_CODING_AGENT_DIR'];
   const oldSocketDir = process.env['PI_SUBAGENT_SOCKET_DIR'];
   process.env['PI_CODING_AGENT_DIR'] = agentDir;
@@ -38,6 +51,20 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
   runtime.registerNativeProvider(faux.provider);
   const model = faux.models[0];
   assert.ok(model);
+  if (packageRegistration) {
+    await writeFile(path.join(agentDir, 'subagent-routing.json'), JSON.stringify({
+      version: 3,
+      classifier: { provider: model.provider, id: model.id },
+      instructions: { role: 'Select the executor.', model: 'Use the fixture model.' },
+      roles: [{
+        id: 'executor',
+        instructions: 'Execute the fixture task.',
+        candidates: { fixture: {
+          model: { provider: model.provider, id: model.id }, thinkingLevel: 'high',
+        } },
+      }],
+    }), 'utf8');
+  }
   runtime.getAuth = async () => ({ auth: { apiKey: 'offline-fixture' }, env: {} });
   const secondPromptRequested = deferred();
   const releaseSecondPrompt = deferred();
@@ -56,9 +83,11 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
     await initialize.call(this);
   };
   let dispatchedCalls = 0;
+  const dispatchedModels: string[] = [];
   let childActiveNames: string[] = [];
   runtime.streamSimple = (_model, _context, options) => {
     dispatchedCalls += 1;
+    dispatchedModels.push(_model.id);
     const stream = new AssistantMessageEventStream();
     started.resolve();
     if (dispatchedCalls === children) allStarted.resolve();
@@ -157,6 +186,15 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
     // A programmatic SDK model need not be discoverable in the registry. The
     // original captured chat model is still valid for this initial Inherited Job.
     if (unlistedModel) context.modelRegistry.find = () => undefined;
+    if (packageRegistration) {
+      const classifierModel = { ...model, type: 'classifier' as const };
+      context.modelRegistry.findOfType = (() => classifierModel) as typeof context.modelRegistry.findOfType;
+      context.modelRegistry.classify = (async (classifier: { api: string; provider: string; id: string }) => ({
+        api: classifier.api, provider: classifier.provider, model: classifier.id, timestamp: 0,
+        answers: { role: { type: 'choice', choice: 'executor', probabilities: { executor: 1 }, confidence: 1 } },
+        stopReason: 'stop',
+      })) as typeof context.modelRegistry.classify;
+    }
     if (children > 1 || managedTools) {
       let childPrompts = 0;
       AgentSession.prototype.prompt = async function(this: AgentSession, ...args: Parameters<AgentSession['prompt']>) {
@@ -170,7 +208,7 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
     }
     const readsBeforeCreation = catalogReads;
     let returned = false;
-    const creation = create.execute('create', { tasks: Array.from({ length: children }, () => ({ task: 'Wait for navigation', inheritContext: true })) },
+    const creation = create.execute('create', { tasks: Array.from({ length: children }, () => ({ task: 'Wait for navigation', inheritContext })) },
       undefined, undefined, context);
     void creation.then(() => { returned = true; }, () => { returned = true; });
     if (children > 1) {
@@ -187,8 +225,11 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
     const registration = created.details as { items: Record<string, unknown>[] };
     assert.ok(registration.items[0]);
     assert.equal(registration.items[0].model, model.id);
-    assert.equal(registration.items[0].role, null);
+    assert.equal(registration.items[0].role, packageRegistration && !inheritContext ? 'executor' : null);
     await started.promise;
+    assert.ok(dispatchedModels.length >= 1, 'the Fresh/Inherited child must dispatch its first model request');
+    assert.ok(dispatchedModels.every((id) => id === model.id),
+      `child requests must use the routed fixture model: ${dispatchedModels.join(', ')}`);
     if (managedTools) {
       assert.equal(childActiveNames.includes('read'), false, 'root explicit enable is root-only');
       assert.equal(childActiveNames.includes('write'), false, 'root disable excludes the child tool');
@@ -266,6 +307,15 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
     await rm(cwd, { recursive: true, force: true });
   }
 }
+
+test('actual package registration excludes root entries for Fresh and Inherited children', { timeout: 30000 }, async () => {
+  // The child loads the package manifest's real extensions while the production
+  // RootService installs its inline child surface. Root entries must be filtered
+  // from the package for both inheritance modes; otherwise harness.ts registers
+  // the root tools a second time and create fails before a child run.
+  await runBoundary({ packageRegistration: true, inheritContext: false });
+  await runBoundary({ packageRegistration: true, inheritContext: true });
+});
 
 test('actual quiescing root persists its one terminal event before the before-hook returns', { timeout: 15000 }, async () => {
   await runBoundary();
