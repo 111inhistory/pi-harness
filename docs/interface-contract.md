@@ -177,9 +177,9 @@ refs 去空白并去重；未知 ref 使本次提交整体拒绝，但不清除�
 
 ### 工具指引与缓存前缀
 
-Harness appends current tool/namespace guidance, Capability memory and Preset instructions before every model call, including same-run tool-result followups. It does not replay historical section versions or infer positions from native messages. Current branch facts restore the current snapshot after reopen, rewind and inheritance. Existing placement entries are left untouched and ignored.
+静态工具指引通过 SDK 原生 `ToolDefinition.promptGuidelines` 提供；Capability 记忆、Preset 指令和动态指引在 `before_agent_start` 写入 `systemPromptOptions.sections`，由 SDK 比较并持久化更新。同 turn 的必要变化在外层工具结果边界合并为带内容的 `harness-context-sync` 消息，经 SDK 编码为 user。中途自动压缩或压缩后续跑会重新提供当前非空状态，即使业务状态未变，也不能漏掉被压缩丢弃的信息。未变的普通工具循环不注入尾部 developer 或 user。
 
-The installed SDK owns native `promptGuidelines`, declarations and provider serialization. Complete forced prompts and later context handlers retain SDK precedence and can suppress Harness sections. Current prose is resent on every request; exact historical request reproduction, whole-request prefix continuity and server cache hits are not guaranteed. Permission and backend admission checks remain independent.
+当前分支事实在重新打开、回退与继承后恢复当前状态。SDK 管理原生声明与 provider 编码；完整的强制提示词可抑制 Harness 系统段落，已持久化的 user 状态消息仍属于对话历史。Harness 不改写旧消息，不读取旧放置记录，不添加显式缓存断点，也不保证精确历史请求复现、全请求前缀连续性或服务端命中。权限与后端准入校验独立生效。
 
 ### 与 Subagent 的关系
 
@@ -197,11 +197,11 @@ Capability 调用仍等待检索完成，再返回筛选后的资源。复用执
 
 - 管理记录保存在当前分支的 `capability-tool-permission` 自定义条目中，只追加、不重写；每条记录包含 `set`（目标与 `enabled`／`disabled`）与 `unset`（解除目标）。`unset` 是统一解除标记：覆盖显式、显式迁移与 config 默认条目。`resume`、`tree`、`fork`、`reload` 按分支重放。无记录或被 `unset` 覆盖即 `not managed`。
 - 目标为精确工具名（注册或未注册均可）、`mcp://<server>` 或 `namespace://<name>`；组规则按命名空间名、别名或成员匹配当前及后续注册的成员。裸 token 一律按精确工具名处理，不做隐式组展开。
-- Runtime reads canonical permissions and config defaults only; startup, restore and turn lifecycle never scan retired records. For closed v3 sessions, back up files and explicitly run `npm run migrate:tool-permissions -- <session.jsonl...>`. The offline tool converts flat manual-only discovery records at their original IDs, preserving parent links, timestamps, messages, all branches and recorded actor/seed checkpoints. It refuses blacklist records, mixed discovery categories, group manual hits and files containing both canonical and retired grants before writing; unsupported files require separate offline analysis. It replaces a file through a sibling temporary file after writing and fsync, without appending migration markers; rerunning a converted file writes nothing. Config `capability.manualTools` supplies ordinary default `disabled` entries. Canonical rules override config defaults, including a group enable over a narrower default; kind specificity and mutation order decide among canonical matches.
+- 运行时仅读取规范权限与配置默认条目；启动、恢复与轮次生命周期绝不扫描已退役记录。对于已关闭的 v3 会话，请先备份文件并显式运行 `npm run migrate:tool-permissions -- <session.jsonl...>`。该离线工具在原条目 ID 处转换扁平的纯 manual 发现记录，并保留父链接、时间戳、消息、所有分支以及已记录的 Actor/Seed 检查点。写入前若检测到黑名单记录、混合发现类别、组级 manual 命中，或同时包含规范授权与已退役授权的文件，工具将拒绝写入；不受支持的文件需单独离线分析。写入并 `fsync` 后，工具通过同级临时文件原子替换原文件，不追加迁移标记；对已转换文件重复运行不会写入任何内容。配置中的 `capability.manualTools` 提供普通的默认 `disabled` 条目。规范规则覆盖配置默认条目（包括组级启用覆盖更窄的默认条目）；规范匹配之间的优先级由类型特异度与变更顺序决定。
 - SDK 命令行限制（`--exclude-tools`、严格 allowlist）不属于管理状态，也不合成为记录；解除管理不会解除 SDK 限制，查询与诊断不虚构 SDK 未提供的来源。
 - 只读查询不暴露来源、命中规则或诊断信息；需要时只返回状态与必要结果。
 
-- Activation, immediate removal, compaction deferral and disabled notices follow the final effective permission after a successful mutation. An exact enabled member remains active when its group is disabled; an exact disabled member is not activated when its group is enabled. Callers may supply a live branch array or a detached branch snapshot; both use the same canonical replay and precedence.
+- 激活、立即移除、压缩延后移除以及禁用提示均遵循成功变更后的最终生效权限。当所属组被禁用时，精确启用的成员仍保持激活；当所属组被启用时，精确禁用的成员不会被激活。调用方既可传入实时分支数组，也可传入分离的分支快照；两者使用相同的规范重放与优先级规则。
 
 ### 派生视图与查询
 - 面向用户与程序的派生视图为互斥四态：已管理的 `enabled`／`disabled`，未管理的运行时成员 `active`／`inactive`。四态是展示与过滤层，不是第二份持久化状态；已管理工具不因处于 active 集而被报告为显式启用。
@@ -458,7 +458,7 @@ Harness 为 Pi 原生 RPC 未覆盖的工具信息、子 Agent 控制、消息�
 ### 协议
 
 - 帧为换行分隔的 JSON。请求为 `{id, method, params?}`；响应为 `{id, ok: true, result}` 或 `{id, ok: false, error: {code, message, detail?}}`；订阅事件为 `{event: {subscription, seq, payload}}`。
-- Each endpoint admits one client connection. While it is occupied, additional connections are closed without dispatching requests; the current client keeps ownership. Disconnect releases subscriptions. FIN retains the slot until pending responses finish and the socket actually closes; root retirement force-closes the owned connection. A replacement client may connect after that close.
+- 每个端点仅接纳一个客户端连接。连接被占用时，多余连接在不分派请求的情况下直接关闭；当前客户端保留所有权。断开连接会释放订阅。FIN 会保留槽位直至未决响应写出且 socket 实际关闭；根服务退役时会强制关闭所持连接。关闭后可接入替换客户端。
 - 每连接请求按顺序处理并保序响应。慢客户端的有界积压（默认 4 MiB，实现可调）超过上限时断开并释放订阅，不阻塞模型执行，也不静默丢弃事件后假装完整。
 - 客户端不能自动重放结果未知的控制输入。异常、超时与断连不证明输入尚未入队。
 - 语言无关的线协议规范见 [Harness RPC 线协议规范](harness-rpc-wire-spec.md)；机器可读 schema 与方法清单由定义源码生成，Git 追踪 [`schemas/SHA256SUMS`](../schemas/SHA256SUMS) 和 [`schemas/fixtures/harness-rpc/`](../schemas/fixtures/harness-rpc/)；生成、GitHub Actions 下载与 `$defs` 细节见 [Harness RPC Schema](harness-rpc-schema.md)。

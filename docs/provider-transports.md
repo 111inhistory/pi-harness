@@ -30,15 +30,17 @@ Chat Completions 的两个标志必须都明确为 `true`。携带工具的 syst
 
 `toolAdditions` 与 `toolSameNameUpdates` 只描述原生工具声明能力。文本工具伪新增不在本模型内，也未实现；未来启用需要模型级检测和服务端验证，不能只凭供应商或 API 判断。
 
-静态工具与命名空间指引（如 Subagent、异步 Shell、`capability`）由原生 `ToolDefinition.promptGuidelines` 随 `<rules>` 段落交付；仅未采用 `promptGuidelines` 的自定义或 MCP 命名空间，以及 `<capabilities>`、`<preset-instructions>`、`<capability-availability>` 等动态段落由 Harness 在 `before_agent_start` 写入 `event.systemPromptOptions.sections`，并在同轮状态变化边界持久化一条 `custom_message`（`user` 角色）。SDK 负责工具描述、声明增量、schema 更新与各传输协议的序列化；Harness 不维护历史描述基线，也不在工具循环末尾注入 `developer` 段落。
+静态工具指引使用 SDK 原生 `promptGuidelines`。动态命名空间指引、Capability 记忆和 Preset 指令在 `before_agent_start` 写入 `systemPromptOptions.sections`，由 SDK 比较并持久化。必要的同 turn 状态更新以带内容的持久化 custom 消息同步，经 SDK 编码为 user；普通未变工具循环保持以工具结果收尾。Harness 不再逐请求追加尾部 system，不保存描述基准或历史放置位置，也不输出第二层描述修正。
 
-`before_agent_start` 之后的 `forceSystemPrompt` 可按 SDK 钩子顺序抑制这些系统段落。对于不支持 `supportsMidConvoSystemMessages` 的传输协议，SDK 与底层序列化器仍会将原生系统更新折叠到头部；对于支持增量消息的传输（Responses 与 Anthropic），未变更的工具调用循环以 `function_call_output` / 工具结果收尾，仅在发生必要状态变更时以持久化 `user` 消息同步并刷新隐式缓存前缀。
+OpenAI 的隐式缓存要求保留可复用前缀和合法的消息结束位置；初始连续 developer 消息组之后的 developer 消息不是自动隐式缓存查询边界。实现只使用隐式缓存，不添加显式缓存断点。完整的强制提示词可抑制系统段落；持久化 user 状态消息仍是对话历史。最终编码由 SDK 负责，离线消息顺序验证不等同于服务端缓存命中或计费验证。
 
-当前的加载集合与权限状态决定声明是否保留；Harness 不为维持旧前缀而压制原生移除更新，执行准入始终为最终边界。成功压缩后可淘汰未使用的已发现工具，详见[压缩与未使用能力淘汰](capability-prompt-memory.md#压缩与未使用能力淘汰)。
+参数或其他真实接口发生变化时，保留原生声明。Harness 不隐藏接口变化，也不保留过时 schema 继续执行。仅支持新增的传输路径遇到同名替换时，可能把工具重新折叠到顶层列表，从而改变请求前缀。描述文本不能代替 schema 更新。
+
+当前工具负载（loadout）与权限状态决定声明的可用性；Harness 不会为保留历史前缀而抑制原生的移除更新。执行准入仍是最终权威。成功压缩后可以移除未使用的已发现工具，详见[压缩与未使用能力淘汰](capability-prompt-memory.md#压缩与未使用能力淘汰)。
 
 ## 对话中 effort
 
-`providerSessionPolicy(model, request?)` 为精确 `api` 和显式 `compat` 返回 `midConversationEffort`。该字段只描述原生编码器是否可用于同模型 effort 变更，不承诺缓存命中，也不代表任意后置 payload hook 之后的结果。
+`providerSessionPolicy(model, request?)` 为精确 `api` 和显式 `compat` 返回 `midConversationEffort`。该字段只描述原生编码器是否可用于同模型 effort 变更，不涵盖任意后置 payload hook 的改写结果，也不保证缓存命中。
 
 | 路径 | 条件 | 原生行为 |
 | --- | --- | --- |
@@ -66,6 +68,6 @@ Chat Completions 缓存参数继续由 SDK 管理。上述工具兼容位不表�
 
 ## 验证边界
 
-离线测试捕获当前安装版本中 Responses、Anthropic、Azure Responses、Codex Responses 和 Chat Completions 原生序列化器的请求。验证范围包括前缀保留、标准 Chat Completions 字段、明确开启的工具追加、描述更新、真实 schema 替换、继承执行阻断、压缩淘汰，以及 managed effort、sign-in 抑制、disabled thinking 和各 API 的 effort 编码器边界。这些测试不能证明任意网关都实现可选格式，也不保证在线缓存命中。
+离线测试捕获当前安装版本中 Responses、Anthropic、Azure Responses、Codex Responses 和 Chat Completions 原生序列化器的请求。验证范围包括前缀保留、标准 Chat Completions 字段、明确开启的工具追加、描述更新、真实 schema 替换、继承执行阻断、压缩淘汰，以及 managed effort、sign-in 抑制、disabled thinking 和各 API 的 effort 编码器边界；不保证任意网关实现可选格式或在线缓存命中。
 
 服务商参考资料：[OpenAI 提示词缓存](https://developers.openai.com/api/docs/guides/prompt-caching)、[OpenAI Chat Completions](https://platform.openai.com/docs/api-reference/chat/create)、[DeepSeek 上下文缓存](https://api-docs.deepseek.com/guides/kv_cache/)。

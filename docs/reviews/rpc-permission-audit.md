@@ -175,7 +175,7 @@ The opt-in creation benchmark runs nine isolated samples per checkout using the 
 
 The rewrite feature freeze is closed with user authorization after recording the Ubuntu PowerShell failure with richer diagnostics and adding macOS to the standard CI matrix. The user explicitly deferred active PowerShell reproduction. The latest completed Linux baseline at `9d735062` has 1,033 passes, zero failures and ten skips; the three PBT models also passed 1,000 local histories each with command limit 128 and `size=max`. The reported Ubuntu CI failure at `1f35ba2c` remains unresolved, and adding macOS CI is not macOS acceptance. Active-root migration deferrals, provider-cache design gaps and untested environments remain recorded in [known issues](../known-issues.md); closure does not mark them fixed or approve deferred feature proposals.
 
-The following plan and freeze rules are historical execution evidence, not an active feature restriction. The preceding findings remain the evidence ledger. The follow-up inputs were [permission algorithm review](capability-permission-algorithm-review.md) and [memory retention review](memory-retention-review.md). Their suggestions require verification; their severity labels and proposed mechanisms are not implementation instructions.
+The following plan and freeze rules are historical execution evidence, not an active feature restriction. The preceding findings remain the evidence ledger. The follow-up inputs were [permission algorithm review](../archive/capability-permission-algorithm-review.md) and [memory retention review](../archive/memory-retention-review.md). Their suggestions require verification; their severity labels and proposed mechanisms are not implementation instructions.
 
 During the former freeze:
 

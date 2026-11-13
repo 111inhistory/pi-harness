@@ -25,7 +25,7 @@
 | Main 空闲 | 1 | 是 | 是 |
 | 一次 `abort()` 已结束，Main 再次空闲 | 1 | 是 | 是 |
 
-脚本见 [`notification-steer.mjs`](reproductions/notification-steer.mjs)，输出见[对应 JSONL](reproductions/notification-steer.jsonl)。脚本复现通知格式，没有加载生产 Subagent 扩展，也没有真实模型或网络请求。
+脚本见 [`notification-steer.mjs`](../reviews/reproductions/notification-steer.mjs)，输出见[对应 JSONL](../reviews/reproductions/notification-steer.jsonl)。脚本复现通知格式，没有加载生产 Subagent 扩展，也没有真实模型或网络请求。
 
 **结论：Main 的通知可以直接使用原生自定义消息 steer 路径，保留当前通知的类型与附加信息。** 这不是把通知伪装成用户任务，也不要求再建立消息草稿提交协议。
 
@@ -153,7 +153,7 @@ SDK 的空闲状态只回答“是否忙碌”，不回答“是否获准继续�
 
 ## 复现材料
 
-- [`reproductions/message-delivery.mjs`](reproductions/message-delivery.mjs)：6 个输出场景，原始输出见[对应 JSONL](reproductions/message-delivery.jsonl)。
-- [`reproductions/message-boundaries.mjs`](reproductions/message-boundaries.mjs)：12 个含断言的边界场景，原始输出见[对应 JSONL](reproductions/message-boundaries.jsonl)。
+- [`reproductions/message-delivery.mjs`](../reviews/reproductions/message-delivery.mjs)：6 个输出场景，原始输出见[对应 JSONL](../reviews/reproductions/message-delivery.jsonl)。
+- [`reproductions/message-boundaries.mjs`](../reviews/reproductions/message-boundaries.mjs)：12 个含断言的边界场景，原始输出见[对应 JSONL](../reviews/reproductions/message-boundaries.jsonl)。
 
 场景数仅适用于上述版本与本轮脚本。负向对照的断言通过，表示成功观察到缺陷条件，不表示负向做法可用于实现。

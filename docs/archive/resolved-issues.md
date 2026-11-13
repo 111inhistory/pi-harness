@@ -18,13 +18,13 @@ Windows 11 虚拟机已验证中文命令、检查阶段不执行命令，以及
 
 ## 存储 v2 迁移与历史在线样本
 
-存储 v2 不恢复 v1 检查点。批量转换、两份新对话、原件与约 4.2 GB 备份见[迁移记录](../reviews/subagent-migration-batch.md)。原件刻意保留，迁移工具按用户决定暂不清理；清理不列为待办。
+存储 v2 不恢复 v1 检查点。批量转换、两份新对话、原件与约 4.2 GB 备份见[迁移记录](subagent-migration-batch.md)。原件刻意保留，迁移工具按用户决定暂不清理；清理不列为待办。
 
 迁移阶段的单样本真实 Gemini 续跑和随后 `GEMINI_SMOKE_OK` 冒烟均成功。这些是当时的在线记录，不能用来证明后续 TS 调用链已完成多轮在线验收。未因独立 SDK 临时代理问题修改 OAuth 插件、凭据或常驻配置。
 
 ## 移除外部压缩插件
 
-用户已移除 `pi-better-compaction`，用户包配置中也已移除该插件，以避免破坏 Responses 的 `additional_tools`。历史问题见[压缩调查](../reviews/native-compaction-review.md)。Inherited 的 Responses 工具继承适配仍未完成，后续适配不以恢复该插件为前提。
+用户已移除 `pi-better-compaction`，用户包配置中也已移除该插件，以避免破坏 Responses 的 `additional_tools`。历史问题见[压缩调查](native-compaction-review.md)。Inherited 的 Responses 工具继承适配仍未完成，后续适配不以恢复该插件为前提。
 
 ## 原生压缩期间的消息投递
 

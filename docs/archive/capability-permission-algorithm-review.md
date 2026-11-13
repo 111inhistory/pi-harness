@@ -1,8 +1,8 @@
 # Capability permission algorithm and test coverage review
 
-Follow-up verification confirmed repeated prune filtering, per-tool rule scans, repeated query replay, duplicated winner logic, unused snapshot projections, inaccurate propagation fixtures and the broken admission benchmark. See [confirmed findings V1–V10](rpc-permission-audit.md#confirmed-findings-from-the-two-follow-up-reviews) for production-function probes, counts, provenance and limits.
+Follow-up verification confirmed repeated prune filtering, per-tool rule scans, repeated query replay, duplicated winner logic, unused snapshot projections, inaccurate propagation fixtures and the broken admission benchmark. See [confirmed findings V1–V10](../reviews/rpc-permission-audit.md#confirmed-findings-from-the-two-follow-up-reviews) for production-function probes, counts, provenance and limits.
 
-This review is not an accepted implementation plan. Other factual claims and severity labels below were rejected or qualified after source verification; see [the reconciled rewrite plan](rpc-permission-audit.md#reconciliation-of-the-additional-reviews). Preserve this text as review history; do not implement its indexing, cumulative-prune, or test-mapping suggestions without that reconciliation.
+This review is not an accepted implementation plan. Other factual claims and severity labels below were rejected or qualified after source verification; see [the reconciled rewrite plan](../reviews/rpc-permission-audit.md#reconciliation-of-the-additional-reviews). Preserve this text as review history; do not implement its indexing, cumulative-prune, or test-mapping suggestions without that reconciliation.
 
 ## Scope
 

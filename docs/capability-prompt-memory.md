@@ -2,7 +2,7 @@
 
 Capability 发现采用惰性机制，但选中的能力必须在会话压缩与嵌套工具调用中保留。
 
-`src/capability/prompt.ts` 根据所选原生分支上的规范 `capability-discovery` 事实渲染当前 `<capabilities>` 段落正文；`src/request-instructions.ts` 通过 `before_agent_start` 的 `event.systemPromptOptions.sections` 写入动态指令段落，并在同轮发现、嵌套发现或自动压缩改变状态时格式化为持久化的 `custom_message`（`user` 角色）。Harness 不保存或重放段落放置日志；原生历史与传输编码仍由 SDK 负责。
+`src/capability/prompt.ts` 根据所选原生分支上的规范 `capability-discovery` 事实渲染当前 `<capabilities>` 段落。动态指令在 `before_agent_start` 写入 SDK 的 `systemPromptOptions.sections`，由 SDK 比较并持久化。同 turn 必要更新使用带内容的持久化 user 状态消息，不再逐请求追加尾部 system。
 
 ## 持久化分支存储
 
@@ -10,7 +10,7 @@ Capability 发现采用惰性机制，但选中的能力必须在会话压缩与
 
 - 嵌套调用：当外层工具调用 `ctx.executeTool("capability", ...)` 时，内层发现记录直接写入分支。即使调用的外层工具丢弃或汇总了内层 `details`，该记录依然保留。
 - 规范条目是唯一的记忆来源。投影不读取 `toolResult.details`，也不从较早的结果消息中重建记忆。
-- 每次运行前通过 `before_agent_start` 重建当前记忆；运行中的直接或嵌套发现由外层 `tool_result` 边界通过一条持久化的 `custom_message`（`user` 角色）同步最新状态，因此外层工具丢弃内层细节也不丢失。
+- 正常输入启动时从规范记录重建当前记忆。同 turn 发现变化在外层工具结果边界合并为 user 状态消息，因此外层吞掉嵌套结果仍能提供最新记忆。
 - 先持久化后激活：Capability 在调用同步工具激活前，先将发现记录追加到分支中。
 
 ## 包含内容
@@ -24,7 +24,7 @@ Capability 发现采用惰性机制，但选中的能力必须在会话压缩与
 - 共享指导：在多次发现之间保留，即使某次选择未增加新工具。
 - 远程覆盖范围：发现仅搜索本地资源。覆盖范围显式将远程搜索标记为 `not_searched`。远程候选资源绝不进入分支记录、系统段落或总结。
 
-发现记忆不授予执行权限。每次快照都会按当前注册表与调用方作用域重新过滤成员；不再在每条请求末尾追加尾部 `developer` 段落，也不重放旧的放置记录。原生声明、活跃工具集与执行准入仍为权威边界。
+发现记忆从不授予执行权限。生成当前指令时对照当前注册表和调用方作用域核对成员；原生声明、活跃工具与执行准入仍是权威依据。
 
 ## 压缩与未使用能力淘汰
 
@@ -34,9 +34,9 @@ Main 和普通 Fresh／Inherited Subagent 在原生压缩成功后，若 `capabi
 
 在变更激活状态前，先向分支写入一条 `capability-prune` 记录。发现回放按分支顺序折叠这些记录：旧的选择保持移除状态，后续发现可引入新的选择。某组成员跨多个检查点全部移除后，旧组指引也应移除；重新发现仅引入新记录的元数据，不恢复旧指引。回放从分支尾部累积后续移除项，每条发现只投影一次，不在每次 prune 时重建全部已累积记录。重新打开或切换分支遵循该分支上的记录。压缩失败或取消不产生淘汰记录。
 
-适用压缩边界上的 `capability-availability` 段落列出本次被移除的工具与组，说明摘要中的旧引用需要重新发现后才能再次使用。手动或运行前压缩由随后的 `before_agent_start` 写入该段落；运行中自动压缩与溢出重试则通过一条持久化的 `custom_message`（`user` 角色）随压缩边界同步，无需改写 SDK 头部。
+适用的压缩边界提供 `capability-availability`，列出被移除的工具和组，并说明摘要中的引用属于历史记录、复用前需重新发现。中途自动压缩或压缩后续跑会重新提供当前非空状态，即使业务状态未变，也不能因去重而漏掉被压缩丢弃的同步消息。手动或空闲压缩不额外启动模型轮次。
 
-当前的声明加载集合与权限状态决定工具可用性。Harness 不根据请求序号推断声明年代，也不为保住历史前缀而保留已停用工具。选择记忆与执行权限始终分离。
+当前工具负载（loadout）与权限状态决定声明的可用性。Harness 不会根据请求序号推断声明年龄，也不会在退役与重新引入之间刻意保留历史前缀。选择记忆与执行权限保持分离。
 
 内部 Capability 检索与 `/btw` 不独立执行淘汰。它们的继承视图保留父会话的当前状态与边界通知。
 
@@ -50,15 +50,15 @@ Codemode 依然可用于执行与组合。其沙箱不注册 `searchTools`。`AL
 
 ## 时序与缓存行为
 
-在每轮运行开始前，`before_agent_start` 通过 `event.systemPromptOptions.sections` 写入当前的动态段落（非 SDK 命名空间指引、`<capabilities>` 记忆、`<preset-instructions>` 与 `<capability-availability>`），由 SDK 原生对比并持久化在用户消息之前，不在请求末尾注入 `developer` 段落。静态工具与命名空间指引（如 Subagent、异步 Shell、`capability`）直接通过 SDK 原生 `ToolDefinition.promptGuidelines` 随 `<rules>` 段落发布。
+静态指引使用 `ToolDefinition.promptGuidelines`；动态工具／命名空间指引、Capability 记忆、Preset 指令和可用性通知在 `before_agent_start` 同步到原生 sections。SDK 将变化持久化为 system 更新；没有变化的普通工具循环不注入 developer 或 user 尾部消息。
 
-在单轮执行中的未变更工具调用循环里，工具结果之后不再附加 `system`/`developer` 或额外 `user` 消息，请求以 `function_call_output`（或对应传输的工具结果）自然结束，从而维持隐式前缀缓存断点推进。仅当同一轮内的直接或嵌套发现（在外层 `tool_result` 合并去重）、或运行中自动压缩／溢出重试实际改变了当前状态或活跃工具声明时，Harness 才通过 `pi.sendMessage(..., { triggerTurn: true, deliverAs: 'steer' })` 持久化一条非空的 `custom_message`（编码为 `user` 角色，携带实际当前状态），既向模型同步最新记忆与可用性通知，又在 SDK 工具变更补丁之后收口为 `user` 断点。
+规范业务记录在重新打开、回退和继承后仍可恢复。过时的放置记录不再读取，不迁移或改写旧消息。SDK 原生提示词和检查点包含已经同步的 sections。Main、普通 Subagent、内部检索与 `/btw` 共享当前状态渲染，各自保留角色与权限边界。
 
-规范业务记录在重新打开、分支回退与继承时恢复当前状态；重放时忽略过时的 `harness-tool-guidance`、`harness-capability-memory`、`harness-preset-instruction` 等旧放置记录，且不改写原始会话文件。Main、普通 Subagent、内部检索与 `/btw` 共用相同的当前状态渲染逻辑，并各自保持角色与权限边界。
+已安装的 SDK 应用隐藏过滤与完整的强制提示词投影。完整的强制提示词优先并可抑制 Harness 系统段落；已持久化的 user 状态消息仍属于对话历史。Harness 不通过 provider hooks 绕过 SDK 边界。
 
-安装的 SDK 在 `before_agent_start` 之后执行隐藏声明过滤与完整强制提示词投影（`forceSystemPrompt`）。完整强制提示词优先并可抑制 Harness 的系统段落，后续上下文插件也可按 SDK 钩子顺序替换上下文；Harness 不通过 provider hook 绕过这两类边界。
+必要的同 turn 发现更新通过 `harness-context-sync` custom 消息承载当前状态，经 SDK 编码为 user。嵌套发现合并到外层工具结果边界；重复未变结果不再发消息。中止或代次切换后禁止晚到刷新写入。中途自动压缩和压缩后续跑重新同步当前非空状态，以恢复可能被压缩丢弃的信息。
 
-原生 `ToolDefinition.promptGuidelines`、工具描述与参数 schema 仍由 SDK 管理。Harness 不再构造独立的描述纠偏层，也不保存历史描述基线；参见[Provider 传输行为](provider-transports.md)。离线序列化观测只验证编码后的消息顺序，不等于真实供应商的缓存命中或计费结果。
+原生描述、schema 和 `promptGuidelines` 由 SDK 管理；已经由活跃且声明的工具提供原生指引时，Capability 记忆省略重复共享文本，否则保留。实现不添加显式缓存断点；离线编码验证不代表服务端缓存命中或计费结果。详见[Provider 传输行为](provider-transports.md)。
 
 ## 待解决的 SDK allowlist 差异
 
@@ -70,9 +70,9 @@ Capability 在激活工具之前先写入规范的分支记录。宿主按实际
 
 ## 回归测试覆盖
 
-- `test/typed/capability-prompt.test.ts`：当前规范记忆、原生 `promptGuidelines` 去重、非 SDK 命名空间指引、压缩淘汰与权限过滤；`test/typed/capability-current-snapshot-sdk.test.ts`：真实 SDK 下的未变更工具循环、`function_call_output` 收尾、同轮静态工具激活、嵌套吞并合并、运行中自动压缩与持久化 `user` 边界。
-- `test/typed/capability-session-sdk.test.ts` 与 `test/typed/btw-session.test.ts`：真实 SDK 会话中的 Preset 继承、角色隔离与受阻父工具执行。
-- `test/typed/capability-history-model.test.ts`：生成原生与转换视图历史，验证无 `developer_tail`、无放置日志写入、业务状态恢复、调用方消息保留、活跃声明与执行权限边界。
+- `test/typed/capability-prompt.test.ts`：当前规范记忆、命名空间说明、裁剪与作用域；`test/typed/capability-current-snapshot-sdk.test.ts`：真实 SDK 同轮更新且不写放置记录。
+- `test/typed/capability-session-sdk.test.ts` 与 `test/typed/btw-session.test.ts`：通过真实 SDK 会话验证当前 Preset 继承、角色隔离以及阻断父执行。
+- `test/typed/capability-history-model.test.ts`：通过生成的原生历史与视图变换历史，验证当前指令、业务状态恢复、调用方消息保留、活跃声明与执行权限；历史放置与全请求前缀保证已明确移除。
 - `test/typed/capability-record.test.ts`：验证记录规范化、参数 schema 排除、分支序列化及覆盖范围报告。
 - `test/typed/capability-nested.test.ts`：验证在外层工具省略内层结果时，嵌套工具调用仍可在分支上保留已发现的能力。
 - `test/typed/capability-native-discovery.test.ts`：在两种扩展加载顺序下验证原生入口替换、选定 MCP 执行、带作用域的 Codemode 辅助函数、资源读取权限及后期服务器注册。

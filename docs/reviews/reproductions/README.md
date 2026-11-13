@@ -38,4 +38,4 @@ node docs/reviews/reproductions/notification-steer.mjs
 node docs/reviews/reproductions/steer-message-update.mjs
 ```
 
-先阅读[原生压缩调查](../native-compaction-review.md)或[消息投递验证](../message-delivery-review.md)，再解释对应输出。
+先阅读[原生压缩调查](../../archive/native-compaction-review.md)或[消息投递验证](../../archive/message-delivery-review.md)，再解释对应输出。

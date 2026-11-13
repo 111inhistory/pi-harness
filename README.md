@@ -22,7 +22,7 @@ Harness 为 Pi 增加按需工具发现、并行委派和独立问答能力。�
 
 本项目采用 [Mozilla Public License 2.0](LICENSE)。依赖及保留的第三方代码按各自许可证分发。
 
-Platform status: Linux and Windows have offline test evidence. macOS CI currently fails; the project does not claim macOS compatibility. See [known issues](docs/known-issues.md#macos-compatibility-is-not-established).
+平台状态：Linux 与 Windows 已有离线测试验证；macOS CI 当前存在失败，项目不宣称兼容 macOS，详见[已知问题](docs/known-issues.md#macos-兼容性尚未建立)。
 
 ## 开始使用
 

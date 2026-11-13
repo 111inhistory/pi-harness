@@ -1,63 +1,63 @@
-# Development workflow
+# 开发工作流
 
-Start with the existing architecture, choose the responsibility and algorithm, then write production code. Apply the repository's current scope and any active restrictions first. Use one coherent change as the unit of work; an exploratory probe may precede the design, but does not establish a new production boundary by itself.
+从当前架构出发，先确定职责归属与核心算法，再编写生产代码。优先适用仓库当前的范围边界与既有约束。以一个内聚的变更为工作单元；正式设计前可先做探索性探测，但探测本身不直接确立新的生产边界。
 
-## 1. Understand the existing responsibility
+## 1. 理解既有职责
 
-Read the relevant architecture/contract section, actual entry point, owning module, direct collaborators and existing tests. Check the working-tree diff so that the design accounts for changes already in progress. Follow the affected path rather than reading the whole repository or trusting a file name as its responsibility.
+阅读相关的架构/契约章节、实际入口、所属模块、直接协作者与现有测试，并查看当前工作区 diff，确保设计把正在进行的改动纳入考量。沿着受影响路径追踪，而不是通读全仓或望文生义地把文件名当作职责。
 
-Identify where the current decision is made, where authoritative state lives, what is derived, and who owns mutation and release. Look for an existing operation that can carry the required behavior. For a bug, establish the trigger or mark the cause as unverified; do not build a design around an assumed failure.
+明确当前决策发生在何处、权威状态存放在哪里、哪些是派生视图，以及谁负责修改与释放。优先寻找能够承载目标行为的既有操作。针对缺陷，先确认触发条件或将成因标为未验证，不要围绕臆测的故障构建设计。
 
-Before editing production code, choose what happens to the affected responsibility:
+编辑生产代码前，先决定受影响职责的去留：
 
-| Choice | Decision to make |
+| 选择 | 需做出的决策 |
 | --- | --- |
-| Keep | Preserve a needed distinction, deep interface or correctness boundary; improve its implementation if needed |
-| Merge | Move a responsibility to an existing owner when it has no sufficient independent meaning; name the receiving owner |
-| Delete | Remove a concept only when no required behavior or invariant depends on it; check callers and failure paths |
-| Replace | Keep a real responsibility but change its algorithm, owner or representation; state what behavior remains equivalent |
-| Defer / Prove first | Leave a speculative addition out, or investigate a consequential uncertainty before committing to a mechanism |
-| Add | Introduce a module, state, field or layer only when an actual current requirement cannot be carried clearly by an existing owner |
+| 保留（Keep） | 保留必要的区分、深度接口或正确性边界；如有需要可改进其实现 |
+| 合并（Merge） | 当某项职责缺乏独立存在意义时，将其迁入既有所有者，并指明接收方 |
+| 删除（Delete） | 仅当没有任何必需行为或系统不变量依赖它时移除该概念；核对调用方与失败路径 |
+| 替换（Replace） | 保留真实职责，但更换算法、所有者或表示形式；说明保持等价的行为 |
+| 延后 / 先行验证（Defer / Prove first） | 暂不引入推测性增量，或在投入机制前先排查关键不确定性 |
+| 新增（Add） | 仅当当前实际需求无法由既有所有者清晰承载时，才引入新模块、状态、字段或分层 |
 
-Apply the existence test: what concretely breaks if this concept disappears, and who would absorb its responsibility? Preserve permission boundaries, recovery, resource ownership and other necessary complexity. A large module is not automatically wrong; a small forwarding layer is not automatically useful. For an addition, name its current caller and the complexity it hides. Do not add a second authority or a future extension point without a present need.
+做存在性检验：如果这个概念消失，具体会破坏什么？由谁接管其职责？保留权限边界、恢复机制、资源所有权等必要复杂度。模块体量大不代表天然错误；只做转发的小模块也不代表天然合理。若要新增概念，必须指明当前调用方及它所隐藏的复杂度；没有现实需求时，不引入第二套权威或面向未来的扩展点。
 
-For a local change, this decision can be one sentence. When ownership moves across modules, state the before/after responsibilities in a short explanation or table. A full architecture report or per-symbol classification is not required.
+局部改动时，这项决策可以压缩为一句话；当职责跨模块迁移时，用简短说明或表格列出迁移前后的归属即可，无需撰写完整架构报告或逐符号分类清单。
 
-## 2. Design the core algorithm and its boundaries
+## 2. 设计核心算法与边界
 
-Before expanding the implementation, determine the input, output, authoritative data, ordering and essential steps. Use a few sentences, a small example or pseudocode to resolve non-obvious logic. Do not substitute a list of helper functions or interfaces for the algorithm.
+在展开实现前，先确定输入、输出、权威数据、顺序要求与关键步骤。用几句话、小示例或伪代码理清非直观逻辑，不要用辅助函数或接口列表代替算法本身。
 
-For the affected path, settle the relevant questions:
+针对受影响路径，明确以下适用问题：
 
-- **Semantics:** What determines the winner, record order, effective interval or state transition? Distinguish a persisted fact from a derived view and an intended change from its successful application.
-- **Cost:** What input sizes multiply? Account for replay, matching, sorting, copies, serialization and synchronous I/O across callers. Distinguish temporary allocation, peak live data and retained state; check actual writes before choosing cloning or sharing.
-- **Ownership and lifecycle:** Who can mutate each object, who holds strong references, and which event releases them? Include cancellation and failure where applicable. Weak references do not replace a release path.
-- **Boundaries:** Which empty/missing inputs, overlapping rules, chronological cases, partial failures or concurrent events can actually reach this path? Preserve error results, ordering and externally visible effects when simplifying.
+- **语义**：由什么决定胜出方、记录顺序、有效区间或状态转移？区分持久事实与派生视图，区分预期变更与成功落盘。
+- **开销**：哪些输入规模会产生乘法放大？核算跨调用方的重放、匹配、排序、复制、序列化与同步 I/O。区分临时分配、峰值活跃数据与滞留状态；先核实实际写入需求，再决定复制还是共享。
+- **所有权与生命周期**：谁可以修改每个对象、谁持有强引用、哪个事件负责释放？将取消与失败路径纳入考量；弱引用不能替代释放路径。
+- **边界**：哪些空/缺失输入、重叠规则、时序情况、部分失败或并发事件确实能到达该路径？简化实现时保留原有错误结果、顺序与外部可见效果。
 
-Select only applicable conditions. A pure parser does not need a socket lifecycle design. A straightforward local fix does not need pseudocode or a new design document. For substantial work, keep these decisions in the existing plan/review or task discussion; implement and validate one dependency unit at a time instead of designing every detail up front.
+只挑选适用项。纯解析器无需设计 Socket 生命周期；直观的局部修复无需伪代码或新设计文档。体量较大的工作可将决策记录在既有计划/审查或任务讨论中；按依赖单元逐个实现与验证，不必预先设计所有细枝末节。
 
-Use independent examples to expose ambiguous semantics before coding. For example, discovery A, prune A, rediscovery A must retain the new record without reviving old metadata; an overlapping permission update must apply the final effective decision. Investigate uncertain SDK or platform behavior with a focused probe. Do not add general machinery to compensate for an unverified premise. Measurement details are in [resource verification](testing.md#complexity-and-resource-verification).
+编码前先用独立示例暴露模糊语义。例如“发现 A → 裁剪 A → 重新发现 A”必须保留新记录且不复活旧元数据；重叠的权限更新必须以最终生效决策为准。对不确定的 SDK 或平台行为，通过定向探测验证，不要为了弥补未验证假设而叠加通用防御机制。测量方法见[资源与复杂度验证](testing.md#复杂度与资源验证)。
 
-## 3. Implement through the real entry point
+## 3. 通过真实入口实现
 
-Make the smallest end-to-end path work using the chosen owner and algorithm, then complete its necessary failure and boundary cases. Reuse domain operations; keep adapters focused on real translation boundaries. Remove superseded implementations, callers and production formats rather than maintaining parallel paths.
+使用选定的所有者与算法打通最小端到端路径，再补全必要的失败与边界分支。复用领域操作，让适配器专注于真实的转换边界。直接移除被替代的实现、调用方与生产格式，不保留并行路径。
 
-Keep types, nearby comments and current contract documentation consistent with the change. Explain non-obvious decisions in [code comments](writing-guide.md#code-comments); do not preserve an obsolete mechanism to satisfy its old comment or test. If implementation needs an unplanned cache, wrapper, deep copy or state, revisit its existence and ownership before expanding the design.
+保持类型、邻近注释与当前契约文档随改动同步。非直观决策在[代码注释](writing-guide.md#代码注释)中说明；不要为了迎合旧注释或旧测试而保留过时机制。若实现过程需要引入计划外的缓存、包装器、深拷贝或新状态，先停下重新审视其存在必要与所有权。
 
-Run the most relevant test or reproduction while implementing. Revisit the design when actual behavior contradicts it; do not patch each symptom with another rule. Record unrelated findings in the current issue/review unless they block this change.
+实现期间运行最相关的测试或复现脚本。当实际行为与设计矛盾时，回到设计层面修正，不要针对每个症状打补丁。与本次改动无关的新发现记入当前问题/审查文档，除非它阻塞本次变更。
 
-## 4. Validate behavior and resource costs
+## 4. 验证行为与资源开销
 
-Verify through the affected production entry, with independent expected behavior. Extend existing behavioral tests where they miss a meaningful case; do not mirror the new algorithm in the expected values. For a bug, rerun the original trigger and verify failed-before/passed-after evidence when feasible. A temporary reproduction may establish the evidence before a permanent test is chosen; strict test-first ordering is not required.
+通过受影响的生产入口验证，并使用独立于实现的预期结果。若既有行为测试遗漏关键场景，优先扩展它们，不要用新算法来生成预期值。修复缺陷时，条件允许应重跑原始触发路径并验证“修前失败 / 修后通过”。临时复现脚本可先用于建立证据，再沉淀为永久测试，不强制先写测试再写代码。
 
-Check the costs and lifecycle boundaries identified in step 2. Use work counts for demonstrated repeated work, actual teardown evidence for observers, and native execution for platform-specific semantics. Use optional measurements when memory retention or latency remains uncertain. Do not require a benchmark, heap dump or multi-platform run for unrelated edits. Explain missing environment evidence rather than substituting a nearby test.
+核查第 2 步识别出的开销与生命周期边界：对已证实的重复工作做工作量计数，对观察者做实际销毁验证，对平台相关语义做原生环境执行。若内存滞留或延迟仍不确定，再辅以测量；无关改动不要求基准测试、堆转储或多平台全跑。缺少对应环境证据时如实说明，不要用邻近测试替代。
 
-Review the complete diff, including comments and removed callers. Run `npm run check` for code delivery and the affected docs and JSON checks. Contract association checks are optional diagnostics: pre-commit findings never block commits, and review receipts are not required. Repeat passed checks only when further changes, failures or unresolved concerns warrant it. Documentation-only changes use documentation checks; do not manufacture behavior tests for wording.
+检查完整 diff（包括注释与被移除的调用方）。代码交付运行 `npm run check`，并运行受影响的文档与 JSON 检查。契约关联检查属于可选诊断：pre-commit 发现不会阻断提交，也不强制留存复核回执。已通过的检查仅在后续又有改动、出现失败或仍有未解疑虑时重跑。纯文档改动只跑文档检查，不要为文字修改制造行为测试。
 
-CI installs the Go toolchain selected by `go/go.mod`, runs `go test` and `go vet`, then runs the Node checks. Terminal coverage uses tmux on Linux/macOS and pinned psmux on Windows. The macOS runner uses `/private/tmp` to keep Unix socket paths short and canonical; passing that environment does not establish compatibility with every macOS temporary directory.
+CI 会安装 `go/go.mod` 指定的 Go 工具链，运行 `go test` 与 `go vet`，随后执行 Node 检查。终端覆盖在 Linux/macOS 上使用 tmux，在 Windows 上使用固定版本的 psmux。macOS runner 使用 `/private/tmp` 以保持 Unix Socket 路径简短规范；该环境通过并不代表兼容所有 macOS 临时目录。
 
-## 5. Commit and deliver
+## 5. 提交与交付
 
-Group each complete behavior with its necessary tests and contract updates. Separate independent work; check dependency-chain commits without relying on later files. Inspect `git diff --cached --stat` and the full staged diff before committing. The staged contract reminder is advisory; review useful findings without manufacturing counterpart edits or receipts.
+将每个完整行为与其必需的测试和契约更新归为一处。分离独立工作，按依赖链顺序检查提交，确保前面的提交不依赖后续文件。提交前核查 `git diff --cached --stat` 与完整暂存 diff。暂存区契约提醒仅作参考，审视有价值的提示即可，无需制造配对修改或回执。
 
-Report what changed, what verified the behavior and any remaining limitations. Keep long-running evidence in the existing review rather than creating a document per edit. Commit, push and lift feature freezes only within the user's authorization.
+汇报中说明已改内容、已验证行为及遗留限制。长期证据保留在既有审查文档中，不要为每次小改新建文档。仅在用户授权范围内执行提交、推送或解除功能冻结。

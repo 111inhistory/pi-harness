@@ -14,39 +14,39 @@ Capability 按实际激活集筛选公开结果，返回失败或部分成功。
 
 这项缺陷尚未修复，也不是 `harness.json` 中的可选策略。修复需要明确 SDK 激活资格或调整记录协议；当前没有激活探针、回滚或补偿状态机。
 
-## Known environment failures
+## 已知环境故障
 
-### macOS compatibility is not established
+### macOS 兼容性尚未建立
 
-The project must not be described as macOS-compatible. The first two macOS CI jobs, at [af70eeb6](https://github.com/111inhistory/pi-harness/actions/runs/43160777427/job/130991157029) and [e8987153](https://github.com/111inhistory/pi-harness/actions/runs/43160828592/job/130991324504), each reported 993 passes, 41 failures and nine skips out of 1,043 tests. The CI lane exposes compatibility failures; its presence is not a support claim.
+不得将本项目描述为兼容 macOS。前两次 macOS CI 运行（[af70eeb6](https://github.com/111inhistory/pi-harness/actions/runs/43160777427/job/130991157029) 与 [e8987153](https://github.com/111inhistory/pi-harness/actions/runs/43160828592/job/130991324504)）在 1,043 项测试中各自报告 993 通过、41 失败、9 跳过。
 
-The logs establish several failure groups, not 41 independently diagnosed defects:
+日志指向几组聚合性故障，而非 41 个独立定位的缺陷：
 
-- Shared SDK fixture setup rejects `PI_CODING_AGENT_DIR` with `must live under the disposable cwd`. It uses a string-prefix check against `process.cwd()`. macOS temporary-directory aliases and canonical paths are a likely explanation, but the failing assertion does not print both values. Native and parent PBT fail during fixture setup, before generated lifecycle operations; those failures do not establish lifecycle counterexamples.
-- The real async-shell test with spaces and non-ASCII characters fails in tmux with `File name too long` under the long native temporary directory. This is an observed socket-path failure, not an optional-backend skip.
-- Managed IPC/session-connect cases fail binding temporary Unix sockets with `listen EINVAL`; other cases cannot observe published session records or the RPC discovery record. Long temporary paths are a candidate cause for the bind failures. The publication/time-out failures have not been independently traced, so they must not be counted as separate confirmed causes or dismissed as fixture-only failures.
+- 共享 SDK 夹具初始化以 `must live under the disposable cwd` 拒绝 `PI_CODING_AGENT_DIR`。它对 `process.cwd()` 使用字符串前缀检查。macOS 临时目录别名与规范路径差异是可能原因，但失败断言未同时打印两个路径值。原生与父协调 PBT 在夹具初始化阶段、尚未执行生成生命周期操作前即失败，因此这些失败不构成生命周期反例。
+- 含空格与非 ASCII 字符的真实异步 Shell 测试在长原生临时目录下因 tmux `File name too long` 失败。这是实测的 Socket 路径长度故障，而非可选后端跳过。
+- 受管 IPC / session-connect 用例在绑定临时 Unix Socket 时因 `listen EINVAL` 失败；其他用例无法观测到已发布的会话记录或 RPC 发现记录。过长的临时路径是绑定失败的候选原因。发布与超时类失败尚未独立追踪，因此不得拆分为已确认的独立成因，也不得轻率为仅限夹具的故障。
 
-No macOS fix or successful end-to-end acceptance has been established. Linux and Windows results cannot substitute for it, and making a short-directory CI configuration pass would not by itself validate normal macOS temporary-directory behavior.
+目前尚未建立 macOS 修复方案或端到端验收通过记录。Linux 与 Windows 的结果不能替代 macOS 验证；仅让短目录 CI 配置通过本身也不足以验证常规 macOS 临时目录行为。
 
-### PowerShell syntax checking on Ubuntu CI
+### Ubuntu CI 上的 PowerShell 语法检查
 
-The [Ubuntu job in run 43154191240](https://github.com/111inhistory/pi-harness/actions/runs/43154191240/job/130970182267) failed at revision `1f35ba2c` in `checks PowerShell through its AST parser when available`. That test runs whenever `pwsh` or `powershell` is found, including Linux. A valid Unicode PowerShell command returned `ok: false`; the job reported 1,033 passes, one failure and nine skips. The Windows job in the same run passed. The local Linux environment had no PowerShell executable and skipped this case, so its green result did not cover this path.
+[run 43154191240 中的 Ubuntu 任务](https://github.com/111inhistory/pi-harness/actions/runs/43154191240/job/130970182267) 在修订版 `1f35ba2c` 于 `checks PowerShell through its AST parser when available` 用例失败。只要环境中找到 `pwsh` 或 `powershell`（包括 Linux），该测试就会运行。一条合法的 Unicode PowerShell 命令返回了 `ok: false`；该任务报告 1,033 通过、1 失败、9 跳过，而同一次运行的 Windows 任务通过。本地 Linux 环境没有安装 PowerShell 可执行文件因而跳过该用例，故本地全绿结果未覆盖此路径。
 
-The failing check took 5,035 ms against a 5,000 ms parser deadline. A startup/check timeout is plausible, but the original assertion printed only `false !== true`, without the result code or diagnostic. The exact cause is unconfirmed: the log cannot distinguish `checker_timeout`, startup failure or parser rejection. This is a Linux/PowerShell environment investigation, not evidence that the command is invalid or that all PowerShell use on Linux is unsupported.
+失败检查耗时 5,035 ms，超出了 5,000 ms 的解析器期限。启动或检查超时是合理猜测，但原断言只打印了 `false !== true`，没有结果码或诊断信息。确切原因尚未确认：日志无法区分 `checker_timeout`、启动失败还是解析器拒绝；目前仅记录该环境下的超时现象。
 
-Failure assertions now include the platform, Node version, selected executable, shell type, result code and parser diagnostic. No timeout, availability rule or production behavior changed. Further reproduction and active validation of this path are deferred at the user's request; this diagnostic improvement does not resolve the recorded failure.
+当前失败断言已补充平台、Node 版本、所选可执行文件、Shell 类型、结果码与解析器诊断信息。超时时间、可用性规则与生产行为未作改动。按用户要求，该路径的进一步复现与主动验证暂缓；失败问题仍待排查。
 
 ## 待处理设计问题
 
-### Provider request ownership and compat-driven thinking changes
+### Provider 请求所有权与 compat 驱动的 thinking 变更
 
-Changing the effective thinking configuration can invalidate a provider's prompt cache even when the serialized message prefix and cache key are unchanged. This includes budget changes, thinking enable/disable transitions, and top-level effort changes with adaptive thinking. The visible cost is another cache write or uncached input processing; accepting the request or retaining a connection does not prove cache reuse. Anthropic documents these effects and a supported per-message effort alternative in [thinking and caching](https://platform.claude.com/docs/en/build-with-claude/thinking-steering-and-cost#prompt-caching) and [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#what-invalidates-the-cache). This is provider-specific, not a claim that every thinking-level change invalidates every provider's cache.
+即使序列化后的消息前缀与缓存标识未变，修改生效的 thinking 配置仍可能使提供方的提示词缓存失效。这包括预算变更、thinking 启用/禁用切换，以及自适应 thinking 下的顶层 effort 变更。其可见代价是重新触发缓存写入或未命中缓存的输入计费。Anthropic 在 [thinking 与缓存](https://platform.claude.com/docs/en/build-with-claude/thinking-steering-and-cost#prompt-caching) 与 [提示词缓存](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#what-invalidates-the-cache) 中记录了这些影响以及受支持的逐消息 effort 替代方案。这是特定提供方的行为，并不意味着每次 thinking 级别变化都会使所有提供方的缓存失效。
 
-Adaptation must follow the exact provider API and explicit model `compat` options, including `supportsMidConvoEffort`; adaptive thinking alone is not the capability test. Pi SDK 1.5.0 already supports mid-conversation effort on multiple transport paths. Its Responses adapter uses `configuration_update` items when that compat option is enabled and its applicability checks pass, including the authentication-path restriction. Anthropic uses historical per-message effort markers and a fixed top-level effort on its supported path while thinking remains enabled; disabled thinking follows a separate path. The Codex WebSocket adapter separately abandons incremental `previous_response_id` reuse when non-input request parameters differ. That continuation check does not guarantee prompt-cache reuse. Harness must reuse native encodings and their restrictions, without inferring support from provider names, adaptive mode or tool-addition compat flags, installing a competing encoder, or rotating cache keys on every level change.
+适配必须遵循精确的 provider API 与显式的模型 `compat` 选项（包括 `supportsMidConvoEffort`）；仅凭自适应 thinking 本身不能作为能力判定依据。Pi SDK 1.5.0 已在多条传输路径上支持对话中 effort：其 Responses 适配器在开启对应 compat 选项且通过适用性检查（包括认证路径限制）后使用 `configuration_update` 条目；Anthropic 在其受支持路径且 thinking 保持开启时使用历史逐消息 effort 标记与固定的顶层 effort，禁用 thinking 时走另一条路径；Codex WebSocket 适配器在非输入请求参数不同时则会单独放弃增量 `previous_response_id` 复用。该延续性检查不保证提示词缓存复用。Harness 必须复用原生编码及其限制，不得根据 provider 名称、自适应模式或工具追加兼容位推断支持，也不得安装竞争编码器或在每次级别变更时轮换缓存 key。
 
-The unresolved design gap is the ownership and verification of Harness's complete provider request/cache contract, including effective thinking configuration across provider paths. Fixing the concrete Capability declaration-projection counterexamples did not resolve this broader design issue; their [resolved evidence](archive/capability-history-pbt.md) is archived separately. The Capability history model checks converted Responses messages under fixed thinking settings; it does not observe the complete outbound payload, adaptive/off transitions, or online cache usage. Request projection is assembled by the Capability extension, while native encoding belongs to the provider adapter. A provider-boundary review must distinguish ordinary budgets, adaptive effort, off transitions, native incremental-effort support and unsupported paths, using the SDK-clamped effective value. Stable message prefixes alone are insufficient acceptance evidence.
+尚未解决的设计缺口是 Harness 完整 provider 请求/缓存契约（包括跨 provider 路径的有效 thinking 配置）的所有权与验证。修复具体的 Capability 声明投影反例并未解决这一更广泛的架构问题；其[已解决证据](archive/capability-history-pbt.md)已单独归档。Capability 历史模型仅在固定 thinking 设置下检查转换后的 Responses 消息，并未观察完整出站 payload、自适应/关闭切换或在线缓存使用情况。请求投影由 Capability 扩展装配，而原生编码归属 provider 适配器。Provider 边界审查必须使用 SDK 钳位（clamped）后的有效值，区分普通预算、自适应 effort、关闭切换、原生增量 effort 支持与不支持路径。仅验证消息前缀稳定性不足以覆盖上述路径。
 
-No additional Harness adaptation is implemented for this gap, and no online cache-miss reproduction has been performed here. This entry records a confirmed design/validation omission and documented provider behavior, not a reproduced request-corruption defect. Keeping thinking settings stable avoids the documented parameter-change invalidation on affected paths, but does not itself guarantee a cache hit.
+目前未针对此缺口实现额外的 Harness 适配，也未在此执行在线缓存未命中复现。本条目记录的是已确认的设计/验证遗漏与有文档依据的提供方行为，而非已复现的请求损坏缺陷。保持 thinking 设置稳定可避免受影响路径上有记录的参数变更失效，但本身不保证缓存命中。
 
 ## 未交付功能
 
@@ -83,7 +83,7 @@ ModelRuntime 桥依赖 SDK 的内部结构，升级 SDK 时应复核。子会话
 
 这些限制描述当前行为，不自动转为新增功能承诺：
 
-- **Offline permission conversion**: the runtime reads canonical records only. The explicit converter supports flat manual-only records in closed v3 files and preserves native checkpoint IDs and unrelated bytes. Blacklist, mixed/group records and legacy/canonical mixtures are refused unchanged. Active roots and their owned child files must be closed before external conversion; backing up or completing other files does not make active-file migration safe. Exact completed/deferred evidence is in the [rewrite audit](reviews/rpc-permission-audit.md).
+- **离线权限转换**：运行时仅读取规范记录。显式转换工具支持已关闭 v3 文件中的扁平纯 manual 记录，并保留原生检查点 ID 与无关字节。黑名单、混合/组记录以及旧格式与规范格式混杂的文件会被原样拒绝。执行外部转换前必须先关闭活跃根及其所属子文件；备份或补齐其他文件并不能让活跃文件迁移变得安全。具体已完成与延后证据见[审计记录](reviews/rpc-permission-audit.md)。
 - **恢复与写入**：Shutdown 不可取消。强制退出或清理失败可能留下原生对话而没有根终态，下次按中断恢复。没有跨文件事务，也不支持多个进程同时写同一根会话。
 - **导航取消**：导航尝试会先停止子 Job。后续插件取消导航时，已停止的 Job 不回滚或自动重跑。
 - **消息交接**：异常、断连或超时不证明消息未入队，不自动重发。普通消息和子节点通知可触发模型请求，本项目不合并不同事件。跨 session 消息的 session 记录与 `from` 都是同用户本机进程的声明，不是认证；进程异常退出可能留下已失效的 session 记录，读取时按 pid 存活过滤，pid 复用时可能短暂误报。同一 durable session 不支持多进程同时打开；目录记录按 session ID 归属，重复打开时较早退出的进程可能删除后者记录。

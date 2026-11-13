@@ -148,7 +148,7 @@ subagent-sessions/<rootId>/views/<jobId>/result.txt
 - 删除末尾检查点可能改变原生默认 leaf 时，仅追加空元数据标记保留原分支。
 - 跳过无旧条目的文件。文件被多个根引用时不重复改写；子文件先转换后中断时，可借原始备份继续。
 
-历史转换审计与迁移复核见审查文档（如 [reviews/subagent-migration-batch.md](reviews/subagent-migration-batch.md)）。
+历史转换审计与迁移复核见归档文档（如 [archive/subagent-migration-batch.md](archive/subagent-migration-batch.md)）。
 
 ## 7. 验证范围
 

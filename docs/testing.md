@@ -25,63 +25,63 @@
 - 只断言内部调用顺序、固定字段复制或与实现等价的条件，没有对应契约。
 - 同一输入和失败条件在多个层次重复断言，但不能发现额外故障。
 
-纯逻辑测试仍可用于复杂算法或状态转换。使用真实 SDK 也不自动证明测试有价值。评审应检查断言是否能在目标行为被破坏时失败；修复实际缺陷时，宜验证回归在修复前失败、修复后通过。
+纯逻辑测试仍可用于复杂算法或状态转换。使用真实 SDK 本身不足以说明测试有效；评审应检查断言是否能在目标行为被破坏时失败，修复实际缺陷时宜验证修前失败、修后通过。
 
-## Complexity and resource verification
+## 复杂度与资源验证
 
-For changes whose work grows with history, tools, rules, actors or subscriptions, state the relevant input sizes and assess the complete call path. Count replay, catalog reads, matching, sorting, serialization and synchronous I/O across nested callers. Separate one-time initialization from work repeated per tool, request or event; include event-loop stalls when the same process owns the TUI. Complexity notation is a model, not evidence of a severity level. Confirm the trigger and user-visible impact before adding indices, batching or caches.
+对于工作量随历史长度、工具数量、规则数、Actor 数量或订阅数增长的改动，应说明相关输入规模并评估完整调用路径。统计跨嵌套调用方的重放、目录读取、匹配、排序、序列化与同步 I/O，区分一次性初始化与每次工具/请求/事件重复执行的工作；同一进程持有 TUI 时还应纳入事件循环阻塞。复杂度记号只是模型，不能替代严重程度证据；在添加索引、批处理或缓存前，先确认实际触发条件与用户可见影响。
 
-Assess three different memory costs:
+评估三种不同的内存开销：
 
-| Cost | Evidence to collect |
+| 开销类型 | 需收集的证据 |
 | --- | --- |
-| Allocation volume | Repeated arrays, object projections, serialization and temporary buffers created during an operation, even when later collected |
-| Peak live memory | Source history, copies, projections, buffers and concurrent children/requests held at the same time; include backing data kept alive by shared slices or closures |
-| Retained memory | Objects still reachable after the owning operation or subscription is released, with intended durable/live-session state accounted for |
+| 分配量（Allocation volume） | 单次操作中重复创建的数组、对象投影、序列化产物与临时缓冲区，即使随后会被回收 |
+| 峰值活跃内存（Peak live memory） | 同一时刻同时持有的源历史、副本、投影、缓冲区与并发子任务/请求；包含被共享切片或闭包保活的底层数据 |
+| 滞留内存（Retained memory） | 所属操作或订阅释放后仍可达的对象，并扣除预期保留的持久化/活跃会话状态 |
 
-Model growth against the right population: current active subscriptions, historical subscription count, live actors or all retained actors are different bounds. A collection growing with required durable actors is not automatically a leak; an accumulation proportional to canceled subscriptions is not bounded by active subscribers. A faster cache may retain histories or sessions indefinitely. Record both the saved work and the retained-data bound before choosing it.
+按正确的基数建立增长模型：当前活跃订阅数、历史订阅总数、活跃 Actor 数与全量保留 Actor 数是不同上界。随必要持久化 Actor 增长的集合不一定是泄漏；随已取消订阅线性累积的数据则不受活跃订阅数约束。加速缓存可能会无限期滞留历史或会话；选择前先记录节省的工作量与滞留数据上界。
 
-For lifecycle changes, identify the strong-reference chain and the owner that breaks it. Include maps/sets, closure captures, unresolved Promise continuations, event emitters, sockets and request queues. Verify applicable completion, cancellation, unsubscribe, disconnect, partial-startup failure and root-retirement paths. Distinguish suppression of late delivery from removal of callbacks and waiters. Preserve ownership fences until the underlying session or resource has actually exited; weakening a fence is not a memory fix.
+对于生命周期改动，明确强引用链及打破它的所有者，涵盖 Map/Set、闭包捕获、未决 Promise 延续、事件发射器、Socket 与请求队列。验证适用的完成、取消、退订、断连、部分启动失败与根服务退役路径。区分“抑制晚到投递”与“摘除回调和等待者”。在底层会话或资源实际退出前保留所有权围栏；削弱围栏不是内存修复。
 
-Use deterministic assertions for teardown where possible, such as detached listeners, removed waiters, closed owned handles and unchanged active-observer counts across repeated subscribe/cancel cycles. Those assertions support, but do not alone prove, whole-object collectability. For suspected retention, use isolated process measurements, heap/reference inspection or explicit-GC diagnostics with event-loop turns. Account for references held by the diagnostic itself: `WeakRef.deref()` can keep an object alive for the current job. A `WeakMap` entry only stops retaining its key through that map; another strong path can retain the key and its graph. Do not rely on finalizer timing to release resources or make normal tests depend on prompt collection.
+尽量为销毁路径编写确定性断言，例如监听器已摘除、等待者已移除、所持句柄已关闭，以及重复订阅/取消循环后活跃观察者数量不变。需要排查整棵对象树是否可被 GC 回收时，再配合隔离进程测量、堆/引用检查或带事件循环轮次的显式 GC 诊断，并把诊断工具自身持有的引用计入考量：`WeakRef.deref()` 会在当前任务期间保活对象；`WeakMap` 条目仅停止通过该 Map 持有键，其他强引用路径仍可能保活该键及其子图。不要依赖终结器（finalizer）时机释放资源，也不要让常规测试依赖及时 GC 回收。
 
-Measure comparable phases and workloads. RSS can remain high after objects are collected because of allocator behavior; a single RSS increase does not establish a leak. Report heap, external/buffer memory and process peak RSS as applicable, alongside the objects intentionally alive at each phase. Distinguish post-operation memory with a child still alive from post-disposal recovery. Use repeat samples and the same SDK/runtime and workload for revision comparisons; keep noisy wall-clock, CPU and memory benchmarks opt-in. Add inexpensive operation-count regressions only for demonstrated excess work, through the relevant production entry point, and verify that they fail before the fix. Select evidence according to the changed resource boundary rather than requiring a full heap/performance exercise for every edit.
+在可比阶段和负载下进行测量。受分配器行为影响，对象被回收后 RSS 仍可能维持高位，需结合堆快照与多阶段对比判断内存泄漏。按需报告 heap、external/buffer 内存与进程峰值 RSS，并附带各阶段预期存活的对象。区分“子会话仍存活时的操作后内存”与“销毁后恢复内存”。版本对比使用重复样本以及相同的 SDK/运行时与负载；易受噪声影响的墙钟、CPU 与内存基准保持按需显式运行。仅针对已证实的过度工作添加低成本操作计数回归测试（走相关生产入口），并验证修前失败、修后通过。按变更的资源边界选取证据，无需每次修改都跑完整堆/性能演练。
 
-## Test runner concurrency and process isolation
+## 测试运行器并发与进程隔离
 
-Pi Harness uses Node's test runner through `scripts/test.mjs`. Test files already run in separate worker processes, with Node's default concurrency of `max(1, os.availableParallelism() - 1)`. Each worker has its own heap, module cache and environment; filesystem paths, ports and external processes still require explicit isolation.
+Pi Harness 通过 `scripts/test.mjs` 调用 Node 测试运行器。各个测试文件已在独立工作进程中运行，Node 默认并发度为 `max(1, os.availableParallelism() - 1)`。每个 worker 拥有独立的堆、模块缓存与环境变量；文件系统路径、端口与外部进程仍需显式隔离。
 
-Within a file, tests remain serial unless a parent suite enables concurrency. The independent subprocess scenarios in `test/subagent-integration-real.test.mjs` and `test/async-shell-sdk.test.mjs` use parent suites capped at two concurrent scenarios. Each scenario owns a temporary working directory, agent directory and IPC namespace. Assertions and cleanup remain in force. Ordinary SDK subprocesses have a 30-second exit deadline and a 45-second outer deadline. Suites that mutate in-process globals or share fixture resources remain serial within their file.
+单文件内部默认串行，除非父 suite 显式开启并发。`test/subagent-integration-real.test.mjs` 与 `test/async-shell-sdk.test.mjs` 中的独立子进程场景通过父 suite 限制为最多两个并发场景，每个场景各自拥有临时工作目录、agent 目录与 IPC 命名空间，断言与清理保持生效。普通 SDK 子进程设有 30 秒退出期限与 45 秒外层期限。会修改进程内全局状态或共享夹具资源的套件在单文件内保持串行。
 
-The scenario cap applies within each of those two files; it is not a global process or CPU cap. Full-suite timing should be compared on the same host because other file workers still run concurrently.
+该场景并发上限仅作用于这两个文件内部，并非全局进程或 CPU 上限。对比全套耗时应在同台宿主机上进行，因为其他文件 worker 仍在并发运行。
 
-The three generated models share [PBT execution support](../test-support/pbt.ts) for private subprocess environments, deadlines, run/seed/replay controls and native fast-check reports. Each model retains its own subprocess and domain state; SDK imports occur after the child environment is installed. Arbitraries, default command limits, scheduling boundaries and assertions remain with the owning model. `PI_PBT_MAX_COMMANDS` explicitly overrides the command limit for local stress runs, and `PI_PBT_COMMAND_SIZE=max` lets generation use that full range instead of fast-check's default small size; without it the standard suite remains at 32 native commands and 24 parent/Capability commands, with 50 histories each. Failing histories must be replayed with the same command limit and generation size as well as the printed seed/path. Keep local stress runs within the existing process deadlines by selecting batches before execution; do not retry failures or relax deadlines to obtain a pass.
+三个生成模型共用 [PBT 执行支持](../test-support/pbt.ts) 提供的私有子进程环境、超时期限、运行/种子/重放控制以及原生 fast-check 报告。每个模型保留各自的子进程与领域状态；SDK 导入在子环境安装后才发生。生成器、默认命令上限、调度边界与断言由各自模型负责。`PI_PBT_MAX_COMMANDS` 可在本地压测时显式覆盖命令上限，`PI_PBT_COMMAND_SIZE=max` 允许生成覆盖完整区间而非 fast-check 默认的小规模；未指定时标准套件保持 32 条原生命令与 24 条父协调/Capability 命令，各跑 50 组历史。复现失败历史时必须使用相同的命令上限、生成规模以及打印出的 seed/path。本地压测通过拆批执行保持在既有进程期限内，不要通过重试失败或放宽超时来获取通过。
 
-## Native lifecycle model tests
+## 原生生命周期模型测试
 
-`test/typed/native-lifecycle-model.test.ts` runs generated histories through the real RootService, runtime, Pi SDK, managed IPC, actor storage and durable Job views. The model and shared SDK fixture use strict TypeScript. Each subprocess has private working, agent and socket directories, a 120-second process exit deadline and a 150-second outer deadline.
+`test/typed/native-lifecycle-model.test.ts` 通过真实的 RootService、运行时、Pi SDK、受管 IPC、Actor 存储与持久化 Job 视图驱动生成的历史。模型与共享 SDK 夹具采用严格 TypeScript。每个子进程拥有私有工作目录、agent 目录与 Socket 目录，进程退出期限为 120 秒，外层期限为 150 秒。
 
-Each sample starts one Fresh and one Inherited Actor. `fast-check` generates up to 32 commands: Main writes, native peer tool calls, SDK enqueue-then-throw faults, cancellation, varied provider results, continuation and reload. Expected lifecycle state, accepted messages and Job lineage come from the generated operations. Assertions check actual durable transcripts, sender attribution, terminal results/notices, inherited context and immutable previous Job artifacts. The model contains no copy of the production transition algorithm. Fifty histories run by default; `PI_PBT_RUNS` selects a larger local sample.
+每个样本启动一个 Fresh Actor 与一个 Inherited Actor。`fast-check` 最多生成 32 条命令：Main 写入、原生 peer 工具调用、SDK 入队后抛错故障、取消、不同 provider 结果、续跑与重载。预期生命周期状态、已接受消息与 Job 谱系均由生成的操作推导。断言检查实际持久化转录本、发送者归属、终态结果/通知、继承上下文以及不可变的旧 Job 产物。模型本身不包含生产状态转移算法的副本。默认运行 50 组历史；`PI_PBT_RUNS` 可指定更大的本地样本量。
 
-`fc.scheduler` varies explicitly scheduled provider-release boundaries when both Actors settle. Native SDK, IPC and filesystem work after those boundaries runs normally; the scheduler does not control arbitrary kernel or timer interleavings. Provider errors, empty replies, thinking-only replies and cancellation are generated outcomes. An unexpected assertion failure remains a failure and is shrunk by `fast-check`.
+`fc.scheduler` 仅在两个 Actor 均进入稳定态时调度显式包裹的 provider 释放边界。这些边界之后的原生 SDK、IPC 与文件系统操作正常运行；调度器不控制任意内核或定时器交错。Provider 错误、空回复、仅思考回复与取消均属于生成结果。非预期的断言失败仍视为失败，并由 `fast-check` 收缩最小反例。
 
-Failures print a seed, property path and command `replayPath`. Replay with `PI_PBT_SEED=<seed> PI_PBT_PATH=<path> PI_PBT_COMMAND_PATH=<replayPath> node --import tsx --test test/typed/native-lifecycle-model.test.ts`. Keep the printed scheduler expression when reproducing a scheduling-specific failure. Reload uses the existing SessionManager and does not claim fresh-process recovery coverage.
+失败时会打印 seed、属性路径与命令 `replayPath`。使用 `PI_PBT_SEED=<seed> PI_PBT_PATH=<path> PI_PBT_COMMAND_PATH=<replayPath> node --import tsx --test test/typed/native-lifecycle-model.test.ts` 重放；复现调度相关失败时需保留打印出的调度器表达式。重载复用既有 SessionManager，不宣称覆盖全新进程恢复。
 
-## Parent coordination model tests
+## 父协调模型测试
 
-`test/typed/parent-coordination-model.test.ts` drives real RootService, runtime, native SDK sessions, managed IPC and durable session files. Each history starts a Fresh and an Inherited parent with one or two generated children each. Generated spawning grows each parent to at most three children, bounding the sample at eight Actors. Up to 24 commands combine child creation, direct/upstream messages, hierarchical broadcasts, held provider requests, yielding, text/empty/error results, cancellation, revival and reload. Fifty histories run by default, with the same seed, path, command-path and run-count controls as the native lifecycle model. Each history enables messaging and read on Main before creating children; the independent loadout audit preserves child-owned messaging, excludes the ordinary Main-only read grant and verifies leaf authority limits.
+`test/typed/parent-coordination-model.test.ts` 驱动真实的 RootService、运行时、原生 SDK 会话、受管 IPC 与持久化会话文件。每组历史启动一个 Fresh 父节点与一个 Inherited 父节点，各自带一到两个生成的子节点；生成派生使每个父节点最多拥有三个子节点，样本上限为八个 Actor。最多 24 条命令组合子节点创建、直连/上行消息、层级广播、挂起的 provider 请求、让出、文本/空/错误结果、取消、唤醒与重载。默认运行 50 组历史，并使用与原生生命周期模型相同的 seed、path、command-path 与样本数控制。每组历史先在 Main 启用消息工具与 read；独立的工具集合断言检查子节点自己的消息能力仍在、普通 Main-only read 授权不被继承，以及叶节点的权限限制。
 
-The reference state tracks intended parent links, live children, explicit rounds and message recipients. Assertions compare the published tree and Job lineage, then reopen each native session file to check delivery identity and terminal notices. Child activity keeps a live parent in its existing Job; late child notices cannot silently revive a stopped parent. Completed Jobs consume accepted messages once, while interrupted deliveries cannot duplicate. A terminal notice queued behind a held parent provider follows the same cancellation semantics as ordinary steer messages: cancelling the receiving Job may leave it unconsumed. Previously drained notices remain required exactly once, and interrupted notices cannot duplicate or reach another parent. Inherited entries are excluded from the receiving Actor’s own delivery observations.
+参考状态追踪预期父子链接、活跃子节点、显式轮次与消息接收者。断言先比对已发布的树与 Job 谱系，再重新打开每个原生会话文件核对投递身份与终态通知。子节点活跃时，活跃父节点停留在当前 Job；晚到的子节点通知不能静默唤醒已停止的父节点。已完成的 Job 消费已接受消息一次，被中断的投递不得重复。排在挂起父节点 provider 之后的终态通知遵循与普通 steer 消息相同的取消语义：取消接收方 Job 可能会使其未被消费。此前已排空的通知仍要求恰好一次，被中断的通知不得重复或送达另一父节点。继承条目排除在接收方 Actor 自身的投递观察之外。
 
-The scripted external provider runs native child creation and message tools. A scoped public SDK prompt observer captures session handles for completion waits and durable-file observations; it is restored even when setup or cleanup fails. Cleanup and unexpected extension/UI errors fail the property. `fc.scheduler` orders only explicitly wrapped leaf-provider releases, leaving SDK, filesystem and kernel scheduling real. Subprocess and outer deadlines remain 120 and 150 seconds. Budget-clock contracts remain in the independent budget tests.
+脚本化的外部 provider 运行原生子节点创建与消息工具。作用域化的公开 SDK prompt 观察者捕获会话句柄以用于完成等待与持久化文件观察；即使初始化或清理失败也会恢复。清理失败与非预期的扩展/UI 错误会使属性失败。`fc.scheduler` 仅排序显式包裹的叶子 provider 释放，SDK、文件系统与内核调度保持真实。子进程与外层期限保持 120 秒与 150 秒。Budget 时钟契约仍在独立的 budget 测试中验证。
 
-## Capability history model tests
+## Capability 历史模型测试
 
-`test/typed/capability-history-model.test.ts` generates histories of description/schema replacement, discovery, permission commands, backend calls, compaction and durable reopen. Discovery uses the real Capability retrieval SDK and local broker; permission commands enter through `AgentSession.prompt`. The external provider and compaction summary are scripted. Request observations use the installed additive Responses serializer. This model does not claim Chat Completions, Anthropic, MCP or nested Codemode coverage.
+`test/typed/capability-history-model.test.ts` 生成包含描述/schema 替换、发现、权限命令、后端调用、压缩与持久化重新打开的历史。发现使用真实的 Capability 检索 SDK 与本地 Broker；权限命令通过 `AgentSession.prompt` 进入。外部 provider 与压缩摘要由脚本驱动。请求观察使用已安装的增量 Responses 序列化器。该模型不宣称覆盖 Chat Completions、Anthropic、MCP 或嵌套 Codemode。
 
-The model generates up to 24 commands per history and runs 50 histories by default. Both native and transformed-view profiles check execution authority, active declarations, current schema/description, Preset/Capability snapshots, caller-message preservation, forced-prompt precedence and durable business-state restoration. Views include filtering, reordering, retained references, opaque cloning and appended messages. Historical placement and full-request prefix continuity are deliberately outside the current-snapshot contract. `PI_PBT_RUNS`, `PI_PBT_SEED`, `PI_PBT_PATH` and `PI_PBT_COMMAND_PATH` control sample size and replay, with the same usage as the native model. All models print the actual seed and run/shrink counts even on success. PBT subprocesses have 120-second deadlines with 150-second outer limits.
+该模型每组历史最多生成 24 条命令，默认运行 50 组历史。原生与视图变换（transformed-view）两个 profile 均验证执行权限、活跃声明、当前 schema/描述、Preset/Capability 快照、调用方消息保留、强制提示词优先级与持久化业务状态恢复。视图变换包含过滤、重排、保留引用、不透明克隆与追加消息。历史放置与全请求前缀连续性已明确排除在当前快照契约之外。`PI_PBT_RUNS`、`PI_PBT_SEED`、`PI_PBT_PATH` 与 `PI_PBT_COMMAND_PATH` 控制样本量与重放，用法与原生模型一致。即使运行成功，所有模型也会打印实际的 seed 以及运行/收缩次数。PBT 子进程期限为 120 秒，外层期限为 150 秒。
 
-The generated property found production declaration-history and prune-usage defects. Minimal traces, causes, fixes and unchanged-property regression results are recorded in [archived Capability history counterexamples](archive/capability-history-pbt.md). Those histories pass after the production fixes; no generated commands were skipped and no failures were marked as expected.
+该生成属性曾发现生产代码中的声明历史与裁剪使用记录缺陷。最小复现轨迹、成因、修复以及未改动属性的回归结果记录在[已归档的 Capability 历史反例](archive/capability-history-pbt.md)中。生产修复后这些历史均已通过；没有跳过任何生成命令，也没有将失败标记为预期。
 
 ## 文档与测试登记
 
@@ -110,55 +110,55 @@ The generated property found production declaration-history and prune-usage defe
 - `kind` 为 design 或 regression。regression 另需 `failure` 字符串，说明实际触发条件和用户可见失败；`docs` 指向缺陷证据章节，可位于 `docs/reviews/`。
 - `docs` 选择 Markdown 的完整 ATX 标题行，例如 `## 创建与查询`。范围包含该节及子节，直到下一个同级或更高级标题。代码围栏内的标题不参与定位。同名标题有歧义时拒绝登记。
 - `tests` 使用明确的行为测试文件路径，不使用 glob。一个契约可关联多个文件；一个文件可关联多个契约，但每个关联都应有独立依据。
-- 生产代码路径不参与文档联动。关联依据来自设计行为，代码文件划分不能证明文档是否需要更新。
+- 生产代码路径不参与文档联动。关联依据来自设计行为而非代码文件划分。
 - 不为满足登记而创建逐函数文档，也不以一个全仓库契约兜住无关测试。
 
 ## 提交前关联检查
 
-The pre-commit contract check is advisory. It prints potential omissions and continues the commit even when the checker fails. It does not require paired edits or review receipts. Secret scanning remains a separate blocking check.
+pre-commit 契约检查仅作提示，会打印潜在遗漏，即使检查器失败也会继续提交；它不要求配对修改或复核回执。敏感信息扫描仍是独立的阻塞检查。
 
-The default checker compares Git HEAD and index, ignoring unstaged document/test changes and running no tests. Explicit `--review ... --write` also reads and updates the working-tree manifest, preserving unrelated edits.
+默认检查器对比 Git HEAD 与暂存区，忽略未暂存的文档/测试改动，且不运行测试。显式执行 `--review ... --write` 还会读取并更新工作区清单，同时保留不相关的改动。
 
-Explicit CLI audit rules (findings are not commit conditions):
+显式 CLI 审计规则（发现项不构成提交条件）：
 
 1. 已登记的文档标题和测试文件必须存在于暂存版本中。
 2. 暂存的新增、修改、删除测试应有 design 或 regression 登记。删除测试可以使用 HEAD 中的旧登记。
-3. Compare associated HEAD/index content. A one-sided change produces a reminder to review whether a counterpart update is useful; it never blocks a commit.
+3. 比对关联的 HEAD 与暂存区内容；单侧变更会输出提示以建议复核是否需要同步更新，但从不阻塞提交。
 4. 文档其他章节变化不触发该契约。测试文件变化会检查该文件的所有关联。
 5. 删除或修改映射仍会检查旧关联，不能仅移除登记来跳过单侧变更检查。
-6. 文档和测试同时变化只证明双方被触及，不能证明语义一致；测试价值与语义一致性仍由审查负责。
+6. 文档和测试同时变化仍需人工核对语义一致与测试价值。
 
-Test refactoring, wording changes and regressions within an existing contract may need no counterpart edit. Review receipts are optional context, not a condition for committing. Do not add meaningless assertions or wording to silence a reminder.
+现有契约范围内的测试重构、文案调整和回归测试可能无需修改对应文档。复核回执属于可选上下文，不是提交条件；不要为了消除提示而添加无意义的断言或文案。
 
-After staging the relevant changes, this single command writes the review entry and stages the manifest; no manual JSON patch is needed:
+暂存相关改动后，下面这一行命令即可写入复核条目并暂存清单，无需手工修改 JSON：
 
 ```sh
 node scripts/check-test-contracts.mjs --review capability.lazy-schemas --reason 'Fixture refactor; documented behavior is unchanged.' --write && git add test/contracts.json
 ```
 
-`--write` updates only that entry in the working-tree manifest's `reviews`; the explicit `git add` stages it. Omitting `--write` prints JSON without modifying files. Fingerprints describe the staged documents/tests, so later changes invalidate the receipt. Neither the command nor a receipt proves semantic consistency or grants user authorization.
+`--write` 仅更新工作区清单 `reviews` 中的对应条目，并由显式的 `git add` 暂存；省略 `--write` 则只打印 JSON 而不修改文件。指纹描述的是已暂存的文档/测试，因此后续变更会使该回执失效；回执仅记录已审阅的指纹。
 
 文档标题、测试移动或契约退出时，可同步清单。已经移除的契约仍可用同一命令根据 HEAD 中的旧登记生成复核记录。历史复核记录可以删除；内容不匹配的旧记录不会消除新的单侧修改提醒。
 
-The default scope covers changed tests. Pre-commit remains non-blocking even for missing associations or malformed manifests; diagnose these when useful. An explicit full audit uses:
+默认范围覆盖已变更的测试。即使存在缺失关联或清单格式错误，pre-commit 仍保持非阻塞；有需要时再据此排查。显式全量审计使用：
 
 ```sh
 node scripts/check-test-contracts.mjs --all
 ```
 
-`--all` audits all indexed tests. Direct CLI checks, including `npm run check:test-contracts`, return nonzero on findings for callers that explicitly choose strict auditing. The pre-commit hook treats that status as advisory. No mode automatically generates associations or runs tests.
+`--all` 会审计全部已索引的测试。直接运行 CLI 检查（包括 `npm run check:test-contracts`）在存在发现项时返回非零退出码，供显式选择严格审计的调用方使用；pre-commit hook 则将该状态视为提示。所有模式均不会自动生成关联或运行测试。
 
-## Common-path measurements
+## 常见路径基准测量
 
 ```sh
 npm run bench:common -- --output /tmp/common-paths.json
 ```
 
-This opt-in script measures permission queries, local broker searches, scoped/full root lists and real owned IPC roundtrips. Fixed profiles contain 4,000/8,000 assistant-message proxies, 30/50 registered tools, eight active tools and terminal registries with 120/240 actors and 200/400 Jobs. The permission replay receives the corresponding user/assistant/tool-result entry counts; it does not inspect message bodies. Root lists use an in-memory registry and omit archive/view I/O. Broker provider ports use synthetic in-memory catalogs and Skill bodies, so this measures local search, not retrieval-model latency or Skill filesystem performance.
+该按需脚本测量权限查询、本地 Broker 搜索、带作用域/全量根列表以及真实的受管 IPC 往返。固定负载档位包含 4,000/8,000 条 assistant 消息代理、30/50 个已注册工具、8 个活跃工具以及含 120/240 个 Actor 和 200/400 个 Job 的终态注册表。权限重放接收对应数量的 user/assistant/toolResult 条目数，不检查消息正文。根列表使用内存注册表，省略归档与视图 I/O。Broker provider 端口使用合成的内存目录与 Skill 正文，因此测量的是本地检索而非检索模型延迟或 Skill 文件系统性能。
 
-Imports and fixture setup are excluded. The first operation is timed before validation; subsequent operations are reported separately with median/min/max wall time, process CPU and applicable work counts. `--iterations N` controls warm samples (default 25). Assertions run outside the clocks. Each invocation owns a private IPC root and tears it down before reporting success. Results include platform, Node, revision and working-tree status; timings are measurements, not CI thresholds or memory-growth evidence.
+导入与夹具初始化不计入耗时。首次操作在校验前单独计时；后续操作按墙钟中位数/最小值/最大值、进程 CPU 及适用工作量计数分别报告。`--iterations N` 控制预热样本数（默认 25）。断言在计时之外执行。每次调用拥有独立的私有 IPC 根目录，并在报告成功前将其清理。结果包含平台、Node 版本、修订号与工作区状态；计时仅作测量参考，不构成 CI 门禁阈值或内存增长证据。
 
-The manual [Harness performance workflow](../.github/workflows/inherited-performance.yml) runs common-path measurements before the inherited lifecycle benchmark on each Linux and Windows runner. Each platform uploads `common-paths.json` and `inherited-performance.json` together as `harness-performance-<os>-<revision>`. The workflow remains opt-in and applies no timing thresholds.
+手动触发的 [Harness performance 工作流](../.github/workflows/inherited-performance.yml) 会在每个 Linux 与 Windows runner 上先运行常见路径测量，再运行 Inherited 生命周期基准测试，并将 `common-paths.json` 与 `inherited-performance.json` 一并上传为 `harness-performance-<os>-<revision>`。该工作流保持按需触发，不设耗时门禁。
 
 ## Inherited 创建性能
 
@@ -178,20 +178,20 @@ npm run bench:inherited -- --output /tmp/inherited-performance.json
 
 比较时核对 Node 版本、操作系统、配置与提交；CPU、墙钟与内存数据用于分析，不设跨 runner 的绝对门禁。默认回归只对已确认的重复工作设宽松读取次数上限，不通过放宽超时掩盖退化。
 
-### Heap ownership attribution
+### 堆所有权归因
 
-Use a separate, explicit profile to investigate live heap ownership:
+使用单独的显式 profile 调查活跃堆所有权：
 
 ```sh
 npm run bench:inherited -- --calls 1000 --children 3 --mode rpc --repeats 1 \
   --heap-snapshot-dir /tmp/private-heap-profile --output /tmp/private-heap-report.json
 ```
 
-The snapshot directory must not exist yet. Snapshot mode requires an explicit `--calls` value and `--repeats 1`; it never expands into the default history matrix. The worker captures standard V8 `.heapsnapshot` files after GC at three phases: the parent before creation, all configured children actually running with RPC subscriptions when requested, and teardown after the fixture function has returned. Each snapshot records its file size and V8 heap-space occupancy. Snapshot collection forces GC and changes subsequent execution and process RSS watermarks, so all timing fields are `null` in this mode and its memory measurements must not be mixed with normal runs; normal benchmark invocations remain unchanged. The worker retains its 120-second deadline, and collection or cleanup failures fail the run.
+快照目录必须尚不存在。快照模式要求显式指定 `--calls` 与 `--repeats 1`，绝不会展开为默认历史矩阵。worker 在三个阶段于 GC 后采集标准 V8 `.heapsnapshot` 文件：创建前的父会话、全部配置子节点实际运行（按需附带 RPC 订阅）、以及夹具函数返回后的销毁阶段。每个快照记录其文件大小与 V8 堆空间占用。采集快照会强制触发 GC 并改变后续执行与进程 RSS 水位，因此该模式下所有计时字段均为 `null`，其内存测量值不得与常规运行混用；常规基准调用保持不变。worker 保留 120 秒期限，采集或清理失败会使本次运行失败。
 
-After the worker exits, the controller reads the snapshots sequentially and reports counts and shallow bytes for each V8 node type, type deltas from the parent phase, the largest object/type groups, plus session owners such as `SessionManager`, `AgentSession` and `RootService`. Compare these per-phase groups to distinguish growth in strings, arrays, maps and session objects. Shallow bytes exclude referenced descendants and do not establish retained ownership. Load the snapshots in Chrome DevTools **Memory**, use **Comparison** to compare `childrenAlive` with `parentBeforeCreate`, and inspect **Retainers** and retained sizes for individual `SessionManager` or `AgentSession` instances. Follow their history arrays, indexes and context-message references to distinguish shared message bodies from independently retained projections. Compare `afterTeardown` to check which owners remain reachable. Multiple snapshots do not establish leak freedom or allocation volume.
+worker 退出后，控制器按顺序读取快照并报告各 V8 节点类型的数量与浅层字节（shallow bytes）、相对父阶段的增量、最大对象/类型分组，以及 `SessionManager`、`AgentSession` 和 `RootService` 等会话所有者。对比各阶段分组可区分字符串、数组、Map 与会话对象的增长。浅层字节不包含所引用的后代对象；可将快照加载到 Chrome DevTools **Memory** 面板中，使用 **Comparison** 对比 `childrenAlive` 与 `parentBeforeCreate`，并检查单个 `SessionManager` 或 `AgentSession` 实例的 **Retainers** 与保留大小（retained size），沿着历史数组、索引与上下文消息引用区分共享消息正文与独立滞留的投影；对比 `afterTeardown` 可检查销毁后仍有哪些所有者保持可达。
 
-These artifacts use synthetic history, but a V8 snapshot also contains process internals, module paths and environment-derived data. Keep snapshot files and their reports outside the repository in a private directory; do not upload them as public workflow artifacts. Large profiles can require substantially more disk and peak memory while writing or parsing snapshots. Controller parsing occurs only after the worker exits and is excluded from worker memory measurements.
+尽管这些产物使用合成历史，V8 快照仍包含进程内部信息、模块路径与环境派生数据。请将快照文件及其报告保存在仓库之外的私有目录中，不要上传为公开工作流产物。大规模 profile 在写入或解析快照时可能需要显著更多的磁盘与峰值内存；控制器解析仅在 worker 退出后进行，不计入 worker 内存测量。
 
 ## 迁移与验证边界
 
