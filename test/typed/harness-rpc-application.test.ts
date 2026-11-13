@@ -434,7 +434,7 @@ test("session RPC lists published peers and connects by host-resolved identity o
   const contacts = fixture.session.sessionManager.getBranch()
     .filter((entry): entry is Extract<typeof entry, { type: "custom_message" }> => entry.type === "custom_message")
     .filter((entry) => entry.customType === "subagent-session-contact");
-  assert.ok(contacts.some((entry) => JSON.stringify(entry).includes(sessionMainAddress(peer))),
+  assert.ok(contacts.some((entry) => typeof entry.content === "string" && entry.content.includes(sessionMainAddress(peer))),
     "the host appends the resolved contact message to the live branch");
 
   await assert.rejects(

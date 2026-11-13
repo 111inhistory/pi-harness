@@ -137,7 +137,9 @@ async function waitFor(predicate: () => boolean, label: string, child: Child, ti
 
 async function stopChild(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill("SIGTERM");
+  // EOF uses the SDK RPC shutdown path on every platform. Windows SIGTERM
+  // terminates the process directly and cannot run extension cleanup hooks.
+  child.stdin?.end();
   await Promise.race([new Promise<void>((resolve) => child.once("exit", () => resolve())), delay(5000)]);
   if (child.exitCode === null && child.signalCode === null) {
     child.kill("SIGKILL");
@@ -207,6 +209,7 @@ test(
 
     await stopChild(running.child);
     await waitFor(() => !existsSync(recordPath), "discovery-record cleanup", running);
+    if (process.platform !== "win32") assert.equal(existsSync(address), false, "the Unix socket was removed");
   },
 );
 
@@ -235,6 +238,7 @@ test(
     await delay(250);
 
     assert.equal(existsSync(path.join(sessionDir, "harness-rpc.json")), false, "no discovery record in json mode");
+    if (process.platform !== "win32") assert.equal(existsSync(getAgentSocketPath("harness-rpc", sessionDir)), false);
     // Named Pipes have no portable filesystem existence check; record absence is
     // the portable assertion that this non-RPC host never published an endpoint.
   },

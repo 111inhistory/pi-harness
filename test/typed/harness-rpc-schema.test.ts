@@ -14,6 +14,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { waitFor } from '../../test-support/async.ts';
 
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Value } from 'typebox/value';
@@ -584,7 +585,7 @@ test('typed client works end-to-end over socket with events, errors and optional
   streamHarness.listener()?.({ type: 'message_start', message: { role: 'assistant', content: [] } });
   running.finish('e3');
   await running.runtime.jobDone(running.jobId);
-  await flush();
+  await waitFor(() => events.length >= 2, { label: 'session and terminal events over the socket' });
   assert.equal(events.length >= 2, true);
 
   const unsub = await client.call(RPC_METHODS.streamUnsubscribe, { subscription: sub.subscription });
