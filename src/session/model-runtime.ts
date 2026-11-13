@@ -1,7 +1,7 @@
 /**
  * The parent-session ModelRuntime bridge for Pi extensions.
  *
- * Session child processes must run on the parent session's exact ModelRuntime
+ * Derived sessions must run on the parent session's exact ModelRuntime
  * so extension-registered providers, virtual-model routing and runtime
  * credentials stay available. Pi's synchronous `ModelRegistry` compatibility
  * facade stores that runtime in a TypeScript-`private` field; the compiled
@@ -28,7 +28,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
  */
 export const MODEL_RUNTIME_AUDITED_VERSION = "1.5.0";
 
-/** Explicit bridge failure. The code matches the Subagent lifecycle error. */
+/** Explicit failure when the parent runtime cannot be reused. */
 export class ModelRuntimeBridgeError extends Error {
   readonly code: string;
 

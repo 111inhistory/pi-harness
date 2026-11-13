@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { SubagentExecution } from '../../src/subagent/execution.ts';
-import type { ExecutionSession } from '../../src/subagent/execution.ts';
+import { SessionExecution } from '../../src/session/execution.ts';
+import type { ExecutionSession } from '../../src/session/execution.ts';
 
 function fakeSession() {
   const events: string[] = [];
@@ -19,7 +19,7 @@ function fakeSession() {
 
 test('shared execution owns prompt, steer and idempotent reverse cleanup', async () => {
   const fake = fakeSession();
-  const execution = new SubagentExecution(fake.session);
+  const execution = new SessionExecution(fake.session);
   execution.addCleanup(() => { fake.events.push('first'); });
   execution.addCleanup(async () => { fake.events.push('second'); });
   await execution.prompt('task');
@@ -35,7 +35,7 @@ test('shared execution owns prompt, steer and idempotent reverse cleanup', async
 
 test('cleanup failure does not prevent remaining cleanup or SDK disposal', async () => {
   const fake = fakeSession();
-  const execution = new SubagentExecution(fake.session);
+  const execution = new SessionExecution(fake.session);
   execution.addCleanup(() => { fake.events.push('remaining'); });
   execution.addCleanup(() => { throw new Error('failed cleanup'); });
   await assert.rejects(execution.dispose(), (error: unknown) => {
@@ -49,7 +49,7 @@ test('cleanup failure does not prevent remaining cleanup or SDK disposal', async
 
 test('disposing active execution aborts before waiting and releasing SDK', async () => {
   const fake = fakeSession();fake.busy();
-  const execution = new SubagentExecution(fake.session);
+  const execution = new SessionExecution(fake.session);
   await execution.dispose();
   assert.deepEqual(fake.events, ['abort', 'idle', 'dispose']);
 });
@@ -57,7 +57,7 @@ test('disposing active execution aborts before waiting and releasing SDK', async
 test('parent abort reaches the owned SDK session and rejects later prompts', async () => {
   const fake = fakeSession();fake.busy();
   const controller = new AbortController();
-  const execution = new SubagentExecution(fake.session, controller.signal);
+  const execution = new SessionExecution(fake.session, controller.signal);
   controller.abort();
   await assert.rejects(execution.prompt('late'), { name: 'AbortError' });
   await execution.dispose();
@@ -68,7 +68,7 @@ test('parent abort reaches the owned SDK session and rejects later prompts', asy
 test('already-aborted execution cannot prompt and still releases the acquired session', async () => {
   const fake = fakeSession();
   const controller = new AbortController();controller.abort();
-  const execution = new SubagentExecution(fake.session, controller.signal);
+  const execution = new SessionExecution(fake.session, controller.signal);
   await assert.rejects(execution.prompt('task'), { name: 'AbortError' });
   await execution.dispose();
   assert.ok(fake.events.includes('dispose'));

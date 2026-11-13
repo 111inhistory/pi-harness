@@ -537,7 +537,7 @@
       ],
       "tests": [
         "test/typed/native-session-factory.test.ts",
-        "test/typed/subagent-execution.test.ts",
+        "test/typed/session-execution.test.ts",
         "test/subagent-runtime.test.mjs",
         "test/subagent-contract-redesign.test.mjs",
         "test/typed/native-lifecycle-model.test.ts"
@@ -611,7 +611,7 @@
         "test/typed/subagent-routing-config.test.ts",
         "test/typed/subagent-runtime-config.test.ts",
         "test/typed/root-service-propagation.test.ts",
-        "test/typed/subagent-model-runtime.test.ts",
+        "test/typed/session-model-runtime.test.ts",
         "test/typed/runtime-domain-contract.test.ts"
       ]
     },

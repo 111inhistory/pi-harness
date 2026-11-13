@@ -18,6 +18,7 @@
 | `actor-sessions.ts` | Actor 角色／模型身份记录、原生 manager 引用与已记录锚点、身份补丁 | Job 状态和停止排序 |
 | `native-session.ts` | Settings、ResourceLoader、子扩展装配及 SDK 会话创建（Fresh／Inherited 均独立加载扩展与 MCP 后端，Inherited 恢复捕获白名单并对异步 MCP 提供有界等待，默认 10 秒） | 路由、任务结果裁决 |
 | `root-service.ts` | 组装上述模块，根事件写入、历史视图、内存超限临时文件管理（进程正常退出清理）、故障锁存，以及把当前根有效黑名单过滤后的作用域交给子会话 | 第二套 Job 状态机 |
+| `session/execution.ts`、`session/model-runtime.ts` | 跨领域 SDK 执行句柄、取消与清理，父模型运行时桥及物理模型解析 | Actor／Job 状态、路由、权限决定 |
 | `session/application.ts`、`session/host.ts`、`subagent/lifecycle.ts` | SDK 根生命周期、领域组合、RPC 连接与代次、退役期限及资源隔离；显式绑定借用的 SDK runtime | 领域状态、伪造物理退出、重跑已结束任务 |
 | `surface.ts`、`message-write.ts`、`managed-send.ts` | 工具声明、调用方绑定、输入捕获；模型工具与 RPC 共用受管消息发送 | 全局注册表、第二套广播或交接状态 |
 | `command.ts`、`status-view.ts` | `/subagent` 命令注册、参数解析、错误呈现与列表文本渲染 | Job 状态、准入或消息投递 |
@@ -53,7 +54,7 @@ Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定�
 
 Inherited 捕获每个批次只读取一次父分支，Fresh-only 批次不捕获。每个子会话持有自己的条目数组、session header、分支索引与叶指针；历史 entry 与消息正文按不可变数据共享，运行时不为整份历史做深拷贝，也不预先物化压缩后的有效上下文。只有 SDK 明确原地写入的对象才需要复制。
 
-Runner 通过 `openSubagentExecution` 获得 SDK Session。共享执行句柄负责 abort 和 cleanup；Root 不用超时竞争强制 dispose 一个仍在执行的 Session。
+Runner 通过 `openSessionExecution` 获得 SDK Session。共享执行句柄负责 abort 和 cleanup；Root 不用超时竞争强制 dispose 一个仍在执行的 Session。
 
 父 Subagent 回复结束后，若直接子节点仍处于 `running`、`stopping` 或 `finalizing`，或当前执行仍持有未完成的异步 Shell 任务，Runner 保留会话并等待事件，不结束当前 Job。Runtime 暂停活跃时间并重排到 lifetime 截止时间；消息、子节点通知或最后一项工作结束会唤醒原循环，恢复活跃时间后重排 deadline。队列和所属工作均为空才正常收尾，期间不分配新 Job 或 Budget。取消会释放等待；失败或取消后的晚到子节点通知只追加保留历史。
 

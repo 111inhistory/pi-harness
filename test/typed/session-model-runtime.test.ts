@@ -20,7 +20,7 @@ import {
   ModelRuntimeBridgeError,
   findParentModelRuntime,
   parentModelRuntime,
-} from "../../src/subagent/model-runtime.ts";
+} from "../../src/session/model-runtime.ts";
 
 interface FakeRuntime {
   readonly marker: string;

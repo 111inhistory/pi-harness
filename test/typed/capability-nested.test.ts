@@ -93,7 +93,7 @@ function recordsOn(branch: BranchEntry[]): BranchEntry[] {
 }
 
 /**
- * End-to-end Capability run through the shared Subagent execution:
+ * End-to-end Capability run through the shared SDK execution:
  *
  * - the parent model calls a fixture tool, which calls `ctx.executeTool("capability")`;
  * - the internal retrieval session first asks for remote/all searches (must fail

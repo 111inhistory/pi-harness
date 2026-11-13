@@ -34,7 +34,7 @@ import { DEFAULT_HARNESS_CONFIG, resolveHarnessConfig } from "../../src/harness-
 import type { HarnessConfig } from "../../src/harness-config.ts";
 import { capabilityAllowsTool } from "../../src/capability/scope.ts";
 import type { CapabilityScopedTool, CapabilityToolCatalog } from "../../src/capability/scope.ts";
-import { ModelRuntimeBridgeError } from "../../src/subagent/model-runtime.ts";
+import { ModelRuntimeBridgeError } from "../../src/session/model-runtime.ts";
 import { CACHE_IDENTITY_CUSTOM_TYPE } from "../../src/session-cache-runtime.ts";
 import { createNativeSessionFactory } from "../../src/subagent/native-session.ts";
 import { convertResponsesMessages } from '../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js';

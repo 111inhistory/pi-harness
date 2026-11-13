@@ -17,7 +17,7 @@ export interface ExecutionSession {
 type Cleanup = () => void | Promise<void>;
 
 /** Owns a session immediately, including failures after asynchronous creation. */
-export class SubagentExecution<S extends ExecutionSession = AgentSession> {
+export class SessionExecution<S extends ExecutionSession = AgentSession> {
   readonly session: S;
   readonly #signal: AbortSignal | undefined;
   readonly #cleanups: Cleanup[] = [];
@@ -48,7 +48,7 @@ export class SubagentExecution<S extends ExecutionSession = AgentSession> {
   }
 
   addCleanup(cleanup: Cleanup): void {
-    if (this.#closed) throw new Error('Cannot register cleanup on a closed Subagent execution');
+    if (this.#closed) throw new Error('Cannot register cleanup on a closed Session execution');
     this.#cleanups.push(cleanup);
   }
 
@@ -84,25 +84,25 @@ export class SubagentExecution<S extends ExecutionSession = AgentSession> {
     for (const cleanup of this.#cleanups.splice(0).reverse()) await attempt(cleanup);
     await attempt(() => this.session.dispose());
     if (this.#abortFailure !== undefined) failures.push(this.#abortFailure);
-    if (failures.length) throw new AggregateError(failures, 'Subagent execution cleanup failed');
+    if (failures.length) throw new AggregateError(failures, 'Session execution cleanup failed');
   }
 
   #assertOpen(): void {
-    if (this.#closed) throw new Error('Subagent execution is closed');
-    if (this.#signal?.aborted) throw new DOMException('Subagent execution was aborted', 'AbortError');
+    if (this.#closed) throw new Error('Session execution is closed');
+    if (this.#signal?.aborted) throw new DOMException('Session execution was aborted', 'AbortError');
   }
 }
 
-/** Both public Subagents and Capability retrieval use this entry point. */
-export async function openSubagentExecution(
+/** Shared SDK execution lifetime for delegated, retrieval and BTW sessions. */
+export async function openSessionExecution(
   options: CreateAgentSessionOptions,
   controls: { signal?: AbortSignal } = {},
-): Promise<SubagentExecution> {
+): Promise<SessionExecution> {
   const { session } = await createAgentSession(options);
-  const execution = new SubagentExecution(session, controls.signal);
+  const execution = new SessionExecution(session, controls.signal);
   if (controls.signal?.aborted) {
     await execution.dispose();
-    throw new DOMException('Subagent execution was aborted during session creation', 'AbortError');
+    throw new DOMException('Session execution was aborted during session creation', 'AbortError');
   }
   return execution;
 }

@@ -2,8 +2,8 @@
 import { DefaultResourceLoader, SessionManager, SettingsManager, type ExtensionAPI, type ExtensionToolContext, type SessionEntry, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { InheritedSnapshot } from '../inherited-context.ts';
-import { openSubagentExecution } from '../subagent/execution.ts';
-import { parentModelRuntime } from '../subagent/model-runtime.ts';
+import { openSessionExecution } from '../session/execution.ts';
+import { parentModelRuntime } from '../session/model-runtime.ts';
 import { installModelCallBudget } from '../subagent/pi-job-budget.ts';
 import { installSessionCacheIdentity } from '../session-cache-runtime.ts';
 import { capabilityBudgetWarning, type CapabilityOpenSessionRequest, type CapabilityRunSession } from './agent.ts';
@@ -170,9 +170,9 @@ export async function openInternalSession(
     return (additive ? additiveToolTranscript(declarations) : declarations) as AgentMessage[];
   }
 
-  // The shared Subagent execution owns session creation, caller-abort handling,
+  // The shared SDK execution owns session creation, caller-abort handling,
   // budget cleanup ordering and the final session.dispose().
-  const execution = await openSubagentExecution({
+  const execution = await openSessionExecution({
     cwd,
     agentDir: service.agentDir,
     settingsManager: settings,

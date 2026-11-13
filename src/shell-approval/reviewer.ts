@@ -26,7 +26,7 @@ import {
 } from "@earendil-works/pi-ai";
 import type { ModelRegistry, ModelRuntime, SessionEntry } from "@earendil-works/pi-coding-agent";
 
-import { parentModelRuntime } from "../subagent/model-runtime.ts";
+import { parentModelRuntime } from "../session/model-runtime.ts";
 
 const REVIEW_MODULE_SPECIFIER = "@mzwing/pi-permission-auto-review/review";
 const CODEX_API = "openai-codex-responses";

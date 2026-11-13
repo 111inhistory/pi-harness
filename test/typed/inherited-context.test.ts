@@ -3,7 +3,7 @@ import test from 'node:test';
 import { ModelRuntime, SessionManager, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { fauxProvider, InMemoryCredentialStore, type AssistantMessage, type Api, type Model } from '@earendil-works/pi-ai';
 import { captureInheritedContext } from '../../src/inherited-context.ts';
-import { physicalModelForCall } from '../../src/subagent/model-runtime.ts';
+import { physicalModelForCall } from '../../src/session/model-runtime.ts';
 import { recordSessionCacheIdentity, CACHE_IDENTITY_CUSTOM_TYPE } from '../../src/session-cache-runtime.ts';
 
 type CaptureContext = Parameters<typeof captureInheritedContext>[1];

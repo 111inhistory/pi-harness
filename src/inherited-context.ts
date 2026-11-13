@@ -4,7 +4,7 @@ import type { Api, Model } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ExtensionContext, FileEntry, SessionEntry, ToolInfo } from '@earendil-works/pi-coding-agent';
 import { isHarnessEntry, withoutEntries } from './subagent/storage.ts';
-import { physicalModelForCall } from './subagent/model-runtime.ts';
+import { physicalModelForCall } from './session/model-runtime.ts';
 import { resolveSessionCacheKey } from './session-cache-runtime.ts';
 import { renderCurrentToolGuidance } from './tool-guidance.ts';
 import { capabilityPromptSections } from './capability/prompt.ts';

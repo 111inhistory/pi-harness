@@ -17,8 +17,8 @@ import { promptString } from '../prompt-text.ts';
 import { providerSessionPolicy } from '../provider-session.ts';
 import { installSessionCacheIdentity } from '../session-cache-runtime.ts';
 import { additiveToolTranscript, appendSessionTranscript, firstToolDeclarations } from '../session-transcript.ts';
-import { openSubagentExecution, type SubagentExecution } from '../subagent/execution.ts';
-import { parentModelRuntime } from '../subagent/model-runtime.ts';
+import { openSessionExecution, type SessionExecution } from '../session/execution.ts';
+import { parentModelRuntime } from '../session/model-runtime.ts';
 
 export interface BtwConversation {
   ask(question: string, onText: (text: string) => void): Promise<void>;
@@ -105,7 +105,7 @@ export async function openBtwConversation(
     }],
   });
   await resourceLoader.reload();
-  const execution = await openSubagentExecution({
+  const execution = await openSessionExecution({
     cwd: snapshot.cwd, agentDir: getAgentDir(), settingsManager: settings, resourceLoader,
     modelRuntime: parentModelRuntime(ctx.modelRegistry, '/btw'),
     model: snapshot.model, thinkingLevel: snapshot.thinkingLevel ?? 'low',
@@ -125,7 +125,7 @@ export async function openBtwConversation(
 }
 
 function conversation(
-  execution: SubagentExecution,
+  execution: SessionExecution,
   resetBlocked: () => void,
   wasBlocked: () => boolean,
   blockedReason: string,

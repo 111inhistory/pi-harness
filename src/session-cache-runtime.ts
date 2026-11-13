@@ -25,7 +25,7 @@
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { lazyStream, normalizeContext, type Api, type Model } from '@earendil-works/pi-ai';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { parentModelRuntime } from './subagent/model-runtime.ts';
+import { parentModelRuntime } from './session/model-runtime.ts';
 import { classifyProviderTransport } from './provider-session.ts';
 import {
   applySessionCacheToPayload, limitSessionCacheKey,

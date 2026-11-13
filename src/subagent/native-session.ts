@@ -33,8 +33,8 @@ import type { HarnessConfig } from "../harness-config.ts";
 import { setCapabilityParent } from "../capability/scope.ts";
 import { installCapabilityMcp } from "../capability/native-discovery.ts";
 import type { CapabilityToolCatalog } from "../capability/scope.ts";
-import { openSubagentExecution } from "./execution.ts";
-import { parentModelRuntime } from "./model-runtime.ts";
+import { openSessionExecution } from "../session/execution.ts";
+import { parentModelRuntime } from "../session/model-runtime.ts";
 import { SubagentError } from "./runtime.ts";
 import { applyPresetToSession } from '../preset/application.ts';
 import { installPresetInstruction } from '../preset/instruction.ts';
@@ -117,7 +117,7 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
   async open(request: NativeSessionRequest): Promise<NativeOpenedSession> {
     // Fail before any expensive setup (and before routing in the caller) when
     // the root runtime bridge is unavailable. The same runtime is then handed
-    // to createAgentSession through openSubagentExecution.
+    // to createAgentSession through openSessionExecution.
     const modelRuntime = this.#modelRuntime();
     const thinkingLevel = narrowThinkingLevel(request.thinkingLevel);
     const settings = this.#settingsFor(request.cwd, request.trusted);
@@ -198,7 +198,7 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
 
     // The shared wrapper owns abort-during-creation cleanup. Once returned,
     // ownership transfers directly to the runner; no second cleanup path.
-    const execution = await openSubagentExecution(
+    const execution = await openSessionExecution(
       {
         cwd: request.cwd,
         agentDir: this.#deps.agentDir,
