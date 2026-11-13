@@ -15,6 +15,10 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 
 import type { RootService } from '../subagent/root-service.ts';
+import { SubagentError } from '../subagent/runtime.ts';
+import { RpcRequestError } from './error.ts';
+import { RPC_METHODS } from './protocol.ts';
+import { buildApplicationPort } from './ports/application.ts';
 import { createHarnessRpcServer, type HarnessRpcServer } from './transport.ts';
 import { harnessRpcTarget, publishHarnessRpcRecord, removeHarnessRpcRecord, type HarnessRpcTarget } from './discovery.ts';
 import { buildToolPort } from './ports/tool-info.ts';
@@ -70,7 +74,7 @@ function disabledHandle(): HarnessRpcHandle {
  * The caller owns lifecycle: call `close()` before the root retires or the host
  * shuts down, and install a fresh handle after a root switch.
  */
-export function installHarnessRpc(api: ExtensionAPI, ctx: ExtensionContext, root: RootService): HarnessRpcHandle {
+export function installHarnessRpc(api: ExtensionAPI, ctx: ExtensionContext, root: RootService, assertSession: () => void): HarnessRpcHandle {
   if (!harnessRpcEnabled(ctx.mode)) return disabledHandle();
 
   const target: HarnessRpcTarget = harnessRpcTarget(root.socketRoot, root.sessionId);
@@ -80,11 +84,19 @@ export function installHarnessRpc(api: ExtensionAPI, ctx: ExtensionContext, root
     subagent: buildSubagentPort(api, ctx, root),
     history: buildHistoryPort(root),
     stream: buildStreamPort(root),
+    application: buildApplicationPort(api, ctx, root, assertSession),
   });
   const server: HarnessRpcServer = createHarnessRpcServer({
     address: target.address,
     root: root.socketRoot,
-    handler: router,
+    isControlRequest: request => request.method === RPC_METHODS.subagentStop || request.method === RPC_METHODS.streamUnsubscribe || request.method === RPC_METHODS.approvalsRespond,
+    handler: async (request, connection) => {
+      try { return await router(request, connection); }
+      catch (error) {
+        if (error instanceof SubagentError) throw new RpcRequestError(error.code, error.message, error.detail);
+        throw error;
+      }
+    },
     onError: (error) => report(ctx, `Harness RPC endpoint error: ${messageOf(error)}`),
   });
 

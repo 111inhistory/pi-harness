@@ -9,7 +9,7 @@ import test from "node:test";
 
 import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 
-import subagentExtension from "../../src/subagent/extension.ts";
+import subagentExtension from "../../extensions/harness.ts";
 import { installSubagentCommand, parseCommand } from "../../src/subagent/command.ts";
 import type { RootService } from "../../src/subagent/root-service.ts";
 import { SubagentError, type AgentView, type DetailedAgentItem, type JobView } from "../../src/subagent/runtime.ts";

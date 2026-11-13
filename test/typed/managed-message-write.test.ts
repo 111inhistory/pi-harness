@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { type ExtensionToolContext } from '@earendil-works/pi-coding-agent';
-import { createMessageWriteTool, type ManagedWriteHost } from '../../src/subagent/message-write.ts';
+import { createMessageWriteTool } from '../../src/subagent/message-write.ts';
+import type { ManagedWriteHost } from '../../src/subagent/managed-send.ts';
 import { getAgentSocketPath, getBroadcastSocketPath } from '../../src/ipc/socket.ts';
 
 const context = (cwd: string): ExtensionToolContext => ({ cwd }) as ExtensionToolContext;

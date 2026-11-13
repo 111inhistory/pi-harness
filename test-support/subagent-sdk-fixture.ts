@@ -15,7 +15,7 @@ import type {
 import type {
   Api, AssistantMessage, ClassifierAnswer, Context, JsonObject, Message, Model, StopReason,
 } from "@earendil-works/pi-ai";
-import subagentExtension from "../src/subagent/extension.ts";
+import subagentExtension from "../extensions/harness.ts";
 import { installResultRendering } from "../src/result-rendering.ts";
 import capabilityExtension from "../src/capability/extension.ts";
 import { deriveSessionUid } from "../src/ipc/socket.ts";

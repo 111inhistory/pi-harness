@@ -16,13 +16,20 @@ import {
 } from '@earendil-works/pi-tui';
 
 import {
-  ManualApprovalQueue,
   ShellApprovalComponent,
   sanitizeCommandDisplay,
   sanitizeTerminalText,
-  type ShellApprovalRequest,
-  type ShellApprovalResult,
+  ShellApprovalTuiAdapter,
 } from '../../src/shell-approval/ui.ts';
+import { ManualApprovalController } from '../../src/shell-approval/controller.ts';
+import type { ShellApprovalRequest, ShellApprovalResult } from '../../src/shell-approval/types.ts';
+
+function presentApprovals(t: test.TestContext, ctx: ExtensionContext) {
+  const controller = new ManualApprovalController({ canPresent: () => ctx.hasUI && ctx.mode === 'tui' });
+  const adapter = new ShellApprovalTuiAdapter({ controller, context: () => ctx });
+  t.after(() => { controller.dispose(); adapter.dispose(); });
+  return controller;
+}
 
 function activeTheme(): Theme {
   initTheme('dark');
@@ -125,8 +132,6 @@ test('Pi SDK blocked permission -> OSC 7501 Program Status pipeline verification
 });
 
 test('custom UI restoration fixture: queue never overlaps dialogs', async (t) => {
-  const queue = new ManualApprovalQueue();
-  t.after(() => queue.dispose());
 
   const dialogStack: Component[] = [];
   let isEditorRestored = true;
@@ -185,11 +190,12 @@ test('custom UI restoration fixture: queue never overlaps dialogs', async (t) =>
     getSystemPrompt: () => '',
   };
 
+  const queue = presentApprovals(t, ctx);
   const req1: ShellApprovalRequest = { sourceAgent: 'agent_1', shell: 'bash', cwd: '/tmp', command: 'echo 1' };
   const req2: ShellApprovalRequest = { sourceAgent: 'agent_2', shell: 'bash', cwd: '/tmp', command: 'echo 2' };
 
-  const p1 = queue.requestApproval(req1, ctx);
-  const p2 = queue.requestApproval(req2, ctx);
+  const p1 = queue.request(req1);
+  const p2 = queue.request(req2);
 
   const [res1, res2] = await Promise.all([p1, p2]);
 
@@ -210,8 +216,6 @@ test('custom UI restoration fixture: queue never overlaps dialogs', async (t) =>
 });
 
 test('Root session navigation cancellation: dispose closes active UI and resolves queue promptly without hanging', async (t) => {
-  const queue = new ManualApprovalQueue();
-  t.after(() => queue.dispose());
 
   let activeCustomClosed = false;
   let activeComponent: Component | null = null;
@@ -254,11 +258,12 @@ test('Root session navigation cancellation: dispose closes active UI and resolve
     getSystemPrompt: () => '',
   };
 
-  const p1 = queue.requestApproval({ sourceAgent: 'agent_1', shell: 'bash', cwd: '/tmp', command: 'sleep 10' }, ctx);
-  const p2 = queue.requestApproval({ sourceAgent: 'agent_2', shell: 'bash', cwd: '/tmp', command: 'sleep 20' }, ctx);
+  const queue = presentApprovals(t, ctx);
+  const p1 = queue.request({ sourceAgent: 'agent_1', shell: 'bash', cwd: '/tmp', command: 'sleep 10' });
+  const p2 = queue.request({ sourceAgent: 'agent_2', shell: 'bash', cwd: '/tmp', command: 'sleep 20' });
 
-  assert.equal(queue.activeCount, 1);
-  assert.equal(queue.queuedCount, 1);
+  assert.equal(queue.list().filter(item => item.state === 'active').length, 1);
+  assert.equal(queue.list().filter(item => item.state === 'queued').length, 1);
   assert.ok(activeComponent);
 
   // Simulate session_before_switch / session_before_fork
@@ -269,14 +274,12 @@ test('Root session navigation cancellation: dispose closes active UI and resolve
   assert.deepEqual(res1, { approved: false, reason: 'disposed' });
   assert.deepEqual(res2, { approved: false, reason: 'disposed' });
   assert.equal(activeCustomClosed, true, 'Active custom dialog must close when session is navigated');
-  assert.equal(queue.activeCount, 0);
-  assert.equal(queue.queuedCount, 0);
-  assert.equal(queue.isDisposed, true);
+  assert.equal(queue.list().length, 0);
+  assert.deepEqual(await queue.request({ sourceAgent: 'Main', shell: 'bash', cwd: '/tmp', command: 'echo disposed' }),
+    { approved: false, reason: 'disposed' });
 });
 
 test('Ctrl-C abort signal immediately cancels active UI dialog and unblocks caller', async (t) => {
-  const queue = new ManualApprovalQueue();
-  t.after(() => queue.dispose());
 
   const abortCtrl = new AbortController();
   let dialogUnmounted = false;
@@ -319,12 +322,12 @@ test('Ctrl-C abort signal immediately cancels active UI dialog and unblocks call
     getSystemPrompt: () => '',
   };
 
-  const p = queue.requestApproval(
-    { sourceAgent: 'agent_1', shell: 'bash', cwd: '/tmp', command: 'echo test' },
-    ctx,
+  const queue = presentApprovals(t, ctx);
+  const p = queue.request(
+    { sourceAgent: 'agent_1', shell: 'bash', cwd: '/tmp', command: 'echo test', signal: ctx.signal },
   );
 
-  assert.equal(queue.activeCount, 1);
+  assert.equal(queue.list().length, 1);
 
   // Trigger Ctrl-C / interrupt
   abortCtrl.abort();

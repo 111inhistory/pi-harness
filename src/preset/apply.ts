@@ -16,9 +16,9 @@
  * session; the extension adapts the real `pi`/`ctx` surface to it.
  */
 
+import type { CodemodeMode, PresetModel, ThinkingLevelName } from './config.ts';
 import type { PresetSnapshot } from './state.ts';
 import type { PresetApplyPlan, PresetIssue } from './resolve.ts';
-import type { ThinkingLevelName } from './config.ts';
 
 /** The side effects an apply needs; the extension maps these to the SDK. */
 export interface PresetApplyHost {
@@ -27,20 +27,42 @@ export interface PresetApplyHost {
   setThinkingLevel(level: ThinkingLevelName): void;
   setActiveTools(tools: readonly string[]): void;
   appendState(record: { readonly snapshot: PresetSnapshot | null }): void;
-  notify(message: string, level: 'info' | 'warning' | 'error'): void;
   /** Apply a live Codemode mode on the harness loadout; omitted hosts cannot. */
   applyCodemodeMode?(mode: 'on' | 'only'): void;
   /** Clear a preset-applied Codemode mode back to Settings. */
   clearCodemodeMode?(): void;
 }
 
+/** A runtime effect that the resolved plan could not apply. */
+export type PresetApplyProblem =
+  | {
+      readonly severity: 'error';
+      readonly kind: 'model_unauthenticated';
+      readonly model: PresetModel;
+      readonly detail: string;
+    }
+  | {
+      readonly severity: 'warning';
+      readonly kind: 'codemode_not_applied';
+      readonly codemode: { readonly mode: CodemodeMode };
+      readonly detail: string;
+    };
+
 export interface PresetApplyOutcome {
   readonly applied: boolean;
   /** The snapshot written to the branch (null when nothing was applied). */
   readonly snapshot: PresetSnapshot | null;
   readonly issues: readonly PresetIssue[];
+  /** Runtime effects that could not be applied, including auth and Codemode. */
+  readonly problems: readonly PresetApplyProblem[];
   /** True when a declared codemode mode could not be switched at runtime. */
   readonly codemodeNotApplied: boolean;
+}
+
+export interface PresetClearOutcome {
+  readonly cleared: true;
+  readonly snapshot: null;
+  readonly codemodeCleared: boolean;
 }
 
 /** Apply a resolved plan. Never reports success when a hard step failed. */
@@ -52,17 +74,25 @@ export async function applyPresetPlan(
   if (plan.model !== undefined) {
     const selected = await host.setModel(plan.model.provider, plan.model.id);
     if (!selected) {
-      host.notify(
-        `Preset "${plan.name}": model ${plan.model.provider}/${plan.model.id} is not authenticated; nothing applied.`,
-        'error',
-      );
-      return { applied: false, snapshot: null, issues, codemodeNotApplied: false };
+      return {
+        applied: false,
+        snapshot: null,
+        issues,
+        problems: [{
+          severity: 'error',
+          kind: 'model_unauthenticated',
+          model: plan.model,
+          detail: `model ${plan.model.provider}/${plan.model.id} is not authenticated; nothing applied.`,
+        }],
+        codemodeNotApplied: false,
+      };
     }
   }
 
   if (plan.thinkingLevel !== undefined) host.setThinkingLevel(plan.thinkingLevel);
   if (plan.tools !== undefined) host.setActiveTools(plan.tools);
 
+  const problems: PresetApplyProblem[] = [];
   let codemodeNotApplied = false;
   if (plan.codemode !== undefined) {
     if (host.applyCodemodeMode !== undefined) {
@@ -71,10 +101,12 @@ export async function applyPresetPlan(
       host.applyCodemodeMode(plan.codemode.mode);
     } else {
       codemodeNotApplied = true;
-      host.notify(
-        `Preset "${plan.name}": codemode mode "${plan.codemode.mode}" cannot be applied in this session; it was recorded only.`,
-        'warning',
-      );
+      problems.push({
+        severity: 'warning',
+        kind: 'codemode_not_applied',
+        codemode: { mode: plan.codemode.mode },
+        detail: `codemode mode "${plan.codemode.mode}" cannot be applied in this session; it was recorded only.`,
+      });
     }
   }
 
@@ -87,13 +119,7 @@ export async function applyPresetPlan(
     instructions: plan.instructions,
   };
   host.appendState({ snapshot });
-  host.notify(
-    codemodeNotApplied
-      ? `Preset "${plan.name}" applied; codemode mode was recorded but not switched.`
-      : `Preset "${plan.name}" applied.`,
-    codemodeNotApplied ? 'warning' : 'info',
-  );
-  return { applied: true, snapshot, issues, codemodeNotApplied };
+  return { applied: true, snapshot, issues, problems, codemodeNotApplied };
 }
 
 /**
@@ -103,8 +129,9 @@ export async function applyPresetPlan(
  * instruction section is withdrawn (the next request projects a null section) and
  * a null snapshot is recorded so resume knows the session is no longer managed.
  */
-export function clearActivePreset(host: PresetApplyHost): void {
+export function clearActivePreset(host: PresetApplyHost): PresetClearOutcome {
   host.appendState({ snapshot: null });
+  const codemodeCleared = host.clearCodemodeMode !== undefined;
   host.clearCodemodeMode?.();
-  host.notify('Preset cleared; model, thinking and tools are unchanged.', 'info');
+  return { cleared: true, snapshot: null, codemodeCleared };
 }

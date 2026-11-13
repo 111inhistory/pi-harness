@@ -36,7 +36,7 @@ import {
 } from '@earendil-works/pi-ai';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 
-import subagentExtension from '../../src/subagent/extension.ts';
+import subagentExtension from '../../extensions/harness.ts';
 import { promptString } from '../../src/prompt-text.ts';
 import { deferred, waitFor } from '../../test-support/async.ts';
 

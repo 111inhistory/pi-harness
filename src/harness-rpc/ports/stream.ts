@@ -18,32 +18,30 @@
 
 import type { RootService } from '../../subagent/root-service.ts';
 import type { RpcConnection } from '../transport.ts';
+import type {
+  JobIdParams,
+  StreamBoundary,
+  StreamSubscribeResult,
+  StreamUnsubscribeParams,
+  StreamUnsubscribeResult,
+} from '../contract.ts';
 import { RPC_ERROR } from '../protocol.ts';
 import { RpcRequestError } from '../error.ts';
 import { projectSessionEvent } from '../stream-projection.ts';
-import { asRecord, requireString } from '../util.ts';
 
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 
-export interface StreamBoundary {
-  readonly status: string;
-  readonly round: number;
-  readonly history: { readonly startEntryId: string | null; readonly endEntryId: string | null } | null;
-  /** Completed native messages produced since the Job started. */
-  readonly messages: readonly unknown[];
-  /** The cumulative assistant partial being streamed at snapshot time, if any. */
-  readonly partial: unknown | null;
-}
+export type { StreamBoundary };
 
 export interface StreamPort {
-  subscribe(params: unknown, connection: RpcConnection): Promise<unknown>;
-  unsubscribe(params: unknown, connection: RpcConnection): unknown;
+  subscribe(params: JobIdParams, connection: RpcConnection): Promise<StreamSubscribeResult>;
+  unsubscribe(params: StreamUnsubscribeParams, connection: RpcConnection): StreamUnsubscribeResult;
 }
 
 export function buildStreamPort(root: RootService): StreamPort {
   return {
-    async subscribe(params: unknown, connection: RpcConnection): Promise<unknown> {
-      const jobId = requireString(asRecord(params).jobId, 'jobId');
+    async subscribe(params: JobIdParams, connection: RpcConnection): Promise<StreamSubscribeResult> {
+      const jobId = params.jobId;
       // Works for a running Job too; `jobRecord` is intentionally terminal-only.
       const snapshot = root.runtime.jobSnapshot(jobId);
       if (snapshot === null) throw new RpcRequestError(RPC_ERROR.notFound, `No Job with id "${jobId}".`);
@@ -111,9 +109,8 @@ export function buildStreamPort(root: RootService): StreamPort {
       };
     },
 
-    unsubscribe(params: unknown, connection: RpcConnection): unknown {
-      const subscription = requireString(asRecord(params).subscription, 'subscription');
-      return { removed: connection.removeSubscription(subscription) };
+    unsubscribe(params: StreamUnsubscribeParams, connection: RpcConnection): StreamUnsubscribeResult {
+      return { removed: connection.removeSubscription(params.subscription) };
     },
   };
 }

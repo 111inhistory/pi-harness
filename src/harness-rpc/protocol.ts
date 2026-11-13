@@ -32,10 +32,10 @@ export interface RpcErrorBody {
   readonly detail?: unknown;
 }
 
-export interface RpcSuccessResponse {
+export interface RpcSuccessResponse<TResult = unknown> {
   readonly id: RpcResponseId;
   readonly ok: true;
-  readonly result: unknown;
+  readonly result: TResult;
 }
 
 export interface RpcFailureResponse {
@@ -44,7 +44,7 @@ export interface RpcFailureResponse {
   readonly error: RpcErrorBody;
 }
 
-export type RpcResponse = RpcSuccessResponse | RpcFailureResponse;
+export type RpcResponse<TResult = unknown> = RpcSuccessResponse<TResult> | RpcFailureResponse;
 
 /** One pushed subscription event. `seq` is monotonic per connection (so also within one subscription). */
 export interface RpcEventEnvelope {
@@ -59,7 +59,7 @@ export interface RpcEventFrame {
 
 export type RpcServerFrame = RpcResponse | RpcEventFrame;
 
-/** Stable method names. Method names are not a public promise yet (see the proposal's TBDs). */
+/** Stable method names. Each wire method string is defined once here. */
 export const RPC_METHODS = {
   info: 'harness.info',
   toolsCatalog: 'tools.catalog',
@@ -79,6 +79,26 @@ export const RPC_METHODS = {
   historyRead: 'history.read',
   streamSubscribe: 'stream.subscribe',
   streamUnsubscribe: 'stream.unsubscribe',
+  presetsCatalog: 'presets.catalog',
+  presetsCurrent: 'presets.current',
+  presetsApply: 'presets.apply',
+  presetsClear: 'presets.clear',
+  approvalsList: 'approvals.list',
+  approvalsGet: 'approvals.get',
+  approvalsRespond: 'approvals.respond',
+  approvalsSubscribe: 'approvals.subscribe',
+  sessionsList: 'sessions.list',
+  sessionsConnect: 'sessions.connect',
+  mainState: 'main.state',
+  mainInput: 'main.input',
+  mainInterrupt: 'main.interrupt',
+  mainCompact: 'main.compact',
+  mainNavigate: 'main.navigate',
+  mainReload: 'main.reload',
+  mainNew: 'main.new',
+  mainSwitch: 'main.switch',
+  mainFork: 'main.fork',
+  mainSubscribe: 'main.subscribe',
 } as const;
 
 export type RpcMethod = (typeof RPC_METHODS)[keyof typeof RPC_METHODS];

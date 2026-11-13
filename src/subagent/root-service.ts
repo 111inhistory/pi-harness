@@ -34,7 +34,7 @@ import type { DeliveryCustomMessage } from './delivery.ts';
 import { createNativeSessionFactory } from './native-session.ts';
 import { isHarnessTool } from './tool-policy.ts';
 import { installSessionSurface, type SubagentSurfaceCreateOptions } from './surface.ts';
-import type { ManagedWriteHost, SessionEndpoint } from './message-write.ts';
+import type { ManagedWriteHost, SessionEndpoint } from './managed-send.ts';
 import type { NativeCustomHandoff, NativeLiveSnapshot, NativeRouteResult, NativeRoutingPort, NativeSessionEvent, NativeStartedJob } from './native-types.ts';
 import {
   createSubagentRuntime, copyInheritedEntries, SubagentError,
@@ -107,7 +107,7 @@ export class RootService implements ManagedWriteHost {
   readonly #historyDir: string;
   #temporaryResults: string | null = null;
   readonly #pendingEvents: RuntimeEvent[] = [];
-  #creation: { gate: Promise<void>; ready: Promise<void>[] } | null = null;
+  #creation: { gate: Promise<void>; ready: { agentId: string; ready: Promise<void> }[] } | null = null;
   readonly #retainedScopes = new Map<string, { proxy: CapabilityToolCatalog; excluded: readonly string[] }>();
   /**
    * The root catalog as a child's parent chain sees it, with explicitly
@@ -223,7 +223,7 @@ export class RootService implements ManagedWriteHost {
       startJob: (request) => {
         const creation = this.#creation;
         const handle = creation === null ? this.runner.start(request) : this.#startAfterListeners(request, creation.gate);
-        creation?.ready.push(handle.ready);
+        creation?.ready.push({ agentId: request.agentId, ready: handle.ready });
         return handle;
       },
       finalizeJob: (input) => this.#finalize(input),
@@ -330,7 +330,7 @@ export class RootService implements ManagedWriteHost {
     this.#registry = ctx.modelRegistry;
     let open!: () => void;
     let fail!: (error: unknown) => void;
-    const creation = { gate: new Promise<void>((resolve, reject) => { open = resolve; fail = reject; }), ready: [] as Promise<void>[] };
+    const creation = { gate: new Promise<void>((resolve, reject) => { open = resolve; fail = reject; }), ready: [] as { agentId: string; ready: Promise<void> }[] };
     let result: CreatedAgents;
     this.#creation = creation;
     try {
@@ -345,11 +345,14 @@ export class RootService implements ManagedWriteHost {
     } catch (error) {
       fail(error);
     }
-    const started = await Promise.allSettled(creation.ready);
+    const started = await Promise.allSettled(creation.ready.map(item => item.ready));
     const failures = started.flatMap((outcome, index) => outcome.status === 'rejected'
-      ? [`${result.items[index]!.id}: ${errorOf(outcome.reason).message}`] : []);
+      ? [{ agentId: creation.ready[index]!.agentId,
+          code: outcome.reason instanceof SubagentError ? outcome.reason.code : 'session_unavailable',
+          message: errorOf(outcome.reason).message }] : []);
     if (failures.length) throw new SubagentError('start_failed',
-      `Subagent startup failed: ${failures.join('; ')}. Registered agents: ${result.items.map((item) => item.id).join(', ')}; do not recreate this batch.`);
+      `Subagent startup failed: ${failures.map(item => item.agentId + ': ' + item.message).join('; ')}. Registered agents: ${result.items.map((item) => item.id).join(', ')}; do not recreate this batch.`,
+      { registered: result.items, failures });
     return { ...result, items: result.items.map(item => {
       const actor = this.actors.get(item.id);
       return { ...item, role: actor?.roleId ?? null, model: actor?.modelRef?.id ?? null };

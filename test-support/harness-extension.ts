@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import resultRendering from '../extensions/result-rendering.ts';
-import subagent from '../extensions/subagent.ts';
+import subagent from '../extensions/harness.ts';
 import capability from '../extensions/capability.ts';
 import btw from '../extensions/btw.ts';
 

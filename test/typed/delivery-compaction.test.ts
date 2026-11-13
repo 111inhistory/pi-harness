@@ -12,7 +12,7 @@ import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import subagentExtension from "../../src/subagent/extension.ts";
+import subagentExtension from "../../extensions/harness.ts";
 import { RootService } from "../../src/subagent/root-service.ts";
 import { deriveSessionUid, getAgentSocketPath, writeSocket } from "../../src/ipc/socket.ts";
 import { registerSession, sessionSenderId, unregisterSession } from "../../src/subagent/session-directory.ts";

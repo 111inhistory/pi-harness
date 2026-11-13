@@ -11,7 +11,7 @@
   "pi": {
     "extensions": [
       "./extensions/result-rendering.ts",
-      "./extensions/subagent.ts",
+      "./extensions/harness.ts",
       "./extensions/capability.ts",
       "./extensions/btw.ts",
       "./extensions/preset.ts"

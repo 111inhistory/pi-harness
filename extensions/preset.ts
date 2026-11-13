@@ -20,11 +20,15 @@ import {
   type ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
 
-import { loadPresets, type PresetConfig } from '../src/preset/config.ts';
-import { clearActivePreset } from '../src/preset/apply.ts';
-import { applyPresetToSession, createPresetApplyHost, ensurePresetBase } from '../src/preset/application.ts';
+import {
+  applyPresetToSession,
+  clearPresetFromSession,
+  currentPreset,
+  ensurePresetBase,
+  loadPresets,
+  type PresetConfig,
+} from '../src/preset/application.ts';
 import { parsePresetCommand } from '../src/preset/command.ts';
-import { restorePresetSnapshot } from '../src/preset/state.ts';
 import { installPresetInstruction } from '../src/preset/instruction.ts';
 
 export default function presetExtension(pi: ExtensionAPI): void {
@@ -36,21 +40,37 @@ export default function presetExtension(pi: ExtensionAPI): void {
     pi,
     getBranch: () => ctx.sessionManager.getBranch(),
     modelRegistry: ctx.modelRegistry,
-    ui: ctx.ui,
   });
 
   const renderStatus = (ctx: ExtensionContext): void => {
     ctx.ui.setStatus('preset', currentName === undefined ? undefined : `preset:${currentName}`);
   };
 
-  const host = (ctx: ExtensionContext) => createPresetApplyHost(sessionHost(ctx));
+  const clear = (ctx: ExtensionContext): void => {
+    clearPresetFromSession(sessionHost(ctx));
+    currentName = undefined;
+    renderStatus(ctx);
+    ctx.ui.notify('Preset cleared; model, thinking and tools are unchanged.', 'info');
+  };
 
   const apply = async (ctx: ExtensionContext, name: string, preset: PresetConfig): Promise<void> => {
     const outcome = await applyPresetToSession(sessionHost(ctx), name, preset);
+    for (const issue of outcome.issues) {
+      ctx.ui.notify(`Preset "${name}": ${issue.detail}`, issue.severity);
+    }
+    for (const problem of outcome.problems) {
+      ctx.ui.notify(`Preset "${name}": ${problem.detail}`, problem.severity);
+    }
     if (outcome.applied) {
+      ctx.ui.notify(
+        outcome.codemodeNotApplied
+          ? `Preset "${name}" applied; codemode mode was recorded but not switched.`
+          : `Preset "${name}" applied.`,
+        outcome.codemodeNotApplied ? 'warning' : 'info',
+      );
       currentName = name;
       renderStatus(ctx);
-    } else if (outcome.issues.length === 0) {
+    } else if (outcome.issues.length === 0 && outcome.problems.length === 0) {
       ctx.ui.notify(`Preset "${name}" was not applied.`, 'error');
     }
   };
@@ -69,7 +89,7 @@ export default function presetExtension(pi: ExtensionAPI): void {
     // (preset-shaped) active set, so B computes from the same base as a fresh
     // apply and no extension tool is silently dropped.
     ensurePresetBase(sessionHost(ctx));
-    currentName = restorePresetSnapshot(ctx.sessionManager.getBranch())?.name;
+    currentName = currentPreset(sessionHost(ctx))?.name;
     const presets = loaded(ctx);
     const flag = pi.getFlag('preset');
     if (typeof flag === 'string' && flag !== '') {
@@ -85,9 +105,7 @@ export default function presetExtension(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const command = parsePresetCommand(args);
       if (command.kind === 'clear') {
-        clearActivePreset(host(ctx));
-        currentName = undefined;
-        renderStatus(ctx);
+        clear(ctx);
         return;
       }
       const presets = loaded(ctx);
@@ -100,9 +118,7 @@ export default function presetExtension(pi: ExtensionAPI): void {
         const choice = await ctx.ui.select('Select preset', [...names, '(none)']);
         if (choice === undefined) return;
         if (choice === '(none)') {
-          clearActivePreset(host(ctx));
-          currentName = undefined;
-          renderStatus(ctx);
+          clear(ctx);
           return;
         }
         const preset = presets.get(choice);

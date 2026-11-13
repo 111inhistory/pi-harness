@@ -14,11 +14,17 @@ import { publishShellCheck, type ShellCheck } from './bridge.ts';
 import { runShellPolicy } from './command.ts';
 import { loadShellRuleFiles } from './rule-files.ts';
 import { extractJobCommands } from './job-command.ts';
-import { ManualApprovalQueue, sanitizeTerminalText, type ShellApprovalRequest } from './ui.ts';
+import { ManualApprovalController } from './controller.ts';
+import { ShellApprovalTuiAdapter, sanitizeTerminalText } from './ui.ts';
 import { sendApprovalNotification } from './url-notification.ts';
 import { truncateToWidth } from '@earendil-works/pi-tui';
 import { createShellReviewer, AUTO_REVIEW_MIN_NODE_MAJOR } from './reviewer.ts';
-import type { ShellApprovalAction, ShellPermissionMode } from './types.ts';
+import type {
+  ShellApprovalAction,
+  ShellApprovalController,
+  ShellApprovalRequest,
+  ShellPermissionMode,
+} from './types.ts';
 
 const PERMISSION_MODES = [
   { value: 'ask', label: 'Ask', description: 'Ask unless a rule explicitly allows the command' },
@@ -27,6 +33,16 @@ const PERMISSION_MODES = [
 ] as const;
 
 const PERMISSION_MODE_ENTRY = 'harness-shell-permission-mode';
+
+const APPROVAL_CONTROLLER = 'pi-harness:shell-approval-controller';
+interface ApprovalControllerExchange { controller?: ShellApprovalController }
+
+/** Typed root integration point for the RPC assembly; it never exposes adapter state. */
+export function shellApprovalController(api: ExtensionAPI): ShellApprovalController | undefined {
+  const exchange: ApprovalControllerExchange = {};
+  api.events.emit(APPROVAL_CONTROLLER, exchange);
+  return exchange.controller;
+}
 
 /** Read only the active branch; an invalid latest record falls back to config. */
 function savedPermissionMode(ctx: ExtensionContext): ShellPermissionMode | undefined {
@@ -124,7 +140,26 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
       }
     });
   };
-  let manual = new ManualApprovalQueue({ onDisplay: notifyManualApproval });
+  let manualController!: ManualApprovalController;
+  let manualTui!: ShellApprovalTuiAdapter;
+  const createManualApproval = (): void => {
+    manualTui?.dispose();
+    manualController?.dispose();
+    const controller = new ManualApprovalController({
+      canPresent: () => manualTui?.canPresent() ?? false,
+    });
+    manualController = controller;
+    manualTui = new ShellApprovalTuiAdapter({
+      controller,
+      context: () => rootContext,
+      onDisplay: notifyManualApproval,
+    });
+  };
+  createManualApproval();
+  let manualActive = true;
+  pi.events.on(APPROVAL_CONTROLLER, data => {
+    if (manualActive) (data as ApprovalControllerExchange).controller = manualController;
+  });
   let mode: ShellPermissionMode | undefined;
   let autocompleteInstalled = false;
   let ruleSources: Promise<readonly string[]> | undefined;
@@ -139,14 +174,17 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
         ? ' (manual fallback)' : ''));
   };
   const cancel = (): void => {
+    manualActive = false;
     lifetime.abort();
-    manual.dispose();
+    manualTui.dispose();
+    manualController.dispose();
   };
   const activate = (ctx: ExtensionContext): void => {
     rootContext = ctx;
+    manualActive = true;
     if (lifetime.signal.aborted) {
       lifetime = new AbortController();
-      manual = new ManualApprovalQueue({ onDisplay: notifyManualApproval });
+      createManualApproval();
     }
     configurationCache.clear();
     status(ctx);
@@ -236,10 +274,10 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
     waiting?.(true);
     let result;
     try {
-      result = await manual.requestApproval({
+      result = await manualController.request({
         sourceAgent: source, shell: action.shell, cwd: action.cwd, command: action.command,
         reason: decisionReason, timeoutSeconds: approval.manualTimeoutMs / 1000, signal,
-      }, root);
+      });
     } finally { waiting?.(false); }
     if (!ownerLifetime.signal.aborted) status(root);
     if (signal.aborted) return 'Command not executed: approval cancelled.';

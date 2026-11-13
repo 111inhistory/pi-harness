@@ -1,0 +1,7 @@
+{
+  "id": "r-bad-filter",
+  "method": "tools.catalog",
+  "params": {
+    "filter": 123
+  }
+}

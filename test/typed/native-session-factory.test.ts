@@ -516,7 +516,7 @@ test("Fresh uses default extensions minus exclusions without installing the root
     });
     pi.on("session_shutdown", () => pi.events.emit("fresh_defaults_lifecycle", "stopped"));
   }`, "utf8");
-  const rootEntries = ['subagent', 'capability', 'btw'].map(name =>
+  const rootEntries = ['harness', 'capability', 'btw'].map(name =>
     new URL(`../../extensions/${name}.ts`, import.meta.url).pathname);
   const packageRoot = fileURLToPath(new URL('../../', import.meta.url));
   await writeFile(path.join(h.root, "agent", "settings.json"), JSON.stringify({

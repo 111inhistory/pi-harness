@@ -1,0 +1,13 @@
+{
+  "id": "r-bad-create",
+  "method": "subagent.create",
+  "params": {
+    "context": 123,
+    "tasks": [
+      {
+        "task": "ok",
+        "inheritContext": "yes"
+      }
+    ]
+  }
+}

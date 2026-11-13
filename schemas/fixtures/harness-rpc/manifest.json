@@ -217,6 +217,51 @@
       ]
     },
     {
+      "path": "invalid/request-tools-catalog-bad-category.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/request-tools-catalog-bad-filter.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/request-permission-query-bad-expr.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/request-jobs-list-bad-job-ids.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
+      "path": "invalid/request-subagent-create-bad-optional.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": false,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
       "path": "invalid/response-both-ok-and-event.json",
       "kind": "frame",
       "schema": "RpcResponse",

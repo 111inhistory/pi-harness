@@ -10,7 +10,7 @@ import { fauxProvider, InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
-import subagentExtension from '../../src/subagent/extension.ts';
+import subagentExtension from '../../extensions/harness.ts';
 import { RootService } from '../../src/subagent/root-service.ts';
 
 function deferred() {

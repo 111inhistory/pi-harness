@@ -45,7 +45,7 @@ import type {
   NativeSessionRequest,
 } from "./native-types.ts";
 
-const ROOT_EXTENSIONS = ['subagent', 'capability', 'btw', 'shell-preflight', 'preset'].map(name =>
+const ROOT_EXTENSIONS = ['harness', 'capability', 'btw', 'shell-preflight', 'preset'].map(name =>
   fileURLToPath(new URL(`../../extensions/${name}.ts`, import.meta.url)));
 
 /**
@@ -225,7 +225,6 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
           pi: childPi,
           getBranch: () => context.sessionManager.getBranch(),
           modelRegistry: context.modelRegistry,
-          ui: context.ui,
           selectModel: async (model) => {
             // Creation already selected this exact routed model. Re-selecting it
             // would duplicate model-change events and authentication work.
@@ -239,7 +238,8 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
             throw new SubagentError('routing_invalid_config',
               outcome.issues.map(issue => issue.detail).join('; '));
           }
-          throw new SubagentError('model_unavailable', `Preset ${name} could not be applied.`);
+          throw new SubagentError('model_unavailable',
+            outcome.problems.map(problem => problem.detail).join('; ') || `Preset ${name} could not be applied.`);
         }
       }
       if (inheritedTools !== undefined) {

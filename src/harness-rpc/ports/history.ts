@@ -10,40 +10,31 @@
  */
 
 import type { RootService } from '../../subagent/root-service.ts';
+import type { HistoryReadResult, JobIdParams } from '../contract.ts';
 import { RPC_ERROR } from '../protocol.ts';
 import { RpcRequestError } from '../error.ts';
-import { asRecord, requireString } from '../util.ts';
 
-export interface JobHistoryResult {
-  readonly available: boolean;
-  readonly jobId: string;
-  readonly status: string;
-  readonly live?: boolean;
-  readonly reason?: string;
-  readonly bounds?: { readonly startEntryId: string | null; readonly endEntryId: string | null };
-  readonly entries?: readonly unknown[];
-}
+export type JobHistoryResult = HistoryReadResult;
 
 export interface HistoryPort {
-  read(params: unknown): JobHistoryResult;
+  read(params: JobIdParams): HistoryReadResult;
 }
 
 export function buildHistoryPort(root: RootService): HistoryPort {
   return {
-    read(params: unknown): JobHistoryResult {
-      const jobId = requireString(asRecord(params).jobId, 'jobId');
-      const snapshot = root.runtime.jobSnapshot(jobId);
-      if (snapshot === null) throw new RpcRequestError(RPC_ERROR.notFound, `No Job with id "${jobId}".`);
+    read(params: JobIdParams): HistoryReadResult {
+      const snapshot = root.runtime.jobSnapshot(params.jobId);
+      if (snapshot === null) throw new RpcRequestError(RPC_ERROR.notFound, `No Job with id "${params.jobId}".`);
 
       if (snapshot.history === null) {
         // The Job is registered but its native start boundary is not recorded yet.
-        return { available: false, jobId, status: snapshot.status, reason: 'history_unavailable' };
+        return { available: false, jobId: params.jobId, status: snapshot.status, reason: 'history_unavailable' };
       }
       // A null startEntryId is a legitimate first-Job interval (the SDK leaf was
       // null before the session recorded anything), not "not started": read from
       // the branch head and return the null start verbatim.
       const start = snapshot.history.startEntryId;
-      const liveEnd = root.liveEndEntryId(jobId);
+      const liveEnd = root.liveEndEntryId(params.jobId);
       const live = liveEnd !== undefined;
       const end = liveEnd ?? snapshot.history.endEntryId ?? null;
       const entries = root.actors.readInterval({
@@ -52,11 +43,11 @@ export function buildHistoryPort(root: RootService): HistoryPort {
         endEntryId: end,
       });
       if (entries === null) {
-        return { available: false, jobId, status: snapshot.status, reason: 'history_unavailable' };
+        return { available: false, jobId: params.jobId, status: snapshot.status, reason: 'history_unavailable' };
       }
       return {
         available: true,
-        jobId,
+        jobId: params.jobId,
         status: snapshot.status,
         live,
         bounds: { startEntryId: start, endEntryId: end },

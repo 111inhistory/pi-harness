@@ -10,35 +10,14 @@ import {
   type TUI,
 } from '@earendil-works/pi-tui';
 
-export type ShellApprovalReason =
-  | 'approved'
-  | 'rejected'
-  | 'timeout'
-  | 'cancelled'
-  | 'no_ui'
-  | 'disposed';
+import type {
+  ShellApprovalController,
+  ShellApprovalPending,
+  ShellApprovalReason,
+  ShellApprovalRequest,
+  ShellApprovalResult,
+} from './types.ts';
 
-export interface ShellApprovalResult {
-  readonly approved: boolean;
-  readonly reason: ShellApprovalReason;
-}
-
-export interface ShellApprovalRequest {
-  readonly sourceAgent: string;
-  readonly shell: string;
-  readonly cwd: string;
-  readonly command: string;
-  readonly reason?: string | undefined;
-  readonly timeoutSeconds?: number | undefined;
-  readonly signal?: AbortSignal | undefined;
-}
-
-export interface ManualApprovalQueueOptions {
-  readonly defaultTimeoutSeconds?: number | undefined;
-  readonly onDisplay?: (request: ShellApprovalRequest) => void;
-}
-
-const DEFAULT_TIMEOUT_SECONDS = 30;
 const MAX_COMMAND_VIEWPORT_ROWS = 10;
 
 /** Sanitize title and single-line prompts to prevent terminal escape injection. */
@@ -64,11 +43,9 @@ export class ShellApprovalComponent implements Component {
   private readonly theme: Theme;
   private readonly keybindings: KeybindingsManager;
   private readonly request: ShellApprovalRequest;
-  private readonly countdownSeconds: number;
+  private readonly remainingSeconds: () => number;
   private readonly onDecision: (result: ShellApprovalResult) => void;
 
-  private remainingSeconds: number;
-  private timerId: ReturnType<typeof setInterval> | null = null;
   private settled = false;
   private scrollOffset = 0;
   private maxScrollOffset = 0;
@@ -80,35 +57,24 @@ export class ShellApprovalComponent implements Component {
     theme: Theme,
     keybindings: KeybindingsManager,
     request: ShellApprovalRequest,
-    countdownSeconds: number,
+    remainingSeconds: number | (() => number),
     onDecision: (result: ShellApprovalResult) => void,
   ) {
     this.tui = tui;
     this.theme = theme;
     this.keybindings = keybindings;
     this.request = request;
-    this.countdownSeconds = Math.max(1, Math.floor(countdownSeconds));
+    this.remainingSeconds = typeof remainingSeconds === 'function'
+      ? remainingSeconds
+      : () => remainingSeconds;
     this.onDecision = onDecision;
-    this.remainingSeconds = this.countdownSeconds;
 
     const rawLines = sanitizeCommandDisplay(this.request.command || '').split('\n');
     this.maxScrollOffset = Math.max(0, rawLines.length - MAX_COMMAND_VIEWPORT_ROWS);
-
-    this.timerId = setInterval(() => {
-      this.remainingSeconds -= 1;
-      if (this.remainingSeconds <= 0) {
-        this.stopTimer();
-        this.decide('timeout');
-      } else {
-        this.invalidate();
-        this.tui.requestRender();
-      }
-    }, 1000);
-    this.timerId.unref();
   }
 
   get remainingTime(): number {
-    return this.remainingSeconds;
+    return Math.max(0, Math.floor(this.remainingSeconds()));
   }
 
   get isSettled(): boolean {
@@ -119,13 +85,6 @@ export class ShellApprovalComponent implements Component {
     return this.scrollOffset;
   }
 
-  private stopTimer(): void {
-    if (this.timerId !== null) {
-      clearInterval(this.timerId);
-      this.timerId = null;
-    }
-  }
-
   invalidate(): void {
     this.cachedRenderWidth = null;
     this.cachedRenderLines = null;
@@ -134,12 +93,10 @@ export class ShellApprovalComponent implements Component {
   decide(reason: ShellApprovalReason): void {
     if (this.settled) return;
     this.settled = true;
-    this.stopTimer();
     this.onDecision({ approved: reason === 'approved', reason });
   }
 
   dispose(): void {
-    this.stopTimer();
     if (!this.settled) this.decide('cancelled');
   }
 
@@ -201,6 +158,7 @@ export class ShellApprovalComponent implements Component {
       return border('│ ') + text + ' '.repeat(innerWidth - v) + border(' │');
     };
 
+    const remaining = this.remainingTime;
     const lines: string[] = [
       topLine,
       formatRow(`${label('Source agent:')} ${sanitizeTerminalText(this.request.sourceAgent || 'unknown')}`),
@@ -234,8 +192,8 @@ export class ShellApprovalComponent implements Component {
     for (const cmdLine of visibleLines) lines.push(formatRow(`  ${cmdLine}`));
     lines.push(divider);
 
-    const countdownColor = this.remainingSeconds <= 10 ? 'error' : 'warning';
-    lines.push(formatRow(this.theme.fg(countdownColor, `Timeout: ${this.remainingSeconds}s (auto-reject on expiry)`)));
+    const countdownColor = remaining <= 10 ? 'error' : 'warning';
+    lines.push(formatRow(this.theme.fg(countdownColor, `Timeout: ${remaining}s (auto-reject on expiry)`)));
     lines.push(formatRow(dim('Keys: [Enter/y] allow once  [Esc/n] reject  [↑/↓] scroll')));
     lines.push(bottomLine);
 
@@ -246,213 +204,218 @@ export class ShellApprovalComponent implements Component {
   }
 }
 
-interface QueuedItem {
-  readonly id: number;
+export interface ShellApprovalTuiAdapterOptions {
+  readonly controller: ShellApprovalController;
+  /** The adapter is reusable across tree switches; callers update the root context. */
+  readonly context: () => ExtensionContext | undefined;
+  readonly onDisplay?: ((request: ShellApprovalRequest) => void) | undefined;
+}
+
+interface ApprovalDialog {
+  pending: ShellApprovalPending;
   readonly request: ShellApprovalRequest;
-  readonly ctx: ExtensionContext;
-  readonly resolve: (result: ShellApprovalResult) => void;
-  cleanupAbort: () => void;
+  component: ShellApprovalComponent | null;
+  tui: TUI | null;
+  done: ((result: ShellApprovalResult) => void) | null;
+  doneCalled: boolean;
+  finalResult: ShellApprovalResult | null;
+  ticker: ReturnType<typeof setInterval> | null;
 }
 
-interface ActiveItem {
-  readonly queuedItem: QueuedItem;
-  dismiss: (reason: ShellApprovalReason) => void;
-}
+/** Terminal adapter over the root approval controller. It owns only rendering and dialog lifecycle. */
+export class ShellApprovalTuiAdapter {
+  readonly #controller: ShellApprovalController;
+  readonly #context: () => ExtensionContext | undefined;
+  readonly #onDisplay: ((request: ShellApprovalRequest) => void) | undefined;
+  readonly #unsubscribe: () => void;
 
-let nextItemId = 1;
+  #dialog: ApprovalDialog | null = null;
+  #disposed = false;
 
-/** Coordinates manual shell execution approvals per root session, showing one request at a time. */
-export class ManualApprovalQueue {
-  private readonly defaultTimeoutSeconds: number;
-  private readonly onDisplay: ((request: ShellApprovalRequest) => void) | undefined;
-  private readonly queue: QueuedItem[] = [];
-  private activeItem: ActiveItem | null = null;
-  private activeProcessing = false;
-  private disposed = false;
-
-  constructor(options?: ManualApprovalQueueOptions) {
-    this.onDisplay = options?.onDisplay;
-    this.defaultTimeoutSeconds = Math.max(
-      1,
-      Math.floor(options?.defaultTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS),
-    );
+  constructor(options: ShellApprovalTuiAdapterOptions) {
+    this.#controller = options.controller;
+    this.#context = options.context;
+    this.#onDisplay = options.onDisplay;
+    this.#unsubscribe = this.#controller.subscribe((snapshot) => this.#sync(snapshot), { consumer: false });
   }
 
-  get isDisposed(): boolean {
-    return this.disposed;
-  }
-
-  get activeCount(): number {
-    return this.activeItem !== null ? 1 : 0;
-  }
-
-  get queuedCount(): number {
-    return this.queue.length;
-  }
-
-  async requestApproval(
-    request: ShellApprovalRequest,
-    ctx: ExtensionContext,
-  ): Promise<ShellApprovalResult> {
-    if (this.disposed) return { approved: false, reason: 'disposed' };
-    if (!ctx || !ctx.hasUI || ctx.mode !== 'tui') return { approved: false, reason: 'no_ui' };
-    if (request.signal?.aborted || ctx.signal?.aborted) return { approved: false, reason: 'cancelled' };
-
-    return new Promise<ShellApprovalResult>((resolve) => {
-      let settled = false;
-      const safeResolve = (result: ShellApprovalResult) => {
-        if (settled) return;
-        settled = true;
-        resolve(result);
-      };
-
-      const queuedItem: QueuedItem = {
-        id: nextItemId++,
-        request,
-        ctx,
-        resolve: safeResolve,
-        cleanupAbort: () => {},
-      };
-
-      const onAbort = () => {
-        this.removeFromQueue(queuedItem);
-        safeResolve({ approved: false, reason: 'cancelled' });
-      };
-
-      if (request.signal) request.signal.addEventListener('abort', onAbort, { once: true });
-      if (ctx.signal) ctx.signal.addEventListener('abort', onAbort, { once: true });
-
-      queuedItem.cleanupAbort = () => {
-        request.signal?.removeEventListener('abort', onAbort);
-        ctx.signal?.removeEventListener('abort', onAbort);
-      };
-
-      this.queue.push(queuedItem);
-      this.processNext();
-    });
-  }
-
-  private removeFromQueue(item: QueuedItem): void {
-    item.cleanupAbort();
-    const index = this.queue.indexOf(item);
-    if (index !== -1) this.queue.splice(index, 1);
-  }
-
-  private processNext(): void {
-    if (this.disposed || this.activeProcessing || this.queue.length === 0) return;
-
-    const current = this.queue.shift()!;
-    current.cleanupAbort();
-
-    if (current.request.signal?.aborted || current.ctx.signal?.aborted) {
-      current.resolve({ approved: false, reason: 'cancelled' });
-      this.processNext();
-      return;
-    }
-
-    this.activeProcessing = true;
-    let activeSettled = false;
-    let dismissComponent: ((reason: ShellApprovalReason) => void) | undefined;
-
-    const resolvePrompt = (result: ShellApprovalResult) => {
-      if (activeSettled) return;
-      activeSettled = true;
-      current.resolve(result);
-    };
-
-    this.activeItem = {
-      queuedItem: current,
-      dismiss: (reason) => {
-        resolvePrompt({ approved: false, reason });
-        dismissComponent?.(reason);
-      },
-    };
-
-    const sanitizedCommand = sanitizeTerminalText(current.request.command);
-    const displayTitle = `Shell approval: ${truncateToWidth(sanitizedCommand, 40)}`;
-
-    try {
-      current.ctx.ui.notify(
-        `[Shell approval] ${current.request.sourceAgent || 'unknown'} requests: ${truncateToWidth(sanitizedCommand, 50)}`,
-        'warning',
-      );
-    } catch {}
-
-    try {
-      if (process.stdout?.isTTY) process.stdout.write('\x07');
-    } catch {}
-
-    const onActiveAbort = () => {
-      if (this.activeItem?.queuedItem === current) this.activeItem.dismiss('cancelled');
-    };
-
-    current.request.signal?.addEventListener('abort', onActiveAbort, { once: true });
-    current.ctx.signal?.addEventListener('abort', onActiveAbort, { once: true });
-
-    const cleanupActiveAbort = () => {
-      current.request.signal?.removeEventListener('abort', onActiveAbort);
-      current.ctx.signal?.removeEventListener('abort', onActiveAbort);
-    };
-
-    const effectiveTimeout = Math.max(1, Math.floor(current.request.timeoutSeconds ?? this.defaultTimeoutSeconds));
-    let activeComponent: ShellApprovalComponent | null = null;
-
-    void current.ctx.ui
-      .custom<ShellApprovalResult>(
-        (tui, theme, keybindings, done) => {
-          let componentDoneCalled = false;
-          const safeDone = (res: ShellApprovalResult) => {
-            if (componentDoneCalled) return;
-            componentDoneCalled = true;
-            resolvePrompt(res);
-            done(res);
-          };
-
-          dismissComponent = (reason) => {
-            activeComponent?.decide(reason);
-            safeDone({ approved: false, reason });
-          };
-
-          activeComponent = new ShellApprovalComponent(tui, theme, keybindings, current.request, effectiveTimeout, safeDone);
-          this.onDisplay?.(current.request);
-          return activeComponent;
-        },
-        {
-          blocked: {
-            kind: 'permission',
-            message: displayTitle,
-          },
-        },
-      )
-      .then((res) => {
-        resolvePrompt(res);
-      })
-      .catch(() => {
-        resolvePrompt({ approved: false, reason: 'rejected' });
-      })
-      .finally(() => {
-        cleanupActiveAbort();
-        this.activeItem = null;
-        this.activeProcessing = false;
-        this.processNext();
-      });
+  canPresent(): boolean {
+    const ctx = this.#context();
+    return ctx !== undefined && ctx.hasUI && ctx.mode === 'tui';
   }
 
   dispose(): void {
-    if (this.disposed) return;
-    this.disposed = true;
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#unsubscribe();
+    const dialog = this.#dialog;
+    this.#dialog = null;
+    if (dialog !== null) this.#close(dialog, { approved: false, reason: 'cancelled' });
+  }
 
-    const pending = [...this.queue];
-    this.queue.length = 0;
-    for (const item of pending) {
-      item.cleanupAbort();
-      item.resolve({ approved: false, reason: 'disposed' });
+  #sync(snapshot: readonly ShellApprovalPending[]): void {
+    if (this.#disposed) return;
+    const active = snapshot.find((pending) => pending.state === 'active');
+    if (active === undefined) {
+      const dialog = this.#dialog;
+      if (dialog !== null) this.#close(dialog, this.#closeReason(dialog));
+      return;
     }
 
-    if (this.activeItem) {
-      const active = this.activeItem;
-      this.activeItem = null;
-      active.dismiss('disposed');
+    if (this.#dialog?.pending.id === active.id) {
+      this.#dialog.pending = active;
+      return;
+    }
+
+    const current = this.#dialog;
+    if (current !== null) {
+      this.#close(current, this.#closeReason(current));
+      // The SDK owns unmounting. Wait for its promise before opening another dialog.
+      return;
+    }
+
+    this.#open(active);
+  }
+
+  #closeReason(dialog: ApprovalDialog): ShellApprovalResult {
+    if (dialog.finalResult !== null) return dialog.finalResult;
+    const expired = dialog.pending.expiresAt !== null && Date.now() >= dialog.pending.expiresAt;
+    return { approved: false, reason: expired ? 'timeout' : 'cancelled' };
+  }
+
+  #open(pending: ShellApprovalPending): void {
+    const ctx = this.#context();
+    if (ctx === undefined || !ctx.hasUI || ctx.mode !== 'tui') {
+      return;
+    }
+
+    const request: ShellApprovalRequest = {
+      sourceAgent: pending.sourceAgent,
+      shell: pending.shell,
+      cwd: pending.cwd,
+      command: pending.command,
+      reason: pending.reason ?? undefined,
+      timeoutSeconds: pending.timeoutSeconds,
+    };
+    const dialog: ApprovalDialog = {
+      pending,
+      request,
+      component: null,
+      tui: null,
+      done: null,
+      doneCalled: false,
+      finalResult: null,
+      ticker: null,
+    };
+    this.#dialog = dialog;
+
+    const sanitizedCommand = sanitizeTerminalText(request.command);
+    const displayTitle = `Shell approval: ${truncateToWidth(sanitizedCommand, 40)}`;
+
+    try {
+      ctx.ui.notify(
+        `[Shell approval] ${request.sourceAgent || 'unknown'} requests: ${truncateToWidth(sanitizedCommand, 50)}`,
+        'warning',
+      );
+    } catch {}
+    try {
+      if (process.stdout?.isTTY) process.stdout.write('\x07');
+    } catch {}
+    try { this.#onDisplay?.(request); } catch { /* Notification failure does not decide approval. */ }
+
+    void ctx.ui
+      .custom<ShellApprovalResult>(
+        (tui, theme, keybindings, done) => {
+          dialog.done = done;
+          dialog.tui = tui;
+          dialog.component = new ShellApprovalComponent(
+            tui,
+            theme,
+            keybindings,
+            request,
+            () => remainingSeconds(dialog),
+            (result) => this.#onDecision(dialog, result),
+          );
+          this.#startTicker(dialog);
+
+          if (dialog.finalResult !== null) {
+            this.#callDone(dialog, dialog.finalResult);
+            dialog.component.decide(dialog.finalResult.reason);
+          }
+          return dialog.component;
+        },
+        { blocked: { kind: 'permission', message: displayTitle } },
+      )
+      .then((result) => {
+        if (dialog.doneCalled) return;
+        dialog.finalResult = result;
+        if (this.#controller.get(pending.id) !== undefined) {
+          this.#controller.respond(pending.id, result.approved ? 'allow' : 'deny');
+        }
+        this.#close(dialog, result);
+      })
+      .catch(() => {
+        if (dialog.doneCalled) return;
+        if (this.#controller.get(pending.id) !== undefined) {
+          this.#controller.respond(pending.id, 'deny');
+        }
+        this.#close(dialog, { approved: false, reason: 'rejected' });
+      })
+      .finally(() => {
+        this.#stopTicker(dialog);
+        if (dialog.component !== null && !dialog.component.isSettled) dialog.component.dispose();
+        if (this.#dialog === dialog) this.#dialog = null;
+        if (!this.#disposed) this.#sync(this.#controller.list());
+      });
+  }
+
+  #onDecision(dialog: ApprovalDialog, result: ShellApprovalResult): void {
+    if (dialog.doneCalled) return;
+    dialog.finalResult ??= result;
+    if (this.#controller.get(dialog.pending.id) !== undefined) {
+      const response = this.#controller.respond(
+        dialog.pending.id,
+        result.reason === 'approved' ? 'allow' : 'deny',
+      );
+      if (!response.accepted && result.reason === 'approved') {
+        dialog.finalResult = { approved: false, reason: 'cancelled' };
+      }
+    }
+    this.#close(dialog, dialog.finalResult);
+  }
+
+  #close(dialog: ApprovalDialog, result: ShellApprovalResult): void {
+    dialog.finalResult ??= result;
+    this.#stopTicker(dialog);
+    this.#callDone(dialog, dialog.finalResult);
+    if (dialog.component !== null && !dialog.component.isSettled) dialog.component.dispose();
+  }
+
+  #callDone(dialog: ApprovalDialog, result: ShellApprovalResult): void {
+    if (dialog.done === null || dialog.doneCalled) return;
+    dialog.doneCalled = true;
+    dialog.done(result);
+  }
+
+  #startTicker(dialog: ApprovalDialog): void {
+    this.#stopTicker(dialog);
+    dialog.ticker = setInterval(() => {
+      if (dialog.doneCalled) return;
+      dialog.component?.invalidate();
+      dialog.tui?.requestRender();
+    }, 1000);
+    dialog.ticker.unref();
+  }
+
+  #stopTicker(dialog: ApprovalDialog): void {
+    if (dialog.ticker !== null) {
+      clearInterval(dialog.ticker);
+      dialog.ticker = null;
     }
   }
+}
+
+function remainingSeconds(dialog: ApprovalDialog): number {
+  if (dialog.pending.expiresAt === null) return dialog.pending.timeoutSeconds;
+  return Math.max(0, Math.ceil((dialog.pending.expiresAt - Date.now()) / 1000));
 }

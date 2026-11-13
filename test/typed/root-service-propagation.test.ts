@@ -20,7 +20,7 @@ import {
 import { fauxProvider, InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import type { AssistantMessage, Usage } from '@earendil-works/pi-ai';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
-import subagentExtension from '../../src/subagent/extension.ts';
+import subagentExtension from '../../extensions/harness.ts';
 import { setToolPermission } from '../../src/capability/tool-permission.ts';
 import { deferred } from '../../test-support/async.ts';
 import { restorePresetSnapshot } from '../../src/preset/state.ts';

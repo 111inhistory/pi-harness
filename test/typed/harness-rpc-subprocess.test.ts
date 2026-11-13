@@ -2,7 +2,7 @@
  * Bounded real-subprocess smoke test for the Harness RPC endpoint.
  *
  * This launches the real Pi CLI in RPC mode (loading the real
- * `extensions/subagent.ts`) with an offline, model-free configuration, then
+ * `extensions/harness.ts`) with an offline, model-free configuration, then
  * verifies the acceptance matrix at the process boundary:
  *
  * - an RPC host publishes a machine-readable discovery record and binds a
@@ -34,7 +34,7 @@ import { harnessRpcSchemaRef } from "../../src/harness-rpc/schema.ts";
 const isWindows = process.platform === "win32";
 const sdkEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
 const cliPath = path.join(path.dirname(sdkEntry), "bundle", "cli.js");
-const extensionPath = fileURLToPath(new URL("../../extensions/subagent.ts", import.meta.url));
+const extensionPath = fileURLToPath(new URL("../../extensions/harness.ts", import.meta.url));
 
 interface Fixture {
   readonly dir: string;

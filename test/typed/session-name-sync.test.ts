@@ -15,7 +15,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 
 import { installSubagentCommand } from "../../src/subagent/command.ts";
-import subagentExtension from "../../src/subagent/extension.ts";
+import subagentExtension from "../../extensions/harness.ts";
 import { RootService } from "../../src/subagent/root-service.ts";
 
 interface Harness {

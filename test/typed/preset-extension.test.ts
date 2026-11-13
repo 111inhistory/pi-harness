@@ -33,6 +33,7 @@ interface SetupOptions {
   activeTools?: string[];
   flags?: Record<string, string>;
   modelIds?: string[];
+  modelSelectFails?: boolean;
   defaultTools?: string[];
 }
 
@@ -61,7 +62,7 @@ function setup(options: SetupOptions = {}): Harness {
     getActiveTools: () => [...activeTools],
     setActiveTools: (names: string[]) => { calls.setActiveTools.push(names); activeTools = [...names]; },
     getAllTools: () => allToolNames.map((name) => ({ name, parameters: {} })),
-    setModel: (model: { provider: string; id: string }) => { calls.setModel.push(`${model.provider}/${model.id}`); return Promise.resolve(true); },
+    setModel: (model: { provider: string; id: string }) => { calls.setModel.push(`${model.provider}/${model.id}`); return Promise.resolve(!options.modelSelectFails); },
     setThinkingLevel: (level: string) => { calls.setThinking.push(level); },
     getFlag: (name: string) => options.flags?.[name],
     appendEntry: (customType: string, data: unknown) => {
@@ -123,10 +124,16 @@ test('/preset NAME rejects an unknown name', async () => {
 });
 
 test('an unauthenticated preset model applies nothing and reports an error', async () => {
-  const h = setup({ presets: { remote: { model: { provider: 'p', id: 'm' }, tools: ['+write'] } }, modelIds: [] });
+  const h = setup({
+    presets: { remote: { model: { provider: 'p', id: 'm' }, tools: ['+write'] } },
+    modelIds: ['p/m'],
+    modelSelectFails: true,
+  });
   await applyOnStart(h, 'remote');
   assert.equal(h.calls.setActiveTools.length, 0);
-  assert.ok(h.calls.notices.some((notice) => notice.level === 'error'));
+  assert.ok(h.calls.notices.some((notice) =>
+    notice.level === 'error' &&
+    notice.message === 'Preset "remote": model p/m is not authenticated; nothing applied.'));
   assert.equal(h.calls.appended.filter((entry) => entry.customType === 'preset-state').length, 0);
 });
 

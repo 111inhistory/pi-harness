@@ -1,0 +1,7 @@
+{
+  "id": "r-bad-expr",
+  "method": "tools.permission.query",
+  "params": {
+    "expr": 42
+  }
+}

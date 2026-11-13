@@ -20,7 +20,8 @@ import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 
 import { getAgentSocketPath, getBroadcastSocketPath, writeSocket } from "../../src/ipc/socket.ts";
 import { AgentListeners } from "../../src/subagent/listeners.ts";
-import { createMessageWriteTool, type ManagedWriteHost, type SessionEndpoint } from "../../src/subagent/message-write.ts";
+import { createMessageWriteTool } from "../../src/subagent/message-write.ts";
+import type { ManagedWriteHost, SessionEndpoint } from "../../src/subagent/managed-send.ts";
 import {
   createSubagentRuntime,
   SubagentError,

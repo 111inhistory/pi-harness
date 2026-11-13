@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import { enableCapabilityTargets } from '../capability/enable.ts';
 import { ipc } from '../ipc/platform.ts';
 import { deriveSessionUid, endpointKey, getAgentSocketPath } from '../ipc/socket.ts';
-import type { SessionEndpoint } from './message-write.ts';
+import type { SessionEndpoint } from './managed-send.ts';
 import { SubagentError } from './runtime.ts';
 import {
   liveSessions,

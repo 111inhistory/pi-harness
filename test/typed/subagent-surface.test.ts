@@ -41,7 +41,7 @@ import type {
   MessageReceipt,
   StopResult,
 } from "../../src/subagent/runtime.ts";
-import type { SessionEndpoint } from "../../src/subagent/message-write.ts";
+import type { SessionEndpoint } from "../../src/subagent/managed-send.ts";
 
 const MAX_DEPTH = 2;
 

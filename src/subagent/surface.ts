@@ -35,9 +35,9 @@ import { captureInheritedContext, type InheritedSnapshot } from "../inherited-co
 import { fillPrompt, promptString } from "../prompt-text.ts";
 import {
   createMessageWriteTool,
-  type ManagedWriteHost,
   type ManagedWriteTool,
 } from "./message-write.ts";
+import type { ManagedWriteHost } from "./managed-send.ts";
 import { droppedInheritedTools, inheritedToolsWarning } from "./tool-policy.ts";
 import type { CreatedAgents, DetailedAgentItem, StopResult } from "./runtime.ts";
 

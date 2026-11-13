@@ -13,13 +13,13 @@ import {
 } from '@earendil-works/pi-tui';
 
 import {
-  ManualApprovalQueue,
   ShellApprovalComponent,
+  ShellApprovalTuiAdapter,
   sanitizeCommandDisplay,
   sanitizeTerminalText,
-  type ShellApprovalRequest,
-  type ShellApprovalResult,
 } from '../../src/shell-approval/ui.ts';
+import { ManualApprovalController } from '../../src/shell-approval/controller.ts';
+import type { ShellApprovalRequest, ShellApprovalResult } from '../../src/shell-approval/types.ts';
 
 function activeTheme(): Theme {
   initTheme('dark');
@@ -132,6 +132,50 @@ function createMockContext(options: MockContextOptions = {}): ExtensionContext &
   };
 
   return ctx;
+}
+
+/** Test-only composition of the domain controller and terminal adapter. */
+class ManualApprovalQueue {
+  readonly controller: ManualApprovalController;
+  readonly #adapter: ShellApprovalTuiAdapter;
+  #ctx: ExtensionContext | undefined;
+  #disposed = false;
+
+  constructor(options?: { defaultTimeoutSeconds?: number; onDisplay?: (request: ShellApprovalRequest) => void }) {
+    this.controller = new ManualApprovalController({
+      defaultTimeoutSeconds: options?.defaultTimeoutSeconds,
+      canPresent: () => this.#ctx?.hasUI === true && this.#ctx?.mode === 'tui',
+    });
+    this.#adapter = new ShellApprovalTuiAdapter({
+      controller: this.controller,
+      context: () => this.#ctx,
+      onDisplay: options?.onDisplay,
+    });
+  }
+
+  get activeCount(): number {
+    return this.controller.list().filter((pending) => pending.state === 'active').length;
+  }
+
+  get queuedCount(): number {
+    return this.controller.list().filter((pending) => pending.state === 'queued').length;
+  }
+
+  get isDisposed(): boolean {
+    return this.#disposed;
+  }
+
+  requestApproval(request: ShellApprovalRequest, ctx: ExtensionContext): Promise<ShellApprovalResult> {
+    this.#ctx = ctx;
+    return this.controller.request(request);
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#adapter.dispose();
+    this.controller.dispose();
+  }
 }
 
 test('sanitizeTerminalText strips ANSI colors, OSC escapes, and control characters', () => {
@@ -299,36 +343,39 @@ test('ShellApprovalComponent scrolls multi-line commands smoothly', (t) => {
   comp.dispose();
 });
 
-test('ShellApprovalComponent times out explicitly and rejects late input', async (t) => {
-  const theme = activeTheme();
-  const keybindings = createKeybindings();
-  const tui = createTestTui();
+test('ManualApprovalController times out explicitly, closes the dialog, and rejects late input', async (t) => {
+  const queue = new ManualApprovalQueue();
+  t.after(() => queue.dispose());
+
+  let component: ShellApprovalComponent | undefined;
+  const ctx = createMockContext({
+    customImpl: async (factory) => {
+      return new Promise<ShellApprovalResult>((resolve) => {
+        component = factory(createTestTui(), activeTheme(), createKeybindings(), resolve) as ShellApprovalComponent;
+      });
+    },
+  });
 
   const request: ShellApprovalRequest = {
     sourceAgent: 'subagent',
     shell: 'bash',
     cwd: '/tmp',
     command: 'echo timeout-test',
+    timeoutSeconds: 1,
   };
 
-  let decision: ShellApprovalResult | undefined;
-  // 1 second timeout
-  const comp = new ShellApprovalComponent(tui, theme, keybindings, request, 1, (res) => {
-    decision = res;
-  });
-  t.after(() => comp.dispose());
+  const pending = queue.requestApproval(request, ctx);
 
-  // Wait for 1.1s for countdown to hit 0
+  // Wait for 1.1s for the root controller deadline.
   await new Promise((r) => setTimeout(r, 1100));
 
-  assert.deepEqual(decision, { approved: false, reason: 'timeout' });
-  assert.equal(comp.isSettled, true);
+  assert.deepEqual(await pending, { approved: false, reason: 'timeout' });
+  assert.equal(component?.isSettled, true);
+  assert.equal(queue.activeCount, 0);
 
-  // Late allow after timeout does nothing
-  comp.handleInput('y');
-  assert.deepEqual(decision, { approved: false, reason: 'timeout' });
-
-  comp.dispose();
+  // Late allow after timeout does nothing.
+  component?.handleInput('y');
+  assert.deepEqual(await pending, { approved: false, reason: 'timeout' });
 });
 
 test('ManualApprovalQueue denies immediately when no UI or not in TUI mode', async (t) => {

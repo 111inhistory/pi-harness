@@ -34,7 +34,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 
 import capabilityExtension from '../../src/capability/extension.ts';
-import subagentEntry from '../../extensions/subagent.ts';
+import subagentEntry from '../../extensions/harness.ts';
 import capabilityEntry from '../../extensions/capability.ts';
 import resultRenderingEntry from '../../extensions/result-rendering.ts';
 import btwEntry from '../../extensions/btw.ts';

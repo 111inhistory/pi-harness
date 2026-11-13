@@ -1,0 +1,7 @@
+{
+  "id": "r-bad-cat",
+  "method": "tools.catalog",
+  "params": {
+    "category": "bogus"
+  }
+}

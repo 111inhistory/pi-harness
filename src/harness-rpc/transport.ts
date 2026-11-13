@@ -40,6 +40,8 @@ export interface HarnessRpcServerOptions {
   readonly root: string;
   readonly handler: RpcHandler;
   readonly maxBacklogBytes?: number;
+  /** Small control operations may bypass the ordered operation queue. */
+  readonly isControlRequest?: (request: RpcRequest) => boolean;
   readonly onError?: (error: Error) => void;
 }
 
@@ -80,10 +82,12 @@ function nextSubscriptionId(): string {
   return `sub-${process.pid.toString(36)}-${subscriptionCounter.toString(36)}`;
 }
 
-/** One accepted client. Requests are handled in order; events are pushed out of band. */
+/** One accepted client. Operations are ordered; control admission and events remain responsive. */
 export class RpcConnection {
   readonly #socket: net.Socket;
   readonly #handler: RpcHandler;
+  readonly #isControlRequest: (request: RpcRequest) => boolean;
+  readonly #controls = new Set<Promise<void>>();
   readonly #maxBacklogBytes: number;
   readonly #onError: (error: Error) => void;
   readonly #subscriptions = new Map<string, () => void>();
@@ -94,9 +98,10 @@ export class RpcConnection {
   #closed = false;
   #inputEnded = false;
 
-  constructor(socket: net.Socket, handler: RpcHandler, maxBacklogBytes: number, onError: (error: Error) => void) {
+  constructor(socket: net.Socket, handler: RpcHandler, maxBacklogBytes: number, onError: (error: Error) => void, isControlRequest: (request: RpcRequest) => boolean = () => false) {
     this.#socket = socket;
     this.#handler = handler;
+    this.#isControlRequest = isControlRequest;
     this.#maxBacklogBytes = maxBacklogBytes;
     this.#onError = onError;
     // A client may finish its request before reading the response. Stop new
@@ -109,7 +114,8 @@ export class RpcConnection {
     socket.on('data', (chunk: Buffer) => this.#onData(chunk));
     socket.on('end', () => {
       this.#inputEnded = true;
-      void this.#chain.then(() => this.#finishInput());
+      this.#releaseSubscriptions();
+      void Promise.allSettled([this.#chain, ...this.#controls]).then(() => this.#finishInput());
     });
     socket.on('error', (error: NodeJS.ErrnoException) => {
       if (error.code !== 'EPIPE' && error.code !== 'ECONNRESET') this.#onError(asError(error));
@@ -124,6 +130,10 @@ export class RpcConnection {
   /** Register a subscription's teardown and return its id. */
   addSubscription(unsubscribe: () => void): string {
     const id = nextSubscriptionId();
+    if (this.#closed || this.#inputEnded) {
+      unsubscribe();
+      throw new RpcRequestError(RPC_ERROR.unavailable, 'Connection no longer accepts subscriptions.');
+    }
     this.#subscriptions.set(id, unsubscribe);
     return id;
   }
@@ -204,21 +214,22 @@ export class RpcConnection {
     for (const line of lines) {
       const trimmed = line.trim();
       if (trimmed === '') continue;
-      // Serialize per-connection so responses keep request order.
-      this.#chain = this.#chain.then(() => this.#handleLine(trimmed)).catch(() => {});
+      let frame: ReturnType<typeof parseRequest>;
+      try { frame = parseRequest(JSON.parse(trimmed)); }
+      catch { frame = { id: null, error: { code: RPC_ERROR.invalidRequest, message: 'Frame is not valid JSON.' } }; }
+      if ('request' in frame && this.#isControlRequest(frame.request)) {
+        // Start in a microtask so an earlier operation can admit its work first.
+        const pending = Promise.resolve().then(() => this.#handleFrame(frame));
+        this.#controls.add(pending);
+        void pending.finally(() => this.#controls.delete(pending)).catch(() => {});
+      } else {
+        this.#chain = this.#chain.then(() => this.#handleFrame(frame)).catch(() => {});
+      }
     }
   }
 
-  async #handleLine(line: string): Promise<void> {
+  async #handleFrame(result: ReturnType<typeof parseRequest>): Promise<void> {
     if (this.#closed) return;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      this.#write({ id: null, ok: false, error: { code: RPC_ERROR.invalidRequest, message: 'Frame is not valid JSON.' } });
-      return;
-    }
-    const result = parseRequest(parsed);
     if ('error' in result) {
       this.#write({ id: result.id, ok: false, error: result.error });
       return;
@@ -266,7 +277,7 @@ export function createHarnessRpcServer(options: HarnessRpcServerOptions): Harnes
         socket.destroy();
         return;
       }
-      const accepted = new RpcConnection(socket, options.handler, maxBacklogBytes, onError);
+      const accepted = new RpcConnection(socket, options.handler, maxBacklogBytes, onError, options.isControlRequest);
       connection = accepted;
       // FIN may leave requests or response bytes in flight. Keep ownership
       // until the socket closes, not merely until observations are detached.

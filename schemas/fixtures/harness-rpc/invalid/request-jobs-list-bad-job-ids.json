@@ -1,0 +1,7 @@
+{
+  "id": "r-bad-jobs",
+  "method": "jobs.list",
+  "params": {
+    "jobIds": "sub_01"
+  }
+}

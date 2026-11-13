@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Value } from 'typebox/value';
 
+import { isRpcMethod, validateMethodParams, validateRpcId } from '../src/harness-rpc/contract.ts';
 import { HARNESS_RPC_PROTOCOL_VERSION, RPC_METHODS } from '../src/harness-rpc/protocol.ts';
 import {
   HARNESS_RPC_METHOD_SCHEMAS,
@@ -95,6 +96,12 @@ check('event frame', 'RpcEventFrame', {
 check('stream event payload', 'StreamEventPayload', {
   kind: 'session', rootSessionId: 's', jobId: 'j', agentId: 'a', event: { type: 'message_start' },
 }, true);
+check('approvals event payload', 'ApprovalsEvent', {
+  kind: 'approvals', rootSessionId: 's', items: [],
+}, true);
+check('main event payload', 'MainEventPayload', {
+  kind: 'main', generation: 1, rootSessionId: 's', source: 'sdk', event: { type: 'agent_start' },
+}, true);
 check('discovery record', 'HarnessRpcRecord', {
   protocolVersion: 1, address: '/tmp/x/harness-rpc.sock', sessionId: 's', pid: 1, startedAt: new Date(0).toISOString(),
 }, true);
@@ -165,6 +172,15 @@ function validateFixture(fixture) {
     }
     const actual = Value.Check(harnessRpcSchemaRef(fixture.schema), parsed.value);
     if (actual !== fixture.valid) fail(`${relative}: expected ${fixture.valid ? 'valid' : 'invalid'} against ${fixture.schema}.`);
+    if (fixture.schema === 'MethodRequest') {
+      const frame = parsed.value;
+      const runtimeValid = typeof frame === 'object' && frame !== null && !Array.isArray(frame)
+        && validateRpcId(frame.id) && isRpcMethod(frame.method)
+        && validateMethodParams(frame.method, frame.params).ok;
+      if (runtimeValid !== fixture.valid) {
+        fail(`${relative}: runtime contract validator returned ${runtimeValid}, expected ${fixture.valid}.`);
+      }
+    }
     if (fixture.dispatch !== undefined) {
       if (fixture.dispatch?.outcome !== 'error' || typeof fixture.dispatch?.code !== 'string') {
         fail(`${relative}: dispatch must be {outcome:"error",code:string}.`);
@@ -440,6 +456,8 @@ const manifestDocument = `${JSON.stringify({
   subscriptions: {
     'stream.subscribe': { result: 'StreamSubscribeResult', eventPayload: 'StreamEventPayload', eventKinds: ['session', 'job'] },
     'stream.unsubscribe': { result: 'StreamUnsubscribeResult' },
+    'approvals.subscribe': { result: 'ApprovalsSubscribeResult', eventPayload: 'ApprovalsEvent', eventKinds: ['approvals'] },
+    'main.subscribe': { result: 'MainSubscribeResult', eventPayload: 'MainEventPayload', eventKinds: ['main'] },
   },
   conformance: {
     levels: [

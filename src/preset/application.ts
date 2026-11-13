@@ -13,17 +13,24 @@
 import type { Api, Model } from '@earendil-works/pi-ai';
 import type {
   ExtensionAPI,
-  ExtensionContext,
   ModelRegistry,
 } from '@earendil-works/pi-coding-agent';
 
-import { applyPresetPlan, type PresetApplyHost, type PresetApplyOutcome } from './apply.ts';
+import {
+  applyPresetPlan,
+  clearActivePreset,
+  type PresetApplyHost,
+  type PresetApplyOutcome,
+  type PresetClearOutcome,
+} from './apply.ts';
 import { resolvePreset } from './resolve.ts';
 import {
   appendPresetBase,
   readPresetBase,
+  restorePresetSnapshot,
   PRESET_STATE_RECORD,
   PRESET_STATE_VERSION,
+  type PresetSnapshot,
 } from './state.ts';
 import { appendCodemodeMode } from '../capability/codemode-mode.ts';
 import { branchToolSelection } from '../capability/admission.ts';
@@ -31,14 +38,23 @@ import { createToolPermissionResolver } from '../capability/tool-permission.ts';
 import { applyToolModifiers, parseToolModifiers } from './modifiers.ts';
 import type { PresetConfig } from './config.ts';
 
+/** Catalog loading stays in `config.ts`; this module is the shared session-facing entry. */
+export { loadPresets, type LoadedPresets, type PresetConfig } from './config.ts';
+
 /** The public session surface Main and child creation both expose. */
 export interface PresetSessionHost {
   readonly pi: ExtensionAPI;
   getBranch(): readonly unknown[];
   readonly modelRegistry: Pick<ModelRegistry, 'find'>;
-  readonly ui: Pick<ExtensionContext['ui'], 'notify'>;
   /** Child creation can skip re-selecting its already-routed exact model. */
   selectModel?(model: Model<Api>): Promise<boolean>;
+}
+
+/** The currently active preset snapshot, or null when cleared/never set. */
+export function currentPreset(
+  host: Pick<PresetSessionHost, 'getBranch'>,
+): PresetSnapshot | null {
+  return restorePresetSnapshot(host.getBranch());
 }
 
 /**
@@ -93,15 +109,19 @@ export function createPresetApplyHost(
         ...record,
       });
     },
-    notify: (message, level) => host.ui.notify(message, level),
     applyCodemodeMode: (mode) => appendCodemodeMode(host.pi, mode),
     clearCodemodeMode: () => appendCodemodeMode(host.pi, null),
   };
 }
 
+/** Clear through the shared session host without rolling model/thinking/tools back. */
+export function clearPresetFromSession(host: PresetSessionHost): PresetClearOutcome {
+  return clearActivePreset(createPresetApplyHost(host));
+}
+
 /**
- * Resolve and apply one Preset through the shared host. Resolution issues are
- * reported exactly once here; the caller decides how to phrase a failed plan.
+ * Resolve and apply one Preset through the shared host. Resolution issues and
+ * runtime problems are returned for the surface adapter to render.
  */
 export async function applyPresetToSession(
   host: PresetSessionHost,
@@ -114,14 +134,12 @@ export async function applyPresetToSession(
     allToolNames: () => host.pi.getAllTools().map((tool) => tool.name),
     baseToolSet: () => base,
   });
-  for (const issue of resolution.issues) {
-    host.ui.notify(`Preset "${name}": ${issue.detail}`, issue.severity);
-  }
   if (resolution.plan === null) {
     return {
       applied: false,
       snapshot: null,
       issues: resolution.issues,
+      problems: [],
       codemodeNotApplied: false,
     };
   }
