@@ -100,6 +100,23 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
   await fsp.rm(release);
   const second = await fixture.create('ASYNC_SHELL_CHILD cancellation while awaiting a command');
   await shellResult.promise;
-  await fixture.call('subagent_stop', { id: second.id });
-  await fixture.stopped(second.id);
+  // Observe the owning child's terminal delivery before checking its stopped
+  // state. Stop acknowledges cancellation; native terminal cleanup can outlive
+  // the fixture's generic three-second polling window (notably with psmux).
+  const cancelled = observedTurn();
+  const unsubscribe = fixture.session.subscribe(event => {
+    if (event.type !== 'message_start' || event.message.role !== 'custom') return;
+    const message = event.message;
+    if (message.customType !== 'agent-delivery' && message.customType !== 'agent-completion') return;
+    const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
+    if (content.includes(second.id)) cancelled.resolve();
+  });
+  try {
+    const stopped = await fixture.call('subagent_stop', { id: second.id });
+    assert.notEqual(stopped.isError, true, JSON.stringify(stopped.content));
+    await cancelled.promise;
+    assert.equal((await fixture.item(second.id))?.status, 'stopped');
+  } finally {
+    unsubscribe();
+  }
 }
