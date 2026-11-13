@@ -223,15 +223,12 @@ export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixt
         "changes-capable Responses declare interfaces in the transcript",
       );
       const lastMessage = request.context.messages.at(-1);
-      assert.ok(lastMessage && lastMessage.role === "system");
+      assert.ok(lastMessage);
+      assert.notEqual(lastMessage.role, "system", "retrieval requests must never end with a developer_tail");
       const blockedPolicy = promptString("capability-policy.json", "additiveExecutionBlocked");
       const policyCopies = request.context.messages.filter(message => message.role === "system"
-        && getSystemMessageText(message) === blockedPolicy);
+        && getSystemMessageText(message).includes(blockedPolicy));
       assert.equal(policyCopies.length, 1, "the blocked policy is present exactly once");
-      if (getSystemMessageText(lastMessage) !== blockedPolicy) {
-        assert.ok(Object.keys(lastMessage.sections ?? {}).length > 0,
-          "the request tail is the current Harness snapshot when it follows the blocked policy");
-      }
       const deniedWrite = resultOf("write");
       if (!deniedWrite) {
         return toolAnswer("write", { path: "forbidden.txt", content: "must not execute" }, "forbidden-write");

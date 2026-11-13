@@ -1,8 +1,8 @@
 # Memory retention and lifecycle review
 
-Follow-up verification confirmed connection retention after subscription cancellation, transient prune-replay allocations, unused snapshot projections and the existence of the named clone sites. See [confirmed findings V1–V10](rpc-permission-audit.md#confirmed-findings-from-the-two-follow-up-reviews) for reproduced retention, counted work and the limits of static evidence.
+Follow-up verification confirmed connection retention after subscription cancellation, transient prune-replay allocations, unused snapshot projections and the existence of the named clone sites. See [confirmed findings V1–V10](../reviews/rpc-permission-audit.md#confirmed-findings-from-the-two-follow-up-reviews) for reproduced retention, counted work and the limits of static evidence.
 
-This review is not an accepted ownership contract. The eager-capture and whole-history deep-copy claims below were rejected after checking the actual call path and SDK writes. Root/scope collection growth alone has not established a leak. See [the reconciled rewrite plan](rpc-permission-audit.md#reconciliation-of-the-additional-reviews) before using these recommendations.
+This review is not an accepted ownership contract. The eager-capture and whole-history deep-copy claims below were rejected after checking the actual call path and SDK writes. Root/scope collection growth alone has not established a leak. See [the reconciled rewrite plan](../reviews/rpc-permission-audit.md#reconciliation-of-the-additional-reviews) before using these recommendations.
 
 ## Scope
 

@@ -83,8 +83,8 @@ D1 包含两层意思，应分别说明：
 
 ## 复现材料
 
-脚本：[`steer-message-update.mjs`](reproductions/steer-message-update.mjs)。
+脚本：[`steer-message-update.mjs`](../reviews/reproductions/steer-message-update.mjs)。
 
-原始输出：[`steer-message-update.jsonl`](reproductions/steer-message-update.jsonl)。
+原始输出：[`steer-message-update.jsonl`](../reviews/reproductions/steer-message-update.jsonl)。
 
 脚本包含当前环境的绝对依赖路径。运行前应核对版本和路径；清理只删除脚本自己的临时目录。

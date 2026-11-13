@@ -40,23 +40,23 @@
 - 测试通过不能替代真实模型或平台验证。
 - 删除旧文档前，应保留其中尚未核对的约束和例外。
 
-## Code comments
+## 代码注释
 
-Use English for code comments. Explain a non-obvious reason, caller contract, ordering constraint, ownership boundary or actual limitation. Prefer a direct name or simpler code when it conveys the same information. A straightforward assignment, wrapper or private helper does not need a prose restatement or mandatory JSDoc.
+代码注释使用英文编写，用于解释非显而易见的原因、调用方契约、顺序约束、所有权边界或实际限制。若直接的命名或更简洁的代码已能传达相同信息，优先采用代码本身而非注释。直观的赋值、包装器或私有辅助函数无需文字复述或强制 JSDoc。
 
-For exported APIs or substantial modules, document what a caller cannot learn from the signature: side effects, lifetime, mutability, error/partial-result behavior and any relevant boundary. Keep module comments short; the current contract and architecture documents own the broader design.
+对于导出 API 或重要模块，注释应说明调用方无法从类型签名中获知的信息：副作用、生命周期、可变性、错误或部分结果行为以及相关边界。模块级注释保持简短；更宏观的设计归当前契约与架构文档管理。
 
-Keep comments factual and local:
+注释应保持客观与局部性：
 
-- Describe the exact mutable object and its owner. Array append does not imply message-body mutation; a fresh array does not imply deeply detached values.
-- Describe what teardown actually removes and what may remain alive. Callback suppression is not observer removal, and wrapper disposal is not proof of underlying resource exit.
-- Qualify complexity and performance claims with the input and scope. Avoid unmeasured claims such as constant cost, negligible allocation or guaranteed responsiveness.
-- Cite the tested dependency version or a focused source/contract reference when a workaround depends on upstream behavior. Explain the trigger that makes the workaround necessary; do not paste an upstream implementation into comments.
-- Keep speculative causes and investigation history in the existing review. A comment asserting a safety requirement is not evidence that the requirement is necessary.
+- 明确说明被修改的对象及其所有者。数组追加不代表消息正文可变；新建数组不代表内部值已完成深层隔离。
+- 明确说明销毁操作实际移除的内容以及仍可能存活的对象。抑制回调不等于摘除观察者，释放包装器不等于底层资源已退出。
+- 复杂度与性能表述须限定输入与范围。避免未经实测的“常数开销”“可忽略分配”或“保证响应速度”等说法。
+- 当权宜方案依赖上游行为时，引用已测试的依赖版本或具体的源码/契约位置，并说明触发该权宜方案的原因；不要把上游实现代码粘贴进注释。
+- 推测性成因与排查历史留在既有审查记录中。不要在注释中仅以“出于安全需要”代替实际依据。
 
-When behavior changes, inspect comments on the affected caller, implementation and test. Update or remove obsolete names, format support, priority rules and guarantees in the same change. Do not leave changelog narration, commented-out old code or retired compatibility instructions in production code. A TODO should identify a concrete remaining condition or issue; do not add vague obligations such as “optimize later.”
+当行为发生变化时，同步检查受影响调用方、实现与测试中的注释，在同一改动中更新或删除过时的名称、格式支持、优先级规则与保证。不要在生产代码中留下变更日志式叙述、被注释掉的旧代码或已退役的兼容说明。TODO 应指向具体遗留条件或问题，不要添加“后续优化”之类空泛要求。
 
-For example, prefer `// Own the append array and session header; historical message bodies stay shared.` over `// Deep-copy everything so callers can never mutate state.` when only the container and header require isolation. Likewise, document both native-listener and Runtime-observer teardown only if both are actually detached. Comments are reviewed against the code; no comment-count or JSDoc-coverage target is required.
+例如，当只有容器和头部需要隔离时，应写 `// Own the append array and session header; historical message bodies stay shared.`，而不是 `// Deep-copy everything so callers can never mutate state.`。同理，只有当原生监听器与 Runtime 观察者确实都已摘除时，才在注释中同时说明二者。注释随代码一起审阅，不设定注释数量或 JSDoc 覆盖率指标。
 
 ## 工具提示词
 

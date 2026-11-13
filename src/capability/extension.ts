@@ -97,9 +97,12 @@ import { createToolAdmission, isMcpExecutionTool } from "./admission.ts";
 import { setCapabilityPermissionDefaults } from "./scope.ts";
 import { providerSessionPolicy } from "../provider-session.ts";
 import { renderCurrentToolGuidance } from "../tool-guidance.ts";
-import { appendCurrentSections } from "../request-instructions.ts";
+import {
+  applySystemPromptSections,
+  HARNESS_CONTEXT_SYNC_CUSTOM_TYPE,
+  renderCustomContextSync,
+} from "../request-instructions.ts";
 import { presetInstructionSections } from "../preset/instruction.ts";
-import { SUBAGENT_TOOL_GUIDANCE } from "../subagent/tool-guidance.ts";
 import { appendSessionTranscript, additiveToolTranscript } from "../session-transcript.ts";
 import {
   capabilityModelResult, capabilityToolDelta, type CapabilityInterfaceSources,
@@ -183,48 +186,133 @@ export default function capabilityExtension(
   });
 
   // Keep Pi's loaded Skill inventory for discovery, but do not advertise it
-  // eagerly in the base prompt. Mutate the native section, not the full prompt.
-  // The active-set and selectedTools prune, including the manual gate, belongs
-  // to the one declaration-admission path in `native-discovery.ts`.
-  pi.on("before_agent_start", (event) => {
-    event.systemPromptOptions.skills = [];
-  });
+  // eagerly in the base prompt. Dynamic Harness sections are written onto
+  // `event.systemPromptOptions.sections` so the SDK diffs and persists them
+  // before the user message (no trailing developer message).
+  let inLoop = false;
+  let afterAgentEnd = false;
+  let generation = 0;
+  let lastSyncedSectionsKey = "";
+  let lastSyncedToolsKey = "";
+  const ownedSectionKeys = new Set<string>();
 
-  // Discovery facts follow the branch. Every request recomputes the current
-  // memory and guidance, then appends one request-only snapshot at the actual
-  // tail. No emitted placement or ordinal is stored. Exposure and execution
-  // remain separate.
-  pi.on("context_with_system", (event, ctx) => {
-    // The permission is a query/memory exclusion here, not a declaration rewrite:
-    // the current snapshot omits a disabled tool, while the native declaration of
-    // an independent tool is retained until the next successful compaction
-    // (see native-discovery.ts).
-    const branch = ctx.sessionManager.getBranch();
+  const resetRunTracking = (): void => {
+    inLoop = false;
+    afterAgentEnd = false;
+    generation += 1;
+    lastSyncedSectionsKey = "";
+    lastSyncedToolsKey = "";
+  };
+
+  const computeCurrentState = (
+    branch: readonly SessionEntry[],
+  ): {
+    readonly sections: Record<string, string>;
+    readonly sectionsKey: string;
+    readonly toolsKey: string;
+  } => {
     const permission = createToolPermissionResolver(pi, null, branch);
     const catalog = createEligibleToolCatalog(pi, {
       blocked: (tool) => permission.disabledFor(tool),
     });
     const available = catalog.names;
     const admission = createToolAdmission(pi, branch, catalog);
-    const callable = new Set(pi.getActiveTools().filter(admission.admits));
-    const guidance: ToolGuidance[] = [...registeredToolGuidance(catalog.tools, SUBAGENT_TOOL_GUIDANCE, callable)];
+    const active = pi.getActiveTools();
+    const callable = new Set(active.filter(admission.admits));
+    const declared = declaredTools();
+    const guidance: ToolGuidance[] = [...registeredToolGuidance(catalog.tools, [], callable, declared)];
     const permissionDisabled = permissionDisabledGuidance(pi, branch);
     if (permissionDisabled !== null) guidance.push(permissionDisabled);
     const guidanceSections = renderCurrentToolGuidance(guidance);
     const memory = capabilityPromptSections(branch, {
       allowsTool: (name) => available.has(name),
       instructions: toolNamespaceInstructions(catalog.tools),
-      nativeGuidanceRefs: projectedNamespaceRefs(guidance, catalog.tools, guidanceSections),
+      nativeGuidanceRefs: projectedNamespaceRefs(guidance, catalog.tools, guidanceSections, declared, callable),
     });
-    const sections = {
-      ...guidanceSections,
-      ...(memory[CAPABILITY_SECTION] === null ? {} : memory),
-      ...capabilityPruneSections(branch),
-    };
-    return {
-      messages: [...appendCurrentSections(event.messages, sections)] as AgentMessage[],
-    };
+    const prune = capabilityPruneSections(branch);
+    const sections: Record<string, string> = {};
+    for (const [key, value] of Object.entries({ ...guidanceSections, ...memory, ...prune })) {
+      if (typeof value === "string" && value.trim().length > 0) sections[key] = value;
+    }
+    const sectionsKey = JSON.stringify(
+      Object.entries(sections).sort(([left], [right]) => left.localeCompare(right)),
+    );
+    const toolsKey = JSON.stringify({
+      active: [...active],
+      declared: [...declared].sort(),
+    });
+    return { sections, sectionsKey, toolsKey };
+  };
+
+  pi.on("session_start", resetRunTracking);
+  pi.on("session_before_switch", resetRunTracking);
+  pi.on("session_tree", resetRunTracking);
+  pi.on("session_shutdown", resetRunTracking);
+
+  pi.on("agent_start", () => {
+    inLoop = true;
+    afterAgentEnd = false;
   });
+  pi.on("agent_end", () => {
+    inLoop = false;
+    afterAgentEnd = true;
+  });
+  pi.on("agent_settled", () => {
+    inLoop = false;
+    afterAgentEnd = false;
+    generation += 1;
+  });
+
+  pi.on("before_agent_start", (event, ctx) => {
+    event.systemPromptOptions.skills = [];
+    const { sections, sectionsKey, toolsKey } = computeCurrentState(ctx.sessionManager.getBranch());
+    applySystemPromptSections(event.systemPromptOptions.sections ??= {}, sections, ownedSectionKeys);
+    ownedSectionKeys.clear();
+    for (const key of Object.keys(sections)) ownedSectionKeys.add(key);
+    lastSyncedSectionsKey = sectionsKey;
+    lastSyncedToolsKey = toolsKey;
+  });
+
+  const emitMidRunBoundarySync = (ctx: ExtensionContext, options?: { force?: boolean }): void => {
+    if (ctx.signal?.aborted) return;
+    const expectedGeneration = generation;
+    const { sections, sectionsKey, toolsKey } = computeCurrentState(ctx.sessionManager.getBranch());
+    const stateChanged = sectionsKey !== lastSyncedSectionsKey || toolsKey !== lastSyncedToolsKey;
+    if (!options?.force && !stateChanged) return;
+    if (options?.force && Object.keys(sections).length === 0 && toolsKey === lastSyncedToolsKey) return;
+    const summary = toolsKey !== lastSyncedToolsKey
+      ? "Active tool declarations updated for the current session state."
+      : undefined;
+    const content = renderCustomContextSync(sections, summary);
+    if (content === null) return;
+    if (generation !== expectedGeneration || ctx.signal?.aborted) return;
+    lastSyncedSectionsKey = sectionsKey;
+    lastSyncedToolsKey = toolsKey;
+    // During an active streaming turn, steer queues the sync cleanly before the
+    // next model call; when idle (overflow/queued-continuation post-run compaction),
+    // append without triggerTurn because AgentSession.continue() follows immediately.
+    if (!ctx.isIdle()) {
+      pi.sendMessage(
+        { customType: HARNESS_CONTEXT_SYNC_CUSTOM_TYPE, content, display: false },
+        { triggerTurn: true, deliverAs: "steer" },
+      );
+    } else if (options?.force) {
+      pi.sendMessage(
+        { customType: HARNESS_CONTEXT_SYNC_CUSTOM_TYPE, content, display: false },
+        { triggerTurn: false },
+      );
+    }
+  };
+
+  pi.on("tool_result", (event, ctx) => {
+    // Coalesce nested `ctx.executeTool("capability", ...)` calls onto the
+    // outer top-level tool boundary so one tool execution emits at most one
+    // persisted user sync message even when multiple inner discoveries run.
+    if (event.parentToolCallId !== undefined) return;
+    if (!inLoop || ctx.isIdle() || ctx.signal?.aborted) return;
+    emitMidRunBoundarySync(ctx);
+  });
+
   pi.on("tool_call", (event, ctx) => {
     // This entry owns declaration/activation; the shared admission view owns the
     // common rule (scope, MCP selection, three-state permission).
@@ -245,7 +333,7 @@ export default function capabilityExtension(
     return undefined;
   });
 
-  pi.on('session_compact', (_event, ctx) => {
+  pi.on('session_compact', (event, ctx) => {
     const branch = ctx.sessionManager.getBranch();
     // Directed disabled removal at a successful compaction is independent of
     // `pruneOnCompaction`: a still-disabled tool loses its active slot here,
@@ -257,33 +345,41 @@ export default function capabilityExtension(
     if (kept.length !== current.length) pi.setActiveTools(kept);
     // The active branch identifies the boundary even when summaries repeat.
     const checkpointId = branch.findLast(entry => entry.type === 'compaction')!.id;
-    if (!(configFor(ctx).capability.pruneOnCompaction || hasPresetBaseToolRemoval(branch, checkpointId))) return;
-    // A preset's stable selection replaces the Settings baseline. Dynamic
-    // Capability tools retained during a switch remain eligible for pruning.
-    const protectedTools = new Set(restorePresetSnapshot(branch)?.tools
-      ?? SettingsManager.inMemory(pi.getSettings()).getDefaultTools()
-      ?? ['read', 'bash', 'edit', 'write']);
-    // Keep discovery and its indirect execution path available for recovery.
-    protectedTools.add('capability');
-    protectedTools.add('codemode');
-    // An explicit enable is a user decision and outranks the prune heuristic;
-    // the old manual protection contract carries over to the unified record.
-    const allTools = pi.getAllTools();
-    const permission = createToolPermissionResolver(pi, allTools, branch);
-    for (const tool of allTools) {
-      if (permission.enabled(tool.name)) protectedTools.add(tool.name);
+    if (configFor(ctx).capability.pruneOnCompaction || hasPresetBaseToolRemoval(branch, checkpointId)) {
+      // A preset's stable selection replaces the Settings baseline. Dynamic
+      // Capability tools retained during a switch remain eligible for pruning.
+      const protectedTools = new Set(restorePresetSnapshot(branch)?.tools
+        ?? SettingsManager.inMemory(pi.getSettings()).getDefaultTools()
+        ?? ['read', 'bash', 'edit', 'write']);
+      // Keep discovery and its indirect execution path available for recovery.
+      protectedTools.add('capability');
+      protectedTools.add('codemode');
+      // An explicit enable is a user decision and outranks the prune heuristic;
+      // the old manual protection contract carries over to the unified record.
+      const allTools = pi.getAllTools();
+      const permission = createToolPermissionResolver(pi, allTools, branch);
+      for (const tool of allTools) {
+        if (permission.enabled(tool.name)) protectedTools.add(tool.name);
+      }
+      // A tool whose current permission is disabled must keep that prohibition;
+      // pruning it back to "rediscoverable" would contradict the disabled notice.
+      const excludedTools = allTools
+        .filter((tool) => permission.disabled(tool.name))
+        .map((tool) => tool.name);
+      const pruning = recordCompactionPruning(pi, {
+        branch, checkpointId, protectedTools, excludedTools,
+      });
+      if (pruning?.removedTools.length) {
+        const removed = new Set(pruning.removedTools);
+        pi.setActiveTools(pi.getActiveTools().filter(name => !removed.has(name)));
+      }
     }
-    // A tool whose current permission is disabled must keep that prohibition;
-    // pruning it back to "rediscoverable" would contradict the disabled notice.
-    const excludedTools = allTools
-      .filter((tool) => permission.disabled(tool.name))
-      .map((tool) => tool.name);
-    const pruning = recordCompactionPruning(pi, {
-      branch, checkpointId, protectedTools, excludedTools,
-    });
-    if (pruning?.removedTools.length) {
-      const removed = new Set(pruning.removedTools);
-      pi.setActiveTools(pi.getActiveTools().filter(name => !removed.has(name)));
+    if ((inLoop && event.reason !== "manual") || (afterAgentEnd && (event.willRetry === true || ctx.hasPendingMessages()))) {
+      // Mid-run / continuation auto-compaction can evict earlier mid-run
+      // `harness-context-sync` messages while `systemPromptOptions.sections` still
+      // holds pre-run sections and state/tools did not change at compaction time.
+      // Force resynchronization of current non-empty state for the upcoming turn.
+      emitMidRunBoundarySync(ctx, { force: true });
     }
   });
 
@@ -742,33 +838,6 @@ async function openInternalSession(
   const modelRuntime = parentModelRuntime(ctx.modelRegistry, "capability discovery");
   const inheritedPrompt = inheritedSystemPrompt(snapshot);
   const retrievalNames = new Set(request.customTools.map(tool => tool.name));
-  const resourceLoader = new DefaultResourceLoader({
-    cwd,
-    agentDir: service.agentDir,
-    settingsManager: settings,
-    noExtensions: true,
-    extensionFactories: [{
-      name: "capability-retrieval-admission",
-      factory(api) {
-        api.on("tool_call", event => retrievalNames.has(event.toolName)
-          ? undefined
-          : { block: true, reason: `Tool ${event.toolName} is unavailable in capability discovery. Only retrieval tools may execute.` });
-        // Compose at the public request lifecycle, never as a private
-        // transformContext suffix after the SDK's forced-prompt projection.
-        api.on("context_with_system", (event, extensionCtx) => ({
-          messages: composeInternalMessages(event.messages, extensionCtx.sessionManager.getBranch()),
-        }));
-      },
-    }],
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
-    ...(inheritedPrompt === null
-      ? { systemPrompt: request.instructions }
-      : { systemPrompt: inheritedPrompt, appendSystemPrompt: [request.instructions] }),
-  });
-  await resourceLoader.reload();
   const model = snapshot.model;
   const branch = ctx.sessionManager.getBranch();
   const permission = createToolPermissionResolver(pi, pi.getAllTools(), branch);
@@ -796,7 +865,64 @@ async function openInternalSession(
   const customTools = (additive
     ? retrievalToolLoadout(inheritedMessages, request.customTools)
     : request.customTools) as unknown as ToolDefinition[];
-  /** Current retrieval request composition through the public context hook. */
+
+  let internalOwnedKeys = new Set<string>();
+  const resourceLoader = new DefaultResourceLoader({
+    cwd,
+    agentDir: service.agentDir,
+    settingsManager: settings,
+    noExtensions: true,
+    extensionFactories: [{
+      name: "capability-retrieval-admission",
+      factory(api) {
+        api.on("tool_call", event => retrievalNames.has(event.toolName)
+          ? undefined
+          : { block: true, reason: `Tool ${event.toolName} is unavailable in capability discovery. Only retrieval tools may execute.` });
+        api.on("before_agent_start", (event, extensionCtx) => {
+          const currentBranch = extensionCtx.sessionManager.getBranch();
+          const currentPermission = createToolPermissionResolver(pi, pi.getAllTools(), currentBranch);
+          const catalog = createEligibleToolCatalog(pi, {
+            disabled: (name) => currentPermission.disabled(name),
+          });
+          const admission = createToolAdmission(pi, currentBranch, catalog);
+          const callable = new Set(pi.getActiveTools().filter((name) => admission.admits(name) && !lazyNames.has(name)));
+          const declared = new Set([...callable].filter((name) => !lazyNames.has(name)));
+          const guidance = registeredToolGuidance(catalog.tools, [], callable, declared);
+          const guidanceSections = renderCurrentToolGuidance(guidance);
+          const memory = capabilityPromptSections(currentBranch, {
+            allowsTool: (name) => catalog.names.has(name),
+            instructions: toolNamespaceInstructions(catalog.tools),
+            nativeGuidanceRefs: projectedNamespaceRefs(guidance, catalog.tools, guidanceSections, declared, callable),
+          });
+          const sections: Record<string, string | null> = {
+            ...guidanceSections,
+            ...(memory[CAPABILITY_SECTION] === null ? {} : memory),
+            ...presetInstructionSections(currentBranch),
+            ...capabilityPruneSections(currentBranch),
+            ...(additive ? { "capability-retrieval-policy": policyPrompt.additiveExecutionBlocked } : {}),
+          };
+          applySystemPromptSections(event.systemPromptOptions.sections ??= {}, sections, internalOwnedKeys);
+          internalOwnedKeys = new Set(
+            Object.entries(sections)
+              .filter(([, value]) => typeof value === "string" && value.trim().length > 0)
+              .map(([key]) => key),
+          );
+        });
+        api.on("context_with_system", (event, extensionCtx) => ({
+          messages: composeInternalMessages(event.messages, extensionCtx.sessionManager.getBranch()),
+        }));
+      },
+    }],
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    ...(inheritedPrompt === null
+      ? { systemPrompt: request.instructions }
+      : { systemPrompt: inheritedPrompt, appendSystemPrompt: [request.instructions] }),
+  });
+  await resourceLoader.reload();
+  /** Current retrieval declarations through the public context hook (no trailing system injection). */
   function composeInternalMessages(
     input: readonly AgentMessage[],
     branch: readonly SessionEntry[],
@@ -809,26 +935,7 @@ async function openInternalSession(
     const declarations = projectDiscoveryDeclarations(input,
       name => (retrievalNames.has(name) || admission.declares(name)) && !lazyNames.has(name),
       () => pi.getAllTools().find(tool => tool.name === "codemode")?.description);
-    const callable = new Set(pi.getActiveTools().filter((name) => admission.admits(name) && !lazyNames.has(name)));
-    const guidance = registeredToolGuidance(catalog.tools, SUBAGENT_TOOL_GUIDANCE, callable);
-    const guidanceSections = renderCurrentToolGuidance(guidance);
-    const memory = capabilityPromptSections(branch, {
-      allowsTool: (name) => catalog.names.has(name),
-      instructions: toolNamespaceInstructions(catalog.tools),
-      nativeGuidanceRefs: projectedNamespaceRefs(guidance, catalog.tools, guidanceSections),
-    });
-    const sections = {
-      ...guidanceSections,
-      ...(memory[CAPABILITY_SECTION] === null ? {} : memory),
-      ...presetInstructionSections(branch),
-      ...capabilityPruneSections(branch),
-    };
-    const withAddendum = additive
-      ? appendSessionTranscript(additiveToolTranscript(declarations) as AgentMessage[], {
-          instructions: { text: policyPrompt.additiveExecutionBlocked },
-        }).messages
-      : declarations;
-    return [...appendCurrentSections(withAddendum as AgentMessage[], sections)] as AgentMessage[];
+    return (additive ? additiveToolTranscript(declarations) : declarations) as AgentMessage[];
   }
 
   // The shared Subagent execution owns session creation, caller-abort handling,

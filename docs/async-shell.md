@@ -96,7 +96,7 @@ Windows 的 `.cmd`／`.bat` 目标经 `cmd.exe` 启动并转义参数，包括 `
 
 wrapper 从环境读取回调地址。注册与完成事件进入同一个 Actor 端点，由宿主按异步 Shell 协议接收。结果不伪装成 Agent 消息，不授予消息工具权限，也不转发给父节点代为处理。
 
-Native Bash and PowerShell execution remains available when the managed callback host cannot initialize. The wrapper clears inherited callback leases and marks the callback host unavailable. In this state, `pi-job create` reports the failure before allocating a task or starting a command; ordinary shell execution and queries of existing tasks remain available. Standalone CLI use outside the Harness retains its existing behavior.
+当受管回调宿主无法初始化时，原生 Bash 与 PowerShell 执行仍然可用。wrapper 会清除继承的回调租约并将回调宿主标记为不可用。在此状态下，`pi-job create` 会在分配任务或启动命令前报告失败；普通 Shell 执行以及对既有任务的查询仍可正常使用。Harness 之外的独立 CLI 用法保持原有行为。
 
 Subagent 有未完成 Shell 任务时，Runner 保留当前 Job 和会话，并暂停活动时间预算计时；完成结果先入队，再释放等待。子会话关闭会撤销其执行标识并停止所属任务。根会话切换、分叉、重载或关闭时，旧宿主停止所持任务并保留资源围栏，直到清理结束。
 

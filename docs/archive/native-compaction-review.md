@@ -75,7 +75,7 @@ Capability 的工具正文还可能省略已经声明的完整接口，因而不
 
 对照输入仅用于定位比对失败的原因，不是修复方案。直接删除工具声明会破坏工具可用性。
 
-脚本快照见[原生压缩复现脚本](reproductions/native-compaction-replay.mjs)；运行后在同目录生成 `native-compaction-replay.log`，该文件受 `.gitignore` 的 `*.log` 规则忽略，不随仓库提交。环境与运行方式见[复现材料说明](reproductions/README.md)。
+脚本快照见[原生压缩复现脚本](../reviews/reproductions/native-compaction-replay.mjs)；运行后在同目录生成 `native-compaction-replay.log`，该文件受 `.gitignore` 的 `*.log` 规则忽略，不随仓库提交。环境与运行方式见[复现材料说明](../reviews/reproductions/README.md)。
 
 ## 与“工具丢失”的关系
 

@@ -19,7 +19,31 @@
 | [工具权限管理提案](tool-permission-management-proposal.md) | 三态接口已落地，旧来源授权与效果一致性仍需修复；归档不表示验收通过，见[审计计划](../reviews/rpc-permission-audit.md) |
 | [Harness RPC 独立接口提案](harness-rpc-interface-proposal.md) | 首批独立接口已落地；后续接口不纳入冻结期间范围，当前协议见[线协议](../harness-rpc-wire-spec.md) |
 | [Capability 历史 PBT 反例修复](capability-history-pbt.md) | 声明历史与使用记录的具体反例已修复；provider 请求职责与 thinking/cache 设计缺口仍见[已知问题](../known-issues.md) |
+| [SDK-free 当前指令快照](sdk-free-snapshots.md) | 已合入主线并完成全量验证，当前契约见[当前架构](../architecture.md)与[能力提示词记忆](../capability-prompt-memory.md) |
+| [Parent Coordination PBT 验收](parent-coordination-pbt.md) | 父协调模型测试已合入并验证，当前说明见[测试架构](../testing.md#父协调模型测试) |
 | [已修复问题记录](resolved-issues.md) | 保存修复时的证据和验证范围；当前缺陷见[已知问题](../known-issues.md) |
+
+## 历史审查与迁移记录
+
+| 文档 | 主题 |
+| --- | --- |
+| [架构与实现审查：2026-10-25](architecture-implementation-review-2026-10-25.md) | 消息回执、Socket、状态职责、持久化与提示词 |
+| [项目审计（2026-10）](project-audit-2026-10.md) | 生命周期、资源归属、模块边界与迁移建议 |
+| [核心架构审查](architecture-review.md) | 状态所有权、IPC、SDK 执行和 Capability |
+| [测试价值审查](test-review.md) | 当时的用例统计、旧契约断言和漏测场景 |
+| [核心实现检查](implementation-check.md) | 历史检查点、资源协议删除和 Work 隔离 |
+| [提示词正文外置](prompt-extraction-review.md) | 资产抽取、字段映射与验证范围 |
+| [消息与终态投递调查](message-delivery-review.md) | 原生批次、代次竞态、消息保留和空闲唤醒 |
+| [Steer 消息更新调查](steer-message-update-review.md) | 队列、公开事件替换和实际历史写入的差异 |
+| [原生压缩调查](native-compaction-review.md) | 特定 SDK 版本的序列化、请求与回放行为 |
+| [Subagent 内存审查](subagent-memory-review.md) | 存储 v2 适配、引用释放和当时的内存观察 |
+| [存储 v2 过渡实现审查](subagent-storage-v2-groundwork-review.md) | 适配层断接、持久化和历史区间问题 |
+| [旧历史批量迁移记录](subagent-migration-batch.md) | 一次离线数据迁移的操作与验证 |
+| [迁移样本人工验收](subagent-migration-smoke.md) | 单样本恢复、工具调用和在线续跑 |
+| [Manual 能力验收](capability-manual-acceptance.md) | 完整 SDK 会话、在线组合与准入开销 |
+| [共享 Provider 与继承上下文设计](shared-provider-context-design.md) | Capability／Subagent 共用适配、独立缓存标识、工具追加与伪移除的设计和边界 |
+| [权限算法复核材料](capability-permission-algorithm-review.md) | 已核对并收敛至[审计计划](../reviews/rpc-permission-audit.md) |
+| [内存与生命周期复核材料](memory-retention-review.md) | 已核对并收敛至[审计计划](../reviews/rpc-permission-audit.md) |
 
 ## 旧契约与候选设计
 

@@ -13,12 +13,14 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import capabilityExtension from '../src/capability/extension.ts';
 import { DEFAULT_HARNESS_CONFIG } from '../src/harness-config.ts';
 import { installPresetInstruction } from '../src/preset/instruction.ts';
+import { HARNESS_CONTEXT_SYNC_CUSTOM_TYPE } from '../src/request-instructions.ts';
+import { toolGuidanceSection } from '../src/tool-guidance.ts';
 import { appendPresetState } from '../src/preset/state.ts';
 import { serializedRequest, declaredTools } from './capability-model-wire.ts';
 
 const names = ['history_alpha', 'history_beta'] as const;
 type Spec = { description: string; schema: number };
-type ToolState = Spec & { permission: 'enabled' | 'disabled' | 'unmanaged'; active: boolean; discovered: boolean; used: boolean };
+type ToolState = Spec & { permission: 'enabled' | 'disabled' | 'unmanaged'; active: boolean; discovered: boolean; discoveredDescription: string | null; used: boolean };
 type View = 'native' | 'append' | 'filter' | 'duplicate' | 'opaque' | 'forced' | 'reorder' | 'retained';
 interface State { tools: ToolState[]; turn: number; preset: string | null; pruned: string[] }
 interface Frame { head: AgentMessage | undefined; hasHeadSystem: boolean; conversation: AgentMessage[] }
@@ -39,7 +41,19 @@ function isHarnessSectionKey(key: string): boolean {
   return key === 'preset-instructions'
     || key === 'capabilities'
     || key === 'capability-availability'
-    || key.startsWith('harness-guidance:');
+    || key.startsWith('harness-guidance-');
+}
+
+function effectiveSystemSections(messages: readonly Message[]): Record<string, string> {
+  const sections: Record<string, string> = {};
+  for (const message of messages) {
+    if (message.role !== 'system' || message.sections === undefined) continue;
+    for (const [key, value] of Object.entries(message.sections)) {
+      if (value === null) delete sections[key];
+      else sections[key] = value;
+    }
+  }
+  return sections;
 }
 
 function allSectionValues(messages: readonly Message[], key: string): (string | null)[] {
@@ -147,9 +161,10 @@ async function fixture(withStaticGuidance = false): Promise<World> {
           installPresetInstruction(api);
           for (const slot of [0, 1]) world.register(slot);
           if (withStaticGuidance) {
-            // Real registration activates Harness's static declaration-anchored asset.
+            // Real registration activates native SDK ToolDefinition.promptGuidelines.
             api.registerTool({ name: 'subagent_create', label: 'Static guidance fixture',
               description: 'Fixture for static instruction placement.', defaultActive: true,
+              promptGuidelines: ['SUBAGENT_STATIC_GUIDANCE'],
               parameters: { type: 'object', properties: {} },
               execute: async () => { throw new Error('The history model does not issue subagent calls.'); } });
           }
@@ -229,17 +244,10 @@ function assertBodyPreserved(request: Request) {
   }
 }
 
-function assertTailPlacement(messages: readonly Message[]) {
-  const lastNonSystem = messages.findLastIndex(message => message.role !== 'system');
-  for (let index = 0; index <= lastNonSystem; index += 1) {
-    const message = messages[index]!;
-    if (message.role !== 'system' || message.sections === undefined) continue;
-    assert.equal(Object.keys(message.sections).some(isHarnessSectionKey), false,
-      'Harness sections must not appear before or inside the conversation body');
-  }
-  for (let index = lastNonSystem + 1; index < messages.length; index += 1) {
-    assert.equal(messages[index]!.role, 'system', 'tail snapshot messages stay after all conversation messages');
-  }
+function assertNoDeveloperTail(messages: readonly Message[], wire: readonly unknown[]) {
+  assert.notEqual(messages.at(-1)?.role, 'system', 'requests must never end with a trailing system message');
+  const wireTail = wire.at(-1) as { role?: unknown; type?: unknown } | undefined;
+  assert.notEqual(wireTail?.role, 'developer', 'encoded Responses wire must never end with a developer item');
 }
 
 class Command implements AsyncCommand<State, World> {
@@ -255,6 +263,15 @@ class Command implements AsyncCommand<State, World> {
   check() { return true; }
   async run(state: State, world: World) {
     const tool = state.tools[this.slot]!;
+    const discoveredSnapshotBefore = state.tools
+      .map((entry, slot) => ({ entry, name: names[slot]! }))
+      .filter(({ entry }) => entry.discovered && entry.permission !== 'disabled')
+      .map(({ entry, name }) => ({ name, description: entry.discoveredDescription }));
+    const discoveredBeforeTurn = discoveredSnapshotBefore.map(({ name }) => name);
+    const activeBeforeTurn = state.tools
+      .map((entry, slot) => ({ entry, name: names[slot]! }))
+      .filter(({ entry }) => entry.active)
+      .map(({ name }) => name);
     if (['native', 'append', 'filter', 'duplicate', 'opaque', 'forced'].includes(this.action)) {
       world.view = this.action === 'filter' && this.slot === 1 ? 'reorder'
         : this.action === 'append' && this.schema === 3 ? 'retained' : this.action as View;
@@ -279,7 +296,7 @@ class Command implements AsyncCommand<State, World> {
       for (const [slot, current] of state.tools.entries()) {
         const pruned = slot !== 0 && current.permission === 'unmanaged' && current.discovered && !current.used;
         if (current.permission === 'disabled' || pruned) current.active = false;
-        if (pruned) { current.discovered = false; state.pruned.push(names[slot]!); }
+        if (pruned) { current.discovered = false; current.discoveredDescription = null; state.pruned.push(names[slot]!); }
         current.used = false;
       }
     } else if (this.action === 'reopen') {
@@ -293,11 +310,18 @@ class Command implements AsyncCommand<State, World> {
     } else if (this.action === 'discover') {
       world.selection = this.slot;
       world.response = { name: 'capability', slot: this.slot, schema: 0 };
-      if (tool.permission !== 'disabled') { tool.active = true; tool.discovered = true; }
+      if (tool.permission !== 'disabled') {
+        tool.active = true;
+        tool.discovered = true;
+        tool.discoveredDescription = tool.description;
+      }
     }
 
     const before = world.effects.length;
     const requestsBefore = world.requests.length;
+    const syncCountBefore = world.session.sessionManager.getBranch().filter(
+      entry => entry.type === 'custom_message' && entry.customType === HARNESS_CONTEXT_SYNC_CUSTOM_TYPE,
+    ).length;
     await world.session.prompt(`Generated history turn ${++state.turn}`);
     assert.equal(world.effects.length - before,
       this.action === 'execute' && tool.active && tool.permission !== 'disabled' ? 1 : 0,
@@ -314,6 +338,7 @@ class Command implements AsyncCommand<State, World> {
     assert.ok(turnRequests.length >= 1, 'every turn issues at least one model request');
     for (const req of turnRequests) {
       assertBodyPreserved(req);
+      assertNoDeveloperTail(req.messages, req.wire);
       if (world.view === 'forced') {
         assert.equal(req.messages[0]?.role, 'system');
         assert.equal(req.messages[0]?.content, 'PBT_FORCED_BASE');
@@ -329,50 +354,126 @@ class Command implements AsyncCommand<State, World> {
           assert.deepEqual(projectedHead.sections, head.sections,
             'the SDK-produced base head sections stay intact');
         }
-        assertTailPlacement(req.messages);
-        const presets = allSectionValues(req.messages, 'preset-instructions');
-        assert.deepEqual(presets, state.preset === null ? [] : [state.preset],
-          'unforced requests emit current Preset instructions once at the tail');
-        const notices = allSectionValues(req.messages, 'capability-availability');
+        const effective = effectiveSystemSections(req.messages);
+        const expectedPreset = state.preset === null ? undefined : `<preset-instructions>\n${state.preset}\n</preset-instructions>`;
+        assert.equal(effective['preset-instructions'], expectedPreset,
+          'unforced requests keep current Preset instructions via SDK systemPromptOptions.sections');
+        const notice = effective['capability-availability'];
         if (state.pruned.length === 0) {
-          assert.deepEqual(notices, [], 'no pruning notice when no capability was pruned at the current compaction');
+          assert.equal(notice, undefined, 'no pruning notice when no capability was pruned at the current compaction');
         } else {
-          assert.equal(notices.length, 1, 'exactly one current pruning notice is emitted per unforced request');
+          assert.ok(typeof notice === 'string', 'a pruning notice is present in effective system sections');
           for (const name of state.pruned) {
-            assert.ok(typeof notices[0] === 'string' && notices[0].includes(name),
-              'the model is told which unused capability was pruned');
+            assert.ok(notice.includes(name), 'the model is told which unused capability was pruned');
           }
         }
         if (this.withStaticGuidance) {
-          const staticGuidance = req.messages.flatMap(message =>
-            message.role === 'system' && message.sections && Object.hasOwn(message.sections, 'harness-guidance:subagent')
-              ? [message.sections['harness-guidance:subagent']] : []);
-          assert.equal(staticGuidance.length, 1, 'static active-tool guidance is emitted once at the tail');
+          const rules = effective['rules'] ?? '';
+          assert.equal(rules.split('SUBAGENT_STATIC_GUIDANCE').length - 1, 1,
+            'static active-tool promptGuidelines is emitted once in SDK <rules>');
         }
+      }
+    }
+
+    const syncCountAfter = world.session.sessionManager.getBranch().filter(
+      entry => entry.type === 'custom_message' && entry.customType === HARNESS_CONTEXT_SYNC_CUSTOM_TYPE,
+    ).length;
+    const discoveredSnapshotAfter = state.tools
+      .map((entry, slot) => ({ entry, name: names[slot]! }))
+      .filter(({ entry }) => entry.discovered && entry.permission !== 'disabled')
+      .map(({ entry, name }) => ({ name, description: entry.discoveredDescription }));
+    const expectedAtTurnEnd = discoveredSnapshotAfter.map(({ name }) => name);
+    const activeAfterTurn = state.tools
+      .map((entry, slot) => ({ entry, name: names[slot]! }))
+      .filter(({ entry }) => entry.active)
+      .map(({ name }) => name);
+    const expectedSyncRequired = this.action === 'discover' && (
+      !isDeepStrictEqual(discoveredSnapshotAfter, discoveredSnapshotBefore)
+      || !isDeepStrictEqual(activeAfterTurn, activeBeforeTurn)
+    );
+    assert.equal(
+      syncCountAfter - syncCountBefore,
+      expectedSyncRequired ? 1 : 0,
+      expectedSyncRequired
+        ? 'modeled mid-run discovery/activation change must persist exactly one harness-context-sync entry'
+        : `action ${this.action} with no modeled mid-run change must not emit a harness-context-sync entry`,
+    );
+
+    if (this.action === 'execute' && tool.active && tool.permission !== 'disabled') {
+      assert.ok(turnRequests.length >= 2, 'active permitted execution sends tool result back to the model');
+      if (world.view === 'native' || world.view === 'filter' || world.view === 'reorder') {
+        const followupWireTail = turnRequests[1]!.wire.at(-1) as { type?: unknown } | undefined;
+        assert.equal(followupWireTail?.type, 'function_call_output',
+          'an unchanged tool execution follow-up ends cleanly with function_call_output');
       }
     }
 
     const latest = world.requests.at(-1)!;
     if (world.view !== 'forced') {
-      const memories = allSectionValues(latest.messages, 'capabilities');
-      const expectedInMemory = state.tools
-        .map((entry, slot) => ({ entry, name: names[slot]! }))
-        .filter(({ entry }) => entry.discovered && entry.permission !== 'disabled')
-        .map(({ name }) => name);
-      if (expectedInMemory.length === 0) {
-        assert.deepEqual(memories, [], 'no Capability memory section when no discovered tool is currently allowed');
+      const firstOfTurn = turnRequests[0]!;
+      const expectedAtTurnStart = this.action === 'discover' ? discoveredBeforeTurn : expectedAtTurnEnd;
+      const startMemory = effectiveSystemSections(firstOfTurn.messages)['capabilities'];
+      if (expectedAtTurnStart.length === 0) {
+        assert.equal(startMemory, undefined,
+          'turn start: no Capability memory when no discovered tool was allowed at turn start');
       } else {
-        assert.equal(memories.length, 1, 'exactly one current Capability memory section is emitted at the tail');
-        for (const name of expectedInMemory) {
-          assert.ok(typeof memories[0] === 'string' && memories[0].includes(name),
-            `current Capability memory includes ${name}`);
+        assert.ok(typeof startMemory === 'string' && startMemory.includes('<capabilities>'),
+          'turn start: current Capability memory is present in system sections');
+        for (const name of expectedAtTurnStart) {
+          assert.ok(startMemory.includes(name), `turn start: Capability memory includes ${name}`);
         }
-        for (const [slot, entry] of state.tools.entries()) {
-          if (!entry.discovered || entry.permission === 'disabled') {
-            assert.equal(memories[0]!.includes(names[slot]!), false,
-              `current Capability memory omits ${names[slot]}`);
+        for (const name of names) {
+          if (!expectedAtTurnStart.includes(name)) {
+            assert.equal(startMemory.includes(name), false, `turn start: Capability memory omits ${name}`);
           }
         }
+      }
+    }
+
+    if (this.action === 'discover') {
+      assert.ok(turnRequests.length >= 2, 'discovery calls capability and issues a follow-up request');
+      if (expectedSyncRequired) {
+        const syncEntry = world.session.sessionManager.getBranch().findLast(
+          entry => entry.type === 'custom_message' && entry.customType === HARNESS_CONTEXT_SYNC_CUSTOM_TYPE,
+        );
+        const rawSyncText = syncEntry?.type === 'custom_message' && typeof syncEntry.content === 'string'
+          ? syncEntry.content
+          : '';
+        const capabilityMatch = /<capabilities>\n[\s\S]*?\n<\/capabilities>/.exec(rawSyncText);
+        const latestSyncText = capabilityMatch?.[0] ?? '';
+        for (const name of expectedAtTurnEnd) {
+          assert.ok(latestSyncText.includes(name), `mid-run sync: Capability memory includes ${name}`);
+        }
+        for (const name of names) {
+          if (!expectedAtTurnEnd.includes(name)) {
+            assert.equal(latestSyncText.includes(name), false, `mid-run sync: Capability memory omits ${name}`);
+          }
+        }
+        if (world.view === 'native' || world.view === 'filter' || world.view === 'reorder') {
+          const latestWireTail = latest.wire.at(-1) as { role?: unknown; content?: unknown } | undefined;
+          assert.equal(latestWireTail?.role, 'user',
+            'modeled mid-run discovery change ends the wire request on a persisted user sync message');
+          const serializedTail = JSON.stringify(latestWireTail?.content ?? '');
+          const wireCapabilities = /<capabilities>[\s\S]*?<\/capabilities>/.exec(serializedTail)?.[0] ?? '';
+          assert.equal(wireCapabilities.length > 0, expectedAtTurnEnd.length > 0,
+            'wire user sync has a capabilities section exactly when current members exist');
+          for (const name of expectedAtTurnEnd) {
+            assert.ok(wireCapabilities.includes(name), `wire current Capability memory includes ${name}`);
+          }
+          for (const name of names) {
+            if (!expectedAtTurnEnd.includes(name)) {
+              assert.equal(wireCapabilities.includes(name), false, `wire current Capability memory omits ${name}`);
+            }
+          }
+          const wireAvailability = /<capability-availability>[\s\S]*?<\/capability-availability>/.exec(serializedTail)?.[0] ?? '';
+          for (const name of state.pruned) {
+            assert.ok(wireAvailability.includes(name), `wire availability notice retains removed capability ${name}`);
+          }
+        }
+      } else if (world.view === 'native' || world.view === 'filter' || world.view === 'reorder') {
+        const latestWireTail = latest.wire.at(-1) as { type?: unknown } | undefined;
+        assert.equal(latestWireTail?.type, 'function_call_output',
+          'modeled no-op mid-run discovery keeps the follow-up wire ending on function_call_output');
       }
     }
 
@@ -390,7 +491,7 @@ class Command implements AsyncCommand<State, World> {
       assert.deepEqual(declared.parameters, { type: 'object', properties: { [`revision_${expected.schema}`]: { type: 'string' } } });
       assert.equal(declared.description, expected.description,
         'the latest native declaration description matches the externally registered metadata');
-      assert.deepEqual(allSectionValues(latest.messages, `harness-guidance:tool-description:${name}`), [],
+      assert.deepEqual(allSectionValues(latest.messages, toolGuidanceSection(`tool-description:${name}`)), [],
         'no obsolete tool-description correction section is emitted');
     }
     assert.deepEqual(world.errors, []);
@@ -411,9 +512,9 @@ export async function runCapabilityHistoryModel() {
       fc.integer({ min: 0, max: 1 }), fc.string({ minLength: 1, maxLength: 40 }), fc.integer({ min: 0, max: 3 }))
       .map(args => new Command(...args, false)),
   ], commandOptions(24));
-  const property = (histories: typeof nativeCommands, restoreNative = false) => fc.asyncProperty(histories, async history => {
+  const runHistory = async (history: Iterable<AsyncCommand<State, World>>, restoreNative = false) => {
     const world = await fixture(restoreNative);
-    const state: State = { tools: world.metadata.map((spec, slot) => ({ ...spec, permission: 'unmanaged', active: slot === 0, discovered: false, used: false })), turn: 0, preset: null, pruned: [] };
+    const state: State = { tools: world.metadata.map((spec, slot) => ({ ...spec, permission: 'unmanaged', active: slot === 0, discovered: false, discoveredDescription: null, used: false })), turn: 0, preset: null, pruned: [] };
     try {
       await new Command('request', 0, '', 0, restoreNative).run(state, world);
       await fc.asyncModelRun(() => ({ model: state, real: world }), history);
@@ -422,7 +523,16 @@ export async function runCapabilityHistoryModel() {
         await new Command('reopen', 0, '', 0, true).run(state, world);
       }
     } finally { await world.close(); }
-  });
+  };
+  const property = (histories: typeof nativeCommands, restoreNative = false) =>
+    fc.asyncProperty(histories, history => runHistory(history, restoreNative));
+  // A removed member remains in the availability notice, but not current memory.
+  // CI replay: seed -1775607658, path 6:5:5:5:5:5:6:6:6:7:7:7, command path q:B.
+  await runHistory([
+    new Command('discover', 1, '', 0, false),
+    new Command('compact', 0, '', 0, false),
+    new Command('discover', 0, '', 0, false),
+  ]);
   const profile = process.env.PI_CAPABILITY_HISTORY_PROFILE ?? (process.env.PI_PBT_PATH === undefined ? 'all' : 'native');
   if (profile !== 'views') {
     console.log('Capability history profile=native');

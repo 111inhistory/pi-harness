@@ -32,14 +32,14 @@
 | `native-delivery.ts`、`delivery.ts` | 独立通知封装、检查原生交接结果、明确拒收后的保留会话追加 | 模型已读回执、自动重发或消息合并 |
 | `btw/command.ts`、`btw/session.ts`、`btw/panel.ts` | `/btw` 命令、内存继承会话、工具阻断和临时问答面板；关闭与根生命周期清理 | Actor／Job、持久化问答或主会话消息写入 |
 | `inherited-context.ts` | 共享分支捕获，在清理未决工具前锁定物理模型，并捕获独立的出站缓存标识 | 伪造身份或跨分支泄漏 |
-| `provider-session.ts`、`session-transcript.ts` | 按明确模型能力判断原生追加路径，组装尾部指令与工具声明；请求编码交给 Pi | 路由、执行授权、手写协议请求 |
+| `provider-session.ts`、`session-transcript.ts` | 按明确模型能力判断原生追加路径并投影工具声明；请求编码交给 Pi | 路由、执行授权、手写协议请求 |
 | `session-cache.ts`、`session-cache-runtime.ts` | Main 最终 payload 缓存标识观察、Responses 继承适配、原生分支记录与生命周期围栏 | 改写本地 Session ID、账号路由或保证缓存命中 |
 | `go/internal/asyncshell/{cli,tmux,output}.go` | 异步命令接口、每任务终端资源、完整 PTY 日志、增量过滤输出和完成回调 | Agent 拓扑、模型轮次或执行授权 |
 | `go/internal/asyncshell/{backend,ipc,proc,private}/*` | POSIX tmux Socket／Windows psmux label、终端启动与输入、进程归属查询、Windows batch 参数传输、命名管道与私有目录校验 | 任务状态、输出游标或通知路由 |
 | `async-shell/{host,surface}.ts`、`async-shell/{task-path,executable,cancel,create-args}.ts` | 每次 Shell 的调用者环境、执行代次归属、未完成任务登记与取消；TS 侧只保留路径/可执行文件/取消/审批参数桥 | tmux 状态机、消息工具授予或跨主机调度 |
-| `request-instructions.ts`, `tool-guidance.ts`, `capability/tool-instructions.ts` | Current owned instructions at the request tail; business facts determine current state | Historical placement replay, SDK history mutation, execution authorization |
+| `request-instructions.ts`、`tool-guidance.ts`、`capability/tool-instructions.ts` | 向 SDK 原生 sections 写入当前动态指令，格式化必要边界的 user 状态同步 | 历史放置重放、改写既有 SDK 历史、执行授权 |
 
-`subagent_create` 在本批 Runner 本地就绪后返回。本地就绪包括路由完成、会话创建、扩展与工具配置完成、初始输入就绪和 IPC 监听就绪。返回项包含 `id`、`socket`、`role` 与 `model`。它不等待首次模型流分发，也不把 `running` 当作启动成功证明。注册后的启动失败不会撤销同批其他节点，也不自动重试。运行时 Job 注册和执行状态仍由 Runtime 独立管理。
+`subagent_create` 在本批 Runner 本地就绪后返回。本地就绪包括路由完成、会话创建、扩展与工具配置完成、初始输入就绪和 IPC 监听就绪。返回项包含 `id`、`socket`、`role` 与 `model`。它不等待首次模型流分发，也不以 `running` 代替启动就绪。注册后的启动失败不会撤销同批其他节点，也不自动重试。运行时 Job 注册和执行状态仍由 Runtime 独立管理。
 
 Runtime 的 `job.status` 是领域事实。Runner 的输入准入栅栏表示原生句柄是否还能接收消息，不表示 Job 已停止。取消后，Job 仍占用 Actor 与名额，直到原生执行退出并完成收尾。
 
@@ -93,7 +93,7 @@ Main 默认不激活 `msg_write`（`defaultActive: false`）。收到跨 session
 
 报文应显式提供非空 `from` 和字符串 `content`，不回退为 Main。广播端点还检查声明的发送者是否为该端点的父节点。本项目信任同用户本机进程，不另建认证协议。
 
-每个 NDJSON 请求处理结束后，成功返回空行，失败只返回错误的 `code`（如有）和 `message`；外部 IPC 广播失败在响应中保留失败接收者列表及原因，普通 IPC 错误不向调用方泄漏内部任意状态细节。`writeSocket` 等待结果再返回；超时或断连表示结果未知，不自动重发。正常返回不表示模型已读或任务完成。
+每个 NDJSON 请求处理结束后，成功返回空行，失败只返回错误的 `code`（如有）和 `message`；外部 IPC 广播失败在响应中保留失败接收者列表及原因，普通 IPC 错误不向调用方泄漏内部任意状态细节。`writeSocket` 等待结果再返回；超时或断连表示结果未知，不自动重发。正常返回只表示请求已处理。
 
 跨 session 消息走同一条接收路径，且只做 Main 之间的交互。发送侧由 `session-directory.ts` 解析目标 session 的 Socket 目录并写入一帧 `{from: "<session-uid>:Main", content}`；接收侧 `listeners.ts` 只在该根的 `Main` 端点接受此类帧，在 IPC 边界解析 `from` 的复合身份，用共享目录核对 uid 是否为存活 session，按该记录推导回复地址后交给 Runtime。Runtime 只接受宿主解析出的外部发送者描述，不自行读目录；外部发送者只能是 Main，接收者也只能是 Main。
 
@@ -115,13 +115,13 @@ Main 压缩期间，Root 持有待投递队列，入队后应答，摘要生成�
 
 根服务区分两个权限：是否接收新命令，以及是否仍拥有原根分支的写入权。开始退役后拒绝新命令，但在原上下文仍有效时，允许已存在 Job 完成终态落盘。
 
-A metadata append failure blocks new work, message delivery and further metadata writes. The initialized root may still inspect its current state, read live history bounds, attach observations and request cancellation while it owns the current generation. These operations do not require healthy persistence. Initialization failure, retirement and loss of generation ownership still reject them; cancellation does not claim that terminal metadata persisted.
+元数据追加失败会阻止新任务、消息投递及后续元数据写入。已初始化的根在仍拥有当前代次时，仍可查询当前状态、读取实时历史边界、附加观察并请求取消。这些操作不依赖健康的持久化；但初始化失败、退役和失去代次所有权仍会拒绝这些操作，且取消操作不承诺终态元数据已落盘。
 
 `session_before_tree`、`session_before_switch` 和 `session_before_fork` 在 SDK 移动上下文前等待退役。正常路径先停止 Job、写入终态、关闭监听，再允许切换。终态由 Runtime 发布一次；视图写入器不提前抢写终态。
 
 持久化失败会锁存，阻止新工作，也阻止切换被报告为成功。钩子应显式返回 `{ cancel: true }`；SDK 会捕获扩展异常，仅抛错不能阻止切换。UI 报错失败也不能改变取消结果。
 
-退役默认期限为 5 秒。期限只限制调用方等待，不证明原生资源退出。超时后保留资源围栏；只有实际清理完成，才允许新代次使用相同文件。清理失败且无法确认退出时，继续隔离，而非强制开放。
+退役默认期限为 5 秒。期限只限制调用方等待，原生资源退出以实际清理为准。超时后保留资源围栏；只有实际清理完成，才允许新代次使用相同文件。清理失败且无法确认退出时，继续隔离，而非强制开放。
 
 Shutdown 不能取消。退出或替换上下文后，代次失效使旧回调不能经 `pi.appendEntry` 写入新根。强制退出、退役超时或进程终止仍可能需要下次按中断恢复；不承诺跨文件事务或强制退出时的完整终态。
 
@@ -147,7 +147,7 @@ Capability 与 Subagent 共用 `provider-session.ts` 的能力判断。Responses
 
 Inherited 与检索会话保留独立本地 Session ID，Responses 请求仅替换原生默认 `prompt_cache_key` 为继承标识；既有自定义 key 与最终 payload hook 优先。`harness-cache-identity` 原生 custom 条目保存分支缓存标识，支持嵌套继承、恢复和续跑。Fresh 默认沿用自己的标识。观察器仅将有效非空字符串 key 写入 lineage；请求暂时使用 `cacheRetention: none` 或最终 payload 缺少 key 不改变继承身份。仅显式记录或安装 `key: null` 才持续禁用，最终 payload hook 仍可覆盖当前请求。Main 通过共享 ModelRuntime 桥观察本会话所有 provider payload hooks 完成后的最终 key，并写入当前分支；会话导航、关闭与已中止请求的围栏阻止晚到写入。观察范围限定于所属会话，摘要和其他会话不计入 Main 请求。
 
-Harness renders current tool/namespace guidance, Capability memory and Preset instructions through `request-instructions.ts` before every model call, including tool-result followups. Fixed domain owners append current sections without replaying earlier versions or identifying native source positions. Main, ordinary Subagents, internal retrieval and `/btw` use the same renderers with their own role, branch and loadout scope. Canonical business records restore current state on reopen and inheritance; obsolete placement records are ignored and original session files remain untouched. The SDK owns native `promptGuidelines`, tool schemas, compaction and transport encoding. A complete forced prompt or later context replacement can suppress the snapshot according to SDK hook order. Current prose is resent; exact historical requests and whole-request prefix continuity are not guaranteed. Instruction text never grants execution rights.
+静态工具指引通过 SDK 的 `ToolDefinition.promptGuidelines` 提供。Capability 记忆、Preset 指令和可用性通知在 `before_agent_start` 写入原生 `systemPromptOptions.sections`，由 SDK 比较并持久化更新。同 turn 状态变化在外层工具结果边界合并为带内容的 `harness-context-sync` 消息，经 SDK 编码为 user；中途自动压缩或压缩后续跑即使状态未变，也重新提供当前非空状态。未变的普通工具循环不追加刷新消息，也不追加尾部 system。Main、普通 Subagent、内部检索与 `/btw` 从规范业务记录恢复当前状态，各自保留角色和权限边界。完整的强制提示词可抑制 Harness 系统段落，已持久化的 user 状态消息仍属于对话历史。SDK 管理工具声明、压缩和传输编码；指令文本不授予执行权限，不迁移旧放置记录，也不改写旧消息。
 
 内部引擎为 `src/capability/agent.ts`，外层装配为 `src/capability/extension.ts`，公开注册入口为 `extensions/capability.ts`。唯一内部工具 `capability_step` 先增量接受已见 refs，再并行调用现有 Broker 搜索。内部选择先留在本次 Run，外层结束后统一保存、激活和投影。没有新增选择的 step 累计计数，上限默认为 3 加一次首轮额度，可配置 `capability.noSelectionLimit`；显式 finish 或达到上限后不再发模型请求。异常结束仍可交付此前已选成果，状态为 `partial`。具体语义和 Budget 见[内部批量检索](interface-contract.md#内部批量检索与增量提交)。
 
@@ -181,7 +181,7 @@ Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返�
 
 ## Harness RPC 独立接口
 
-The endpoint holds one client connection reference. Additional sockets are closed before request dispatch. Ownership lasts until actual socket close, including after FIN while handlers or response writes remain; endpoint retirement force-closes that connection. Reconnecting creates new subscriptions rather than transferring old observations.
+端点仅持有一个客户端连接引用。多余的连接在请求分派前即被关闭。所有权持续到 socket 实际关闭为止（包括 FIN 之后仍有处理中请求或待写出响应的情况）；端点退役时会强制关闭该连接。重连会创建新的订阅，而不会转移旧的观察者。
 
 独立端点由 `src/harness-rpc/*` 实现，只在根宿主运行模式为 `rpc` 时由 `src/subagent/extension.ts` 装配；TUI、print、JSON 与内部 SDK 子会话不装配。`transport.ts` 复用 `createOwnedServer` 与平台适配，负责 NDJSON 分帧、保序响应、订阅推送与有界积压；`discovery.ts` 在会话私有目录发布 `harness-rpc.json`；`router.ts` 分派到 `ports/*`，各 port 调用现有领域 API（Capability 目录、RootService、Runtime、`capability/tool-permission.ts`），不解析 Slash 输出。执行流订阅由 `native-runner.ts` 按 `jobId` 转发原生事件，`ports/stream.ts` 投影并携带归属；观察失败不影响 Job。端点失败向接入方报告，不阻止宿主启动；切根先关闭旧端点再装配新端点。
 

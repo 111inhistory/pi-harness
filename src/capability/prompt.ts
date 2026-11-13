@@ -112,7 +112,7 @@ function merge(state: State, hits: readonly SelectedHit[]): void {
 
 function render(state: State): string | null {
   if (!state.size) return null;
-  return `<${CAPABILITY_SECTION}>\n${memoryHeader}\n${JSON.stringify([...state.values()])}\n</${CAPABILITY_SECTION}>`;
+  return `${memoryHeader}\n${JSON.stringify([...state.values()])}`;
 }
 
 /**

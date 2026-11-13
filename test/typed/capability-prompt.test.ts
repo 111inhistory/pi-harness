@@ -28,7 +28,11 @@ import {
   type CapabilitySearchCoverage,
 } from "../../src/capability/discovery-record.ts";
 import { renderCurrentToolGuidance, toolGuidanceSection } from "../../src/tool-guidance.ts";
-import { SUBAGENT_TOOL_GUIDANCE } from "../../src/subagent/tool-guidance.ts";
+import {
+  nativelyGuidedNamespaces,
+  projectedNamespaceRefs,
+  registeredToolGuidance,
+} from "../../src/capability/tool-instructions.ts";
 import type { TranscriptMessageLike } from "../../src/session-transcript.ts";
 
 interface DiscoveryDetails {
@@ -213,8 +217,14 @@ test("discovery appends one current section and preserves original messages", ()
 });
 
 test("current guidance renderer supplies shared prose once while namespace memory keeps third-party instructions", () => {
-  const common = SUBAGENT_TOOL_GUIDANCE.find((entry) => entry.id === "subagent")?.text;
-  assert.ok(common && common.trim().length > 0);
+  const common = "Common native subagent guideline";
+  const subagentTools = [
+    {
+      name: "subagent_list",
+      namespace: { name: "subagent", instructions: common },
+      promptGuidelines: [common],
+    },
+  ];
   const subagent: CapabilityHit = {
     ref: "namespace://subagent",
     name: "subagent",
@@ -228,8 +238,16 @@ test("current guidance renderer supplies shared prose once while namespace memor
   };
   const found = result("a", { mcp: [subagent, group], guidance: [guidanceHit] });
   const messages = [head, user, found];
+  const declared = new Set(["subagent_list"]);
+  assert.deepEqual([...nativelyGuidedNamespaces(subagentTools, declared, declared)], ["subagent"]);
+  const guidance = registeredToolGuidance(subagentTools, [], declared, declared);
+  assert.deepEqual(guidance, [], "namespaces covered by ToolDefinition.promptGuidelines do not emit duplicate custom sections");
+  const rendered = renderCurrentToolGuidance([
+    ...guidance,
+    { id: "namespace:third-party", namespace: "third-party", tools: ["tp_tool"], text: "Third-party body", eligible: true },
+  ]);
   const projected = projectCapabilitySnapshot(messages, entries(...messages), {
-    nativeGuidanceRefs: new Set([subagent.ref!]),
+    nativeGuidanceRefs: projectedNamespaceRefs(guidance, subagentTools, rendered, declared, declared),
   });
   const remembered = records(projected);
   assert.equal(remembered.find((hit) => hit.ref === subagent.ref)?.instructions, undefined,
@@ -238,12 +256,10 @@ test("current guidance renderer supplies shared prose once while namespace memor
     "a third-party namespace keeps its own instructions");
   assert.equal(remembered.find((hit) => hit.ref === guidanceHit.ref)?.instructions, guidanceHit.instructions,
     "third-party guidance text is untouched");
-  assert.match(section(projected) ?? "", /\/skills\/slides\/SKILL.md/);
-
-  const rendered = renderCurrentToolGuidance(SUBAGENT_TOOL_GUIDANCE);
-  assert.equal(rendered[toolGuidanceSection("subagent")], common);
-  assert.equal(occurrences(Object.values(rendered).join("\n"), common), 1,
-    "the current guidance renderer supplies the common text once");
+  assert.match(section(projected) ?? "", /\/skills\/slides\/SKILL\.md/);
+  assert.equal(occurrences(Object.values(rendered).join("\n"), "Third-party body"), 1,
+    "non-SDK namespace guidance renders once");
+  assert.match(toolGuidanceSection("namespace:third-party"), /^[a-z][a-z0-9_-]*$/);
 });
 
 test("repeated discoveries produce no redundant patches, later guidance preserves members", () => {
@@ -450,18 +466,59 @@ test("real SDK extension exposes discovery on the next turn and after manual com
     const rememberedRequest = requests[1];
     assert.ok(initialRequest && rememberedRequest);
     assert.equal(section(initialRequest), undefined);
-    assert.match(section(rememberedRequest) ?? "", /\/skills\/slides\/SKILL.md/);
+    // Mid-run discovery persists a non-empty custom_message converted to role "user" (never developer_tail).
+    assert.equal(section(rememberedRequest), undefined);
+    const syncMessage = rememberedRequest.at(-1);
+    assert.equal(syncMessage?.role, "user");
+    assert.match(JSON.stringify(syncMessage), /\/skills\/slides\/SKILL\.md/);
     assert.deepEqual(rememberedRequest.slice(0, initialRequest.length), initialRequest);
-    assert.match(JSON.stringify(rememberedRequest), /\/skills\/slides\/SKILL.md/);
+    assert.match(JSON.stringify(rememberedRequest), /\/skills\/slides\/SKILL\.md/);
     await session.compact();
     await session.prompt("Continue without rediscovery");
     assert.equal(requests.length, 3);
     const compactedRequest = requests[2];
     assert.ok(compactedRequest);
-    assert.match(section(compactedRequest) ?? "", /\/skills\/slides\/SKILL.md/);
+    assert.match(section(compactedRequest) ?? "", /\/skills\/slides\/SKILL\.md/);
     assert.deepEqual(errors, []);
   } finally {
     session?.dispose();
     await rm(cwd, { recursive: true, force: true });
   }
+});
+
+test("toolGuidanceSection is strictly injective across valid and invalid ids while preserving valid SDK keys", () => {
+  const sdkKeyPattern = /^[a-z][a-z0-9_-]*$/;
+  const validSimple = toolGuidanceSection("tool-permission-disabled");
+  assert.equal(validSimple, "harness-guidance-tool-permission-disabled");
+  assert.match(validSimple, sdkKeyPattern);
+
+  const validUnderscore = toolGuidanceSection("alpha_1");
+  assert.equal(validUnderscore, "harness-guidance-alpha_1");
+  assert.match(validUnderscore, sdkKeyPattern);
+
+  const colonKey = toolGuidanceSection("namespace:browser");
+  assert.match(colonKey, sdkKeyPattern);
+  const transformedSuffix = colonKey.slice("harness-guidance-".length);
+  assert.match(transformedSuffix, /^[a-z0-9_-]+$/);
+  const collidingValidInput = toolGuidanceSection(transformedSuffix);
+  assert.match(collidingValidInput, sdkKeyPattern);
+  assert.notEqual(collidingValidInput, colonKey,
+    "passing the transformed suffix of an encoded id as a second valid id must not collide");
+
+  const samples = [
+    "",
+    "entry",
+    "namespace:browser",
+    "namespace-browser",
+    "Namespace:Browser",
+    "a:b",
+    "a-b",
+    "x_already",
+    "tool-permission:disabled",
+    "tool-permission-disabled",
+    transformedSuffix,
+  ];
+  const keys = samples.map((id) => toolGuidanceSection(id));
+  for (const key of keys) assert.match(key, sdkKeyPattern);
+  assert.equal(new Set(keys).size, samples.length, "every distinct id maps to a distinct SDK section key");
 });

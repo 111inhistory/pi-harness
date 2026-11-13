@@ -32,7 +32,7 @@ import { Type } from "typebox";
 import type { Static } from "typebox";
 
 import { captureInheritedContext, type InheritedSnapshot } from "../inherited-context.ts";
-import { fillPrompt, promptString } from "../prompt-text.ts";
+import { fillPrompt, promptString, promptStrings } from "../prompt-text.ts";
 import {
   createMessageWriteTool,
   type ManagedWriteTool,
@@ -162,6 +162,7 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
   const msg_write: ManagedWriteTool = {
     ...messageTemplate,
     namespace: SUBAGENT_NAMESPACE,
+    promptGuidelines: [SUBAGENT_NAMESPACE_INSTRUCTIONS, ...TOOL_TEXT.msgWriteGuidelines],
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       let resolved: Promise<SubagentSurfaceHost> | undefined;
       const host = (): Promise<SubagentSurfaceHost> => resolved ??= resolveHost(ctx);
@@ -181,6 +182,7 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
         defaultActive: false,
         label: "Create Subagent",
         description: TOOL_TEXT.create.description,
+        promptGuidelines: [SUBAGENT_NAMESPACE_INSTRUCTIONS, TOOL_TEXT.create.guideline],
         parameters: createParameters,
         async execute(toolCallId, params, _signal, _onUpdate, ctx) {
           const host = await resolveHost(ctx);
@@ -206,6 +208,7 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
     defaultActive: false,
     label: "List Subagents",
     description: TOOL_TEXT.list.description,
+    promptGuidelines: [SUBAGENT_NAMESPACE_INSTRUCTIONS],
     parameters: listParameters,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const host = await resolveHost(ctx);
@@ -220,6 +223,7 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
         defaultActive: false,
         label: "Stop Subagent",
         description: TOOL_TEXT.stop.description,
+        promptGuidelines: [SUBAGENT_NAMESPACE_INSTRUCTIONS],
         parameters: stopParameters,
         async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
           const host = await resolveHost(ctx);
@@ -296,6 +300,7 @@ const TOOL_TEXT: SurfaceToolText = {
   namespace: text('namespace'),
   create: {
     description: text('create', 'description'),
+    guideline: text('create', 'guideline'),
     capacity: text('create', 'capacity'),
     parameters: {
       context: text('create', 'parameters', 'context'),
@@ -317,12 +322,15 @@ const TOOL_TEXT: SurfaceToolText = {
     description: text('stop', 'description'),
     parameters: { id: text('stop', 'parameters', 'id') },
   },
+  msgWriteGuidelines: promptStrings('subagent-tools.json', 'msg_write', 'guidelines'),
 };
+
+const SUBAGENT_NAMESPACE_INSTRUCTIONS = promptString("subagent-tools.json", "instructions");
 
 export const SUBAGENT_NAMESPACE: ToolNamespace = Object.freeze({
   name: "subagent",
   description: TOOL_TEXT.namespace,
-  instructions: promptString("subagent-tools.json", "instructions"),
+  instructions: SUBAGENT_NAMESPACE_INSTRUCTIONS,
 });
 
 const createParameters = Type.Object({
@@ -351,6 +359,7 @@ interface SurfaceToolText {
   readonly namespace: string;
   readonly create: {
     readonly description: string;
+    readonly guideline: string;
     readonly capacity: string;
     readonly parameters: {
       readonly context: string;
@@ -362,6 +371,7 @@ interface SurfaceToolText {
   };
   readonly list: { readonly description: string; readonly parameters: { readonly all: string; readonly id: string } };
   readonly stop: { readonly description: string; readonly parameters: { readonly id: string } };
+  readonly msgWriteGuidelines: readonly string[];
 }
 
 // The declared tool parameter types, exported so callers can name a batch.

@@ -319,8 +319,10 @@ test("nested Capability discovery persists branch memory without exposing remote
   assert.ok(scenario.activeTools.includes("fixture_slides"), "a persisted discovery activates its selected tool");
   assert.equal(scenario.parentRequests.length, 2);
 
-  const section = sectionOf(scenario.parentRequests[1]);
-  assert.ok(section, "the next request carries the canonical discovery memory");
+  const syncTail = scenario.parentRequests[1]?.messages.at(-1) as { role?: string; content?: unknown } | undefined;
+  assert.equal(syncTail?.role, "user", "nested mid-run discovery ends on persisted user sync message");
+  const section = JSON.stringify(syncTail?.content ?? "");
+  assert.match(section, /<capabilities>/, "the next request carries the canonical discovery memory");
   assert.match(section, /tool:\/\/fixture_slides/);
   assert.doesNotMatch(section, /npm:|"needs_approval"/);
   assert.doesNotMatch(JSON.stringify(scenario.parentRequests[1]), /npm:|"needs_approval"/);

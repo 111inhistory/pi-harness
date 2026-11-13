@@ -2,7 +2,7 @@
 
 本文件面向在本仓库工作的 AI 编码与审查 Agent，提供执行边界、架构不变量、防膨胀原则与验证速查。功能细节与协议定义以链接文档为准，不在此重复。
 
-Read `LOCAL_AGENTS.md` at the checkout root when it exists for machine-specific workspace instructions. This optional, Git-ignored file contains local preferences; direct user instructions take precedence.
+若仓库根目录存在 `LOCAL_AGENTS.md`，请一并读取以获取本机工作区偏好。该文件为可选的 Git 忽略文件，仅包含本机设置；用户直接指令始终优先。
 
 ## 1. 项目边界与文档地图
 
@@ -31,22 +31,22 @@ Read `LOCAL_AGENTS.md` at the checkout root when it exists for machine-specific 
 - **先审前提，区分强依赖与弱依赖**：
   - 新增防御校验、回滚或字段前，先核实故障前提在现实中是否成立，并区分**强依赖前提**（如跨进程会话/IPC 句柄所有权、代次围栏、磁盘 JSONL 恢复、外部 Socket 报文、工具入参）与**弱依赖前提**（如可随时从原生区间重建的 `views/` 视图、TUI 折叠缓存）。
   - 同一宿主内的受控 TS 模块间信任静态类型。历史 entry 与消息正文按不可变数据共享；子会话独立持有追加数组、header、索引与分支指针。仅对已证明会原地修改的对象做必要复制，不把容器追加当作整份历史深拷贝的理由，也不引入通用 CoW。确需复制上下文时，按 SDK 最近有效 compaction 的摘要、保留区间及后续必要状态限定范围。严禁把内部协作边界当成强事务不变量去重复编写字段白名单自检（`checkFields`）、递归 `deepFreeze` 或无意义的 `structuredClone`。
-- **Complexity, ownership and release**:
-  - For changes that scale with history, tools, rules, actors or subscriptions, identify those input sizes and the total time/space cost across callers. Check nested scans, repeated replay/sorting/serialization and synchronous main-thread work; reuse operation-local results before adding persistent caches or indices.
-  - Distinguish allocation volume, peak live memory and retained memory after teardown. Account for shared history, full projections, buffers and queued work; reducing CPU time does not justify unbounded retention. Every substantial copy or cache needs an owner, a bound and an actual mutation/reuse reason.
-  - Trace strong references through maps, closures, pending Promises and listeners. Define release on completion, cancellation, unsubscribe, disconnect, startup failure and root retirement as applicable. Suppressing callbacks is not detaching observers; releasing a wrapper must not remove resource fences while underlying work remains alive.
-  - Weak references describe reachability, not cleanup. A `WeakMap` does not neutralize other strong paths; `WeakRef` and `FinalizationRegistry` do not replace deterministic teardown. Verify observable release and retained-object behavior separately; validation guidance is in [resource verification](docs/testing.md#complexity-and-resource-verification).
+- **复杂度、所有权与资源释放**：
+  - 面对随历史长度、工具数量、规则数、Actor 数量或订阅数线性/超线性增长的改动，需明确这些输入规模以及跨调用方的总时间/空间开销。排查嵌套扫描、重复重放/排序/序列化及同步主线程工作；先复用单次操作内的局部结果，再考虑是否引入持久缓存或索引。
+  - 区分瞬时分配量、峰值活跃内存与销毁后滞留内存。核算共享历史、完整投影、缓冲区与排队任务；降低 CPU 开销不能作为无界滞留内存的理由。任何实质性复制或缓存都必须明确所有权、容量上界及实际的修改/复用理由。
+  - 沿着 Map、闭包、未决 Promise 和监听器追踪强引用链，明确完成、取消、退订、断连、启动失败与根服务退役时的释放动作。仅抑制回调不等于摘除观察者；释放外层包装器时，若底层任务仍在运行，不得提前移除资源围栏。
+  - 弱引用仅描述可达性，不负责清理。`WeakMap` 无法抵消其他强引用路径，`WeakRef` 和 `FinalizationRegistry` 也不能替代确定性销毁。可观测的资源释放与滞留对象行为需分别验证，方法见[资源与复杂度验证](docs/testing.md#复杂度与资源验证)。
 - **保持架构审美与主体性，变丑前先停下并交用户拍板**：
   - 面对边缘追问或审查意见时，不机械顺从、不为应付极端巧合而叠床架屋（审美是启动复核的信号，但不能作为删除已证必要正确性约束的理由）。
   - 当识别出某处属于弱边界、继续加保护会让架构、状态机、接口或 Prompt 变拧巴时，**先停下添加机制，向用户简列：① 触发条件；② 用户可见失败/残留状态及影响范围；③ 恢复办法；④ 增加保护的代价与推荐取舍**，由用户拍板后再修改；未获确认前不私自放宽契约或把部分失败包装成成功。
-- **Workflow and comments**: Before writing production code, inspect the affected architecture and actual callers; decide whether to keep, merge, delete, replace or add responsibility, then settle the core algorithm, data ownership, costs and reachable boundary cases. Follow [the development workflow](docs/development-workflow.md); scale the explanation to the change rather than requiring a new report. Explain non-obvious reasons and ownership in English comments, and update or remove stale guarantees with the implementation. Follow [code comment guidance](docs/writing-guide.md#code-comments); do not require comments on every symbol or preserve mechanisms solely because comments/tests describe them.
+- **开发流程与代码注释**：编写生产代码前，先审阅受影响的架构与实际调用方，明确相关职责是保留、合并、删除、替换还是新增，再确定核心算法、数据所有权、开销与可达边界条件。按[开发工作流](docs/development-workflow.md)执行，说明篇幅随改动规模调整，无需动辄另写报告。非显而易见的设计原因与所有权边界须用英文注释说明，并随实现更新或删除过时保证。注释规范见[代码注释指南](docs/writing-guide.md#代码注释)；不要求为每个符号都写注释，也不得仅因旧注释或旧测试的描述而保留无用机制。
 - **Prompt 资产改动原则**：
   - Prompt 是系统契约的一部分，严禁混入内部实现细节噪音（底层函数名、中间变量、特定实验反馈要求）；修改已打磨的提示词遵循最小改动原则，使用明确的技术动词与行为原语，杜绝空洞说教与反向诱导。
 
 - **测试依据与审查责任**：
   - 测试应关联有效设计的具体行为契约，或实际发现的缺陷及其触发条件；新增前先检查现有覆盖，优先扩展已有行为用例，不按函数、文件或提交数量机械增加测试。
   - 断言应有独立于被测实现的预期。禁止以同一算法同时生成实际值和期望值，或只验证夹具自行完成的行为；不得把绕过真实入口的辅助函数组合测试称为完整链路验收。
-  - 文档与测试关联 hook 仅作非阻塞提醒；不得要求配对修改或复核记录才能提交。检查通过、双方都有修改或已有复核记录，均不证明设计、实现与断言一致，也不证明覆盖充分；编码与审查 Agent 仍应主动核对行为契约、测试价值和缺失路径。需要记录复核时，可用一行 `--review ID --reason TEXT --write` 命令更新记录，无需手工补 JSON；见[测试架构](docs/testing.md)。
+  - 文档与测试关联 hook 仅作非阻塞提醒；不得要求配对修改或复核记录才能提交。检查通过、双方都有修改或已有复核记录，都不替代编码与审查 Agent 对行为契约、测试价值和缺失路径的核对。需要记录复核时，可用一行 `--review ID --reason TEXT --write` 命令更新记录，无需手工补 JSON；见[测试架构](docs/testing.md)。
   - 单侧修改可自行复核，记录理由是可选的；不得为消除提醒而添加无意义的文案、断言或宽泛映射。合并重复覆盖时，应保留代次、归属、持久化、未知交接结果等必要边界，并用已发现缺陷的复现条件验证回归。登记与复核用法见[测试架构](docs/testing.md)。
 
 ## 4. 常用命令与验证门禁

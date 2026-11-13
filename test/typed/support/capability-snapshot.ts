@@ -1,6 +1,6 @@
 /** Test-only composition of the production current-state Capability sections. */
-import { appendCurrentSections } from '../../../src/request-instructions.ts';
 import {
+  CAPABILITY_SECTION,
   capabilityPromptSections,
   type CapabilityPromptOptions,
   type ProjectionMessage,
@@ -11,5 +11,16 @@ export function projectCapabilitySnapshot(
   branch: readonly unknown[] | null | undefined,
   options: CapabilityPromptOptions = {},
 ): ProjectionMessage[] {
-  return [...appendCurrentSections(messages, capabilityPromptSections(branch, options))] as ProjectionMessage[];
+  const rendered = capabilityPromptSections(branch, options)[CAPABILITY_SECTION];
+  if (typeof rendered !== 'string' || rendered.trim().length === 0) return [...messages];
+  const wrapped = `<${CAPABILITY_SECTION}>\n${rendered}\n</${CAPABILITY_SECTION}>`;
+  return [
+    ...messages,
+    {
+      role: 'system',
+      content: '',
+      sections: { [CAPABILITY_SECTION]: wrapped },
+      timestamp: messages.at(-1)?.timestamp ?? 0,
+    },
+  ];
 }

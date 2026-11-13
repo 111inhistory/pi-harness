@@ -99,7 +99,7 @@ try {
       assert.equal(tool.defaultActive, false);
       assert.equal(tool.namespace.name, "subagent");
       assert.equal(tool.promptSnippet, undefined);
-      assert.equal(tool.promptGuidelines, undefined);
+      assert.ok(Array.isArray(tool.promptGuidelines) && tool.promptGuidelines.length >= 1);
     }
     assert.doesNotMatch(session.systemPrompt, /subagent_create|one JSON object per line/);
     const nativeWrite = createWriteToolDefinition(cwd);
