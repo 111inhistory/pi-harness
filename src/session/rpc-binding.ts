@@ -7,4 +7,6 @@ export interface RpcSessionBinding {
   readonly ctx: ExtensionContext;
   readonly root: RootService;
   readonly assertSession: () => void;
+  /** Reopen domain services after SDK navigation is canceled. */
+  readonly resume?: () => Promise<void>;
 }

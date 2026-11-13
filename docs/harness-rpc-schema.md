@@ -1,6 +1,6 @@
 # Harness RPC Schema
 
-本文是 [Harness RPC 线协议规范](harness-rpc-wire-spec.md) 的 schema 附录：说明机器可读 schema、manifest、夹具入口和校验方式。协议语义（传输、信封、关联、订阅交接、解析器／组装器分工）以线协议规范为准；本页不新增协议字段或状态模型。
+本文是 [Harness RPC 线协议规范](harness-rpc-wire-spec.md) 的 schema 附录：说明机器可读 schema、manifest、夹具入口和校验方式。协议语义（传输、信封、关联、订阅交接、解析器／组装器分工）以线协议规范为准；本页不新增协议字段或状态模型。当前协议版本为 2。
 
 ## 入口与生成
 
@@ -31,11 +31,13 @@ sha256sum --check schemas/SHA256SUMS
 | 校验目标 | 引用 | 说明 |
 | --- | --- | --- |
 | 任意帧 | 顶层 `oneOf` | `RpcRequest`、`RpcResponse`、`RpcEventFrame` 三选一 |
-| 客户端请求（严格） | `#/$defs/MethodRequest` | 按 `method` 字面量区分 18 个方法；要求必填参数的方法缺少 `params` 时校验失败 |
+| 客户端请求（严格） | `#/$defs/MethodRequest` | 按 `method` 字面量区分 38 个方法；要求必填参数的方法缺少 `params` 时校验失败 |
 | 客户端请求（通用） | `#/$defs/RpcRequest` | 只校验 `id`、`method`、可选 `params`；未知请求字段被 transport 忽略 |
 | 响应 | `#/$defs/RpcResponse` | `ok:true` 携带 `result`；`ok:false` 携带 `error`；`id` 可为 `null` |
 | 订阅帧 | `#/$defs/RpcEventFrame` | `{event:{subscription,seq,payload}}`；`seq` 从 1 起、每连接单调 |
 | 执行流事件载荷 | `#/$defs/StreamEventPayload` | `session` 或 `job` 两类；由 `stream.subscribe` 推送 |
+| Approval 事件载荷 | `#/$defs/ApprovalsEvent` | `kind:"approvals"`；由 `approvals.subscribe` 推送 |
+| Main 事件载荷 | `#/$defs/MainEventPayload` | `kind:"main"`；由 `main.subscribe` 推送，`event` 为 opaque SDK/扩展事件 |
 | 发现记录 | `#/$defs/HarnessRpcRecord` | `harness-rpc.json` 的机器可读内容 |
 
 `#/$defs` 内的引用由 JSON Schema 解析器处理；用 TypeBox 校验时，把 `$defs` 与 `$ref` 放在同一个根对象中（测试与脚本使用 `harnessRpcSchemaRef(name)`）。
@@ -64,6 +66,26 @@ sha256sum --check schemas/SHA256SUMS
 | `history.read` | `JobIdParams` | `HistoryReadResult` |
 | `stream.subscribe` | `JobIdParams` | `StreamSubscribeResult` |
 | `stream.unsubscribe` | `StreamUnsubscribeParams` | `StreamUnsubscribeResult` |
+| `presets.catalog` | `NoParams` | `PresetsCatalogResult` |
+| `presets.current` | `NoParams` | `PresetsCurrentResult` |
+| `presets.apply` | `PresetApplyParams` | `PresetApplyOutcome` |
+| `presets.clear` | `NoParams` | `PresetClearOutcome` |
+| `approvals.list` | `NoParams` | `ApprovalsListResult` |
+| `approvals.get` | `ApprovalIdParams` | `ApprovalsGetResult` |
+| `approvals.respond` | `ApprovalRespondParams` | `ShellApprovalRespondResult` |
+| `approvals.subscribe` | `NoParams` | `ApprovalsSubscribeResult` |
+| `sessions.list` | `NoParams` | `SessionsListResult` |
+| `sessions.connect` | `SessionsConnectParams` | `SessionConnect` |
+| `main.state` | `NoParams` | `MainStateResult` |
+| `main.input` | `MainInputParams` | `MainInputResult` |
+| `main.interrupt` | `NoParams` | `MainRequestedResult` |
+| `main.compact` | `MainCompactParams` | `MainCompactResult` |
+| `main.navigate` | `MainNavigateParams` | `MainOutcomeResult` |
+| `main.reload` | `NoParams` | `MainRequestedResult` |
+| `main.new` | `MainNewParams` | `MainOutcomeResult` |
+| `main.switch` | `MainSwitchParams` | `MainOutcomeResult` |
+| `main.fork` | `MainForkParams` | `MainOutcomeResult` |
+| `main.subscribe` | `NoParams` | `MainSubscribeResult` |
 
 响应本身不携带方法名；客户端按请求 `id` 关联后，用上表选择结果定义。`RpcSuccessResponse.result` 在通用 schema 中是开放值，严格结果校验使用方法映射。
 
@@ -74,15 +96,15 @@ schema 与实现使用同一套三态管理模型，不新增独立 schema 状�
 - `ToolPermissionManagedState` 只有 `enabled` 与 `disabled`；`not managed` 是“没有管理条目”，不是第三个字面量。
 - `ToolPermissionState` 是派生的四态：`enabled`、`disabled`、`active`、`inactive`。`active` 是运行时激活集事实，不由 `permission` 推导；`ToolStatus` 同时保留 `registered`、`eligible`、`active`、`managed` 与 `permission`。
 - `ToolPermissionTarget` 的 `kind` 为 `tool`、`mcp`、`namespace` 或 `prefix`；目标形式分别为精确工具名、`mcp://server`、`namespace://name` 与 config 默认的 `foo*`。`id` 是 `${kind}:${name}`。
-- `tools.catalog` 默认排除 `disabled`；`tools.detail` 可显示被禁用的注册工具。`tools.permission.query` 返回派生 `entries` 与用户管理数据 `managed`，不返回来源、命中规则或解释。
+- `tools.catalog` 默认排除 `disabled`；`tools.detail` 仍可显示禁用的注册工具。`tools.permission.query` 返回派生 `entries` 与用户管理数据 `managed`，不返回来源、命中规则或解释。
 - 写操作结果保留逐项目标：`changed`、`alreadySet`、`unresolved`、`skipped`；`disable` 区分立即移出 active 的 `removedActive` 与等待 compaction 的 `pendingCompaction`；`reset` 区分 `reset`、`notManaged` 与仍被其他规则管理的 `stillManaged`。
 
 ## 可选、null、错误与部分结果
 
 - 请求 `params` 在通用 envelope 中可选；方法 schema 对必填参数的方法要求 `params`。transport 把缺失或 `null` 的 `params` 当作空对象。
 - `RpcResponseId` 为 `id` 或 `null`；无法解析或缺少合法 `id` 的请求返回 `id:null`。
-- 错误分支固定为 `{id, ok:false, error:{code,message,detail?}}`。`code` 是开放字符串；稳定集合见 `RPC_ERROR`，端口还会返回 `invalid_target`、`unmanaged_endpoint`、`unknown_endpoint`。
-- 部分结果不折叠为整体失败：`subagent.create` 返回已登记 `items` 与 `warnings`；`message.send` 的广播回执保留 `sent` 与逐接收者 `errors`；权限写操作的 `skipped`/`unresolved` 与 `recordError` 分开。
+- 错误分支固定为 `{id, ok:false, error:{code,message,detail?}}`。`code` 是开放字符串；稳定集合见 `RPC_ERROR`，端口还会返回 `invalid_target`、`unmanaged_endpoint`、`unknown_endpoint`。领域 `SubagentError` 与 `MainControlError` 的 code/message 会保留，仅有真正未预期异常使用 `internal`。
+- 部分结果不折叠为整体失败：`subagent.create` 成功返回已登记 `items` 与 `warnings`；启动失败使用 `start_failed`，`error.detail` 含 `registered` 与每个失败的 `{agentId, code, message}`；`message.send` 的广播回执保留 `sent` 与逐接收者 `errors`；权限写操作的 `skipped`/`unresolved` 与 `recordError` 分开。
 - `recordError` 为 `string|null`；非 `null` 表示权限记录未写入，相关效果未应用。
 - `jobs.get.record` 为 `JobRecordView|null`；运行中 Job 可能还没有终态记录。
 - `history.read` 是 `HistoryReadResult` 联合：`available:false` 只带 `reason:"history_unavailable"`；`available:true` 带 `live`、`bounds` 与 `entries`。`bounds.startEntryId` 可为 `null`，表示从分支开头读取，不是“未开始”。
@@ -101,6 +123,8 @@ schema 与实现使用同一套三态管理模型，不新增独立 schema 状�
 | `NativeEntry` | `@earendil-works/pi-coding-agent@1.5.0` 的 `FileEntry`（`dist/core/session-manager.d.ts:130`，`dist/index.d.ts:21` 再导出）；`history.read.entries` |
 | `ToolDetail.parameters` | `@earendil-works/pi-coding-agent@1.5.0` 的 `ToolInfo["parameters"]`（`dist/core/extensions/types.d.ts:1600`，`dist/index.d.ts:8` 再导出）；TypeBox／JSON Schema 对象，或 `null` |
 | `JobRecordView.result` | Runtime 记录的领域结果值，类型不固定 |
+| `MainEventPayload.event` | Pi `AgentSessionEvent` 或 Main `input_error`，类型不固定；保留原始 JSON |
+| `MainCompactResult.result` | Pi SDK compaction result；保留原始 JSON |
 | `DetailedAgentHistory` | Job 历史文件路径；`summary`、`cleanJsonl` 必有，其他路径键可扩展 |
 
 `message_update` 的 `assistantMessageEvent` 为 `@earendil-works/pi-ai@1.5.0` 的 `AssistantMessageEvent`（`dist/types.d.ts:585`），`usage` 为 `Usage`（`dist/types.d.ts:285`）。投影后的逐类型字段表见 [线协议规范第 11 节](harness-rpc-wire-spec.md#11-上游-pi-定义与不透明载荷)；本页不重复上游模型。
@@ -109,19 +133,11 @@ schema 与实现使用同一套三态管理模型，不新增独立 schema 状�
 
 ## 实现与契约差异
 
-以下差异是核对当前实现时发现的事实；schema 按实际行为描述，不把差异静默编码成协议承诺。
-
-1. `message.send` 的跨会话回执 `{ok:true, delivered:"session", path}` 在实现中存在，接口契约的方法表未逐字命名该分支；schema 的 `MessageSendResult` 联合包含它。
-2. `tools.catalog` 的 `filter`／`category` 与 `tools.permission.query` 的 `expr` 在适配层用 `optionalString`，非字符串值被当作“未提供”；schema 要求字符串。客户端应按 schema 发送；是否改为显式拒绝需另行决定。
-3. `subagent.stop`、`subagent.create`、`message.send` 的领域 `SubagentError` 不是 `RpcRequestError`，transport 将其归为 `code:"internal"` 并触发 `onError`；只有端口自己抛出的 `RpcRequestError` 保留结构化 code。这与“预期拒绝应为结构化错误”的契约存在差距，schema 只承诺 `ok:false` 与 `code:string`，不把领域错误码写成稳定协议。
-4. `history.read` 与 `stream.subscribe` 的 `status` 在端口类型中写为 `string`，实际值是 `JobStatus`；schema 使用 `JobStatus`。
-5. `tools.catalog` 的 `category` 参数使用 `CapabilityCategory`，包含 `mcp`；方法表未枚举参数值，schema 按实现包含。
-6. `src/capability/tool-permission.ts` 顶部注释仍描述旧的读时迁移与优先级；实际 runtime 只读 canonical `capability-tool-permission` 与 config 默认，旧格式由显式离线脚本迁移。该注释已按实现同步，schema 不包含读时迁移分支。
-7. `subagent.create` 的本地启动失败在 `root.create` 中抛 `SubagentError("start_failed")`，已登记项只出现在错误 message 中；`CreatedAgents` 只有 `items` 与 `warnings`，没有结构化失败项。契约要求“返回已登记项与失败项”，schema 按实际成功结果与 `ok:false` 错误分支描述，不把失败项编码成结果字段。
+当前 schema 与 router/ports 的线上输出一致，没有需要保留的实现差异。`message.send` 的跨会话回执 `{ok:true, delivered:"session", path}` 仍在 `MessageSendResult` 联合中；接口契约方法表未逐字命名该分支。
 
 ## 验证
 
-- `npm run check:rpc-schema`：18 个方法与 `$defs` 覆盖一致；`MethodRequest` 每个方法恰好一个分支；`$ref` 均可解析；样例请求／响应／事件／发现记录通过 TypeBox 校验；`valid/`、`invalid/`、`transport/`、`stateful/` 夹具按 manifest 声明验证（含 `conformance` 标签、`nativeValidity` 标签、`conversation` 逐帧 schema 与 `scenarios` 有状态序列）；`strict` 对话还校验上游 `AssistantMessage`/`Usage`/`toolCall` 必填字段；schema 与 manifest 的生成字节匹配 Git 追踪的 SHA-256。
+- `npm run check:rpc-schema`：38 个方法与 `$defs` 覆盖一致；`MethodRequest` 每个方法恰好一个分支；`$ref` 均可解析；样例请求／响应／事件／发现记录通过 TypeBox 校验；`valid/`、`invalid/`、`transport/`、`stateful/` 夹具按 manifest 声明验证（含 `conformance` 标签、`nativeValidity` 标签、`conversation` 逐帧 schema 与 `scenarios` 有状态序列）；`strict` 对话还校验上游 `AssistantMessage`/`Usage`/`toolCall` 必填字段；schema 与 manifest 的生成字节匹配 Git 追踪的 SHA-256。
 - `test/typed/harness-rpc-schema.test.ts`：用真实 `createRouter`、工具端口、子 Agent 端口、历史端口与执行流端口产生结果，逐个方法校验 `$defs`；覆盖 `record:null`、`history_unavailable`、`stream` 的 `session`/`job` 事件、广播与跨会话回执、错误 envelope 与全部方法请求。
 - 夹具是普通 JSON/NDJSON，其他语言可直接读取；`scripts/check-rpc-schema.mjs` 只是仓库 CI，不是跨语言运行时。
-- Windows runner 的 transport 与装配测试使用真实 Named Pipe，验证请求／响应、订阅与端点生命周期；消息投递测试使用平台地址生成器。CLI 子进程烟测仍仅在 POSIX 运行，Windows 的完整 CLI 生命周期与真实在线供应商多轮不在该覆盖范围。
+- 传输、实际 SDK 宿主与 CLI 子进程测试使用平台地址生成器，Windows 对应真实 Named Pipe；平台验收以 CI 结果为准。真实在线供应商多轮不在这些离线测试的覆盖范围。

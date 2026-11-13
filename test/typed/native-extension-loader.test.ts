@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-const entries = ['result-rendering', 'subagent', 'capability', 'btw', 'preset'];
+const entries = ['result-rendering', 'harness', 'capability', 'btw', 'preset'];
 
 for (const registration of ['extensions', 'package'] as const) {
 test(`separate plugins load through Pi's ${registration} registration without a TypeScript preload`, async t => {
@@ -47,8 +47,8 @@ test(`separate plugins load through Pi's ${registration} registration without a 
   const loaded = JSON.parse(child.stdout) as { path: string; tools: string[]; commands: string[] }[];
   assert.equal(loaded.length, entries.length);
   const byName = new Map(loaded.map(entry => [path.basename(entry.path, '.ts'), entry]));
-  assert.ok(byName.get('subagent')?.tools.includes('msg_write'));
-  assert.ok(byName.get('subagent')?.commands.includes('subagent'));
+  assert.ok(byName.get('harness')?.tools.includes('msg_write'));
+  assert.ok(byName.get('harness')?.commands.includes('subagent'));
   assert.ok(byName.get('capability')?.tools.includes('capability'));
   assert.ok(byName.get('capability')?.commands.includes('mcp'));
   assert.deepEqual(byName.get('btw')?.tools, []);

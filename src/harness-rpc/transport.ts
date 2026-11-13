@@ -90,7 +90,7 @@ export class RpcConnection {
   readonly #controls = new Set<Promise<void>>();
   readonly #maxBacklogBytes: number;
   readonly #onError: (error: Error) => void;
-  readonly #subscriptions = new Map<string, () => void>();
+  readonly #subscriptions = new Map<string, { readonly unsubscribe: () => void; readonly scope: 'root' | 'host' }>();
   #decoder = new StringDecoder('utf8');
   #buffer = '';
   #chain: Promise<void> = Promise.resolve();
@@ -128,32 +128,44 @@ export class RpcConnection {
   }
 
   /** Register a subscription's teardown and return its id. */
-  addSubscription(unsubscribe: () => void): string {
+  addSubscription(unsubscribe: () => void, scope: 'root' | 'host' = 'root'): string {
     const id = nextSubscriptionId();
     if (this.#closed || this.#inputEnded) {
       unsubscribe();
       throw new RpcRequestError(RPC_ERROR.unavailable, 'Connection no longer accepts subscriptions.');
     }
-    this.#subscriptions.set(id, unsubscribe);
+    this.#subscriptions.set(id, { unsubscribe, scope });
     return id;
   }
 
   /** Remove one subscription; returns whether it existed. */
   removeSubscription(id: string): boolean {
-    const unsubscribe = this.#subscriptions.get(id);
-    if (unsubscribe === undefined) return false;
+    const subscription = this.#subscriptions.get(id);
+    if (subscription === undefined) return false;
     this.#subscriptions.delete(id);
     try {
-      unsubscribe();
+      subscription.unsubscribe();
     } catch (error) {
       this.#onError(asError(error));
     }
     return true;
   }
 
-  /** Push one event for a subscription. No-op once input ended or the connection closed. */
+  /**
+   * Detach only observers owned by the current Root generation.
+   *
+   * SDK Main host observers remain attached to this connection across a Root
+   * transition; the connection itself also remains open. `pushEvent` checks the
+   * live subscription map so a released Root observer cannot emit through its
+   * old id while a new Root is being installed.
+   */
+  releaseRootSubscriptions(): void {
+    this.#releaseSubscriptions('root');
+  }
+
+  /** Push one event for a live subscription. No-op once released or disconnected. */
   pushEvent(subscription: string, payload: unknown): void {
-    if (this.#closed || this.#inputEnded) return;
+    if (this.#closed || this.#inputEnded || !this.#subscriptions.has(subscription)) return;
     this.#eventSeq += 1;
     const frame: RpcEventFrame = { event: { subscription, seq: this.#eventSeq, payload } };
     this.#write(frame);
@@ -195,15 +207,20 @@ export class RpcConnection {
     }
   }
 
-  #releaseSubscriptions(): void {
-    for (const unsubscribe of this.#subscriptions.values()) {
+  #releaseSubscriptions(scope?: 'root' | 'host'): void {
+    const released: Array<() => void> = [];
+    for (const [id, subscription] of this.#subscriptions) {
+      if (scope !== undefined && subscription.scope !== scope) continue;
+      this.#subscriptions.delete(id);
+      released.push(subscription.unsubscribe);
+    }
+    for (const unsubscribe of released) {
       try {
         unsubscribe();
       } catch (error) {
         this.#onError(asError(error));
       }
     }
-    this.#subscriptions.clear();
   }
 
   #onData(chunk: Buffer): void {
@@ -260,6 +277,8 @@ export class RpcConnection {
 export interface HarnessRpcServer {
   readonly address: string;
   readonly ready: Promise<void>;
+  /** Detach Root-scoped observers without closing the host connection. */
+  releaseRootSubscriptions(): void;
   close(): Promise<void>;
 }
 
@@ -289,6 +308,9 @@ export function createHarnessRpcServer(options: HarnessRpcServerOptions): Harnes
   return {
     address: options.address,
     ready: owned.ready,
+    releaseRootSubscriptions() {
+      connection?.releaseRootSubscriptions();
+    },
     async close() {
       connection?.close();
       await owned.close();

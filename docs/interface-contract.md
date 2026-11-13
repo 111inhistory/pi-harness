@@ -185,7 +185,7 @@ refs 去空白并去重；未知 ref 使本次提交整体拒绝，但不清除�
 
 **Capability 的检索 Agent 复用 Subagent 的底层执行能力。** 系统通过 `src/subagent/execution.ts` 中的 `openSubagentExecution` 统一管理会话生命周期、超时与清理，不为 Capability 另建一套会话创建、预算、取消和清理流程。
 
-Capability 与 Subagent 分别通过 `extensions/capability.ts`、`extensions/subagent.ts` 注册，共用底层执行能力和同一会话的配置、资格状态，不创建两套执行环境。Capability 直接调用内部执行入口，不要求公开的 `subagent_create`、`subagent_list` 或 `subagent_stop` 工具已注册或已激活。
+Capability 与 Subagent 分别通过 `extensions/capability.ts`、`extensions/harness.ts` 注册，共用底层执行能力和同一会话的配置、资格状态，不创建两套执行环境。Capability 直接调用内部执行入口，不要求公开的 `subagent_create`、`subagent_list` 或 `subagent_stop` 工具已注册或已激活。
 
 Capability 调用仍等待检索完成，再返回筛选后的资源。复用执行代码不改变检索权限，不向内部检索 Agent 开放父 Agent 的执行权限。
 
@@ -434,11 +434,11 @@ Harness 为没有专用结果渲染器的工具提供统一预览，包括 Capab
 
 ## Harness RPC 独立接口
 
-Harness 为 Pi 原生 RPC 未覆盖的工具信息、子 Agent 控制、消息历史与子会话执行流提供独立的结构化端点。客户端继续通过 Pi 原生 RPC 控制和读取 Main 会话，不应执行 Slash 命令后解析面向人的文本。
+Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合、SDK 绑定和连接生命周期；Main、工具权限、Preset、审批、会话联系和 Subagent 继续拥有各自的业务状态。客户端直接使用结构化操作。
 
 ### 双通道边界
 
-- Pi 原生 RPC（stdin／stdout）负责 Main 输入、执行流、模型设置、会话操作与原生查询；Harness 独立端点（Unix Socket／Windows Named Pipe）负责工具目录、子 Agent 控制、执行记录与子会话事件。
+- Pi 原生 RPC 可继续提供 UI。完整 Harness 宿主通过 `createHarnessSessionHost` 借用实际 SDK runtime，在每个 ResourceLoader 中安装 `host.extension`；嵌入方保留正常 SDK 重绑回调和 runtime 所有权。仅扩展加载时如实报告 capabilities：不可观察字段为 null，输入仅为 `submitted`，缺少的导航控制返回 `unavailable`。
 - 两个通道不承诺跨通道的全局消息顺序。订阅事件与 `stream.subscribe` 响应携带根会话与执行归属；`jobs.*`、`agents.tree` 响应带 Agent／Job 执行身份，但不重复携带根 `sessionId`（仅 `harness.info` 提供）；`tools.*` 等查询响应不携带归属。客户端不能仅按接收先后推断操作因果。
 - `get_commands` 是 Slash 命令、Skill 与模板目录，不是工具目录；`get_tree` 是 Main 的 entry 树，不是 Subagent 树。Main 的原生消息查询与事件流不覆盖独立子会话。
 
@@ -448,18 +448,18 @@ Harness 为 Pi 原生 RPC 未覆盖的工具信息、子 Agent 控制、消息�
 - 一个 RPC 根宿主提供一个端点。客户端通过 Agent 与 Job 标识访问子任务，不为每个子 Agent 新建监控端点。
 - 端点使用独立地址，不与 `Main.sock`、Agent 端点或广播端点共用，复用受管 IPC 的创建、归属校验与清理。
 - 端点创建失败时不发布发现记录，并通过宿主通知与状态报告原因；客户端此时只能观察到无记录或连接失败。该失败不阻止 RPC 宿主启动。
-- 根会话切换、fork、reload 或退役期间，接口拒绝访问旧服务，旧订阅终止，不自动改指向新根；新根就绪后由客户端明确查询或订阅。客户端断开只解除观察，不取消子任务、不关闭 Pi。
+- 完整宿主跨新建、切换、fork 和 reload 保留连接及地址，替换领域绑定并释放旧 Root 观察者；Main 宿主观察者随真实 SDK session 重绑。取消导航恢复原会话的领域服务。断连只解除观察，不取消任务、不决定审批或关闭 Pi。
 
 ### 地址与发现
 
 - 端点地址为 `<socketRoot>/<session-uid>/harness-rpc.sock`；Windows 使用由同一目录派生的 Named Pipe。
-- 同一私有目录的 `harness-rpc.json` 是机器可读发现记录，包含协议版本、地址、`sessionId`、`pid` 与起始时间；会话关闭时删除本会话目录下的发现记录（按路径，容忍缺失）。发现不依赖 Slash 命令，也不向 Pi 原生 stdout 注入记录。
+- `harness-rpc.json` 包含协议版本、稳定地址、当前 `sessionId`、pid 和起始时间；完整宿主在当前 Root 目录更新发现记录。关闭移除记录。失败通过 SDK 通知、`host.status()` 与会话应用的 `rpcStatus()` 暴露，RPC 清理失败不能跳过底层 Job 和资源退役。
 
 ### 协议
 
 - 帧为换行分隔的 JSON。请求为 `{id, method, params?}`；响应为 `{id, ok: true, result}` 或 `{id, ok: false, error: {code, message, detail?}}`；订阅事件为 `{event: {subscription, seq, payload}}`。
-- 每个端点仅接纳一个客户端连接。连接被占用时，多余连接在不分派请求的情况下直接关闭；当前客户端保留所有权。断开连接会释放订阅。FIN 会保留槽位直至未决响应写出且 socket 实际关闭；根服务退役时会强制关闭所持连接。关闭后可接入替换客户端。
-- 每连接请求按顺序处理并保序响应。慢客户端的有界积压（默认 4 MiB，实现可调）超过上限时断开并释放订阅，不阻塞模型执行，也不静默丢弃事件后假装完整。
+- 每个端点仅接纳一个客户端连接，额外连接不顶替当前客户端。FIN 释放观察者，但槽位持续到未决响应写出且 Socket 实际关闭。完整宿主只在关闭时强制关闭连接，Root 切换释放 Root 观察者。
+- 协议版本为 2。普通请求串行；停止、审批回复、Main 中断与退订可绕过长请求。响应可能乱序，必须按 id 关联。有界积压默认 4 MiB，超限断开并释放观察者。
 - 客户端不能自动重放结果未知的控制输入。异常、超时与断连不证明输入尚未入队。
 - 语言无关的线协议规范见 [Harness RPC 线协议规范](harness-rpc-wire-spec.md)；机器可读 schema 与方法清单由定义源码生成，Git 追踪 [`schemas/SHA256SUMS`](../schemas/SHA256SUMS) 和 [`schemas/fixtures/harness-rpc/`](../schemas/fixtures/harness-rpc/)；生成、GitHub Actions 下载与 `$defs` 细节见 [Harness RPC Schema](harness-rpc-schema.md)。
 
@@ -468,7 +468,11 @@ Harness 为 Pi 原生 RPC 未覆盖的工具信息、子 Agent 控制、消息�
 | 方法 | 职责 |
 | --- | --- |
 | `harness.info` | 协议版本、会话标识与进程标识 |
-| `tools.catalog`、`tools.detail` | 工具目录与详情；报告 `registered`、`eligible`、`active`、`managed` 与 `permission`（`enabled`／`disabled`／`active`／`inactive`）；`catalog` 默认排除 `disabled`，`detail` 可显示 |
+| `main.*` | SDK 状态、输入准入、中断、压缩、导航、reload、新建、切换、fork 和观察；preflight 区分 handled、queued、started，不等待整次运行完成 |
+| `presets.catalog/current/apply/clear` | 共享 Preset 配置、分支快照及应用／清除结果，保持稀疏选择语义 |
+| `approvals.list/get/respond/subscribe` | 真实审批队列和首次有效决定，保持超时、取消、无消费者时拒绝及退役释放 |
+| `sessions.list/connect` | 共享会话目录与联系操作，联系和发送相互独立 |
+| `tools.catalog`、`tools.detail` | 当前作用域目录与详情，报告 registered、eligible、active、managed 和 permission；catalog 默认排除 disabled，detail 保留禁用项 |
 | `tools.enable` | 用户显式启用工具或分组，与 `/capability enable` 共用同一份领域操作；不作为模型可调用的通用授权工具 |
 | `tools.permission.query` | 查询派生权限视图；`{expr?}` 返回 `scope`、`expression`、`entries` 与 `managed`；不返回来源或命中规则 |
 | `tools.permission.enable`、`tools.permission.disable` | 显式启用或禁用目标；返回逐项结果、受影响工具，以及 `disable` 立即移出 active 的无独立声明成员与延迟到 compaction 的声明成员 |
@@ -481,8 +485,8 @@ Harness 为 Pi 原生 RPC 未覆盖的工具信息、子 Agent 控制、消息�
 | `history.read` | 读取指定 Job 的原生历史区间；running Job 返回已产生区间与 live 端，首个 Job 的 `null` start 是合法边界（按分支开头读取），memory-only 会话明确报告历史不可用 |
 | `stream.subscribe`、`stream.unsubscribe` | 订阅或解除指定 Job 的子会话执行流；订阅响应携带读取边界（状态、轮次、历史区间、已产生消息与当前 `partial`），事件携带订阅、根会话、Agent 与 Job 归属 |
 
-- 控制操作本身的业务输入与副作用保留；控制响应、查询结果与观察事件不写入 Main 的对话、分支条目或 TUI。
-- 所有子任务操作使用装配时绑定的当前根服务；切根先关闭旧端点再装配新端点，旧代次服务在退役前其端点已关闭，晚到请求无法绕过代次与准入围栏。
+- 公开参数、结果、校验和生成 schema 关联于 `src/harness-rpc/contract.ts`，编译时核对 38 个方法的覆盖及结果类型。SDK 事件与历史保留不透明载荷。领域错误保留 code、message 和 detail；登记后的启动失败以 `start_failed` 和 detail 中的 registered／failures 报告，不能视为整批未创建。查询与回执不额外写入 Main 对话，操作自身仍保留业务记录。
+- 子任务操作使用当前领域绑定；Root 过渡期间拒绝访问旧服务。SDK Main 控制独立于 Subagent 健康状态；后续回调受绑定代次围栏隔离。
 
 ### 执行流
 

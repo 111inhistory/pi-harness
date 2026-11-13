@@ -1,31 +1,18 @@
-/**
- * Assembly of the Harness RPC endpoint for one root host.
- *
- * The endpoint exists only when the root host actually runs in RPC mode
- * (`ctx.mode === "rpc"`). TUI, print and JSON hosts — and the internal SDK child
- * sessions, which default to print mode — never create, listen on or publish it.
- * The endpoint is a separate address from `Main.sock`, the Agent endpoints and
- * the broadcast endpoints, and it reuses the managed-IPC ownership and cleanup.
- *
- * Endpoint creation failure is reported to the caller and never claimed as a
- * working Harness interface. The RPC host itself is not prevented from starting;
- * the handle simply reports `available: false` with the reason.
- */
-
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-
 import type { RootService } from '../subagent/root-service.ts';
-import { SubagentError } from '../subagent/runtime.ts';
+import type { SdkMainControls } from '../session/main-controls.ts';
+import type { RpcSessionBinding } from '../session/rpc-binding.ts';
 import { RpcRequestError } from './error.ts';
 import { RPC_METHODS } from './protocol.ts';
 import { buildApplicationPort } from './ports/application.ts';
-import { createHarnessRpcServer, type HarnessRpcServer } from './transport.ts';
+import { buildMainPort } from './ports/main.ts';
+import { createHarnessRpcServer } from './transport.ts';
 import { harnessRpcTarget, publishHarnessRpcRecord, removeHarnessRpcRecord, type HarnessRpcTarget } from './discovery.ts';
 import { buildToolPort } from './ports/tool-info.ts';
 import { buildSubagentPort } from './ports/subagent.ts';
 import { buildHistoryPort } from './ports/history.ts';
 import { buildStreamPort } from './ports/stream.ts';
-import { createRouter } from './router.ts';
+import { createRouter, type RouterDeps } from './router.ts';
 
 export interface HarnessRpcStatus {
   readonly enabled: boolean;
@@ -40,101 +27,144 @@ export interface HarnessRpcHandle {
   ready(): Promise<void>;
   close(): Promise<void>;
   status(): HarnessRpcStatus;
+  generation(): number;
+  bindRoot(binding: RpcSessionBinding): number;
+  suspend(): void;
 }
 
-/** The single source of truth for the RPC-mode gate. */
-export function harnessRpcEnabled(mode: string | undefined): boolean {
-  return mode === 'rpc';
+export interface HarnessRpcHostAccess {
+  controls(): SdkMainControls | undefined;
 }
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+export function harnessRpcEnabled(mode: string | undefined): boolean { return mode === 'rpc'; }
+function messageOf(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function report(ctx: ExtensionContext | undefined, message: string): void {
+  try { ctx?.ui.notify(message, 'error'); } catch { /* Status remains observable if presentation fails. */ }
 }
 
-function report(ctx: ExtensionContext, message: string): void {
-  try {
-    ctx.ui.notify(message, 'error');
-  } catch {
-    /* A UI failure must not turn a reported endpoint error into a silent one. */
-  }
-}
-
-function disabledHandle(): HarnessRpcHandle {
-  return {
-    enabled: false,
-    address: null,
-    ready: () => Promise.resolve(),
-    close: () => Promise.resolve(),
+/** The host owns the listener; a Root transition replaces only the domain binding. */
+export function installHarnessRpc(
+  api: ExtensionAPI, ctx: ExtensionContext, root: RootService, assertSession: () => void,
+  access?: HarnessRpcHostAccess,
+): HarnessRpcHandle {
+  let generation = 1;
+  if (!harnessRpcEnabled(ctx.mode)) return {
+    enabled: false, address: null, ready: async () => {}, close: async () => {},
     status: () => ({ enabled: false, available: false, address: null }),
+    generation: () => generation, bindRoot: () => ++generation, suspend() {},
   };
-}
-
-/**
- * Install the endpoint for `root`, or return a disabled handle outside RPC mode.
- * The caller owns lifecycle: call `close()` before the root retires or the host
- * shuts down, and install a fresh handle after a root switch.
- */
-export function installHarnessRpc(api: ExtensionAPI, ctx: ExtensionContext, root: RootService, assertSession: () => void): HarnessRpcHandle {
-  if (!harnessRpcEnabled(ctx.mode)) return disabledHandle();
-
-  const target: HarnessRpcTarget = harnessRpcTarget(root.socketRoot, root.sessionId);
-  const router = createRouter({
-    sessionId: root.sessionId,
-    tool: buildToolPort(api, ctx),
-    subagent: buildSubagentPort(api, ctx, root),
-    history: buildHistoryPort(root),
-    stream: buildStreamPort(root),
-    application: buildApplicationPort(api, ctx, root, assertSession),
+  const endpoint = harnessRpcTarget(root.socketRoot, root.sessionId);
+  const makeSlot = (binding: RpcSessionBinding) => ({
+    binding,
+    tool: buildToolPort(binding.api, binding.ctx),
+    subagent: buildSubagentPort(binding.api, binding.ctx, binding.root),
+    history: buildHistoryPort(binding.root),
+    stream: buildStreamPort(binding.root),
+    application: buildApplicationPort(binding.api, binding.ctx, binding.root, binding.assertSession),
   });
-  const server: HarnessRpcServer = createHarnessRpcServer({
-    address: target.address,
-    root: root.socketRoot,
-    isControlRequest: request => request.method === RPC_METHODS.subagentStop || request.method === RPC_METHODS.streamUnsubscribe || request.method === RPC_METHODS.approvalsRespond,
+  let slot: ReturnType<typeof makeSlot> | undefined = makeSlot({ api, ctx, root, assertSession });
+  const current = () => {
+    if (slot === undefined) throw new RpcRequestError('runtime_transitioning', 'No active session is bound.');
+    slot.binding.assertSession();
+    return slot;
+  };
+  const deps: RouterDeps = {
+    get sessionId() { return current().binding.root.sessionId; },
+    get tool() { return current().tool; }, get subagent() { return current().subagent; },
+    get history() { return current().history; }, get stream() { return current().stream; },
+    get application() { return current().application; },
+  };
+  const main = buildMainPort({
+    binding: () => slot?.binding, controls: () => access?.controls(), generation: () => generation,
+    async recover(previous) {
+      if (slot !== undefined) return;
+      const controls = access?.controls();
+      if (controls?.state().sessionId !== previous.root.sessionId || previous.resume === undefined) {
+        throw new RpcRequestError('unavailable', 'The host cannot recover the canceled session transition.');
+      }
+      await previous.resume();
+    },
+  });
+  const router = createRouter(deps, main);
+  const server = createHarnessRpcServer({
+    address: endpoint.address, root: root.socketRoot,
+    isControlRequest: request => [RPC_METHODS.subagentStop, RPC_METHODS.streamUnsubscribe,
+      RPC_METHODS.approvalsRespond, RPC_METHODS.mainInterrupt].some(method => method === request.method),
     handler: async (request, connection) => {
       try { return await router(request, connection); }
       catch (error) {
-        if (error instanceof SubagentError) throw new RpcRequestError(error.code, error.message, error.detail);
+        // SDK file extensions load domains in a fresh Jiti module graph. Use
+        // the domain error discriminant across that constructor boundary.
+        if (error instanceof Error
+          && (error.name === 'SubagentError' || error.name === 'MainControlError')
+          && 'code' in error && typeof error.code === 'string') {
+          throw new RpcRequestError(error.code, error.message, 'detail' in error ? error.detail : undefined);
+        }
         throw error;
       }
     },
-    onError: (error) => report(ctx, `Harness RPC endpoint error: ${messageOf(error)}`),
+    onError: error => report(slot?.binding.ctx, `Harness RPC endpoint error: ${messageOf(error)}`),
   });
-
   let available = false;
+  let closed = false;
   let failure: string | undefined;
-  const ready = server.ready
-    .then(() => {
-      available = true;
-      try {
-        publishHarnessRpcRecord(target, root.sessionId);
-      } catch (error) {
-        failure = `Harness RPC endpoint is bound but its discovery record could not be published: ${messageOf(error)}`;
-        report(ctx, failure);
-      }
-    })
-    .catch((error: unknown) => {
-      available = false;
-      failure = `The Harness RPC endpoint could not be created: ${messageOf(error)}`;
-      report(ctx, failure);
-    });
-
+  let record: HarnessRpcTarget | undefined;
+  const removeRecord = () => {
+    if (record === undefined) return;
+    removeHarnessRpcRecord(record);
+    record = undefined;
+  };
+  const publish = () => {
+    if (!available || closed || slot === undefined) return;
+    const bound = slot.binding;
+    // Discovery follows the active Root while the host endpoint address is stable.
+    const nextRecord = { ...harnessRpcTarget(bound.root.socketRoot, bound.root.sessionId), address: endpoint.address };
+    publishHarnessRpcRecord(nextRecord, bound.root.sessionId);
+    record = nextRecord;
+    failure = undefined;
+  };
+  const ready = server.ready.then(() => {
+    if (closed) return;
+    available = true;
+    publish();
+  }).catch((error: unknown) => {
+    failure = `Harness RPC startup failed: ${messageOf(error)}`;
+    report(slot?.binding.ctx, failure);
+  });
   return {
-    enabled: true,
-    address: target.address,
-    ready: () => ready,
-    async close() {
-      await server.close();
+    enabled: true, address: endpoint.address, ready: () => ready, generation: () => generation,
+    bindRoot(binding) {
+      if (closed) throw new RpcRequestError('unavailable', 'The RPC host has closed.');
+      server.releaseRootSubscriptions();
+      slot = makeSlot(binding);
+      generation++;
       try {
-        removeHarnessRpcRecord(target);
+        removeRecord();
+        publish();
       } catch (error) {
-        report(ctx, `Harness RPC discovery record could not be removed: ${messageOf(error)}`);
+        failure = `Harness RPC discovery update failed: ${messageOf(error)}`;
+        report(binding.ctx, failure);
+      }
+      return generation;
+    },
+    suspend() {
+      const context = slot?.binding.ctx;
+      slot = undefined;
+      server.releaseRootSubscriptions();
+      try { removeRecord(); }
+      catch (error) {
+        failure = `Harness RPC discovery cleanup failed: ${messageOf(error)}`;
+        report(context, failure);
       }
     },
-    status: () => ({
-      enabled: true,
-      available,
-      address: target.address,
-      ...(failure === undefined ? {} : { error: failure }),
-    }),
+    async close() {
+      closed = true;
+      slot = undefined;
+      available = false;
+      await server.close();
+      removeRecord();
+    },
+    status: () => ({ enabled: true, available: available && failure === undefined,
+      address: endpoint.address, ...(failure === undefined ? {} : { error: failure }) }),
   };
 }

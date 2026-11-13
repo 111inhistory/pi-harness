@@ -220,6 +220,105 @@ test("a subscription receives pushed events and can be removed", async (t) => {
   assert.equal(unsubscribed, true);
 });
 
+test("root release detaches root observers but retains host observers and the connection", async (t) => {
+  const root = await fixture(t);
+  let connection: RpcConnection | undefined;
+  let rootReleased = 0;
+  let hostReleased = 0;
+  const handler: RpcHandler = async (request, accepted) => {
+    connection = accepted;
+    if (request.method === "subscribe") {
+      const params = request.params as { scope?: unknown };
+      const scope = params.scope === "host" ? "host" : "root";
+      const subscription = accepted.addSubscription(() => {
+        if (scope === "host") hostReleased += 1;
+        else rootReleased += 1;
+      }, scope);
+      return { subscription };
+    }
+    if (request.method === "ping") return { pong: true };
+    throw new RpcRequestError("method_not_found", "no");
+  };
+  const server = createHarnessRpcServer({ address: getAgentSocketPath("harness-rpc", root), root, handler });
+  t.after(() => server.close());
+  await server.ready;
+
+  const client = await connect(server.address);
+  client.send({ id: 1, method: "subscribe", params: { scope: "root" } });
+  client.send({ id: 2, method: "subscribe", params: { scope: "host" } });
+  await client.waitFor(() => client.frames.length === 2, "root and host subscriptions");
+  const rootSubscription = asRecord(asRecord(client.frames[0]).result).subscription as string;
+  const hostSubscription = asRecord(asRecord(client.frames[1]).result).subscription as string;
+  assert.ok(connection);
+
+  connection.pushEvent(rootSubscription, { root: 1 });
+  connection.pushEvent(hostSubscription, { host: 1 });
+  await client.waitFor(() => client.frames.length === 4, "both observers receive events");
+
+  server.releaseRootSubscriptions();
+  assert.equal(rootReleased, 1);
+  assert.equal(hostReleased, 0, "host observers survive a root transition");
+  assert.equal(connection.closed, false, "the connection survives a root transition");
+
+  connection.pushEvent(rootSubscription, { late: true });
+  await nextTurn();
+  assert.equal(client.frames.length, 4, "a released root observer cannot push through its old id");
+  connection.pushEvent(hostSubscription, { host: 2 });
+  await client.waitFor(() => client.frames.length === 5, "host observer still pushes");
+
+  client.send({ id: 3, method: "ping" });
+  await client.waitFor(() => client.frames.length === 6, "connection still serves requests");
+  assert.deepEqual(asRecord(client.frames[5]), { id: 3, ok: true, result: { pong: true } });
+
+  // Normal unsubscribe removes only its observer. A later close still releases
+  // every remaining scope; a root subscription may be created after the root release.
+  client.send({ id: 4, method: "subscribe", params: { scope: "root" } });
+  await client.waitFor(() => client.frames.length === 7, "new root observer");
+  const nextRoot = asRecord(asRecord(client.frames[6]).result).subscription as string;
+  assert.equal(connection.removeSubscription(hostSubscription), true);
+  assert.equal(hostReleased, 1);
+  assert.equal(connection.closed, false);
+  connection.pushEvent(hostSubscription, { lateHost: true });
+  await nextTurn();
+  assert.equal(client.frames.length, 7, "normal unsubscribe also suppresses old host ids");
+
+  client.close();
+  await client.closed;
+  await client.waitFor(() => rootReleased === 2, "connection close releases remaining root observers");
+  assert.equal(nextRoot.length > 0, true);
+});
+
+test("a control reply completes while an earlier ordered operation is pending", async (t) => {
+  const root = await fixture(t);
+  const entered = deferred();
+  const release = deferred();
+  const handler: RpcHandler = async (request) => {
+    if (request.method === "long") {
+      entered.resolve();
+      await release.promise;
+      return { long: true };
+    }
+    if (request.method === "control") return { control: true };
+    throw new RpcRequestError("method_not_found", "no");
+  };
+  const server = createHarnessRpcServer({
+    address: getAgentSocketPath("harness-rpc", root), root, handler,
+    isControlRequest: request => request.method === "control",
+  });
+  t.after(async () => { release.resolve(); await server.close(); });
+  await server.ready;
+
+  const client = await connect(server.address);
+  client.send({ id: 1, method: "long" });
+  await entered.promise;
+  client.send({ id: 2, method: "control" });
+  await client.waitFor(() => client.frames.length === 1, "control response while long operation is pending");
+  assert.deepEqual(asRecord(client.frames[0]), { id: 2, ok: true, result: { control: true } });
+  release.resolve();
+  await client.waitFor(() => client.frames.length === 2, "ordered operation completion");
+  assert.deepEqual(asRecord(client.frames[1]), { id: 1, ok: true, result: { long: true } });
+});
+
 test("a connection that exceeds its event backlog is disconnected instead of blocking", () => {
   const destroyCalls: boolean[] = [];
   const errors: Error[] = [];
@@ -242,7 +341,8 @@ test("a connection that exceeds its event backlog is disconnected instead of blo
     },
   } as unknown as net.Socket;
   const connection = new RpcConnection(fakeSocket, async () => ({}), 1024, (error) => errors.push(error));
-  connection.pushEvent("sub-1", { big: "payload" });
+  const subscription = connection.addSubscription(() => {});
+  connection.pushEvent(subscription, { big: "payload" });
   assert.equal(connection.closed, true);
   assert.equal(destroyCalls.length, 1);
   assert.equal(errors.length, 1);
@@ -276,13 +376,13 @@ test("FIN stops new events, releases subscriptions and ends instead of destroyin
   } as unknown as net.Socket;
   const connection = new RpcConnection(fakeSocket, async () => ({ ok: true }), 4096, () => {});
   let unsubscribed = false;
-  connection.addSubscription(() => {
+  const subscription = connection.addSubscription(() => {
     unsubscribed = true;
   });
 
   listeners.get("data")?.(Buffer.from(`${JSON.stringify({ id: 1, method: "work" })}\n`) as never);
   listeners.get("end")?.();
-  connection.pushEvent("sub-1", { late: true });
+  connection.pushEvent(subscription, { late: true });
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(unsubscribed, true, "FIN releases the subscription");

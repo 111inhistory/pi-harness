@@ -402,6 +402,7 @@
       "tests": [
         "test/typed/shell-approval-command.test.ts",
         "test/typed/shell-approval-ui.test.ts",
+        "test/typed/shell-approval-controller-fresh-modules.test.ts",
         "test/typed/shell-approval-sdk.test.ts",
         "test/typed/shell-approval-bridge.test.ts",
         "test/typed/shell-permissions-command.test.ts",
@@ -950,7 +951,9 @@
         "test/typed/harness-rpc-history.test.ts",
         "test/typed/harness-rpc-stream.test.ts",
         "test/typed/harness-rpc-subprocess.test.ts",
-        "test/typed/harness-rpc-schema.test.ts"
+        "test/typed/harness-rpc-schema.test.ts",
+        "test/typed/harness-rpc-application.test.ts",
+        "test/typed/harness-rpc-main.test.ts"
       ]
     },
     {

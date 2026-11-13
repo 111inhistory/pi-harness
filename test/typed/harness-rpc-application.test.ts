@@ -26,10 +26,11 @@ import { PRESET_STATE_RECORD } from "../../src/preset/state.ts";
 import { installHarnessSession } from "../../src/session/application.ts";
 import shellPreflightExtension, { shellApprovalController } from "../../src/shell-approval/extension.ts";
 import type { ShellApprovalController } from "../../src/shell-approval/types.ts";
-import { installRootSubagentSurface, type RootSubagentAccess } from "../../src/subagent/extension.ts";
+import { installRootSubagentSurface } from "../../src/subagent/extension.ts";
+import type { HarnessSessionApplication } from "../../src/session/application.ts";
 import { registerSession, sessionMainAddress, unregisterSession } from "../../src/subagent/session-directory.ts";
 import type { RootService } from "../../src/subagent/root-service.ts";
-import { waitFor } from "../../test-support/async.ts";
+import { deferred, waitFor } from "../../test-support/async.ts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -37,7 +38,7 @@ const asRecord = (value: unknown): JsonObject | null =>
   typeof value === "object" && value !== null && !Array.isArray(value) ? value as JsonObject : null;
 
 function asString(value: unknown): string {
-  assert.equal(typeof value, "string");
+  if (typeof value !== "string") assert.fail("expected a string");
   return value;
 }
 
@@ -160,13 +161,6 @@ async function startApplication(t: test.TestContext): Promise<ApplicationFixture
   const socketDir = path.join(cwd, "uds");
   await mkdir(agentDir, { recursive: true });
   await mkdir(socketDir, { recursive: true, mode: 0o700 });
-  await writeFile(path.join(agentDir, "presets.json"), JSON.stringify({
-    "rpc-apply": {
-      tools: ["+read", "-write"],
-      codemode: { mode: "only" },
-      instructions: "RPC_PRESET_INSTRUCTION",
-    },
-  }));
 
   const previousAgentDir = process.env["PI_CODING_AGENT_DIR"];
   const previousSocketDir = process.env["PI_SUBAGENT_SOCKET_DIR"];
@@ -182,9 +176,22 @@ async function startApplication(t: test.TestContext): Promise<ApplicationFixture
   assert.ok(model);
   runtime.getAuth = async () => ({ auth: { apiKey: "offline-fixture" }, env: {} });
   runtime.hasConfiguredAuth = () => true;
+  await writeFile(path.join(agentDir, "presets.json"), JSON.stringify({
+    "rpc-apply": {
+      tools: ["+read", "-write"],
+      codemode: { mode: "only" },
+      instructions: "RPC_PRESET_INSTRUCTION",
+    },
+    "rpc-gated": {
+      model: { provider: model.provider, id: model.id },
+      thinkingLevel: "low",
+      tools: ["+read", "-write"],
+      instructions: "RPC_GATED_INSTRUCTION",
+    },
+  }));
 
   let api!: ExtensionAPI;
-  let access!: RootSubagentAccess;
+  let access!: HarnessSessionApplication;
   const extensionErrors: unknown[] = [];
   const settingsManager = SettingsManager.inMemory({
     retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: "off",
@@ -286,6 +293,49 @@ test("preset RPC apply/clear records the same branch state and tool selection as
   const afterClear = asRecord(await fixture.client.request("presets.current"));
   assert.equal(afterClear?.["preset"], null);
   assert.equal(asRecord(presetEntries(fixture.session).at(-1)?.["snapshot"]), null);
+});
+
+test("Preset apply rechecks the Root epoch after a gated SDK model selection", { timeout: 20000 }, async (t) => {
+  const fixture = await startApplication(t);
+  const anchor = fixture.session.sessionManager.appendMessage({
+    role: "user", content: "Preset epoch anchor", timestamp: Date.now(),
+  });
+  const later = fixture.session.sessionManager.appendMessage({
+    role: "user", content: "later branch point", timestamp: Date.now() + 1,
+  });
+  const started = deferred<void>();
+  const release = deferred<void>();
+  const originalSetModel = fixture.api.setModel.bind(fixture.api);
+  fixture.api.setModel = async model => {
+    started.resolve();
+    await release.promise;
+    return originalSetModel(model);
+  };
+  t.after(() => release.resolve());
+
+  const pending = fixture.client.request("presets.apply", { name: "rpc-gated" });
+  await started.promise;
+
+  // This is the real public SDK session tree operation, not a queued RPC
+  // request. It changes the Root while setModel is still pending.
+  await fixture.session.navigateTree(anchor);
+  assert.notEqual(fixture.session.sessionManager.getLeafId(), later);
+  const toolsAtNavigation = fixture.session.getActiveToolNames();
+  const thinkingAtNavigation = fixture.session.thinkingLevel;
+
+  release.resolve();
+  await assert.rejects(
+    pending,
+    (error: unknown) => error instanceof RpcFailure && error.code === "runtime_transitioning",
+  );
+
+  assert.deepEqual(fixture.session.getActiveToolNames(), toolsAtNavigation,
+    "the rejected old apply must not write the Preset tool selection to the new branch");
+  assert.equal(fixture.session.thinkingLevel, thinkingAtNavigation,
+    "the rejected old apply must not write the Preset thinking level to the new branch");
+  assert.deepEqual(presetEntries(fixture.session), [],
+    "the rejected old apply must not write a Preset snapshot to the new branch");
+  fixture.api.setModel = originalSetModel;
 });
 
 test("approval RPC observes and decides the live controller; unsubscribe, timeout and dispose stay fail-closed", { timeout: 20000 }, async (t) => {

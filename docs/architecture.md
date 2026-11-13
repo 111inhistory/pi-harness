@@ -4,7 +4,7 @@
 
 ## 插件注册
 
-`extensions/` 只保留公开注册入口：`subagent.ts`、`capability.ts`、`btw.ts`、`result-rendering.ts`、`preset.ts` 和可选的 `shell-preflight.ts`。包清单按结果渲染、Subagent、Capability、独立问答、模型 Preset 的顺序加载默认入口。Capability 的完整装配位于 `src/capability/extension.ts`；子会话直接复用它，不从公开入口重复装配根工具。模型 Preset 的装配位于 `src/preset/*` 与 `extensions/preset.ts`。
+`extensions/` 只保留公开注册入口：`harness.ts`、`capability.ts`、`btw.ts`、`result-rendering.ts`、`preset.ts` 和可选的 `shell-preflight.ts`。`harness.ts` 组合会话宿主与 Subagent 工具表面；Capability 与 Preset 分别装配自己的领域。子会话复用领域装配，不重复安装根宿主。
 
 入口分开，底层仍共享。Pi 给每个扩展不同的 API 对象；`harness-config.ts` 与 `capability/scope.ts` 通过同一 ResourceLoader 的原生事件总线取得共享配置提供者和资格状态，保留各自 API 的局部引用，不建立进程全局会话注册表。不同 ResourceLoader 的总线隔离；子会话继续通过显式父资格链和配置快照继承。异步 Shell 仍依附 Subagent 的资源生命周期。
 
@@ -18,13 +18,13 @@
 | `actor-sessions.ts` | Actor 角色／模型身份记录、原生 manager 引用与已记录锚点、身份补丁 | Job 状态和停止排序 |
 | `native-session.ts` | Settings、ResourceLoader、子扩展装配及 SDK 会话创建（Fresh／Inherited 均独立加载扩展与 MCP 后端，Inherited 恢复捕获白名单并对异步 MCP 提供有界等待，默认 10 秒） | 路由、任务结果裁决 |
 | `root-service.ts` | 组装上述模块，根事件写入、历史视图、内存超限临时文件管理（进程正常退出清理）、故障锁存，以及把当前根有效黑名单过滤后的作用域交给子会话 | 第二套 Job 状态机 |
-| `extension.ts`、`lifecycle.ts` | SDK 生命周期钩子、代次隔离、退役期限和资源隔离 | 伪造物理退出、重跑已结束任务 |
-| `surface.ts`、`message-write.ts` | 工具声明、调用方身份绑定、输入捕获、专用 `msg_write` 消息工具（`write` 为 SDK 原生文件工具完全保持不变） | 持有全局注册表或执行循环 |
+| `session/application.ts`、`session/host.ts`、`subagent/lifecycle.ts` | SDK 根生命周期、领域组合、RPC 连接与代次、退役期限及资源隔离；显式绑定借用的 SDK runtime | 领域状态、伪造物理退出、重跑已结束任务 |
+| `surface.ts`、`message-write.ts`、`managed-send.ts` | 工具声明、调用方绑定、输入捕获；模型工具与 RPC 共用受管消息发送 | 全局注册表、第二套广播或交接状态 |
 | `command.ts`、`status-view.ts` | `/subagent` 命令注册、参数解析、错误呈现与列表文本渲染 | Job 状态、准入或消息投递 |
 | `capability/command.ts`、`capability/catalog.ts`、`capability/enable.ts`、`capability/activation.ts` | `/capability` 目录浏览与用户启用、按实时注册表解析启用目标、激活与可达性判定（发现、命令与跨会话回复工具加载共用） | 检索会话、路由、Subagent 状态 |
 | `capability/admission.ts` | 单次操作的工具准入视图：一次解析作用域链与分支记录，提供 `declares`（声明）、`admits`（执行）、`disabled`（显式禁用）、`enabled`（显式启用）与 `admitsServer`；复用已解析的工具目录，不重复读取 catalog | 跨请求缓存、第二套权限服务、改写激活集 |
 | `capability/tool-permission.ts` | 三态工具权限的 canonical 分支重放、config 默认条目、精确／组／prefix 匹配、派生四态查询与 enable／disable／reset；历史格式迁移由离线脚本 `scripts/migrate-tool-permissions.mjs` 独立承担，runtime 不调用 | 工具准入与执行本身、SDK 限制合成、跨作用域传播的存储 |
-| `harness-rpc/*` | 独立 RPC 端点的协议、传输、发现、方法分派与工具／子任务／历史适配；仅在根宿主运行模式为 `rpc` 时装配，复用受管 IPC 的归属与清理 | Pi 原生 RPC 命令、Capability 内部规则、第二套 Job 状态机 |
+| `harness-rpc/*` | 协议契约、校验、传输、发现与领域适配；Root 与宿主订阅寿命 | Main 执行状态、审批决定、第二套 Job 或权限状态机 |
 | `capability/lazy-schemas.ts`、`capability/codemode-mode.ts` | lazySchemas ref 解析与组归属、生效 Codemode 模式（预设记录在分支上的覆盖，回退到 Pi 设置） | 改变启用集合、授权或工具 exposure；写入 Pi 原生设置 |
 | `src/preset/*`、`extensions/preset.ts` | 模型 Preset 配置加载与合并、解析、模型／thinking／工具应用、分支快照与 instructions 段落、`/preset` 与 `--preset` | Capability 检索、Subagent 路由、Pi 原生设置写入 |
 | `listeners.ts`、`ipc/` | 端点目录、监听、NDJSON 分帧、平台资源归属校验，以及“端点属于哪个 session 命名空间”的地址分类（Unix 为目录包含，Windows 为管道名前缀） | 用显示窗口决定可达性、另写广播状态机、用文件系统路径推断管道归属 |
@@ -183,7 +183,7 @@ Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返�
 
 端点仅持有一个客户端连接引用。多余的连接在请求分派前即被关闭。所有权持续到 socket 实际关闭为止（包括 FIN 之后仍有处理中请求或待写出响应的情况）；端点退役时会强制关闭该连接。重连会创建新的订阅，而不会转移旧的观察者。
 
-独立端点由 `src/harness-rpc/*` 实现，只在根宿主运行模式为 `rpc` 时由 `src/subagent/extension.ts` 装配；TUI、print、JSON 与内部 SDK 子会话不装配。`transport.ts` 复用 `createOwnedServer` 与平台适配，负责 NDJSON 分帧、保序响应、订阅推送与有界积压；`discovery.ts` 在会话私有目录发布 `harness-rpc.json`；`router.ts` 分派到 `ports/*`，各 port 调用现有领域 API（Capability 目录、RootService、Runtime、`capability/tool-permission.ts`），不解析 Slash 输出。执行流订阅由 `native-runner.ts` 按 `jobId` 转发原生事件，`ports/stream.ts` 投影并携带归属；观察失败不影响 Job。端点失败向接入方报告，不阻止宿主启动；切根先关闭旧端点再装配新端点。
+独立端点由会话宿主装配，只在 `rpc` 模式创建。领域状态仍由现有模块拥有，RPC 复用 SDK Main、Capability、Subagent、Preset、审批和会话联系操作。`session/host.ts` 借用实际 `AgentSessionRuntime` 并提供 ResourceLoader 局部绑定；嵌入方保留正常 SDK 重绑回调和 runtime 所有权。完整宿主跨 Root 切换保留端点与连接，替换领域绑定并释放旧 Root 观察者；SDK Main 宿主观察者随真实 session 重新绑定。仅作为扩展加载时，如实报告输入准入与导航能力限制，不缓存 command context 模拟 SDK 控制。端点失败由宿主状态和 SDK 通知暴露。
 
 ## Shell 执行前检查
 

@@ -213,12 +213,14 @@ test("unsubscribe detaches the live observer and suppresses later events", async
   const connection = makeConnection();
   await port.subscribe({ jobId: running.jobId }, connection as unknown as RpcConnection);
 
-  assert.deepEqual(port.unsubscribe({ subscription: "sub-1" }, connection as unknown as RpcConnection), { removed: true });
+  // The wire method calls the transport directly so it stays available while
+  // the Root binding is suspended; no StreamPort unsubscribe is involved.
+  assert.equal(connection.removeSubscription("sub-1"), true);
   assert.equal(harness.detachCount(), 1);
   const before = connection.events.length;
   harness.listener()?.({ type: "text_delta" });
   assert.equal(connection.events.length, before);
-  assert.deepEqual(port.unsubscribe({ subscription: "sub-1" }, connection as unknown as RpcConnection), { removed: false });
+  assert.equal(connection.removeSubscription("sub-1"), false);
 
   running.finish("e3");
   await running.runtime.jobDone(running.jobId);

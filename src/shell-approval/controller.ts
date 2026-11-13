@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type {
   ShellApprovalController,
   ShellApprovalDecision,
@@ -9,8 +10,6 @@ import type {
 } from './types.ts';
 
 const DEFAULT_TIMEOUT_SECONDS = 30;
-
-let nextApprovalId = 1;
 
 export interface ManualApprovalControllerOptions {
   readonly defaultTimeoutSeconds?: number | undefined;
@@ -72,7 +71,7 @@ export class ManualApprovalController implements ShellApprovalController {
     );
     return new Promise<ShellApprovalResult>((resolve) => {
       const entry: PendingEntry = {
-        id: `approval-${nextApprovalId++}`,
+        id: `approval-${randomUUID()}`,
         request,
         timeoutSeconds,
         requestedAt: Date.now(),

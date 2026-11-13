@@ -2,7 +2,7 @@
   "id": "req-1",
   "ok": true,
   "result": {
-    "protocolVersion": 1,
+    "protocolVersion": 2,
     "sessionId": "session-demo",
     "pid": 4242
   }

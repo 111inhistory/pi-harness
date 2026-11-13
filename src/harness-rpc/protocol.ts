@@ -12,7 +12,7 @@
  * discriminator keeps the two directions of one connection unambiguous.
  */
 
-export const HARNESS_RPC_PROTOCOL_VERSION = 1;
+export const HARNESS_RPC_PROTOCOL_VERSION = 2;
 
 /** A request correlation id; the client chooses it and gets it back. */
 export type RpcId = string | number;

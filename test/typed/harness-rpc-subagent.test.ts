@@ -7,7 +7,7 @@ import { buildSubagentPort } from "../../src/harness-rpc/ports/subagent.ts";
 import { RpcRequestError } from "../../src/harness-rpc/error.ts";
 import { getAgentSocketPath, getBroadcastSocketPath } from "../../src/ipc/socket.ts";
 import type { RootService } from "../../src/subagent/root-service.ts";
-import type { JobRecordView, JobView } from "../../src/subagent/runtime.ts";
+import { SubagentError, type JobRecordView, type JobView } from "../../src/subagent/runtime.ts";
 
 function jobView(jobId: string): JobView {
   return {
@@ -162,12 +162,12 @@ test("broadcast send resolves to all, and unmanaged/foreign addresses are refuse
   }));
   await assert.rejects(
     foreign.send({ path: getAgentSocketPath("Main", "/tmp/project/pi-session"), content: "hi" }),
-    (error: unknown) => error instanceof RpcRequestError && error.code === "invalid_target",
+    (error: unknown) => error instanceof SubagentError && error.code === "invalid_target",
   );
 
   const notPath = buildSubagentPort(api, ctx, makeRoot({}));
   await assert.rejects(
     notPath.send({ path: "sub_01", content: "hi" }),
-    (error: unknown) => error instanceof RpcRequestError && error.code === "invalid_request",
+    (error: unknown) => error instanceof SubagentError && error.code === "invalid_target",
   );
 });

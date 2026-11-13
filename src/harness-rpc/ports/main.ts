@@ -1,4 +1,3 @@
-import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { MainInput, SdkMainControls } from '../../session/main-controls.ts';
 import type { RpcSessionBinding } from '../../session/rpc-binding.ts';
 import type { MethodParams, MethodResult } from '../contract.ts';
@@ -51,13 +50,13 @@ export function buildMainPort(access: MainPortAccess) {
       } };
     },
     async input(params: MainInput): Promise<MethodResult<'main.input'>> {
-      const current = binding();
       const generation = access.generation();
       const sdk = access.controls();
       if (sdk !== undefined) {
         const result = await sdk.submitInput(params);
         return { ...result, generation };
       }
+      const current = binding();
       current.api.sendUserMessage(params.images === undefined ? params.text : [
         { type: 'text', text: params.text }, ...params.images,
       ], { ...(params.streamingBehavior === undefined ? {} : { deliverAs: params.streamingBehavior }),
@@ -77,10 +76,16 @@ export function buildMainPort(access: MainPortAccess) {
       return { completed: false, result: null };
     },
     navigate(params: MethodParams<'main.navigate'>) {
-      const { targetId, ...options } = params;
-      return transition(sdk => sdk.navigateTree(targetId, options));
+      return transition(sdk => sdk.navigateTree(params.targetId, {
+        ...(params.summarize === undefined ? {} : { summarize: params.summarize }),
+        ...(params.customInstructions === undefined ? {} : { customInstructions: params.customInstructions }),
+        ...(params.replaceInstructions === undefined ? {} : { replaceInstructions: params.replaceInstructions }),
+        ...(params.label === undefined ? {} : { label: params.label }),
+      }));
     },
-    newSession(params: MethodParams<'main.new'>) { return transition(sdk => sdk.newSession(params)); },
+    newSession(params: MethodParams<'main.new'>) {
+      return transition(sdk => sdk.newSession(params.parentSession === undefined ? {} : { parentSession: params.parentSession }));
+    },
     switchSession(params: MethodParams<'main.switch'>) {
       return transition(sdk => sdk.switchSession(params.sessionPath,
         params.cwdOverride === undefined ? undefined : { cwdOverride: params.cwdOverride }));

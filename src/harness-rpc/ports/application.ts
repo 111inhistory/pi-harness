@@ -9,7 +9,15 @@ import { RPC_ERROR } from '../protocol.ts';
 
 /** Adapts existing session operations; all business state remains in its domain. */
 export function buildApplicationPort(api: ExtensionAPI, ctx: ExtensionContext, root: RootService, assertSession: () => void) {
-  const host = { pi: api, getBranch: () => ctx.sessionManager.getBranch(), modelRegistry: ctx.modelRegistry };
+  const host = {
+    pi: api, getBranch: () => ctx.sessionManager.getBranch(), modelRegistry: ctx.modelRegistry,
+    async selectModel(model: Parameters<ExtensionAPI['setModel']>[0]) {
+      const selected = await api.setModel(model);
+      // Native UI navigation can change this branch while SDK auth is pending.
+      assertSession();
+      return selected;
+    },
+  };
   const catalog = () => loadPresets({ cwd: ctx.cwd, agentDir: getAgentDir(), projectTrusted: ctx.isProjectTrusted() });
   const controller = () => {
     assertSession();

@@ -22,8 +22,6 @@ import type {
   JobIdParams,
   StreamBoundary,
   StreamSubscribeResult,
-  StreamUnsubscribeParams,
-  StreamUnsubscribeResult,
 } from '../contract.ts';
 import { RPC_ERROR } from '../protocol.ts';
 import { RpcRequestError } from '../error.ts';
@@ -35,7 +33,6 @@ export type { StreamBoundary };
 
 export interface StreamPort {
   subscribe(params: JobIdParams, connection: RpcConnection): Promise<StreamSubscribeResult>;
-  unsubscribe(params: StreamUnsubscribeParams, connection: RpcConnection): StreamUnsubscribeResult;
 }
 
 export function buildStreamPort(root: RootService): StreamPort {
@@ -109,8 +106,5 @@ export function buildStreamPort(root: RootService): StreamPort {
       };
     },
 
-    unsubscribe(params: StreamUnsubscribeParams, connection: RpcConnection): StreamUnsubscribeResult {
-      return { removed: connection.removeSubscription(params.subscription) };
-    },
   };
 }

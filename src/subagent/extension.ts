@@ -1,20 +1,13 @@
 /** Root Subagent tools and commands; the session host owns lifecycle and RPC. */
-import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { installAsyncShellSurface } from '../async-shell/surface.ts';
 import { argumentCompletionProvider } from '../autocomplete.ts';
-import { DEFAULT_HARNESS_CONFIG, type HarnessConfigProvider } from '../harness-config.ts';
+import { DEFAULT_HARNESS_CONFIG } from '../harness-config.ts';
 import { installSubagentCommand } from './command.ts';
 import { installSessionSurface } from './surface.ts';
-import type { RootService } from './root-service.ts';
-import type { LiveSession } from './session-directory.ts';
+import type { HarnessSessionApplication } from '../session/application.ts';
 
-export interface RootSubagentAccess {
-  current(ctx: ExtensionContext): Promise<RootService>;
-  peers(): Promise<LiveSession[]>;
-  readonly configFor: HarnessConfigProvider;
-}
-
-export function installRootSubagentSurface(api: ExtensionAPI, access: RootSubagentAccess): void {
+export function installRootSubagentSurface(api: ExtensionAPI, access: Pick<HarnessSessionApplication, 'current' | 'peers' | 'configFor'>): void {
   let autocompleteInstalled = false;
   api.on('session_start', (_event, ctx) => {
     if (autocompleteInstalled) return;

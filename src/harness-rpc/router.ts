@@ -19,6 +19,7 @@ import type { RpcConnection, RpcHandler } from './transport.ts';
 import { RpcRequestError } from './error.ts';
 import type { ToolPort } from './ports/tool-info.ts';
 import type { ApplicationPort } from './ports/application.ts';
+import type { MainPort } from './ports/main.ts';
 import type { SubagentPort } from './ports/subagent.ts';
 import type { HistoryPort } from './ports/history.ts';
 import type { StreamPort } from './ports/stream.ts';
@@ -58,7 +59,11 @@ export function createTypedRouter(handlers: TypedMethodHandlers): RpcHandler {
   };
 }
 
-export function createRouter(deps: RouterDeps): RpcHandler {
+export function createRouter(deps: RouterDeps, main?: MainPort): RpcHandler {
+  const mainControls = () => {
+    if (main === undefined) throw new RpcRequestError(RPC_ERROR.unavailable, 'Main controls are not installed on this host.');
+    return main;
+  };
   const application = () => {
     if (deps.application === undefined) throw new RpcRequestError(RPC_ERROR.unavailable, 'Session operations are not installed on this host.');
     return deps.application;
@@ -89,7 +94,7 @@ export function createRouter(deps: RouterDeps): RpcHandler {
     [RPC_METHODS.historyRead]: (params) => deps.history.read(params),
 
     [RPC_METHODS.streamSubscribe]: (params, connection) => deps.stream.subscribe(params, connection),
-    [RPC_METHODS.streamUnsubscribe]: (params, connection) => deps.stream.unsubscribe(params, connection),
+    [RPC_METHODS.streamUnsubscribe]: (params, connection) => ({ removed: connection.removeSubscription(params.subscription) }),
     [RPC_METHODS.presetsCatalog]: () => application().presetsCatalog(),
     [RPC_METHODS.presetsCurrent]: () => application().presetsCurrent(),
     [RPC_METHODS.presetsApply]: params => application().presetsApply(params),
@@ -100,5 +105,15 @@ export function createRouter(deps: RouterDeps): RpcHandler {
     [RPC_METHODS.approvalsSubscribe]: (_params, connection) => application().approvalsSubscribe(connection),
     [RPC_METHODS.sessionsList]: () => application().sessionsList(),
     [RPC_METHODS.sessionsConnect]: params => application().sessionsConnect(params),
+    [RPC_METHODS.mainState]: () => mainControls().state(),
+    [RPC_METHODS.mainInput]: params => mainControls().input(params),
+    [RPC_METHODS.mainInterrupt]: () => mainControls().interrupt(),
+    [RPC_METHODS.mainCompact]: params => mainControls().compact(params),
+    [RPC_METHODS.mainNavigate]: params => mainControls().navigate(params),
+    [RPC_METHODS.mainReload]: () => mainControls().reload(),
+    [RPC_METHODS.mainNew]: params => mainControls().newSession(params),
+    [RPC_METHODS.mainSwitch]: params => mainControls().switchSession(params),
+    [RPC_METHODS.mainFork]: params => mainControls().fork(params),
+    [RPC_METHODS.mainSubscribe]: (_params, connection) => mainControls().subscribe(connection),
   });
 }

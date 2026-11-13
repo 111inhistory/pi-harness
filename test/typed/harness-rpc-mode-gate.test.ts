@@ -43,7 +43,7 @@ test("only the rpc run mode enables the endpoint", () => {
 
 test("non-rpc modes install a disabled handle and never publish a record", async (t) => {
   const directory = await fixture(t);
-  const handle = installHarnessRpc({} as unknown as ExtensionAPI, contextWithMode("tui"), rootAt(directory));
+  const handle = installHarnessRpc({} as unknown as ExtensionAPI, contextWithMode("tui"), rootAt(directory), () => {});
   await handle.ready();
   assert.equal(handle.enabled, false);
   assert.equal(handle.status().available, false);
@@ -53,7 +53,7 @@ test("non-rpc modes install a disabled handle and never publish a record", async
 
 test("rpc mode binds a distinct endpoint and publishes/removes its discovery record", async (t) => {
   const directory = await fixture(t);
-  const handle = installHarnessRpc({} as unknown as ExtensionAPI, contextWithMode("rpc"), rootAt(directory));
+  const handle = installHarnessRpc({} as unknown as ExtensionAPI, contextWithMode("rpc"), rootAt(directory), () => {});
   t.after(() => handle.close());
   await handle.ready();
 

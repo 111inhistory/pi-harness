@@ -35,7 +35,7 @@ git clone https://github.com/111inhistory/pi-harness.git
 cd pi-harness
 npm ci
 npx pi -e ./extensions/result-rendering.ts \
-  -e ./extensions/subagent.ts \
+  -e ./extensions/harness.ts \
   -e ./extensions/capability.ts \
   -e ./extensions/btw.ts \
   -e ./extensions/preset.ts
@@ -47,7 +47,7 @@ npx pi -e ./extensions/result-rendering.ts \
 
 ```sh
 pi -e /path/to/pi-harness/extensions/result-rendering.ts \
-  -e /path/to/pi-harness/extensions/subagent.ts \
+  -e /path/to/pi-harness/extensions/harness.ts \
   -e /path/to/pi-harness/extensions/capability.ts \
   -e /path/to/pi-harness/extensions/btw.ts \
   -e /path/to/pi-harness/extensions/preset.ts
@@ -69,7 +69,7 @@ Pi 会在用户设置的 `packages` 中登记该目录。更新仓库后，重�
 
 | 入口 | 职责 |
 | --- | --- |
-| [subagent.ts](extensions/subagent.ts) | 子任务、会话通信与依附其生命周期的异步 Shell |
+| [harness.ts](extensions/harness.ts) | 会话宿主、RPC、子任务、会话通信与异步 Shell |
 | [capability.ts](extensions/capability.ts) | Capability 发现、启用、权限投影、MCP 装配与 Main 最终出站缓存标识观察 |
 | [btw.ts](extensions/btw.ts) | `/btw` 独立问答 |
 | [preset.ts](extensions/preset.ts) | 模型 Preset 切换、专属指引与工具修饰符 |

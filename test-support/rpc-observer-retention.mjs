@@ -70,7 +70,8 @@ async function subscribeAndDrop() {
   for (let index = 0; index < 500; index += 1) {
     const connection = makeConnection();
     await port.subscribe({ jobId: item.id }, connection);
-    port.unsubscribe({ subscription: "sub-1" }, connection);
+    // Wire unsubscribe is transport-owned and remains available without a Root.
+    connection.removeSubscription("sub-1");
     references.push(new WeakRef(connection));
   }
 }

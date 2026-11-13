@@ -1,16 +1,16 @@
 # Harness RPC 线协议规范
 
-本文件是 Harness 独立 RPC 端点的语言无关协议规范，面向其他语言的解析器实现者。协议版本为 1。规范性产物是本文、生成的 `schemas/harness-rpc.schema.json`、生成的 `schemas/harness-rpc.manifest.json` 与 [`schemas/fixtures/harness-rpc/`](../schemas/fixtures/harness-rpc/)；Git 追踪定义源码、夹具和 [`schemas/SHA256SUMS`](../schemas/SHA256SUMS)，两个 JSON 由本地命令或 GitHub Actions 生成并核对 SHA-256，分发入口见 [Harness RPC Schema](harness-rpc-schema.md)。TypeScript 的 `src/harness-rpc/schema.ts` 只用于生成 schema 与仓库 CI，不是其他语言的运行时依赖。
+本文件是 Harness 独立 RPC 端点的语言无关协议规范，面向其他语言的解析器实现者。协议版本为 2。规范性产物是本文、生成的 `schemas/harness-rpc.schema.json`、生成的 `schemas/harness-rpc.manifest.json` 与 [`schemas/fixtures/harness-rpc/`](../schemas/fixtures/harness-rpc/)；Git 追踪定义源码、夹具和 [`schemas/SHA256SUMS`](../schemas/SHA256SUMS)，两个 JSON 由本地命令或 GitHub Actions 生成并核对 SHA-256，分发入口见 [Harness RPC Schema](harness-rpc-schema.md)。TypeScript 的 `src/harness-rpc/schema.ts` 只用于生成 schema 与仓库 CI，不是其他语言的运行时依赖。
 
 本文只描述已实现行为，不新增方法、字段、状态或兼容回退。JSON Schema 的 `$defs` 细节见 [Harness RPC Schema](harness-rpc-schema.md)。
 
 ## 1. 范围与非目标
 
-端点与 Pi 原生 RPC 并行：原生 RPC 继续负责 Main 的输入、执行流、模型与会话操作；本端点负责工具目录与权限、子 Agent 控制、Job 历史与子会话执行流。
+端点与 Pi 原生 RPC 并行：原生 RPC 继续提供 Pi 的主机交互界面；本端点同时暴露工具目录与权限、子 Agent/Job、历史与执行流，以及 Main、Preset、Shell approval、session peer 等共享业务域的操作。两边的业务状态属于同一份宿主状态，本端点只是适配层，不建立平行的队列、控制器或会话状态。
 
 非目标：
 
-- 不复制 Main 的 prompt、steer、abort、队列、模型设置、压缩、会话切换。
+- 不复制 Main 的 prompt 执行、模型选择、队列或会话实现；`main.*` 只调用宿主已经绑定的 SDK/扩展操作。
 - 不提供协议层认证、压缩、TLS、请求取消、批量请求、断点续传或结果重放。
 - 不定义完整的上游 Pi 事件模型；原生事件保持 Pi 的 `AgentSessionEvent` 语义。
 - 不绑定实现语言，也不提供 Python／Rust／Go SDK 或代码生成框架。
@@ -20,12 +20,12 @@
 ### 2.1 端点与发现
 
 - 仅在根宿主运行模式为 `rpc` 时创建；TUI、print、JSON 模式与内部 SDK 子会话不创建。
-- 一个根宿主一个端点。地址为 `<socketRoot>/<session-uid>/harness-rpc.sock`（Unix）或同目录派生的 Named Pipe（Windows）。
+- 一个根宿主一个端点。地址为 `<socketRoot>/<session-uid>/harness-rpc.sock`（Unix）或同目录派生的 Named Pipe（Windows）。端点地址在宿主生命周期内稳定，不随 Root session 的 new／switch／fork 改变。
 - 同目录的 `harness-rpc.json` 是发现记录：
 
 ```json
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "address": "/tmp/pi-harness/session-demo/harness-rpc.sock",
   "sessionId": "session-demo",
   "pid": 4242,
@@ -33,7 +33,7 @@
 }
 ```
 
-客户端先读取发现记录，再连接 `address`。记录在会话关闭时删除；连接失败可能表示端点已退役。
+客户端先读取当前 Root 的发现记录，再连接 `address`。Root 切换时宿主在同一连接上换绑并先删除旧 Root 的记录，再发布新 Root 的记录；旧记录的 `address` 仍是稳定端点地址，但 `sessionId` 属于旧 Root。记录在会话关闭时删除；连接失败可能表示端点已退役。
 
 ### 2.2 字节流与 UTF-8
 
@@ -52,11 +52,76 @@
 
 ### 2.4 顺序与并发
 
-- 每个连接内的请求按到达顺序串行处理，响应按请求顺序写出。
-- 订阅事件在请求处理之外推送，可能与响应交错；同一连接的事件与响应不保证全局因果顺序。
+- 普通请求在每个连接内按到达顺序串行处理，响应顺序与普通请求的受理顺序一致。
+- 控制请求旁路这条串行链：`subagent.stop`、`stream.unsubscribe`、`approvals.respond`、`main.interrupt`。它们用于在长时间操作、模型运行或 Root 换绑期间及时停止、退订或应答；控制请求可以比先前受理的普通请求先完成，响应因此可能乱序。控制请求之间也不承诺相对顺序。
+- 客户端必须用响应中的 `id` 关联待处理请求，不能按响应位置推断方法或因果；即使客户端只发普通请求，也不要把控制请求的到达位置当成普通队列位置。
+- 订阅事件在请求处理之外推送，可能与任意响应交错；同一连接的事件与响应不保证全局因果顺序。
 - 本端点与 Pi 原生 RPC 是两个通道，不承诺跨通道的全局消息顺序。客户端不能仅按接收先后推断操作因果。
 - 每个端点最多只持有一个客户端连接。多余的连接在未分派请求前即被关闭；当前连接不会被顶替。
-- 槽位在 socket 实际关闭时释放。FIN 会停止推送事件，但在仍有未决处理或待写出响应时继续保留所有权。端点退役时会强制关闭所持连接。客户端可在关闭后建立替换连接；既有订阅不会转移或重放。
+- 槽位在 socket 实际关闭时释放。FIN 会停止推送事件，但在仍有未决处理或待写出响应时继续保留所有权。端点退役时会强制关闭所持连接。客户端可在关闭后建立替换连接；既有订阅不会转移或重放。Root 换绑不关闭宿主连接，见下一节。
+
+### 2.5 SDK 宿主接入与运行时绑定
+
+Harness RPC 的端点由宿主产生，RPC 层不拥有 SDK session、SDK runtime 或 Main 执行状态。嵌入应用使用公开 SDK 的 `CreateAgentSessionRuntimeFactory` 与 `createAgentSessionRuntime`，并在每个 replacement factory 中装入 `host.extension`：
+
+```ts
+import {
+  createAgentSessionFromServices,
+  createAgentSessionRuntime,
+  createAgentSessionServices,
+  type CreateAgentSessionRuntimeFactory,
+} from '@earendil-works/pi-coding-agent';
+import { fileURLToPath } from 'node:url';
+import { createHarnessSessionHost } from './src/session/host.ts';
+
+const host = createHarnessSessionHost();
+const factory: CreateAgentSessionRuntimeFactory = async ({
+  cwd, agentDir, sessionManager, sessionStartEvent,
+}) => {
+  const services = await createAgentSessionServices({
+    cwd, agentDir,
+    resourceLoaderOptions: {
+      additionalExtensionPaths: [fileURLToPath(new URL('./extensions/harness.ts', import.meta.url))],
+      extensionFactories: [host.extension],
+    },
+  });
+  return {
+    ...await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent }),
+    services,
+    diagnostics: services.diagnostics,
+  };
+};
+
+const runtime = await createAgentSessionRuntime(factory, {
+  cwd, agentDir, sessionManager,
+});
+// 必须在第一次 bindExtensions 之前绑定宿主已有的 SDK runtime。
+host.bindRuntime(runtime);
+
+// 嵌入宿主自己拥有 replacement 回调：
+runtime.setRebindSession(async next => {
+  await next.bindExtensions({ mode: 'rpc' });
+});
+await runtime.session.bindExtensions({ mode: 'rpc' });
+```
+
+CLI 入口使用同一个 factory，但把最后的扩展绑定交给公开的 SDK RPC 循环：
+
+```ts
+import { runRpcMode } from '@earendil-works/pi-coding-agent';
+
+const runtime = await createAgentSessionRuntime(factory, { cwd, agentDir, sessionManager });
+host.bindRuntime(runtime);
+await runRpcMode(runtime); // SDK 循环安装自己的 normal setRebindSession 路径
+```
+
+要点：
+
+- `host.extension` 是 ResourceLoader 本地的宿主桥；`installHarnessSession` 在 `session_start` 时通过它找到外部宿主。factory 的每次 replacement 都必须包含它；只在初始 session 注册会丢失 Root 换绑。
+- 先 `host.bindRuntime(runtime)`，再执行初始 `bindExtensions`。`bindRuntime` 产生 SDK Main controls；`bindRoot` 只更换当前 Root 的领域绑定。
+- 嵌入应用保留正常的 `runtime.setRebindSession`，在 replacement 后重新绑定扩展；CLI 使用公开的 `runRpcMode(runtime)`，由 SDK RPC 循环负责同样的 rebind 与扩展绑定。不要复制或改写 CLI 的 RPC 主循环；本端点只挂接扩展生命周期。`runRpcMode` 会安装自己的 rebind 回调，因此不要在同一 runtime 上再手工绑定一次。
+- 宿主在 Root 换绑、取消导航、shutdown 与 dispose 时维护 `bindRoot`/`suspend`/`shutdown` 租约。RPC 层不直接持有 `AgentSession` 或 `AgentSessionRuntime`。
+- 未提供 SDK runtime 的普通 extension-only 装配仍可提供工具、子 Agent、部分 Main 操作，但 `main.state.session.capabilities.inputAdmission` 为 `false`，替代运行时操作不可用；详见第 5、6 节。
 
 ## 3. 信封与判别
 
@@ -97,41 +162,68 @@
 
 ## 4. 请求关联与生命周期
 
-- 客户端维护 `id → 待处理请求` 映射。响应按请求顺序到达，但客户端应按 `id` 关联，不按位置。
+- 客户端维护 `id → 待处理请求` 映射。普通请求的响应通常按受理顺序到达，但控制请求可能乱序；客户端必须按 `id` 关联，不按位置。
 - `id` 用字符串最稳妥。JSON 数字是 IEEE-754 双精度：超过 2^53 的整数、`-0` 等值在解析/回显时可能不精确；需要精确关联时使用字符串。
 - 请求缺少合法 `id` 或 `method`：返回 `invalid_request`；`id` 无法确定时为 `null`。`id` 合法但 `method` 未知：返回 `method_not_found` 并回显 `id`。
-- 结构有效性分两层：`RpcRequest` 只要求 `id`／`method`／可选 `params`；未知 `method` 是结构有效的通用请求，dispatch 返回 `method_not_found`。`MethodRequest` 是严格 schema，只接受 18 个已实现方法；未知方法在严格校验中失败。不要把“严格 schema 不匹配”误报为“帧结构非法”。
-- 方法处理器通常要求 `params` 为对象；数组、字符串等返回 `invalid_request`。`harness.info` 与 `agents.tree` 忽略 `params`，schema 仍按对象／缺失／`null` 约束。`params` 为 `null` 等价于缺失。
-- 协议没有请求取消、超时或重试。客户端断开只解除观察，不取消子任务、不关闭 Pi。
+- 结构有效性分两层：`RpcRequest` 只要求 `id`／`method`／可选 `params`；未知 `method` 是结构有效的通用请求，dispatch 返回 `method_not_found`。`MethodRequest` 是严格 schema，只接受 38 个已实现方法；未知方法在严格校验中失败。不要把“严格 schema 不匹配”误报为“帧结构非法”。
+- 所有方法校验对象参数；数组、字符串等返回 `invalid_request`。无参方法接受对象、缺失或 `null`，对象中的额外字段不参与操作；`params:null` 等价于缺失。
+- 协议没有请求级取消、超时或重试。客户端断开只解除观察，不取消子任务、不关闭 Pi。
 - 控制输入的结果未知时（异常、超时、断连），不得自动重发；断连不证明输入未入队。
-- 同一连接可以并发发出多个请求，但服务器串行处理；客户端不要依赖交错执行。
+- 同一连接可以并发发出多个请求；普通请求串行处理，控制请求可旁路并产生乱序响应。客户端按 `id` 关联，不要依赖响应位置或控制请求与普通请求的交错顺序。
 
 ## 5. 方法映射
 
-方法名、参数 `$defs`、结果 `$defs` 与 `paramsRequired` 由生成的 `schemas/harness-rpc.manifest.json` 的 `methods` 给出；JSON Schema 的 `x-methods` 是同一份映射。响应不带方法名，客户端按请求 `method` 选择结果 schema。
+方法名、参数 `$defs`、结果 `$defs` 与 `paramsRequired` 由生成的 `schemas/harness-rpc.manifest.json` 的 `methods` 给出；JSON Schema 的 `x-methods` 是同一份映射。响应不带方法名，客户端按请求 `id` 关联后，以请求 `method` 选择结果 schema。
+
+`Main`、Preset、Shell approval 与 session peer 操作都调用同一份共享业务域，不建立 RPC 专用副本：
+
+- `main.*` 绑定宿主已有的 `SdkMainControls`（或 extension-only 上下文）；输入、中断、压缩、会话替换继续走 SDK/扩展原语义。
+- `presets.*` 复用 Preset 目录、branch snapshot 与应用/清除操作；`presets.clear` 不回收已应用的模型、thinking 或工具效果。等待 SDK 模型选择后会复核 Root 代次，拒绝继续写入新分支；SDK 已产生的效果不自动回滚。
+- `approvals.*` 直接观察和回复 Root 的 `ManualApprovalController`；没有第二套 approval 状态。
+- `sessions.*` 读取共享 session 目录并复用 `sessions connect` 的显式启用路径，不建立 RPC 专用连接表。
 
 | 方法 | `params` 必需 | 结果 | 语义 |
 | --- | --- | --- | --- |
-| `harness.info` | 否 | `HarnessInfoResult` | 协议版本、根会话、进程 |
+| `harness.info` | 否 | `HarnessInfoResult` | 协议版本、Root 会话、进程 |
 | `tools.catalog` | 否 | `ToolCatalogResult` | 当前作用域候选工具；默认排除 `disabled` |
-| `tools.detail` | 是 | `ToolDetail` | 单个已注册工具；可显示 `disabled` |
+| `tools.detail` | 是 | `ToolDetail` | 单个已注册工具；运行时状态、权限与参数 schema |
 | `tools.enable` | 是 | `EnableResult` | 用户启用工具或分组；与 `/capability enable` 共用领域操作 |
-| `tools.permission.query` | 否 | `ToolPermissionQueryResult` | 派生四态视图与管理条目；无来源/命中规则 |
+| `tools.permission.query` | 否 | `ToolPermissionQueryResult` | 派生四态视图与管理条目；不返回来源/命中规则 |
 | `tools.permission.enable` | 是 | `ToolPermissionSetResult` | 显式启用 |
 | `tools.permission.disable` | 是 | `ToolPermissionSetResult` | 显式禁用 |
 | `tools.permission.reset` | 是 | `ToolPermissionResetResult` | 解除显式规则 |
-| `agents.tree` | 否 | `AgentsTreeResult` | 根 Agent 树；可为 `null` |
+| `agents.tree` | 否 | `AgentsTreeResult` | Root Agent 树；可为 `null` |
 | `jobs.list` | 否 | `JobsListResult` | Job 列表；可按 `jobIds` 过滤 |
 | `jobs.get` | 是 | `JobGetResult` | Job 视图与可空终态记录 |
 | `jobs.result` | 是 | `JobRecordView` | 已结算结果；未结算与不存在分别报错 |
-| `subagent.create` | 是 | `CreatedAgents` | 创建子任务；宿主绑定身份、cwd、会话与容量 |
+| `subagent.create` | 是 | `CreatedAgents` | 创建子任务；宿主绑定身份、cwd、会话与容量；部分注册失败见第 7 节 |
 | `subagent.stop` | 是 | `StopResult` | 请求取消；区分请求与最终退出 |
-| `message.send` | 是 | `MessageSendResult` | 按受管 IPC 地址投递、续跑或广播 |
+| `message.send` | 是 | `MessageSendResult` | 按受管 IPC 地址投递、续跑或广播，返回共享发送回执 |
 | `history.read` | 是 | `HistoryReadResult` | 原生历史区间；running Job 返回已产生区间 |
 | `stream.subscribe` | 是 | `StreamSubscribeResult` | 订阅子会话执行流并返回读取边界 |
-| `stream.unsubscribe` | 是 | `StreamUnsubscribeResult` | 解除订阅 |
+| `stream.unsubscribe` | 是 | `StreamUnsubscribeResult` | 从当前连接移除一个订阅；不依赖 Root 绑定 |
+| `presets.catalog` | 否 | `PresetsCatalogResult` | 合并后的 Preset 目录与解析警告 |
+| `presets.current` | 否 | `PresetsCurrentResult` | 当前 branch 的 Preset snapshot，或 `null` |
+| `presets.apply` | 是 | `PresetApplyOutcome` | 解析并应用 Preset；返回问题与 Codemode 结果 |
+| `presets.clear` | 否 | `PresetClearOutcome` | 清除 branch 管理；不回滚已应用效果 |
+| `approvals.list` | 否 | `ApprovalsListResult` | Root 上待处理的 Shell approval |
+| `approvals.get` | 是 | `ApprovalsGetResult` | 按 ID 返回一个待处理项，或 `null` |
+| `approvals.respond` | 是 | `ShellApprovalRespondResult` | 回答 `allow`/`deny`；首个有效回答生效 |
+| `approvals.subscribe` | 否 | `ApprovalsSubscribeResult` | 订阅 Root approval 快照并返回当前项 |
+| `sessions.list` | 否 | `SessionsListResult` | 共享目录中的存活 peer session |
+| `sessions.connect` | 是 | `SessionConnect` | 让 peer 通过共享 enable 路径可达 |
+| `main.state` | 否 | `MainStateResult` | 当前 Main binding generation、会话状态与能力 |
+| `main.input` | 是 | `MainInputResult` | 提交 Main 输入并报告 admission disposition |
+| `main.interrupt` | 否 | `MainRequestedResult` | 请求中断当前 Main run |
+| `main.compact` | 否 | `MainCompactResult` | 执行压缩；返回是否完成与 opaque SDK 结果 |
+| `main.navigate` | 是 | `MainOutcomeResult` | 导航 Main session tree |
+| `main.reload` | 否 | `MainRequestedResult` | 请求 reload Main session |
+| `main.new` | 否 | `MainOutcomeResult` | 通过 bound runtime 新建 Main session |
+| `main.switch` | 是 | `MainOutcomeResult` | 通过 bound runtime 切换 session |
+| `main.fork` | 是 | `MainOutcomeResult` | 通过 bound runtime fork Main session |
+| `main.subscribe` | 否 | `MainSubscribeResult` | 订阅 Main 事件；SDK 宿主下为 host scope，extension-only 下为 Root scope |
 
-`paramsRequired:false` 的方法接受缺失或 `null` 的 `params`；`paramsRequired:true` 的方法要求 `params` 是对象。
+`paramsRequired:false` 的方法接受缺失或 `null` 的 `params`；`paramsRequired:true` 的方法要求 `params` 是对象。`main.input` 的 `disposition` 在 SDK host 下为 `handled`、`queued` 或 `started`；只有 extension-only fallback 才返回 `submitted`（已交给扩展，未承诺 SDK admission）。`main.state.session.capabilities.inputAdmission` 区分这两种宿主。
 
 ## 6. 值模型：可选、null、数字与不透明载荷
 
@@ -145,18 +237,20 @@
   - `history.read.available:false` 是明确不可用；`bounds.startEntryId:null` 是合法分支开头，不是“未开始”。
   - `stream.boundary.history` 与 `partial` 可为 `null`。
   - `ToolDetail.parameters` 与 `promptGuidelines` 可为 `null`。
+  - `main.state.session` 的 `sessionFile`、`name`、`leafId`、`model` 可为 `null`；extension-only fallback 的 `streaming`、`compacting`、`retrying`、`pendingMessageCount` 也可能为 `null`，表示该宿主无法观察 SDK 的对应运行时事实。
 - 数字字段：`seq`、`pid`、`protocolVersion`、`round`、`total`、`modelCalls`、`activeTimeMs` 是整数；`id` 是字符串或数字。大整数按 IEEE-754 处理，精确关联用字符串。
-- 不透明载荷：`JobRecordView.result`、`ToolDetail.parameters`、`stream` 的 `messages`／`partial`／`entries`、原生事件中未知字段。解析器必须保留原始 JSON，不要按本地猜测拒绝未知字段。
-- 响应对象是精确形状；请求与原生/不透明载荷可能包含额外字段。
+- `main.input.disposition` 是 `handled`、`queued`、`started` 或 `submitted`；`main.state.generation` 随 Root binding 递增，`main.subscribe` 事件的 `generation`／`rootSessionId` 用于识别事件属于哪一代 Root。
+- `main.state.session.capabilities` 是宿主能力声明：SDK host 下 `inputAdmission:true`，且 `navigateTree`、`reload`、`newSession`、`switchSession`、`fork` 可用；extension-only 下 `inputAdmission:false`，以上运行时操作不可用。两类宿主的 `input`、`interrupt`、`compact`、`events` 都由共享扩展/SDK 操作支撑。
+- 不透明载荷：`JobRecordView.result`、`ToolDetail.parameters`、`stream` 的 `messages`／`partial`／`entries`、`MainEventPayload.event`、`MainCompactResult.result`、`MainOutcomeResult` 的 SDK 附加字段，以及原生事件中未知字段。解析器必须保留原始 JSON，不要按本地猜测拒绝未知字段。
+- 响应对象是精确形状；请求、错误 `detail` 与原生/不透明载荷可能包含额外字段。
 
 ## 7. 错误与部分结果
 
-- 错误只出现在 `ok:false` 响应中；没有错误事件。连接断开是传输层事实，不是方法错误。
-- `error.code` 是字符串。稳定集合包括 `invalid_request`、`method_not_found`、`not_found`、`not_ready`、`unavailable`、`internal`；端口还会产生 `invalid_target`、`unmanaged_endpoint`、`unknown_endpoint`。
-- `internal` 表示未预期失败。当前实现中领域 `SubagentError`（如 `unknown_agent`、`invalid_batch`）没有映射为结构化 code，而是归为 `internal`；这是已知差异，不要把它当作稳定的领域错误码。
-- `error.detail` 可选，结构由产生错误的操作决定；解析器应保留原始 JSON。
-- 部分结果不是错误：`subagent.create` 的 `items`/`warnings`、`message.send` 广播的 `sent`/`errors`、权限写的 `skipped`/`unresolved`、`reset` 的 `notManaged`/`stillManaged` 都在 `ok:true` 结果中。
-- 权限写操作先写记录再应用效果；`recordError` 非 `null` 表示记录未写入，相关效果未应用（fail-closed）。`tools.enable` 同样经 `setToolPermission`，记录失败时 `changed` 为空。
+- 方法拒绝通过 `ok:false` 响应表达；已准入 Main 输入的后续错误通过 `main.subscribe` 的 `input_error` 事件提供，不撤销先前的准入回执。连接断开是传输层事实。
+- `error.code` 是字符串。传输/路由稳定集合包括 `invalid_request`、`method_not_found`、`not_found`、`not_ready`、`unavailable`、`internal`；端口还会产生 `invalid_target`、`unmanaged_endpoint`、`unknown_endpoint`。领域 `SubagentError` 与 `MainControlError` 的 `code`、`message` 会原样保留；只有真正未预期的异常才归为 `internal`。
+- `error.detail` 可选，结构由产生错误的操作决定；解析器应保留原始 JSON。例如 `subagent.create` 的启动失败使用 `start_failed`，`detail` 含已登记的 `registered` 项与每个失败的 `{agentId, code, message}`；客户端不得因为整批报错而重放已登记项。
+- 部分结果不是错误：`subagent.create` 成功的 `items`/`warnings`、`message.send` 广播的 `sent`/`errors`、权限写的 `skipped`/`unresolved`、`reset` 的 `notManaged`/`stillManaged` 都在 `ok:true` 结果中。启动失败则走 `ok:false` + `start_failed` detail，而不是虚构一个成功的部分结果。
+- 权限写操作先写记录再应用效果；`recordError` 非 `null` 表示记录未写入，相关效果未应用（fail-closed）。`tools.enable` 同样经 `setToolPermission`；记录失败时 `enabled` 为空。
 - `disable` 的 `removedActive` 是立即移出 active 的工具；`pendingCompaction` 是等待下一次 compaction 才解除声明的工具。二者不是同一状态。
 - 结果未知的控制输入不得自动重放；客户端应让用户或上层决定是否重新发起。
 
@@ -181,11 +275,21 @@
 
 `id` 为 `${kind}:${name}`；`kind` 为 `tool`、`mcp`、`namespace`、`prefix`。
 
-`tools.catalog` 默认排除 `disabled`；`tools.detail` 仍可显示被禁用的已注册工具。`tools.permission.query` 只返回派生 `entries` 与用户管理数据 `managed`，不返回来源、命中规则或解释。写操作的逐项字段见 `ToolPermissionSetResult` 与 `ToolPermissionResetResult`；不要把 `enabled` 当成 `active`，也不要把 `active` 当成显式启用。
+`tools.catalog` 默认排除 `disabled`；`tools.detail` 仍可显示禁用的注册工具。`tools.permission.query` 只返回派生 `entries` 与用户管理数据 `managed`，不返回来源、命中规则或解释。写操作的逐项字段见 `ToolPermissionSetResult` 与 `ToolPermissionResetResult`；不要把 `enabled` 当成 `active`，也不要把 `active` 当成显式启用。
 
 ## 9. 订阅、快照与增量交接
 
-### 9.1 订阅响应
+### 9.1 订阅类别与 Root／host 生命周期
+
+订阅属于当前连接，但可以有两个生命周期 scope：
+
+- **Root scope**：`stream.subscribe` 与 `approvals.subscribe`。Root 进入 suspend、new／switch／fork 或 shutdown 时，宿主释放这些观察者；旧 subscription id 随即失效，新 Root 需要重新订阅。旧 Root 的 `pushEvent` 会被连接丢弃。
+- **Host scope**：SDK 宿主上的 `main.subscribe`。它绑定 SDK session 的 Main 事件源，不是某个 Root 的领域观察者；Root 换绑、取消导航与 discovery 记录移动时不释放，同一连接上的同一 `main` 订阅可跨 session replacement 继续接收事件（事件带新的 `generation`／`rootSessionId`）。extension-only fallback 没有 SDK host，`main.subscribe` 按 Root scope 处理。
+- 端点地址与已接受连接在宿主生命周期内稳定；Root 换绑只移动发现记录。`main.subscribe` 的 host scope 不意味着地址或状态跨进程持久化。
+- `stream.unsubscribe` 直接作用于当前连接，可移除 host 或 Root 订阅；它在 Root 绑定暂时不可用时仍然有效，因为不读取 Root deps。`removed:false` 只表示该 id 已失效／从未存在，不解除其他订阅。
+- 连接关闭、FIN 或端点退役会释放全部 scope；正常退订只释放指定的观察者，不取消 Job、不替审批做决定、不关闭 SDK session。
+
+### 9.2 订阅响应
 
 `stream.subscribe` 返回：
 
@@ -208,7 +312,7 @@
 
 `boundary` 是订阅建立时的读取边界：已产生消息、当前累计 partial、历史区间、Job 状态与轮次。`live` 表示是否挂上实时源；已终态 Job 仍返回真实快照，但不再补发终态事件。
 
-### 9.2 事件
+### 9.3 事件
 
 ```json
 { "event": { "subscription": "sub-1", "seq": 1, "payload": { "kind": "session", "rootSessionId": "session-demo", "jobId": "job-1", "agentId": "agent-1", "event": { "type": "message_start" } } } }
@@ -218,12 +322,24 @@
 { "event": { "subscription": "sub-1", "seq": 2, "payload": { "kind": "job", "rootSessionId": "session-demo", "jobId": "job-1", "agentId": "agent-1", "status": "completed" } } }
 ```
 
+`approvals.subscribe` 推送 `kind:"approvals"` 的待处理快照：
+
+```json
+{ "event": { "subscription": "sub-2", "seq": 3, "payload": { "kind": "approvals", "rootSessionId": "session-demo", "items": [] } } }
+```
+
+SDK 宿主的 `main.subscribe` 推送 `kind:"main"`；`event` 是 opaque 的 Pi `AgentSessionEvent` 或 `{type:"input_error",message}`：
+
+```json
+{ "event": { "subscription": "sub-3", "seq": 4, "payload": { "kind": "main", "generation": 2, "rootSessionId": "session-demo", "source": "sdk", "event": { "type": "agent_start" } } } }
+```
+
 - `seq` 是**每连接**单调递增的整数，从 1 开始；不是每订阅独立序号。多个订阅在同一连接上共享 `seq` 空间，事件会交错。
 - 客户端按 `subscription` 分发；同一订阅内按接收顺序处理。不要假设某订阅的 `seq` 连续；只有观察整个连接的所有事件时才谈缺口。
 - `kind:"session"` 的 `event` 是 Pi 原生事件；`kind:"job"` 是 Harness Job 终态，独立于原生 `agent_end`/`agent_settled`。
 - 已终态 Job 的 `stream.subscribe` 不再补发 `kind:"job"`；状态在 `boundary.status`。
 
-### 9.3 快照／增量交接与事件先于响应
+### 9.4 快照／增量交接与事件先于响应
 
 服务器不承诺 `stream.subscribe` 响应先于事件。实现顺序是：
 
@@ -241,7 +357,7 @@
 - `message_update` 的线上投影丢弃顶层 `message` 与 `assistantMessageEvent.partial`，保留 `usage` 与 `assistantMessageEvent`（文本/推理/工具参数增量）。客户端需要自己的消息组装器：`message_start`/`message_end` 提供完整消息边界，delta 事件累积到本地消息。
 - `toolcall_start` 额外提供 `id` 与 `toolName`；后续 `tool_execution_*` 用 `toolCallId` 与（存在时）`parentToolCallId` 关联。不要把参数生成事件与工具执行事件合并。
 - `agent_end`/`agent_settled` 不是 Harness Job 终态；Job 可能继续消费停放输入或等待子任务。最终状态以 `kind:"job"` 或 `boundary.status` 为准。
-- `stream.unsubscribe` 返回 `{removed:boolean}`。`removed:true` 后应忽略该订阅的后续事件；由于事件与响应可能交错，响应到达前已写出的事件仍可能合法。
+- `stream.unsubscribe` 返回 `{removed:boolean}`，可移除当前连接上的 `stream`、`approvals` 或 host-scoped `main` 订阅；它是控制请求，可能比先前的普通请求先返回。`removed:true` 后应忽略该订阅的后续事件；由于事件与响应可能交错，响应到达前已写出的事件仍可能合法。
 - 断连会释放订阅，但不会取消 Job。重新订阅会得到新的快照；没有 resume token，也没有事件重放。
 
 ## 10. 解析器与有状态组装器的分工
@@ -299,11 +415,13 @@ on_event(frame):
   payload = frame.event.payload
   if payload.kind == "session": assemble_native_event(payload.event)
   else if payload.kind == "job": sub.terminal = payload.status
+  else if payload.kind == "approvals": update_approvals(payload.items)
+  else if payload.kind == "main": assemble_main_event(payload)
 
 on_unsubscribe_ok(subscription): subscriptions.remove(subscription)
 ```
 
-`seq` 是每连接序号；每订阅 `lastSeq` 只用于排序，不能检测该订阅的缺口。
+`pending` 必须按响应 `id` 匹配；`subagent.stop`、`stream.unsubscribe`、`approvals.respond`、`main.interrupt` 的响应可能早于先前普通请求，不能按响应位置推断请求。`seq` 是每连接序号；每订阅 `lastSeq` 只用于排序，不能检测该订阅的缺口。
 
 纯解析器（无业务状态）必须能完成：
 
@@ -341,6 +459,10 @@ on_unsubscribe_ok(subscription): subscriptions.remove(subscription)
 | `ToolDetail.parameters` | `ToolInfo["parameters"]` | `@earendil-works/pi-coding-agent@1.5.0` | `dist/core/extensions/types.d.ts:1600`（`dist/index.d.ts:8` 再导出） |
 | `NativeEntry` | `FileEntry` | `@earendil-works/pi-coding-agent@1.5.0` | `dist/core/session-manager.d.ts:130`（`dist/index.d.ts:21` 再导出） |
 | `JobRecordView.result` | Runtime 领域结果 | — | 类型不固定；保留原始 JSON |
+| `MainEventPayload.event` | Pi `AgentSessionEvent` 或 Main `input_error` | `@earendil-works/pi-coding-agent@1.5.0` | 事件类型不固定；保留原始 JSON |
+| `MainCompactResult.result` | Pi SDK compaction result | `@earendil-works/pi-coding-agent@1.5.0` | SDK 对象；保留原始 JSON |
+
+`MainEventPayload.event` 与 `MainCompactResult.result` 都保留 SDK 原始字段；`MainOutcomeResult` 也保留 SDK 返回的额外字段。协议不复制这些 SDK 定义，也不要求解析器理解所有事件类型。
 
 `NativeSessionEvent` 的 `message_update` 投影（仅 `message.role === "assistant"`）：
 
@@ -395,12 +517,11 @@ on_unsubscribe_ok(subscription): subscriptions.remove(subscription)
 
 - 实现没有输入行长度上限；服务器未发送积压默认 4 MiB，超限断开。不要把它当作可靠的大帧传输。
 - 非法 UTF-8 可能被解码器替换为 U+FFFD，协议不做修复。
-- 领域 `SubagentError` 目前归为 `internal`，不保留领域错误码；`subagent.create` 的本地启动失败在领域层抛 `SubagentError("start_failed")`，线上 `code` 仍是 `internal`，已登记项只在 message 中，没有结构化失败项。
 - `message.send` 的跨会话回执 `{ok:true, delivered:"session", path}` 在实现中存在，接口契约方法表未逐字命名。
-- `tools.catalog.filter/category`、`permission.query.expr` 在适配层把非字符串当作未提供；schema 要求字符串。
-- `history.read`/`stream.subscribe` 的 `status` 实际是 `JobStatus`，端口类型写 `string`。
-- `seq` 是每连接而非每订阅；没有每订阅缺口检测。
-- 没有协议级取消、重订阅 resume token、压缩、认证或版本协商；`harness.info.protocolVersion` 只报告当前版本。
-- Windows Named Pipe 实机与真实在线供应商多轮未验证。
+- extension-only 装配没有 SDK runtime：`main.input` 只能返回 `submitted`，`main.state` 的部分运行时字段为 `null`，`navigateTree`、`reload`、`newSession`、`switchSession`、`fork` 不可用。客户端必须先读取 `main.state.session.capabilities`。
+- Root 换绑会移动 `harness-rpc.json` 到新 Root 的 session 目录；端点地址不变，但旧记录的 `sessionId` 不再表示当前 Root。重新连接前应重新发现。
+- `seq` 是每连接而非每订阅；没有每订阅缺口检测。控制请求响应可能乱序，按 `id` 关联。
+- 没有协议级取消、重订阅 resume token、压缩、认证或版本协商；`harness.info.protocolVersion` 只报告当前版本。v2 的控制请求乱序语义不与 v1 客户端兼容。
+- 离线测试使用真实 SDK 与平台 IPC；跨平台验收以 CI 为准，真实在线供应商多轮不在这些测试的覆盖范围。
 
 上述差异按实际行为记录，不编码成新的协议承诺；详见 [Harness RPC Schema](harness-rpc-schema.md#实现与契约差异)。

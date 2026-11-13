@@ -46,7 +46,7 @@ import { buildToolPort, type ToolPort } from '../../src/harness-rpc/ports/tool-i
 import { buildSubagentPort } from '../../src/harness-rpc/ports/subagent.ts';
 import { buildHistoryPort } from '../../src/harness-rpc/ports/history.ts';
 import { buildStreamPort } from '../../src/harness-rpc/ports/stream.ts';
-import { RPC_ERROR, RPC_METHODS, type RpcMethod } from '../../src/harness-rpc/protocol.ts';
+import { HARNESS_RPC_PROTOCOL_VERSION, RPC_ERROR, RPC_METHODS, type RpcMethod } from '../../src/harness-rpc/protocol.ts';
 import { HARNESS_RPC_METHOD_SCHEMAS, harnessRpcSchemaRef } from '../../src/harness-rpc/schema.ts';
 import { RpcRequestError } from '../../src/harness-rpc/error.ts';
 import { getAgentSocketPath, getBroadcastSocketPath } from '../../src/ipc/socket.ts';
@@ -94,7 +94,7 @@ const subagentStub = {
 } as unknown as RouterDeps['subagent'];
 
 const historyStub = { read: unused } as unknown as RouterDeps['history'];
-const streamStub = { subscribe: unused, unsubscribe: unused } as unknown as RouterDeps['stream'];
+const streamStub = { subscribe: unused } as unknown as RouterDeps['stream'];
 
 // ---------------------------------------------------------------------------
 // Tool / permission fixtures
@@ -560,7 +560,7 @@ test('typed client works end-to-end over socket with events, errors and optional
   t.after(() => client.close());
 
   const info = await client.call(RPC_METHODS.info);
-  assert.equal(info.protocolVersion, 1);
+  assert.equal(info.protocolVersion, HARNESS_RPC_PROTOCOL_VERSION);
   assert.equal(info.sessionId, 'session-client');
 
   const catalog = await client.call(RPC_METHODS.toolsCatalog);
@@ -605,7 +605,7 @@ function _compileTimeContractAssertions(base: TypedMethodHandlers): void {
   createTypedRouter({
     ...base,
     // @ts-expect-error wrong result shape for harness.info (missing sessionId/pid)
-    [RPC_METHODS.info]: () => ({ protocolVersion: 1 }),
+    [RPC_METHODS.info]: () => ({ protocolVersion: HARNESS_RPC_PROTOCOL_VERSION }),
   });
   createTypedRouter({
     ...base,
@@ -690,7 +690,7 @@ test('connectHarnessRpc handles opaque events, callback errors, unknown ids and 
         socket.write(`${JSON.stringify({ id: null, ok: false, error: { code: 'invalid_request', message: 'noise' } })}\n`);
         socket.write(`${JSON.stringify({ id: 99999, ok: true, result: {} })}\n`);
         socket.write(`${JSON.stringify({ event: { subscription: 'sub-1', seq: 1, payload: { opaque: { nested: [1, 2] } } } })}\n`);
-        socket.write(`${JSON.stringify({ id: req.id, ok: true, result: { protocolVersion: 1, sessionId: 's', pid: 1 } })}\n`);
+        socket.write(`${JSON.stringify({ id: req.id, ok: true, result: { protocolVersion: HARNESS_RPC_PROTOCOL_VERSION, sessionId: 's', pid: 1 } })}\n`);
       }
     });
   });

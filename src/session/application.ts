@@ -1,13 +1,21 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { harnessConfigFor } from '../harness-config.ts';
+import { harnessConfigFor, type HarnessConfigProvider } from '../harness-config.ts';
 import { ServiceLifecycle } from '../subagent/lifecycle.ts';
 import { RootService } from '../subagent/root-service.ts';
 import { SubagentError } from '../subagent/runtime.ts';
-import { installHarnessRpc, harnessRpcEnabled, type HarnessRpcHandle } from '../harness-rpc/index.ts';
-import type { RootSubagentAccess } from '../subagent/extension.ts';
+import { createHarnessSessionHost, harnessSessionHost, type HarnessSessionHost } from './host.ts';
+import type { LiveSession } from '../subagent/session-directory.ts';
+import type { HarnessRpcStatus } from '../harness-rpc/assembly.ts';
+
+export interface HarnessSessionApplication {
+  current(ctx: ExtensionContext): Promise<RootService>;
+  peers(): Promise<LiveSession[]>;
+  readonly configFor: HarnessConfigProvider;
+  rpcStatus(): HarnessRpcStatus;
+}
 
 /** Own the root generation and RPC lifetime; domains keep their state and execution. */
-export function installHarnessSession(api: ExtensionAPI): RootSubagentAccess {
+export function installHarnessSession(api: ExtensionAPI): HarnessSessionApplication {
   // Acquire the root's config provider before registering any lifecycle hook:
   // its own session reset listeners must be in place before this service starts
   // activating. Every service of one Pi surface shares that snapshot.
@@ -22,28 +30,30 @@ export function installHarnessSession(api: ExtensionAPI): RootSubagentAccess {
     catch { /* UI failure must never turn a rejected transition into approval. */ }
   };
 
-  // The Harness RPC endpoint lives beside the root service: it is installed only
-  // when the root host actually runs in RPC mode, torn down before the root
-  // retires, and re-installed against the new service after a root switch.
-  let rpcHandle: HarnessRpcHandle | null = null;
-  let rpcService: RootService | null = null;
-  const closeRpc = async (ctx: ExtensionContext): Promise<void> => {
-    const handle = rpcHandle;
-    rpcHandle = null;
-    rpcService = null;
-    if (handle === null) return;
-    try { await handle.close(); } catch (error) { report(ctx, error); }
-  };
+  let host: HarnessSessionHost | undefined;
+  let ownsHost = false;
+  let rpcLease: number | undefined;
   const armRpc = async (ctx: ExtensionContext, service: RootService): Promise<void> => {
-    if (!harnessRpcEnabled(ctx.mode)) { await closeRpc(ctx); return; }
-    if (rpcHandle !== null && rpcService === service) return;
-    await closeRpc(ctx);
+    if (host === undefined) {
+      host = harnessSessionHost(api);
+      ownsHost = host === undefined;
+      host ??= createHarnessSessionHost();
+    }
     const ownEpoch = epoch;
-    rpcHandle = installHarnessRpc(api, ctx, service, () => {
-      if (transitionPending || epoch !== ownEpoch) throw new SubagentError('runtime_transitioning', 'The session is changing.');
+    rpcLease = host.bindRoot({ api, ctx, root: service,
+      assertSession() {
+        if (transitionPending || epoch !== ownEpoch) throw new SubagentError('runtime_transitioning', 'The session is changing.');
+      },
+      async resume() {
+        if (epoch !== ownEpoch) throw new SubagentError('runtime_closed', 'The previous SDK session is no longer current.');
+        const next = await activate(ctx);
+        await armRpc(ctx, next);
+      },
     });
-    rpcService = service;
-    await rpcHandle.ready();
+    await host.ready();
+  };
+  const suspendRpc = (): void => {
+    if (rpcLease !== undefined) host?.suspend(rpcLease);
   };
 
   const activate = async (ctx: ExtensionContext): Promise<RootService> => {
@@ -74,8 +84,8 @@ export function installHarnessSession(api: ExtensionAPI): RootSubagentAccess {
   const beforeTransition = async (ctx: ExtensionContext) => {
     transitionPending = true;
     try {
-      // Stop serving the old root's Harness RPC endpoint before its resources retire.
-      await closeRpc(ctx);
+      // Detach Root observers before retirement; the SDK host keeps the connection.
+      suspendRpc();
       // BEFORE hooks still own the original branch. New commands are blocked,
       // but canceled Jobs must finish their one terminal append before moving.
       await lifecycle.retire();
@@ -111,9 +121,17 @@ export function installHarnessSession(api: ExtensionAPI): RootSubagentAccess {
   api.on('session_before_tree', async (_event, ctx) => beforeTransition(ctx));
   api.on('session_before_switch', async (_event, ctx) => beforeTransition(ctx));
   api.on('session_before_fork', async (_event, ctx) => beforeTransition(ctx));
-  api.on('session_shutdown', async (_event, ctx) => {
+  api.on('session_shutdown', async (event, ctx) => {
     transitionPending = true;
-    try { await closeRpc(ctx); await lifecycle.retire(); }
+    try {
+      suspendRpc();
+      try {
+        if (rpcLease !== undefined) await host?.shutdown(rpcLease, ownsHost || event.reason === 'quit');
+      } finally {
+        // Endpoint cleanup failure cannot skip native Job/resource retirement.
+        await lifecycle.retire();
+      }
+    }
     catch (error) { report(ctx, error); }
     finally {
       // Shutdown cannot be canceled. Late completion must never append through
@@ -129,6 +147,7 @@ export function installHarnessSession(api: ExtensionAPI): RootSubagentAccess {
   return {
     current,
     configFor,
+    rpcStatus: () => host?.status() ?? { enabled: false, available: false, address: null },
     async peers() {
       const service = lifecycle.service;
       if (service === null || transitionPending || lifecycle.retiring) return [];
