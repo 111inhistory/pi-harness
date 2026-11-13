@@ -195,10 +195,14 @@ test("permission disable drops active codemode-only tools, holds declared ones a
   assert.deepEqual(disabled.noticed, ["write"]);
   assert.equal(noticedToolPermissionNames(branch).has("write"), true);
 
-  // Disabled tools are excluded from the available catalogue but still detail-able.
-  const names = port.catalog({}).entries.map((entry) => entry.name);
-  assert.equal(names.includes("write"), false);
-  assert.equal(names.includes("script_only"), false);
+  // User-facing catalogues retain disabled tools so their permission can be managed.
+  const entries = port.catalog({}).entries;
+  for (const name of ["write", "script_only"]) {
+    const entry = entries.find(item => item.name === name);
+    assert.ok(entry);
+    assert.equal(entry.permission, "disabled");
+    assert.equal(entry.eligible, false);
+  }
   assert.equal(port.detail({ name: "write" }).permission, "disabled");
 
   const query = port.permissionQuery({ expr: "disabled" });
@@ -211,7 +215,7 @@ test("permission enable re-admits a disabled tool and permission reset clears ma
   const port = buildToolPort(api, makeContext(branch));
 
   port.permissionDisable({ targets: ["write"] });
-  assert.equal(port.catalog({}).entries.some((entry) => entry.name === "write"), false);
+  assert.equal(port.catalog({}).entries.find((entry) => entry.name === "write")?.permission, "disabled");
 
   const enabled = port.permissionEnable({ targets: ["write"] });
   assert.equal(enabled.state, "enabled");

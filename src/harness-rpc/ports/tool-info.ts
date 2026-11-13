@@ -88,18 +88,12 @@ function statusOf(name: string, state: StateSnapshot): ToolStatus {
   };
 }
 
-function isDisabled(name: string, state: StateSnapshot): boolean {
-  return state.permission.get(name)?.state === 'disabled';
-}
-
 export function buildToolPort(api: ExtensionAPI, ctx: ExtensionContext): ToolPort {
   return {
     catalog(params: ToolsCatalogParams): ToolCatalogResult {
       const state = snapshot(api, ctx);
-      // The available catalogue excludes explicitly disabled tools by default;
-      // `detail` still reports them so a client can manage the restriction.
+      // Match the user picker: disabled entries remain visible for permission management.
       const view = createCapabilityCatalog(api, {
-        disabled: (name: string) => isDisabled(name, state),
         ...(params.filter === undefined ? {} : { filter: params.filter }),
         ...(params.category === undefined ? {} : { category: params.category }),
       });

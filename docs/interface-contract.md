@@ -472,7 +472,7 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 | `presets.catalog/current/apply/clear` | 共享 Preset 配置、分支快照及应用／清除结果，保持稀疏选择语义 |
 | `approvals.list/get/respond/subscribe` | 真实审批队列和首次有效决定，保持超时、取消、无消费者时拒绝及退役释放 |
 | `sessions.list/connect` | 共享会话目录与联系操作，联系和发送相互独立 |
-| `tools.catalog`、`tools.detail` | 当前作用域目录与详情，报告 registered、eligible、active、managed 和 permission；catalog 默认排除 disabled，detail 保留禁用项 |
+| `tools.catalog`、`tools.detail` | 当前作用域目录与详情，报告 registered、eligible、active、managed 和 permission；禁用项保留，供用户管理 |
 | `tools.enable` | 用户显式启用工具或分组，与 `/capability enable` 共用同一份领域操作；不作为模型可调用的通用授权工具 |
 | `tools.permission.query` | 查询派生权限视图；`{expr?}` 返回 `scope`、`expression`、`entries` 与 `managed`；不返回来源或命中规则 |
 | `tools.permission.enable`、`tools.permission.disable` | 显式启用或禁用目标；返回逐项结果、受影响工具，以及 `disable` 立即移出 active 的无独立声明成员与延迟到 compaction 的声明成员 |

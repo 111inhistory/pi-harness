@@ -185,7 +185,7 @@ await runRpcMode(runtime); // SDK 循环安装自己的 normal setRebindSession 
 | 方法 | `params` 必需 | 结果 | 语义 |
 | --- | --- | --- | --- |
 | `harness.info` | 否 | `HarnessInfoResult` | 协议版本、Root 会话、进程 |
-| `tools.catalog` | 否 | `ToolCatalogResult` | 当前作用域候选工具；默认排除 `disabled` |
+| `tools.catalog` | 否 | `ToolCatalogResult` | 当前作用域候选工具；包含可管理的 `disabled` 项，运行时事实与权限分开 |
 | `tools.detail` | 是 | `ToolDetail` | 单个已注册工具；运行时状态、权限与参数 schema |
 | `tools.enable` | 是 | `EnableResult` | 用户启用工具或分组；与 `/capability enable` 共用领域操作 |
 | `tools.permission.query` | 否 | `ToolPermissionQueryResult` | 派生四态视图与管理条目；不返回来源/命中规则 |
@@ -275,7 +275,7 @@ await runRpcMode(runtime); // SDK 循环安装自己的 normal setRebindSession 
 
 `id` 为 `${kind}:${name}`；`kind` 为 `tool`、`mcp`、`namespace`、`prefix`。
 
-`tools.catalog` 默认排除 `disabled`；`tools.detail` 仍可显示禁用的注册工具。`tools.permission.query` 只返回派生 `entries` 与用户管理数据 `managed`，不返回来源、命中规则或解释。写操作的逐项字段见 `ToolPermissionSetResult` 与 `ToolPermissionResetResult`；不要把 `enabled` 当成 `active`，也不要把 `active` 当成显式启用。
+`tools.catalog` 与用户选择器共用候选视图：可管理的 `disabled` 工具保留在结果中（`permission:"disabled"`、`eligible:false`），供权限管理；隐藏工具与不可执行的 native discovery 工具不进入目录。`tools.detail` 仍可显示被禁用的已注册工具。`tools.permission.query` 只返回派生 `entries` 与用户管理数据 `managed`，不返回来源、命中规则或解释。写操作的逐项字段见 `ToolPermissionSetResult` 与 `ToolPermissionResetResult`；不要把 `enabled` 当成 `active`，也不要把 `active` 当成显式启用。
 
 ## 9. 订阅、快照与增量交接
 

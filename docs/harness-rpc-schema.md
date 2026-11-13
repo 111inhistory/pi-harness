@@ -96,7 +96,7 @@ schema 与实现使用同一套三态管理模型，不新增独立 schema 状�
 - `ToolPermissionManagedState` 只有 `enabled` 与 `disabled`；`not managed` 是“没有管理条目”，不是第三个字面量。
 - `ToolPermissionState` 是派生的四态：`enabled`、`disabled`、`active`、`inactive`。`active` 是运行时激活集事实，不由 `permission` 推导；`ToolStatus` 同时保留 `registered`、`eligible`、`active`、`managed` 与 `permission`。
 - `ToolPermissionTarget` 的 `kind` 为 `tool`、`mcp`、`namespace` 或 `prefix`；目标形式分别为精确工具名、`mcp://server`、`namespace://name` 与 config 默认的 `foo*`。`id` 是 `${kind}:${name}`。
-- `tools.catalog` 默认排除 `disabled`；`tools.detail` 仍可显示禁用的注册工具。`tools.permission.query` 返回派生 `entries` 与用户管理数据 `managed`，不返回来源、命中规则或解释。
+- `tools.catalog` 与用户选择器共用候选视图，保留可管理的 `disabled` 工具供权限管理；隐藏工具与不可执行的 native discovery 工具不进入目录。`tools.detail` 可显示被禁用的注册工具。`tools.permission.query` 返回派生 `entries` 与用户管理数据 `managed`，不返回来源、命中规则或解释。
 - 写操作结果保留逐项目标：`changed`、`alreadySet`、`unresolved`、`skipped`；`disable` 区分立即移出 active 的 `removedActive` 与等待 compaction 的 `pendingCompaction`；`reset` 区分 `reset`、`notManaged` 与仍被其他规则管理的 `stillManaged`。
 
 ## 可选、null、错误与部分结果
