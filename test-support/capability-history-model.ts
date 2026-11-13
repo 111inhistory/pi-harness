@@ -454,13 +454,20 @@ class Command implements AsyncCommand<State, World> {
           assert.equal(latestWireTail?.role, 'user',
             'modeled mid-run discovery change ends the wire request on a persisted user sync message');
           const serializedTail = JSON.stringify(latestWireTail?.content ?? '');
+          const wireCapabilities = /<capabilities>[\s\S]*?<\/capabilities>/.exec(serializedTail)?.[0] ?? '';
+          assert.equal(wireCapabilities.length > 0, expectedAtTurnEnd.length > 0,
+            'wire user sync has a capabilities section exactly when current members exist');
           for (const name of expectedAtTurnEnd) {
-            assert.ok(serializedTail.includes(name), `wire user sync includes ${name}`);
+            assert.ok(wireCapabilities.includes(name), `wire current Capability memory includes ${name}`);
           }
           for (const name of names) {
             if (!expectedAtTurnEnd.includes(name)) {
-              assert.equal(serializedTail.includes(name), false, `wire user sync omits ${name}`);
+              assert.equal(wireCapabilities.includes(name), false, `wire current Capability memory omits ${name}`);
             }
+          }
+          const wireAvailability = /<capability-availability>[\s\S]*?<\/capability-availability>/.exec(serializedTail)?.[0] ?? '';
+          for (const name of state.pruned) {
+            assert.ok(wireAvailability.includes(name), `wire availability notice retains removed capability ${name}`);
           }
         }
       } else if (world.view === 'native' || world.view === 'filter' || world.view === 'reorder') {
@@ -505,7 +512,7 @@ export async function runCapabilityHistoryModel() {
       fc.integer({ min: 0, max: 1 }), fc.string({ minLength: 1, maxLength: 40 }), fc.integer({ min: 0, max: 3 }))
       .map(args => new Command(...args, false)),
   ], commandOptions(24));
-  const property = (histories: typeof nativeCommands, restoreNative = false) => fc.asyncProperty(histories, async history => {
+  const runHistory = async (history: Iterable<AsyncCommand<State, World>>, restoreNative = false) => {
     const world = await fixture(restoreNative);
     const state: State = { tools: world.metadata.map((spec, slot) => ({ ...spec, permission: 'unmanaged', active: slot === 0, discovered: false, discoveredDescription: null, used: false })), turn: 0, preset: null, pruned: [] };
     try {
@@ -516,7 +523,16 @@ export async function runCapabilityHistoryModel() {
         await new Command('reopen', 0, '', 0, true).run(state, world);
       }
     } finally { await world.close(); }
-  });
+  };
+  const property = (histories: typeof nativeCommands, restoreNative = false) =>
+    fc.asyncProperty(histories, history => runHistory(history, restoreNative));
+  // A removed member remains in the availability notice, but not current memory.
+  // CI replay: seed -1775607658, path 6:5:5:5:5:5:6:6:6:7:7:7, command path q:B.
+  await runHistory([
+    new Command('discover', 1, '', 0, false),
+    new Command('compact', 0, '', 0, false),
+    new Command('discover', 0, '', 0, false),
+  ]);
   const profile = process.env.PI_CAPABILITY_HISTORY_PROFILE ?? (process.env.PI_PBT_PATH === undefined ? 'all' : 'native');
   if (profile !== 'views') {
     console.log('Capability history profile=native');
