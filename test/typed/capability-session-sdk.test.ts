@@ -11,6 +11,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 import { clampOpenAIPromptCacheKey } from '@earendil-works/pi-ai/api/openai-prompt-cache';
@@ -31,6 +32,8 @@ import {
 } from '../../src/capability/tool-permission.ts';
 import { providerSessionPolicy } from '../../src/provider-session.ts';
 import { appendPresetState, PRESET_STATE_VERSION } from '../../src/preset/state.ts';
+import { CAPABILITY_DISCOVERY_RECORD } from '../../src/capability/discovery-record.ts';
+import { waitFor } from '../../test-support/async.ts';
 
 type ToolResult = Extract<Message, { role: 'toolResult' }>;
 
@@ -338,3 +341,183 @@ for (const api of ['openai-responses', 'anthropic-messages'] as const) {
     );
   });
 }
+
+
+async function runCapabilityLifecycleCase(mode: 'navigate' | 'shutdown' | 'cancel'): Promise<void> {
+  const cwd = await mkdtemp(path.join(tmpdir(), 'pi-capability-lifecycle-'));
+  const agentDir = path.join(cwd, 'agent');
+  await mkdir(agentDir, { recursive: true });
+  const previousAgentDir = process.env['PI_CODING_AGENT_DIR'];
+  const previousSocketDir = process.env['PI_SUBAGENT_SOCKET_DIR'];
+  process.env['PI_CODING_AGENT_DIR'] = agentDir;
+  process.env['PI_SUBAGENT_SOCKET_DIR'] = path.join(cwd, 'uds');
+  const originalInMemory = SessionManager.inMemory;
+  const childManagers: SessionManager[] = [];
+  let session: AgentSession | undefined;
+  try {
+    const faux = fauxProvider({ models: [{ id: 'capability-lifecycle-fixture', reasoning: true }] });
+    const runtime = await ModelRuntime.create({
+      credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,
+    });
+    runtime.registerNativeProvider(faux.provider);
+    runtime.getAuth = async () => ({ auth: { apiKey: 'offline-fixture' }, env: {} });
+    runtime.hasConfiguredAuth = () => true;
+    const model = {
+      ...faux.models[0]!, api: 'openai-responses',
+      compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+    } as Model<Api>;
+
+    let retrievalCalls = 0;
+    let gateRetrieval = true;
+    let releaseHeldRetrieval: (() => void) | undefined;
+    runtime.streamSimple = (_requestModel, context, options) => {
+      const stream = new AssistantMessageEventStream();
+      if (!toolNames(context.messages).includes(CAPABILITY_STEP_TOOL_NAME)) {
+        const reply = assistant(model, [{ type: 'text', text: 'parent done' }], 'stop');
+        stream.push({ type: 'done', reason: 'stop', message: reply });
+        stream.end();
+        return stream;
+      }
+      retrievalCalls += 1;
+      const finish = (aborted: boolean): void => {
+        const reply = aborted
+          ? assistant(model, [], 'error')
+          : retrievalCalls === 1
+            ? call(model, 'lifecycle-search', CAPABILITY_STEP_TOOL_NAME, { queries: ['fixture_slides'] })
+            : call(model, 'lifecycle-finish', CAPABILITY_STEP_TOOL_NAME, {
+              refs: ['tool://fixture_slides'], finish: true,
+            });
+        if (aborted) stream.push({ type: 'error', reason: 'error', error: reply });
+        else stream.push({ type: 'done', reason: reply.stopReason as 'toolUse' | 'stop', message: reply });
+        stream.end();
+      };
+      if (retrievalCalls === 2 && gateRetrieval) {
+        let settled = false;
+        releaseHeldRetrieval = () => { if (!settled) { settled = true; finish(false); } };
+        options?.signal?.addEventListener('abort', () => { if (!settled) { settled = true; finish(true); } }, { once: true });
+        return stream;
+      }
+      finish(false);
+      return stream;
+    };
+
+    const settingsManager = SettingsManager.inMemory({
+      packages: [], extensions: [], retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: 'off',
+    });
+    const entryPath = fileURLToPath(new URL('../../extensions/capability.ts', import.meta.url));
+    const loader = new DefaultResourceLoader({
+      cwd, agentDir, settingsManager,
+      noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
+      additionalExtensionPaths: [entryPath],
+      extensionFactories: [{
+        name: 'capability-lifecycle-tools',
+        factory(pi) {
+          pi.registerTool({
+            name: 'fixture_slides', label: 'Fixture slides', description: 'A selectable local fixture capability.',
+            parameters: { type: 'object', properties: {} }, defaultActive: false,
+            async execute() { return { content: [{ type: 'text' as const, text: 'FIXTURE_EXECUTED' }], details: {} }; },
+          });
+        },
+      }, {
+        name: 'capability-lifecycle-cancel',
+        factory(pi) {
+          pi.on('session_before_tree', () => mode === 'cancel' ? { cancel: true } : undefined);
+        },
+      }],
+    });
+    await loader.reload();
+    assert.deepEqual(loader.getExtensions().errors, []);
+    session = (await createAgentSession({
+      cwd, agentDir, modelRuntime: runtime, model, settingsManager, resourceLoader: loader,
+      sessionManager: SessionManager.inMemory(cwd),
+    })).session;
+    const errors: unknown[] = [];
+    await session.bindExtensions({ onError: (error) => errors.push(error) });
+    assert.deepEqual(errors, []);
+
+    const anchor = session.sessionManager.appendMessage({ role: 'user', content: 'lifecycle anchor', timestamp: Date.now() });
+    const later = session.sessionManager.appendMessage({ role: 'user', content: 'lifecycle later', timestamp: Date.now() + 1 });
+    assert.equal(session.sessionManager.getLeafId(), later);
+    const tool = session.getToolDefinition('capability');
+    assert.ok(tool);
+    const context = session.extensionRunner.createToolContext('lifecycle-capability', undefined);
+    SessionManager.inMemory = (...args: Parameters<typeof originalInMemory>): SessionManager => {
+      const manager = originalInMemory(...args);
+      childManagers.push(manager);
+      return manager;
+    };
+    const pending = tool.execute('lifecycle-capability', {}, undefined, undefined, context);
+    await waitFor(() => retrievalCalls >= 2, { label: 'held retrieval model' });
+    assert.equal(childManagers.length, 1, 'the real retrieval created one independent SessionManager (actual constructor identity)');
+    const child = childManagers[0]!;
+    if (mode === 'navigate') {
+      await session.navigateTree(anchor);
+    } else if (mode === 'cancel') {
+      const navigation = await session.navigateTree(anchor);
+      assert.equal(navigation.cancelled, true);
+    } else {
+      await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+    }
+    releaseHeldRetrieval?.();
+    const outcome = await pending;
+    const details = outcome.details as { status?: string; endReason?: string } | undefined;
+    assert.equal(details?.endReason, 'cancelled');
+    assert.equal(outcome.isError, true);
+    assert.equal(session.getActiveToolNames().includes('fixture_slides'), false,
+      'the invalidated retrieval must not activate its old selection');
+    assert.equal(session.sessionManager.getBranch().filter((entry) =>
+      entry.type === 'custom' && entry.customType === CAPABILITY_DISCOVERY_RECORD).length, 0,
+    'the invalidated retrieval must not publish a discovery record on the new branch');
+
+    const parentBranch = session.sessionManager.getBranch().map((entry) => entry.id);
+    child.appendMessage({ role: 'user', content: 'child-only append', timestamp: Date.now() + 2 });
+    assert.deepEqual(session.sessionManager.getBranch().map((entry) => entry.id), parentBranch,
+      'an independent retrieval SessionManager append must not mutate the parent branch');
+
+    gateRetrieval = false;
+    retrievalCalls = 0;
+    const childManagersBeforeFresh = childManagers.length;
+    const freshContext = session.extensionRunner.createToolContext('fresh-capability', undefined);
+    const fresh = await tool.execute('fresh-capability', {}, undefined, undefined, freshContext);
+    const freshDetails = fresh.details as { status?: string; endReason?: string } | undefined;
+    if (mode === 'shutdown') {
+      assert.equal(freshDetails?.endReason, 'cancelled');
+      assert.equal(childManagers.length, childManagersBeforeFresh,
+        'a disposed Capability manager must not open a fresh SDK retrieval session');
+      assert.equal(retrievalCalls, 0, 'a disposed manager must not dispatch a retrieval model request');
+      assert.equal(session.getActiveToolNames().includes('fixture_slides'), false);
+      assert.equal(session.sessionManager.getBranch().filter((entry) =>
+        entry.type === 'custom' && entry.customType === CAPABILITY_DISCOVERY_RECORD).length, 0,
+      'a disposed manager must not publish or activate after shutdown');
+    } else {
+      assert.equal(freshDetails?.status, 'ok');
+      assert.equal(freshDetails?.endReason, 'finished');
+      assert.equal(childManagers.length, childManagersBeforeFresh + 1,
+        'an invalidated manager must open a fresh retrieval session');
+      assert.equal(retrievalCalls, 2, 'a fresh retrieval must dispatch its search and finish requests');
+      assert.equal(session.getActiveToolNames().includes('fixture_slides'), true,
+        'a successful or cancelled tree transition invalidates but does not dispose the Capability manager');
+      assert.equal(session.sessionManager.getBranch().filter((entry) =>
+        entry.type === 'custom' && entry.customType === CAPABILITY_DISCOVERY_RECORD).length, 1);
+    }
+    if (mode !== 'shutdown') await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+  } finally {
+    SessionManager.inMemory = originalInMemory;
+    try { session?.dispose(); } finally {
+      if (previousAgentDir === undefined) delete process.env['PI_CODING_AGENT_DIR'];
+      else process.env['PI_CODING_AGENT_DIR'] = previousAgentDir;
+      if (previousSocketDir === undefined) delete process.env['PI_SUBAGENT_SOCKET_DIR'];
+      else process.env['PI_SUBAGENT_SOCKET_DIR'] = previousSocketDir;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }
+}
+
+test('SDK tree navigation vs shutdown: invalidate keeps retrieval usable; dispose blocks fresh publication', { timeout: 30_000 }, async () => {
+  await runCapabilityLifecycleCase('navigate');
+  await runCapabilityLifecycleCase('shutdown');
+});
+
+test('cancelled SDK tree navigation uses invalidation, not disposal, and allows a fresh retrieval', { timeout: 30_000 }, async () => {
+  await runCapabilityLifecycleCase('cancel');
+});

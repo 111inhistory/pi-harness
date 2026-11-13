@@ -149,7 +149,7 @@ Inherited 与检索会话保留独立本地 Session ID，Responses 请求仅替�
 
 静态工具指引通过 SDK 的 `ToolDefinition.promptGuidelines` 提供。Capability 记忆、Preset 指令和可用性通知在 `before_agent_start` 写入原生 `systemPromptOptions.sections`，由 SDK 比较并持久化更新。同 turn 状态变化在外层工具结果边界合并为带内容的 `harness-context-sync` 消息，经 SDK 编码为 user；中途自动压缩或压缩后续跑即使状态未变，也重新提供当前非空状态。未变的普通工具循环不追加刷新消息，也不追加尾部 system。Main、普通 Subagent、内部检索与 `/btw` 从规范业务记录恢复当前状态，各自保留角色和权限边界。完整的强制提示词可抑制 Harness 系统段落，已持久化的 user 状态消息仍属于对话历史。SDK 管理工具声明、压缩和传输编码；指令文本不授予执行权限，不迁移旧放置记录，也不改写旧消息。
 
-内部引擎为 `src/capability/agent.ts`，外层装配为 `src/capability/extension.ts`，公开注册入口为 `extensions/capability.ts`。唯一内部工具 `capability_step` 先增量接受已见 refs，再并行调用现有 Broker 搜索。内部选择先留在本次 Run，外层结束后统一保存、激活和投影。没有新增选择的 step 累计计数，上限默认为 3 加一次首轮额度，可配置 `capability.noSelectionLimit`；显式 finish 或达到上限后不再发模型请求。异常结束仍可交付此前已选成果，状态为 `partial`。具体语义和 Budget 见[内部批量检索](interface-contract.md#内部批量检索与增量提交)。
+内部引擎为 `src/capability/agent.ts`，`manager.ts` 独立拥有在途检索的取消寿命，`session.ts` 装配检索专用 SDK 会话，`extension.ts` 负责注册、投影与发布。每次检索独立持有内存 SessionManager 和无外部资源的 loader；不进入 Subagent Actor／Job 管理，仍复用 SDK 执行清理及预算原语。manager 的 Set 仅持有尚未完成的检索，每次调用结束摘除信号监听和条目；切换／导航使已有调用失效，关闭同时阻止后续发布。公开注册入口为 `extensions/capability.ts`。唯一内部工具 `capability_step` 先增量接受已见 refs，再并行调用现有 Broker 搜索。内部选择先留在本次 Run，外层结束后统一保存、激活和投影。没有新增选择的 step 累计计数，上限默认为 3 加一次首轮额度，可配置 `capability.noSelectionLimit`；显式 finish 或达到上限后不再发模型请求。异常结束仍可交付此前已选成果，状态为 `partial`。具体语义和 Budget 见[内部批量检索](interface-contract.md#内部批量检索与增量提交)。
 
 本地来源由宿主固定，不再提供内部 `src` 参数。远端审批未实现前不搜索远端、不安装候选、不把远端未搜索解释成不存在资源。
 

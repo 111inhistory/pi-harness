@@ -183,7 +183,7 @@ refs 去空白并去重；未知 ref 使本次提交整体拒绝，但不清除�
 
 ### 与 Subagent 的关系
 
-**Capability 的检索 Agent 复用 Subagent 的底层执行能力。** 系统通过 `src/subagent/execution.ts` 中的 `openSubagentExecution` 统一管理会话生命周期、超时与清理，不为 Capability 另建一套会话创建、预算、取消和清理流程。
+**Capability 独立管理内部检索会话。** `capability/manager.ts` 持有本表面的在途检索，取消、树导航、fork、会话切换和关闭会使旧检索失效；旧结果不得保存发现记录或激活工具。取消导航不关闭 manager，后续检索仍可启动。`capability/session.ts` 负责独立的内存 SessionManager、隔离 loader 和 SDK 会话装配，底层继续复用 `subagent/execution.ts` 的 SDK 执行清理原语及共享 Budget，不经过 Actor／Job 注册。manager 仅在每次检索完成清理后释放其在途引用。
 
 Capability 与 Subagent 分别通过 `extensions/capability.ts`、`extensions/harness.ts` 注册，共用底层执行能力和同一会话的配置、资格状态，不创建两套执行环境。Capability 直接调用内部执行入口，不要求公开的 `subagent_create`、`subagent_list` 或 `subagent_stop` 工具已注册或已激活。
 
