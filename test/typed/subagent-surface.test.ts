@@ -261,21 +261,27 @@ test("the root surface registers controls and messaging without overriding write
     "subagent_stop",
     "msg_write",
   ]);
+  const asset = JSON.parse(promptText("subagent-tools.json"));
   for (const tool of registered) {
     assert.equal(tool.namespace?.name, "subagent");
     assert.ok((tool.namespace?.description ?? "") !== "");
     assert.ok((tool.namespace?.instructions ?? "") !== "");
     assert.equal(tool.defaultActive, false, "Main activates messaging through the Capability/Subagent namespace");
     assert.equal(tool.promptSnippet, undefined);
-    assert.equal(tool.promptGuidelines, undefined);
+    assert.ok(Array.isArray(tool.promptGuidelines) && tool.promptGuidelines.length >= 1,
+      "static subagent guidance moves to native ToolDefinition.promptGuidelines");
+    assert.equal(tool.promptGuidelines[0], asset.instructions);
     assert.ok(tool.description.length > 0, "usage guidance travels in the tool declaration");
   }
+  assert.deepEqual(registered[0]!.promptGuidelines, [asset.instructions, asset.create.guideline]);
+  assert.deepEqual(registered[1]!.promptGuidelines, [asset.instructions]);
+  assert.deepEqual(registered[2]!.promptGuidelines, [asset.instructions]);
+  assert.deepEqual(registered[3]!.promptGuidelines, [asset.instructions, ...asset.msg_write.guidelines]);
   assert.ok(!registered.some(tool => tool.name === "write"));
-  const asset = JSON.parse(promptText("subagent-tools.json"));
   for (const text of [asset.instructions, asset.create.snippet, asset.create.guideline, asset.list.snippet,
     asset.stop.snippet, asset.msg_write.snippet, ...asset.msg_write.guidelines]) {
     assert.ok(!registered.some((tool) => tool.description.includes(text)),
-      "guidance is projected as context, not folded into a tool description");
+      "guidance is projected natively via promptGuidelines, not folded into a tool description");
   }
 
   const create = schemaOf(registered[0] as ToolDefinition);

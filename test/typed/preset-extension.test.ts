@@ -183,13 +183,9 @@ test('/preset clear succeeds despite unreadable catalog source after apply persi
     .at(-1);
   assert.equal(modeBefore, 'only');
 
-  const projectedBefore = (await h.fire('context_with_system', {
-    messages: [{ role: 'user', content: 'inspect' }],
-  })) as { messages: { sections?: Record<string, string | null> }[] };
-  const textsBefore = projectedBefore.messages
-    .map((message) => message.sections?.['preset-instructions'])
-    .filter((value) => value !== undefined);
-  assert.ok(textsBefore.includes('Follow concise guidelines.'));
+  const beforeSections: Record<string, string> = {};
+  await h.fire('before_agent_start', { systemPromptOptions: { sections: beforeSections } });
+  assert.equal(beforeSections['preset-instructions'], 'Follow concise guidelines.');
 
   // 2. Obstruct the private catalog on disk with an unreadable directory (EISDIR).
   const catalogPath = path.join(process.env['PI_CODING_AGENT_DIR']!, 'presets.json');
@@ -213,14 +209,9 @@ test('/preset clear succeeds despite unreadable catalog source after apply persi
     .at(-1);
   assert.equal(modeAfter, null, 'clear withdraws the codemode mode override');
 
-  const projectedAfter = (await h.fire('context_with_system', {
-    messages: [{ role: 'user', content: 'inspect' }],
-  })) as { messages: { sections?: Record<string, string | null> }[] };
-  const lastSection = projectedAfter.messages
-    .map((message) => message.sections?.['preset-instructions'])
-    .filter((value) => value !== undefined)
-    .at(-1);
-  assert.equal(lastSection, undefined, 'cleared current state emits no instruction section');
+  const afterSections: Record<string, string> = { 'preset-instructions': 'Follow concise guidelines.' };
+  await h.fire('before_agent_start', { systemPromptOptions: { sections: afterSections } });
+  assert.equal(afterSections['preset-instructions'], undefined, 'cleared current state removes the instruction section');
 
   assert.equal(h.calls.status.at(-1), undefined, 'status is cleared');
   assert.deepEqual(h.calls.setModel, ['p/m'], 'model is not rolled back');

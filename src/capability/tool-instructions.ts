@@ -4,7 +4,10 @@ import { renderCurrentToolGuidance, toolGuidanceSection, type ToolGuidance } fro
 import { capabilityRef, mcpRef } from './refs.ts';
 import { mcpIdentity } from './broker.ts';
 
-type NamespaceTool = Pick<ToolInfo, 'name' | 'namespace' | 'sourceInfo'>;
+type NamespaceTool = Pick<ToolInfo, 'name' | 'namespace'> & {
+  readonly sourceInfo?: ToolInfo['sourceInfo'];
+  readonly promptGuidelines?: ToolInfo['promptGuidelines'];
+};
 
 function namespaceRefs(tool: NamespaceTool): string[] {
   const namespace = tool.namespace;
@@ -15,6 +18,32 @@ function namespaceRefs(tool: NamespaceTool): string[] {
     refs.push(mcpRef(mcp.server));
   }
   return refs;
+}
+
+/**
+ * Namespaces whose `namespace.instructions` text is already supplied natively
+ * by at least one active, declared tool's `ToolDefinition.promptGuidelines`
+ * (which the SDK renders into `<rules>`).
+ */
+export function nativelyGuidedNamespaces(
+  tools: readonly NamespaceTool[],
+  callable?: ReadonlySet<string>,
+  declared?: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const covered = new Set<string>();
+  const activeSet = declared ?? callable;
+  for (const tool of tools) {
+    const namespace = tool.namespace;
+    const instructions = namespace?.instructions?.trim();
+    if (!namespace?.name || !instructions) continue;
+    if (activeSet && !activeSet.has(tool.name)) continue;
+    if (declared && !declared.has(tool.name)) continue;
+    if (callable && !callable.has(tool.name)) continue;
+    if (tool.promptGuidelines?.some((line) => line === namespace.instructions || line.includes(instructions))) {
+      covered.add(namespace.name);
+    }
+  }
+  return covered;
 }
 
 /** Current prose for already-discovered resources, including MCP source aliases. */
@@ -32,16 +61,21 @@ export function toolNamespaceInstructions(tools: readonly NamespaceTool[]): Read
 }
 
 /**
- * Every registered namespace can supply guidance, including namespaces enabled
- * directly by the user without a Capability discovery. The current request
- * renders this prose in its tail snapshot; no placement is stored.
+ * Registered namespaces that supply `namespace.instructions` without native
+ * `ToolDefinition.promptGuidelines` emit dynamic guidance sections through
+ * `before_agent_start`. Namespaces whose active declared tools already carry
+ * their instructions via `promptGuidelines` rely on the SDK's `<rules>` section.
  */
 export function registeredToolGuidance(
   tools: readonly NamespaceTool[],
-  assets: readonly ToolGuidance[],
+  assets: readonly ToolGuidance[] = [],
   callable?: ReadonlySet<string>,
+  declared?: ReadonlySet<string>,
 ): readonly ToolGuidance[] {
   const covered = new Set(assets.flatMap(entry => entry.namespace ? [entry.namespace] : []));
+  for (const name of nativelyGuidedNamespaces(tools, callable, declared)) {
+    covered.add(name);
+  }
   const groups = new Map<string, string[]>();
   for (const tool of tools) {
     const name = tool.namespace?.name;
@@ -64,13 +98,19 @@ export function registeredToolGuidance(
   }))];
 }
 
-/** Omit shared prose from memory when the current request actually renders its native guidance. */
+/**
+ * Omit shared prose from `<capabilities>` memory when either a rendered dynamic
+ * guidance section or a declared tool's native `promptGuidelines` already
+ * supplies it in the current request.
+ */
 export function projectedNamespaceRefs(
   guidance: readonly ToolGuidance[],
   tools: readonly NamespaceTool[],
   rendered: Readonly<Record<string, string>> = renderCurrentToolGuidance(guidance),
+  declared?: ReadonlySet<string>,
+  callable?: ReadonlySet<string>,
 ): ReadonlySet<string> {
-  const emitted = new Set<string>();
+  const emitted = new Set<string>(nativelyGuidedNamespaces(tools, callable, declared));
   for (const entry of guidance) {
     if (!entry.namespace || rendered[toolGuidanceSection(entry.id)] === undefined) continue;
     emitted.add(entry.namespace);

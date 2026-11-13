@@ -245,7 +245,10 @@ test("a plain CLI allowlist can leave a selected deferred MCP tool silently unac
     const next = rootRequests[1];
     assert.ok(next, "the parent continued after the publication");
     assert.equal(getCurrentTools(next.messages).some((tool) => tool.name === "mcp__fixture__inspect"), false);
-    assert.match(capabilitySections(next.messages), /mcp__fixture__inspect/, "memory still advertises the recorded member");
+    const tail = next.messages.at(-1);
+    assert.equal(tail?.role, "user", "mid-run boundary emits persisted user sync instead of developer_tail");
+    assert.match(JSON.stringify(tail?.content ?? "") + capabilitySections(next.messages), /mcp__fixture__inspect/,
+      "memory still advertises the recorded member");
   } finally {
     globalThis.fetch = originalFetch;
     if (originalAgentDir === undefined) delete process.env["PI_CODING_AGENT_DIR"];

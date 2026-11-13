@@ -37,7 +37,7 @@
 | `go/internal/asyncshell/{cli,tmux,output}.go` | 异步命令接口、每任务终端资源、完整 PTY 日志、增量过滤输出和完成回调 | Agent 拓扑、模型轮次或执行授权 |
 | `go/internal/asyncshell/{backend,ipc,proc,private}/*` | POSIX tmux Socket／Windows psmux label、终端启动与输入、进程归属查询、Windows batch 参数传输、命名管道与私有目录校验 | 任务状态、输出游标或通知路由 |
 | `async-shell/{host,surface}.ts`、`async-shell/{task-path,executable,cancel,create-args}.ts` | 每次 Shell 的调用者环境、执行代次归属、未完成任务登记与取消；TS 侧只保留路径/可执行文件/取消/审批参数桥 | tmux 状态机、消息工具授予或跨主机调度 |
-| `request-instructions.ts`, `tool-guidance.ts`, `capability/tool-instructions.ts` | Current owned instructions at the request tail; business facts determine current state | Historical placement replay, SDK history mutation, execution authorization |
+| `request-instructions.ts`、`tool-guidance.ts`、`capability/tool-instructions.ts` | 通过原生 `systemPromptOptions.sections` 写入当前动态段落，以及将同轮边界状态格式化为持久化 `custom_message`；由业务事实决定当前状态 | 历史放置重放、尾部 `developer` 注入、改写 SDK 历史或授予执行权限 |
 
 `subagent_create` 在本批 Runner 本地就绪后返回。本地就绪包括路由完成、会话创建、扩展与工具配置完成、初始输入就绪和 IPC 监听就绪。返回项包含 `id`、`socket`、`role` 与 `model`。它不等待首次模型流分发，也不把 `running` 当作启动成功证明。注册后的启动失败不会撤销同批其他节点，也不自动重试。运行时 Job 注册和执行状态仍由 Runtime 独立管理。
 
@@ -147,7 +147,7 @@ Capability 与 Subagent 共用 `provider-session.ts` 的能力判断。Responses
 
 Inherited 与检索会话保留独立本地 Session ID，Responses 请求仅替换原生默认 `prompt_cache_key` 为继承标识；既有自定义 key 与最终 payload hook 优先。`harness-cache-identity` 原生 custom 条目保存分支缓存标识，支持嵌套继承、恢复和续跑。Fresh 默认沿用自己的标识。观察器仅将有效非空字符串 key 写入 lineage；请求暂时使用 `cacheRetention: none` 或最终 payload 缺少 key 不改变继承身份。仅显式记录或安装 `key: null` 才持续禁用，最终 payload hook 仍可覆盖当前请求。Main 通过共享 ModelRuntime 桥观察本会话所有 provider payload hooks 完成后的最终 key，并写入当前分支；会话导航、关闭与已中止请求的围栏阻止晚到写入。观察范围限定于所属会话，摘要和其他会话不计入 Main 请求。
 
-Harness renders current tool/namespace guidance, Capability memory and Preset instructions through `request-instructions.ts` before every model call, including tool-result followups. Fixed domain owners append current sections without replaying earlier versions or identifying native source positions. Main, ordinary Subagents, internal retrieval and `/btw` use the same renderers with their own role, branch and loadout scope. Canonical business records restore current state on reopen and inheritance; obsolete placement records are ignored and original session files remain untouched. The SDK owns native `promptGuidelines`, tool schemas, compaction and transport encoding. A complete forced prompt or later context replacement can suppress the snapshot according to SDK hook order. Current prose is resent; exact historical requests and whole-request prefix continuity are not guaranteed. Instruction text never grants execution rights.
+Harness 通过 `ToolDefinition.promptGuidelines` 发布静态工具指引，并在每轮运行前的 `before_agent_start` 通过 `event.systemPromptOptions.sections` 写入动态状态（非 SDK 命名空间指引、Capability 记忆、Preset 指令与压缩淘汰通知）；同轮内的直接或嵌套发现与运行中自动压缩若实际改变状态，则在对应边界持久化一条非空 `custom_message`（`user` 角色）同步最新状态，使未变更工具调用循环以 `function_call_output` 收尾且无尾部 `developer` 注入。Main、普通 Subagent、内部检索与 `/btw` 共用相同渲染器并保持各自的角色、分支和作用域边界。规范业务记录在重开和继承时恢复当前状态；过时放置记录被忽略且不修改原会话文件。SDK 负责原生 `promptGuidelines`、工具 schema、压缩与传输编码；完整强制提示词或后置上下文替换可按 SDK 钩子顺序抑制系统段落。提示词文本从不授予执行权限。
 
 内部引擎为 `src/capability/agent.ts`，外层装配为 `src/capability/extension.ts`，公开注册入口为 `extensions/capability.ts`。唯一内部工具 `capability_step` 先增量接受已见 refs，再并行调用现有 Broker 搜索。内部选择先留在本次 Run，外层结束后统一保存、激活和投影。没有新增选择的 step 累计计数，上限默认为 3 加一次首轮额度，可配置 `capability.noSelectionLimit`；显式 finish 或达到上限后不再发模型请求。异常结束仍可交付此前已选成果，状态为 `partial`。具体语义和 Budget 见[内部批量检索](interface-contract.md#内部批量检索与增量提交)。
 

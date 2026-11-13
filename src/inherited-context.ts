@@ -10,7 +10,6 @@ import { renderCurrentToolGuidance } from './tool-guidance.ts';
 import { capabilityPromptSections } from './capability/prompt.ts';
 import { capabilityPruneSections } from './capability/compaction-context.ts';
 import { registeredToolGuidance, toolNamespaceInstructions, projectedNamespaceRefs } from './capability/tool-instructions.ts';
-import { SUBAGENT_TOOL_GUIDANCE } from './subagent/tool-guidance.ts';
 import { presetInstructionSections } from './preset/instruction.ts';
 
 export interface InheritedSnapshot {
@@ -73,15 +72,16 @@ export function inheritedInstructionSections(
   branch: readonly SessionEntry[],
   tools: readonly ToolInfo[],
   visible: ReadonlySet<string>,
+  declared: ReadonlySet<string> = visible,
 ): Readonly<Record<string, string | null>> {
-  const guidance = registeredToolGuidance(tools, SUBAGENT_TOOL_GUIDANCE, visible);
+  const guidance = registeredToolGuidance(tools, [], visible, declared);
   const rendered = renderCurrentToolGuidance(guidance);
   return {
     ...rendered,
     ...capabilityPromptSections(branch, {
       allowsTool: name => visible.has(name),
       instructions: toolNamespaceInstructions(tools),
-      nativeGuidanceRefs: projectedNamespaceRefs(guidance, tools, rendered),
+      nativeGuidanceRefs: projectedNamespaceRefs(guidance, tools, rendered, declared, visible),
     }),
     ...presetInstructionSections(branch),
     ...capabilityPruneSections(branch),

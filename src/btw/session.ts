@@ -12,7 +12,7 @@ import { createToolPermissionResolver } from '../capability/tool-permission.ts';
 import { createToolAdmission } from '../capability/admission.ts';
 import { projectDiscoveryDeclarations } from '../capability/declarations.ts';
 import { inheritedInstructionSections, type InheritedSnapshot } from '../inherited-context.ts';
-import { appendCurrentSections } from '../request-instructions.ts';
+import { applySystemPromptSections } from '../request-instructions.ts';
 import { promptString } from '../prompt-text.ts';
 import { providerSessionPolicy } from '../provider-session.ts';
 import { installSessionCacheIdentity } from '../session-cache-runtime.ts';
@@ -76,17 +76,26 @@ export async function openBtwConversation(
     extensionFactories: [{
       name: 'btw-tool-boundary',
       factory(api) {
-        api.on('context_with_system', (event, childCtx) => {
+        const ownedSectionKeys = new Set<string>();
+        api.on('before_agent_start', (event, childCtx) => {
           const admission = createToolAdmission(pi, snapshot.entries);
           const branch = childCtx.sessionManager.getBranch();
+          const visible = new Set(snapshot.tools.filter(name => keepInherited(name) && admission.declares(name)));
+          const sections = inheritedInstructionSections(branch, pi.getAllTools(), visible);
+          applySystemPromptSections(event.systemPromptOptions.sections ??= {}, sections, ownedSectionKeys);
+          ownedSectionKeys.clear();
+          for (const [key, value] of Object.entries(sections)) {
+            if (typeof value === 'string' && value.trim().length > 0) ownedSectionKeys.add(key);
+          }
+        });
+        api.on('context_with_system', (event) => {
+          const admission = createToolAdmission(pi, snapshot.entries);
           const declarations = projectDiscoveryDeclarations(event.messages, admission.declares,
             () => pi.getAllTools().find(tool => tool.name === 'codemode')?.description);
           const projected = additive ? appendSessionTranscript(additiveToolTranscript(declarations), {
             blockedTools: tools.map(tool => tool.name),
           }).messages : declarations;
-          const visible = new Set(snapshot.tools.filter(name => keepInherited(name) && admission.declares(name)));
-          return { messages: [...appendCurrentSections(projected as AgentMessage[],
-            inheritedInstructionSections(branch, pi.getAllTools(), visible))] };
+          return { messages: [...projected] };
         });
         api.on('tool_call', () => {
           toolBlocked = true;

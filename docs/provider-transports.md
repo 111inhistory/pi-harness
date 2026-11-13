@@ -30,13 +30,11 @@ Chat Completions 的两个标志必须都明确为 `true`。携带工具的 syst
 
 `toolAdditions` 与 `toolSameNameUpdates` 只描述原生工具声明能力。文本工具伪新增不在本模型内，也未实现；未来启用需要模型级检测和服务端验证，不能只凭供应商或 API 判断。
 
-Harness renders current namespace instructions at the request tail. Native `promptGuidelines`, descriptions, tool declarations and schema updates remain SDK-owned. Harness stores no description baseline or placement record and emits no separate description-correction layer. Earlier instruction versions are not replayed.
+静态工具与命名空间指引（如 Subagent、异步 Shell、`capability`）由原生 `ToolDefinition.promptGuidelines` 随 `<rules>` 段落交付；仅未采用 `promptGuidelines` 的自定义或 MCP 命名空间，以及 `<capabilities>`、`<preset-instructions>`、`<capability-availability>` 等动态段落由 Harness 在 `before_agent_start` 写入 `event.systemPromptOptions.sections`，并在同轮状态变化边界持久化一条 `custom_message`（`user` 角色）。SDK 负责工具描述、声明增量、schema 更新与各传输协议的序列化；Harness 不维护历史描述基线，也不在工具循环末尾注入 `developer` 段落。
 
-Current text is resent on each request. A complete forced prompt can suppress Harness sections under the existing SDK hook order. Historical instruction placement and whole-request prefix continuity are not guaranteed; serializers may fold tail system messages into the head.
+`before_agent_start` 之后的 `forceSystemPrompt` 可按 SDK 钩子顺序抑制这些系统段落。对于不支持 `supportsMidConvoSystemMessages` 的传输协议，SDK 与底层序列化器仍会将原生系统更新折叠到头部；对于支持增量消息的传输（Responses 与 Anthropic），未变更的工具调用循环以 `function_call_output` / 工具结果收尾，仅在发生必要状态变更时以持久化 `user` 消息同步并刷新隐式缓存前缀。
 
-参数或其他真实接口发生变化时，保留原生声明。Harness 不隐藏接口变化，也不保留过时 schema 继续执行。仅支持新增的传输路径遇到同名替换时，可能把工具重新折叠到顶层列表，从而改变请求前缀。描述文本不能代替 schema 更新。
-
-Current loadout and permission state determine declaration availability; Harness does not suppress native removal updates to preserve a historical prefix. Execution admission remains authoritative. Successful compaction can remove unused discovered tools; see [compaction pruning](capability-prompt-memory.md#压缩与未使用能力淘汰)。
+当前的加载集合与权限状态决定声明是否保留；Harness 不为维持旧前缀而压制原生移除更新，执行准入始终为最终边界。成功压缩后可淘汰未使用的已发现工具，详见[压缩与未使用能力淘汰](capability-prompt-memory.md#压缩与未使用能力淘汰)。
 
 ## 对话中 effort
 

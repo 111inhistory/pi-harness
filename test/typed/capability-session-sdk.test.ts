@@ -275,7 +275,7 @@ for (const api of ['openai-responses', 'anthropic-messages'] as const) {
     const retrievalPresets = scenario.retrievalRequests[0]!.messages.flatMap((message) =>
       message.role === 'system' && message.sections?.['preset-instructions'] !== undefined
         ? [message.sections['preset-instructions']] : []);
-    assert.deepEqual(retrievalPresets, ['CURRENT_PARENT_PRESET'],
+    assert.deepEqual(retrievalPresets, ['<preset-instructions>\nCURRENT_PARENT_PRESET\n</preset-instructions>'],
       'real internal retrieval carries the current parent preset instruction snapshot');
     const parentNonManual = parentTools.filter((name) => name !== 'manual_parent');
     assert.deepEqual(
