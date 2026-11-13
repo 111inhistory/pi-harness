@@ -20,7 +20,7 @@ import { serializedRequest, declaredTools } from './capability-model-wire.ts';
 
 const names = ['history_alpha', 'history_beta'] as const;
 type Spec = { description: string; schema: number };
-type ToolState = Spec & { permission: 'enabled' | 'disabled' | 'unmanaged'; active: boolean; discovered: boolean; used: boolean };
+type ToolState = Spec & { permission: 'enabled' | 'disabled' | 'unmanaged'; active: boolean; discovered: boolean; discoveredDescription: string | null; used: boolean };
 type View = 'native' | 'append' | 'filter' | 'duplicate' | 'opaque' | 'forced' | 'reorder' | 'retained';
 interface State { tools: ToolState[]; turn: number; preset: string | null; pruned: string[] }
 interface Frame { head: AgentMessage | undefined; hasHeadSystem: boolean; conversation: AgentMessage[] }
@@ -263,9 +263,14 @@ class Command implements AsyncCommand<State, World> {
   check() { return true; }
   async run(state: State, world: World) {
     const tool = state.tools[this.slot]!;
-    const discoveredBeforeTurn = state.tools
+    const discoveredSnapshotBefore = state.tools
       .map((entry, slot) => ({ entry, name: names[slot]! }))
       .filter(({ entry }) => entry.discovered && entry.permission !== 'disabled')
+      .map(({ entry, name }) => ({ name, description: entry.discoveredDescription }));
+    const discoveredBeforeTurn = discoveredSnapshotBefore.map(({ name }) => name);
+    const activeBeforeTurn = state.tools
+      .map((entry, slot) => ({ entry, name: names[slot]! }))
+      .filter(({ entry }) => entry.active)
       .map(({ name }) => name);
     if (['native', 'append', 'filter', 'duplicate', 'opaque', 'forced'].includes(this.action)) {
       world.view = this.action === 'filter' && this.slot === 1 ? 'reorder'
@@ -291,7 +296,7 @@ class Command implements AsyncCommand<State, World> {
       for (const [slot, current] of state.tools.entries()) {
         const pruned = slot !== 0 && current.permission === 'unmanaged' && current.discovered && !current.used;
         if (current.permission === 'disabled' || pruned) current.active = false;
-        if (pruned) { current.discovered = false; state.pruned.push(names[slot]!); }
+        if (pruned) { current.discovered = false; current.discoveredDescription = null; state.pruned.push(names[slot]!); }
         current.used = false;
       }
     } else if (this.action === 'reopen') {
@@ -305,7 +310,11 @@ class Command implements AsyncCommand<State, World> {
     } else if (this.action === 'discover') {
       world.selection = this.slot;
       world.response = { name: 'capability', slot: this.slot, schema: 0 };
-      if (tool.permission !== 'disabled') { tool.active = true; tool.discovered = true; }
+      if (tool.permission !== 'disabled') {
+        tool.active = true;
+        tool.discovered = true;
+        tool.discoveredDescription = tool.description;
+      }
     }
 
     const before = world.effects.length;
@@ -369,27 +378,40 @@ class Command implements AsyncCommand<State, World> {
     const syncCountAfter = world.session.sessionManager.getBranch().filter(
       entry => entry.type === 'custom_message' && entry.customType === HARNESS_CONTEXT_SYNC_CUSTOM_TYPE,
     ).length;
-    if (this.action === 'execute' && tool.active && tool.permission !== 'disabled' && turnRequests.length >= 2) {
+    const discoveredSnapshotAfter = state.tools
+      .map((entry, slot) => ({ entry, name: names[slot]! }))
+      .filter(({ entry }) => entry.discovered && entry.permission !== 'disabled')
+      .map(({ entry, name }) => ({ name, description: entry.discoveredDescription }));
+    const expectedAtTurnEnd = discoveredSnapshotAfter.map(({ name }) => name);
+    const activeAfterTurn = state.tools
+      .map((entry, slot) => ({ entry, name: names[slot]! }))
+      .filter(({ entry }) => entry.active)
+      .map(({ name }) => name);
+    const expectedSyncRequired = this.action === 'discover' && (
+      !isDeepStrictEqual(discoveredSnapshotAfter, discoveredSnapshotBefore)
+      || !isDeepStrictEqual(activeAfterTurn, activeBeforeTurn)
+    );
+    assert.equal(
+      syncCountAfter - syncCountBefore,
+      expectedSyncRequired ? 1 : 0,
+      expectedSyncRequired
+        ? 'modeled mid-run discovery/activation change must persist exactly one harness-context-sync entry'
+        : `action ${this.action} with no modeled mid-run change must not emit a harness-context-sync entry`,
+    );
+
+    if (this.action === 'execute' && tool.active && tool.permission !== 'disabled') {
+      assert.ok(turnRequests.length >= 2, 'active permitted execution sends tool result back to the model');
       if (world.view === 'native' || world.view === 'filter' || world.view === 'reorder') {
         const followupWireTail = turnRequests[1]!.wire.at(-1) as { type?: unknown } | undefined;
         assert.equal(followupWireTail?.type, 'function_call_output',
           'an unchanged tool execution follow-up ends cleanly with function_call_output');
       }
-      assert.equal(syncCountAfter, syncCountBefore,
-        'an unchanged tool execution never emits a harness-context-sync user message');
     }
 
     const latest = world.requests.at(-1)!;
     if (world.view !== 'forced') {
       const firstOfTurn = turnRequests[0]!;
-      const expectedAtTurnStart = this.action === 'discover' ? discoveredBeforeTurn : state.tools
-        .map((entry, slot) => ({ entry, name: names[slot]! }))
-        .filter(({ entry }) => entry.discovered && entry.permission !== 'disabled')
-        .map(({ name }) => name);
-      const expectedAtTurnEnd = state.tools
-        .map((entry, slot) => ({ entry, name: names[slot]! }))
-        .filter(({ entry }) => entry.discovered && entry.permission !== 'disabled')
-        .map(({ name }) => name);
+      const expectedAtTurnStart = this.action === 'discover' ? discoveredBeforeTurn : expectedAtTurnEnd;
       const startMemory = effectiveSystemSections(firstOfTurn.messages)['capabilities'];
       if (expectedAtTurnStart.length === 0) {
         assert.equal(startMemory, undefined,
@@ -406,35 +428,45 @@ class Command implements AsyncCommand<State, World> {
           }
         }
       }
+    }
 
-      if (turnRequests.length > 1 && this.action === 'discover') {
-        if (syncCountAfter > syncCountBefore) {
-          if (world.view === 'native' || world.view === 'filter' || world.view === 'reorder') {
-            const latestWireTail = latest.wire.at(-1) as { role?: unknown } | undefined;
-            assert.equal(latestWireTail?.role, 'user',
-              'mid-run discovery change ends the wire request on a persisted user sync message');
+    if (this.action === 'discover') {
+      assert.ok(turnRequests.length >= 2, 'discovery calls capability and issues a follow-up request');
+      if (expectedSyncRequired) {
+        const syncEntry = world.session.sessionManager.getBranch().findLast(
+          entry => entry.type === 'custom_message' && entry.customType === HARNESS_CONTEXT_SYNC_CUSTOM_TYPE,
+        );
+        const rawSyncText = syncEntry?.type === 'custom_message' && typeof syncEntry.content === 'string'
+          ? syncEntry.content
+          : '';
+        const capabilityMatch = /<capabilities>\n[\s\S]*?\n<\/capabilities>/.exec(rawSyncText);
+        const latestSyncText = capabilityMatch?.[0] ?? '';
+        for (const name of expectedAtTurnEnd) {
+          assert.ok(latestSyncText.includes(name), `mid-run sync: Capability memory includes ${name}`);
+        }
+        for (const name of names) {
+          if (!expectedAtTurnEnd.includes(name)) {
+            assert.equal(latestSyncText.includes(name), false, `mid-run sync: Capability memory omits ${name}`);
           }
-          const syncEntry = world.session.sessionManager.getBranch().findLast(
-            entry => entry.type === 'custom_message' && entry.customType === HARNESS_CONTEXT_SYNC_CUSTOM_TYPE,
-          );
-          const rawSyncText = syncEntry?.type === 'custom_message' && typeof syncEntry.content === 'string'
-            ? syncEntry.content
-            : '';
-          const capabilityMatch = /<capabilities>\n[\s\S]*?\n<\/capabilities>/.exec(rawSyncText);
-          const latestSyncText = capabilityMatch?.[0] ?? '';
+        }
+        if (world.view === 'native' || world.view === 'filter' || world.view === 'reorder') {
+          const latestWireTail = latest.wire.at(-1) as { role?: unknown; content?: unknown } | undefined;
+          assert.equal(latestWireTail?.role, 'user',
+            'modeled mid-run discovery change ends the wire request on a persisted user sync message');
+          const serializedTail = JSON.stringify(latestWireTail?.content ?? '');
           for (const name of expectedAtTurnEnd) {
-            assert.ok(latestSyncText.includes(name), `mid-run sync: Capability memory includes ${name}`);
+            assert.ok(serializedTail.includes(name), `wire user sync includes ${name}`);
           }
           for (const name of names) {
             if (!expectedAtTurnEnd.includes(name)) {
-              assert.equal(latestSyncText.includes(name), false, `mid-run sync: Capability memory omits ${name}`);
+              assert.equal(serializedTail.includes(name), false, `wire user sync omits ${name}`);
             }
           }
-        } else if (world.view === 'native' || world.view === 'filter' || world.view === 'reorder') {
-          const latestWireTail = latest.wire.at(-1) as { type?: unknown } | undefined;
-          assert.equal(latestWireTail?.type, 'function_call_output',
-            'a no-op mid-run discovery keeps the follow-up wire ending on function_call_output');
         }
+      } else if (world.view === 'native' || world.view === 'filter' || world.view === 'reorder') {
+        const latestWireTail = latest.wire.at(-1) as { type?: unknown } | undefined;
+        assert.equal(latestWireTail?.type, 'function_call_output',
+          'modeled no-op mid-run discovery keeps the follow-up wire ending on function_call_output');
       }
     }
 
@@ -475,7 +507,7 @@ export async function runCapabilityHistoryModel() {
   ], commandOptions(24));
   const property = (histories: typeof nativeCommands, restoreNative = false) => fc.asyncProperty(histories, async history => {
     const world = await fixture(restoreNative);
-    const state: State = { tools: world.metadata.map((spec, slot) => ({ ...spec, permission: 'unmanaged', active: slot === 0, discovered: false, used: false })), turn: 0, preset: null, pruned: [] };
+    const state: State = { tools: world.metadata.map((spec, slot) => ({ ...spec, permission: 'unmanaged', active: slot === 0, discovered: false, discoveredDescription: null, used: false })), turn: 0, preset: null, pruned: [] };
     try {
       await new Command('request', 0, '', 0, restoreNative).run(state, world);
       await fc.asyncModelRun(() => ({ model: state, real: world }), history);
