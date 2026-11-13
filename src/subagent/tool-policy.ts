@@ -21,22 +21,16 @@
  * - a dropped-tool list keeps the capture's order and never repeats a name.
  */
 
+import { HARNESS_TOOLS, isHarnessTool } from "../harness-tools.ts";
+
 /** The only shape the transplantability filter needs from a registered tool. */
 export interface ToolPolicyTool {
   readonly name: string;
   readonly sourceInfo?: { readonly source?: string | undefined; readonly path?: string | undefined } | undefined;
 }
 
-/** Harness tools a child keeps below the leaf depth, in registration order. */
-const HARNESS_TOOLS = ["subagent_create", "subagent_list", "subagent_stop", "capability", "msg_write"] as const;
-const HARNESS_TOOL_NAMES: ReadonlySet<string> = new Set(HARNESS_TOOLS);
 /** At the leaf depth a child keeps listing and messaging, without create or stop. */
 const LEAF_HARNESS_TOOLS = ["subagent_list", "msg_write"] as const;
-
-/** Independently granted by the child Harness; explicit denials still win. */
-export function isHarnessTool(name: string): boolean {
-  return HARNESS_TOOL_NAMES.has(name);
-}
 
 /**
  * The harness tool names a child at `depth` may hold. `maxDepth` is the root's
@@ -61,7 +55,7 @@ export function transplantableToolNames(
   for (const tool of tools) {
     // Harness tool membership is depth-owned. The catalog must not re-add a
     // leaf-gated tool merely because it is file-backed or built-in.
-    if (HARNESS_TOOL_NAMES.has(tool.name)) continue;
+    if (isHarnessTool(tool.name)) continue;
     const source = tool.sourceInfo;
     if (source?.source === "builtin" || (source?.path !== undefined && !source.path.startsWith('<'))) names.add(tool.name);
   }

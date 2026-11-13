@@ -32,7 +32,7 @@ import { NativeJobRunner } from './native-runner.ts';
 import { NativeDeliveryRouter } from './native-delivery.ts';
 import type { DeliveryCustomMessage } from './delivery.ts';
 import { createNativeSessionFactory } from './native-session.ts';
-import { isHarnessTool } from './tool-policy.ts';
+import { isHarnessTool } from '../harness-tools.ts';
 import { installSessionSurface, type SubagentSurfaceCreateOptions } from './surface.ts';
 import type { ManagedWriteHost, SessionEndpoint } from './managed-send.ts';
 import type { NativeCustomHandoff, NativeLiveSnapshot, NativeRouteResult, NativeRoutingPort, NativeSessionEvent, NativeStartedJob } from './native-types.ts';

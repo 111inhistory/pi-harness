@@ -18,7 +18,7 @@
  * depth-owned Harness grant. Ancestor and role denials still bound that grant.
  */
 
-import { isHarnessTool } from '../subagent/tool-policy.ts';
+import { isHarnessTool } from '../harness-tools.ts';
 import { discoveryRecords, prunedToolNames } from './discovery-record.ts';
 import { createToolPermissionResolver } from './tool-permission.ts';
 import {

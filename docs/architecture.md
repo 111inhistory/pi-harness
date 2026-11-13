@@ -12,6 +12,7 @@
 
 | 所有者 | 负责 | 不负责 |
 | --- | --- | --- |
+| `harness-tools.ts` | 共享 Harness 工具身份；权限模块与子任务策略共同读取 | 子任务深度、工具继承与授权决定 |
 | `harness-config.ts` | 外部配置读取、合成与校验；根配置快照和指定提示词段落 | 路由角色、Pi 原生设置、运行中 Job 变更 |
 | `runtime.ts` | Actor 拓扑、Job 状态机、活跃名额控制（Fresh 与 Inherited 独立父节点名额池）、停止原因、续跑准入、中断恢复、终态事件与单一 Budget 监控（监控 lifetime 与 active hard 截止时间，`startActive` 时重置，`stop`/`finalize`/`end` 时清理） | SDK Session、Socket、原生文件解析 |
 | `native-runner.ts` | Session 执行句柄生命周期、输入准入、在途 steer 协调、原生输入缓冲、本地就绪（local readiness）判定、资源清理，以及按 Job 提供原生事件观察与实时快照 | 裁定 Job 状态、决定空闲唤醒、写根终态 |
