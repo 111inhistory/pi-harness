@@ -14,10 +14,11 @@
  * A disabled tool stops execution and Codemode access immediately, but its
  * recorded native declaration is kept until the next successful compaction, so
  * the declaration removal is a compaction concern while the execution hook
- * already blocks it. An enabled tool is root-only: a child scope never admits
- * it, and the root filters it from child parent catalogs.
+ * already blocks it. An enabled tool is root-only unless the child has its own
+ * depth-owned Harness grant. Ancestor and role denials still bound that grant.
  */
 
+import { isHarnessTool } from '../subagent/tool-policy.ts';
 import { discoveryRecords, prunedToolNames } from './discovery-record.ts';
 import { createToolPermissionResolver } from './tool-permission.ts';
 import {
@@ -125,15 +126,18 @@ export function createToolAdmission(
   const seedDisabled = permission.seedDisabled;
   const deferredDisabled = (name: string): boolean => disabled(name) && !seedDisabled(name);
   const mcpSelected = (name: string): boolean => selected.has(name) || enabled(name);
+  // An inherited enabled record must not cancel an independent child grant.
+  // Scope qualification still enforces ancestor and role prohibitions.
+  const enabledHere = (name: string): boolean => !enabled(name) || scope.root || isHarnessTool(name);
   const declares = (name: string): boolean =>
     !seedDisabled(name) &&
     !isNativeDiscoveryTool(name) &&
     (!isMcpExecutionTool(name) || mcpSelected(name)) &&
     (!pruned.has(name) || enabled(name)) &&
-    (!enabled(name) || scope.root) &&
+    enabledHere(name) &&
     (!deferredDisabled(name) || active.has(name));
   const admits = (name: string): boolean =>
-    !disabled(name) && declares(name) && scope.allows(name) && (!enabled(name) || scope.root);
+    !disabled(name) && declares(name) && scope.allows(name) && enabledHere(name);
   const admitsServer = (server: unknown): boolean => {
     if (typeof server !== 'string' || server === '') return false;
     return tools.some((tool) => mcpSelected(tool.name) && active.has(tool.name) &&

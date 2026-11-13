@@ -139,6 +139,17 @@ async function audit(model: Model, real: Real) {
     assert.equal(actual.parent, expected.parent === null ? null : real.nodes[expected.parent]!.actor!.id);
     assert.equal(actual.view.status, expected.alive ? 'running' : 'stopped', `published state of node ${slot}`);
     assert.equal(actual.view.kind, expected.inherited ? 'inherited' : 'fresh');
+    const active = real.nodes[slot]!.session!.getActiveToolNames();
+    // These are policy expectations, independent of the production scope filter:
+    // child communication is depth-owned, while a Main-only read grant is not.
+    assert.ok(active.includes('msg_write'),
+      `Main enable cannot revoke independent child messaging (node ${slot}, ${actual.view.kind}; active: ${active.join(', ')})`);
+    assert.equal(active.includes('read'), false, 'ordinary Main enables remain root-only');
+    if (expected.parent !== null) {
+      for (const name of ['subagent_create', 'subagent_stop', 'capability']) {
+        assert.equal(active.includes(name), false, `leaf authority excludes ${name}`);
+      }
+    }
     const jobs = records(real, slot);
     assert.equal(jobs.length, expected.round, 'child activity never silently creates parent Jobs');
     for (let index = 0; index < jobs.length; index++) assert.equal(jobs[index]!.data.continuedFromJobId, index === 0 ? null : jobs[index - 1]!.data.jobId);
@@ -248,7 +259,15 @@ async function sample(initial: number[], commands: Iterable<AsyncCommand<Model, 
   let fx: SdkFixture | undefined;
   let failed: unknown;
   try {
-    fx = await createSdkFixture({ scenario: 'parent-coordination-model', durable: true });
+    fx = await createSdkFixture({ scenario: 'parent-coordination-model', durable: true,
+      config: { subagent: { maxDepth: 2 } } });
+    // Reproduce the root enable before any Fresh or Inherited child is created.
+    // Exercise the real branch reader and SDK loadouts, not a modeled scope helper.
+    fx.sessionManager.appendCustomEntry('capability-tool-permission', {
+      version: 1,
+      set: [{ target: 'msg_write', state: 'enabled' }, { target: 'read', state: 'enabled' }],
+    });
+    fx.session.setActiveToolsByName([...new Set([...fx.session.getActiveToolNames(), 'msg_write', 'read'])]);
     const real: Real = { fx, nodes: [freshReal(), freshReal()], notices: [], scheduler };
     const model: Model = { nodes: [false, true].map(inherited => ({ parent: null, inherited, alive: true, busy: false, round: 1, inbox: [] })), serial: 0 };
     const owners = new Map<string, number>();

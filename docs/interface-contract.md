@@ -225,7 +225,7 @@ Capability 调用仍等待检索完成，再返回筛选后的资源。复用执
 
 ### 子会话
 
-- 子会话不得自行解除祖先限制。Fresh 应用命名或临时 Preset 的工具选择时仍需通过祖先资格检查；例如 Preset 保留 `write`，祖先禁用仍会将它排除。Preset 的显式最终减项也作为该 Actor 的执行排除传播给后代。根会话把当前 `explicitlyDisabled` 与 `explicitlyEnabled` 都作为 **live denial** 沿作用域父链传播：禁用向子会话生效；显式启用是 root-only，子会话同样不能继承。denial 在每次资格解析时生效，已开始的执行不自动取消。
+- 子会话不得自行解除祖先限制。Fresh 应用命名或临时 Preset 的工具选择时仍需通过祖先资格检查；例如 Preset 保留 `write`，祖先禁用仍会将它排除。Preset 的显式最终减项也作为该 Actor 的执行排除传播给后代。根会话将当前显式禁用，以及没有子会话独立 Harness 授权的 root-only 显式启用，作为 **live denial** 沿作用域父链传播。显式启用不自动授予子会话权限，也不撤销深度工具策略独立提供的 Harness 能力；复制到 Inherited 分支的启用记录同样不能遮蔽这些独立能力。祖先禁用、固定深度限制与角色最终排除仍然优先。denial 在每次资格解析时生效，已开始的执行不自动取消。
 - 已学到的名字不会从子会话记忆中物理删除；denial 在每次解析时覆盖它，所以不能把“已学到”当作仍可使用。
 
 ### 程序接口
@@ -278,7 +278,7 @@ Enter 提问，Shift+Enter 换行，Ctrl+C 仅取消当前回答（取消完成�
 初始工具集与激活状态按调用方深度确定：
 
 - Main 会话：基础工具沿用 Pi 的工具配置。`subagent_create`、`subagent_list`、`subagent_stop` 和 `msg_write` 均已注册，但默认不激活；Capability 选中整个 `subagent` 命名空间后一起激活。收到跨 session 消息时，宿主在触发模型轮次前自动激活 `msg_write`，使 Main 可以直接回复；该激活不写能力记录，也不加载命名空间的其余工具。
-- 子会话（Subagents）：非叶节点加载 `subagent_create`、`subagent_list`、`subagent_stop`、`capability` 与 `msg_write`；叶节点（`depth === maxDepth`）仅保留 `subagent_list` 与 `msg_write`。所有子节点显式保持激活 `msg_write`。
+- 子会话（Subagents）：非叶节点加载 `subagent_create`、`subagent_list`、`subagent_stop`、`capability` 与 `msg_write`；叶节点（`depth === maxDepth`）仅保留 `subagent_list` 与 `msg_write`。子节点独立获得 `msg_write`，但祖先禁用与角色最终排除仍可阻止它。
 - `write` 是 SDK 原生文件工具，完全保持原生行为，不被拦截或覆写，不承担 IPC 消息发送。
 
 Fresh 路由保留角色及其职责提示词，其他执行配置复用命名或临时 Preset。工具以子会话自己的默认集合为基线，应用 Preset 的 `tools` 修饰；显式最终减项作为执行作用域 denial 始终排除，后续激活不能绕过。SDK 注册排除只承载固定深度限制，祖先限制继续由作用域父链提供。Preset 的 Codemode 模式与指引使用同一分支记录及投影路径。候选与已解析选择固定在 Actor 身份中，续跑不读取后来编辑的配置。配置格式与离线转换见[Harness 参数配置](harness-configuration.md#fresh-routing-presets)。Root 装配入口由子会话 surface 替代，不重复加载。Fresh 与 Inherited 均独立加载已配置的扩展与 MCP 后端（`noExtensions: false`）；Inherited 在捕获时通过父会话生成该调用的 assistant 消息锁定底层物理模型（`physicalModelForCall`），避免虚拟模型在子会话中重路由。它恢复捕获的工具白名单、系统提示词与思考强度。白名单仅限可重新创建的文件型扩展工具与 MCP 工具，父会话专属诊断工具不传递。若继承的异步 MCP 尚未完成注册，按 `subagent.inheritedToolWaitMs` 有界等待，默认最多 10 秒。
@@ -369,7 +369,7 @@ Agent 应通过提供的 `msg_write` 发送消息；`write` 保持 SDK 原生文
 
 调用方只提供接收地址和纯文本消息。`content` 即为消息正文，不要求调用方封装成 JSON、拼接 NDJSON 或添加末尾换行。
 
-`msg_write` 位于 subagent 命名空间。Main 默认不启用该工具；Capability 选中整个 subagent namespace 后，一并启用 `msg_write`。所有子 Agent 的 Harness 工具组显式保持启用该工具。`msg_write` 只接受受管 IPC 地址或跨 session 地址。由宿主负责通信封装、消息分帧（`src/ipc/message.ts` 中的 `managedFrame`）和发送者绑定。内部传输格式不属于 Agent 的调用契约。
+`msg_write` 位于 subagent 命名空间。Main 默认不启用该工具；Capability 选中整个 subagent namespace 后，一并启用 `msg_write`。所有子 Agent 的 Harness 工具组独立提供该工具，仍受祖先禁用与角色最终排除约束。`msg_write` 只接受受管 IPC 地址或跨 session 地址。由宿主负责通信封装、消息分帧（`src/ipc/message.ts` 中的 `managedFrame`）和发送者绑定。内部传输格式不属于 Agent 的调用契约。
 
 参数示例：
 

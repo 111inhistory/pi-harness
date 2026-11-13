@@ -20,9 +20,9 @@ function deferred() {
 }
 
 async function runBoundary({ rejectWrite = false, unlistedModel = false, children = 1,
-  catalogSize = 0, historyTurns = 0, managedTools = false, isolateFailure = false }: {
+  catalogSize = 0, historyTurns = 0, managedTools = false, managedMessageDisabled = false, isolateFailure = false }: {
   rejectWrite?: boolean; unlistedModel?: boolean; children?: number;
-  catalogSize?: number; historyTurns?: number; managedTools?: boolean; isolateFailure?: boolean;
+  catalogSize?: number; historyTurns?: number; managedTools?: boolean; managedMessageDisabled?: boolean; isolateFailure?: boolean;
 } = {}): Promise<number> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'root-boundary-'));
   const agentDir = path.join(cwd, 'agent');
@@ -147,7 +147,11 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
       assert.ok(session.getActiveToolNames().includes('edit'));
       manager.appendCustomEntry('capability-tool-permission', {
         version: 1,
-        set: [{ target: 'read', state: 'enabled' }, { target: 'write', state: 'disabled' }],
+        set: [
+          { target: 'read', state: 'enabled' },
+          { target: 'write', state: 'disabled' },
+          { target: 'msg_write', state: managedMessageDisabled ? 'disabled' : 'enabled' },
+        ],
       });
     }
     // A programmatic SDK model need not be discoverable in the registry. The
@@ -188,6 +192,10 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
     if (managedTools) {
       assert.equal(childActiveNames.includes('read'), false, 'root explicit enable is root-only');
       assert.equal(childActiveNames.includes('write'), false, 'root disable excludes the child tool');
+      assert.equal(childActiveNames.includes('msg_write'), !managedMessageDisabled,
+        managedMessageDisabled
+          ? 'root disable overrides the independent depth-owned Harness grant'
+          : 'root enable does not revoke the independent depth-owned Harness grant');
       assert.equal(childActiveNames.includes('edit'), true, 'unmanaged native tools remain available');
     }
     rejectTerminal = rejectWrite;
@@ -275,8 +283,12 @@ test('batch create waits for local readiness without waiting for every provider 
   await runBoundary({ children: 2 });
 });
 
-test('actual root excludes explicitly enabled and disabled tools from an Inherited child loadout', { timeout: 15000 }, async () => {
+test('actual root keeps independent Harness grants while excluding other managed tools from an Inherited child loadout', { timeout: 15000 }, async () => {
   await runBoundary({ managedTools: true });
+});
+
+test('actual root disable overrides an independent Harness grant for an Inherited child loadout', { timeout: 15000 }, async () => {
+  await runBoundary({ managedTools: true, managedMessageDisabled: true });
 });
 
 test('Inherited creation reads the root catalog per operation with a long parent history', { timeout: 15000 }, async () => {

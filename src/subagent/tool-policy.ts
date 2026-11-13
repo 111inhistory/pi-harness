@@ -33,6 +33,11 @@ const HARNESS_TOOL_NAMES: ReadonlySet<string> = new Set(HARNESS_TOOLS);
 /** At the leaf depth a child keeps listing and messaging, without create or stop. */
 const LEAF_HARNESS_TOOLS = ["subagent_list", "msg_write"] as const;
 
+/** Independently granted by the child Harness; explicit denials still win. */
+export function isHarnessTool(name: string): boolean {
+  return HARNESS_TOOL_NAMES.has(name);
+}
+
 /**
  * The harness tool names a child at `depth` may hold. `maxDepth` is the root's
  * one resolved nesting limit; a child at that depth is a leaf.

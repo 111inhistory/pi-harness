@@ -32,6 +32,7 @@ import { NativeJobRunner } from './native-runner.ts';
 import { NativeDeliveryRouter } from './native-delivery.ts';
 import type { DeliveryCustomMessage } from './delivery.ts';
 import { createNativeSessionFactory } from './native-session.ts';
+import { isHarnessTool } from './tool-policy.ts';
 import { installSessionSurface, type SubagentSurfaceCreateOptions } from './surface.ts';
 import type { ManagedWriteHost, SessionEndpoint } from './message-write.ts';
 import type { NativeCustomHandoff, NativeLiveSnapshot, NativeRouteResult, NativeRoutingPort, NativeSessionEvent, NativeStartedJob } from './native-types.ts';
@@ -110,8 +111,10 @@ export class RootService implements ManagedWriteHost {
   readonly #retainedScopes = new Map<string, { proxy: CapabilityToolCatalog; excluded: readonly string[] }>();
   /**
    * The root catalog as a child's parent chain sees it, with explicitly
-   * managed tools (disabled or root-only enabled) removed. Stable per root because the capability scope keys on
-   * the catalog object; `getAllTools` reads the current root branch so a rule
+   * managed tools removed: a disabled tool is a hard denial, while a
+   * root-only enabled tool is denied only when it has no independent child
+   * Harness grant. Stable per root because the capability scope keys on the
+   * catalog object; `getAllTools` reads the current root branch so a rule
    * added later is filtered for views built afterwards. The authoritative
    * prohibition is the live denial applied by {@link #parentScope}: a learned
    * catalog is append-only, so filtering alone cannot revoke a name an earlier
@@ -669,8 +672,8 @@ export class RootService implements ManagedWriteHost {
   }
 
   /**
-   * Tools a child must not inherit right now: explicitly disabled names and
-   * explicitly enabled names, because an enable is root-only.
+   * Tools a child must not inherit right now: hard-disabled names and root-only
+   * enabled names that are not independent depth-owned Harness grants.
    */
   #childDeniedNames(): string[] {
     const api = this.#options.api;
@@ -678,7 +681,8 @@ export class RootService implements ManagedWriteHost {
     const tools = api.getAllTools();
     const permissions = createToolPermissionResolver(api, tools, branch);
     return tools
-      .filter((tool) => permissions.disabled(tool.name) || permissions.enabled(tool.name))
+      .filter((tool) => permissions.disabled(tool.name)
+        || (permissions.enabled(tool.name) && !isHarnessTool(tool.name)))
       .map((tool) => tool.name);
   }
 

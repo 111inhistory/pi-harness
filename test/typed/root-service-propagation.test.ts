@@ -80,7 +80,7 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
   await writeFile(path.join(agentDir, 'presets.json'), JSON.stringify({
     'nested-worker': {
       model: { provider: faux.provider.id, id: model.id }, thinkingLevel: 'low',
-      tools: ['-bash'], codemode: { mode: 'only' }, instructions: 'PRESET_NESTED_GUIDANCE',
+      tools: ['-bash', '+msg_write'], codemode: { mode: 'only' }, instructions: 'PRESET_NESTED_GUIDANCE',
     },
   }));
   runtime.classify = async (classifier, context) => {
@@ -177,6 +177,8 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
     const create = session.getToolDefinition('subagent_create');
     assert.ok(create);
     assert.ok(rootApi);
+    const messageGrant = setToolPermission(rootApi, rootApi, session.sessionManager.getBranch(), ['msg_write'], 'enabled');
+    assert.equal(messageGrant.recordError, null);
     const created = await create.execute('create-child', { tasks: [{ task: 'CHILD_MARKER', inheritContext: true }] },
       undefined, undefined, session.extensionRunner.createToolContext('create-child', undefined));
     assert.ok((created.details as { items: unknown[] }).items[0]);
@@ -187,6 +189,8 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
     assert.ok(childPrompt, 'the root tool created the child session');
     assert.ok(childPrompt.tools.includes('write'), 'the live child keeps the loadout it started with');
     assert.ok(childPrompt.tools.includes('edit'));
+    assert.ok(childPrompt.tools.includes('msg_write'),
+      'the inherited child keeps the independent Harness grant despite the root enable');
 
     const mutation = setToolPermission(rootApi, rootApi, session.sessionManager.getBranch(), ['write'], 'disabled');
     assert.deepEqual(mutation.changed.map((change) => change.target), ['write']);
@@ -201,6 +205,8 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
       'a root denial applies to the loadout of a grandchild created after it');
     assert.ok(grandchildPrompt.tools.includes('edit'), 'an unmanaged sibling tool stays available');
     assert.equal(grandchildPrompt.tools.includes('bash'), false, 'the named Preset removes bash from the real child');
+    assert.ok(grandchildPrompt.tools.includes('msg_write'),
+      'the local Preset +msg_write survives the root explicit enable');
     assert.equal(grandchildPrompt.preset, 'nested-worker');
     assert.equal(grandchildPrompt.mode, 'only', 'the shared Preset application writes the child Codemode override');
     assert.equal(grandchildPrompt.thinking, 'low');
