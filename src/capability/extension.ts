@@ -273,22 +273,35 @@ export default function capabilityExtension(
     lastSyncedToolsKey = toolsKey;
   });
 
-  const emitMidRunBoundarySync = (ctx: ExtensionContext): void => {
+  const emitMidRunBoundarySync = (ctx: ExtensionContext, options?: { force?: boolean }): void => {
+    if (ctx.signal?.aborted) return;
     const expectedGeneration = generation;
     const { sections, sectionsKey, toolsKey } = computeCurrentState(ctx.sessionManager.getBranch());
-    if (sectionsKey === lastSyncedSectionsKey && toolsKey === lastSyncedToolsKey) return;
+    const stateChanged = sectionsKey !== lastSyncedSectionsKey || toolsKey !== lastSyncedToolsKey;
+    if (!options?.force && !stateChanged) return;
+    if (options?.force && Object.keys(sections).length === 0 && toolsKey === lastSyncedToolsKey) return;
     const summary = toolsKey !== lastSyncedToolsKey
       ? "Active tool declarations updated for the current session state."
       : undefined;
     const content = renderCustomContextSync(sections, summary);
     if (content === null) return;
-    if (generation !== expectedGeneration) return;
+    if (generation !== expectedGeneration || ctx.signal?.aborted) return;
     lastSyncedSectionsKey = sectionsKey;
     lastSyncedToolsKey = toolsKey;
-    pi.sendMessage(
-      { customType: HARNESS_CONTEXT_SYNC_CUSTOM_TYPE, content, display: false },
-      { triggerTurn: true, deliverAs: "steer" },
-    );
+    // During an active streaming turn, steer queues the sync cleanly before the
+    // next model call; when idle (overflow/queued-continuation post-run compaction),
+    // append without triggerTurn because AgentSession.continue() follows immediately.
+    if (!ctx.isIdle()) {
+      pi.sendMessage(
+        { customType: HARNESS_CONTEXT_SYNC_CUSTOM_TYPE, content, display: false },
+        { triggerTurn: true, deliverAs: "steer" },
+      );
+    } else if (options?.force) {
+      pi.sendMessage(
+        { customType: HARNESS_CONTEXT_SYNC_CUSTOM_TYPE, content, display: false },
+        { triggerTurn: false },
+      );
+    }
   };
 
   pi.on("tool_result", (event, ctx) => {
@@ -296,7 +309,7 @@ export default function capabilityExtension(
     // outer top-level tool boundary so one tool execution emits at most one
     // persisted user sync message even when multiple inner discoveries run.
     if (event.parentToolCallId !== undefined) return;
-    if (!inLoop) return;
+    if (!inLoop || ctx.isIdle() || ctx.signal?.aborted) return;
     emitMidRunBoundarySync(ctx);
   });
 
@@ -361,8 +374,12 @@ export default function capabilityExtension(
         pi.setActiveTools(pi.getActiveTools().filter(name => !removed.has(name)));
       }
     }
-    if ((inLoop && event.reason !== "manual") || (afterAgentEnd && event.willRetry === true)) {
-      emitMidRunBoundarySync(ctx);
+    if ((inLoop && event.reason !== "manual") || (afterAgentEnd && (event.willRetry === true || ctx.hasPendingMessages()))) {
+      // Mid-run / continuation auto-compaction can evict earlier mid-run
+      // `harness-context-sync` messages while `systemPromptOptions.sections` still
+      // holds pre-run sections and state/tools did not change at compaction time.
+      // Force resynchronization of current non-empty state for the upcoming turn.
+      emitMidRunBoundarySync(ctx, { force: true });
     }
   });
 

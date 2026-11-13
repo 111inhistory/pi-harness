@@ -457,7 +457,7 @@ test('connect delivers contacts and preserves the native conversation', { timeou
   const nativeMessages = (messages: typeof after) => messages.filter(message => {
     if (message.role !== 'system') return true;
     const keys = Object.keys(message.sections ?? {});
-    return keys.length === 0 || !keys.every(key => key.startsWith('harness-guidance:') ||
+    return keys.length === 0 || !keys.every(key => key.startsWith('harness-guidance-') ||
       ['capabilities', 'preset-instructions', 'capability-availability'].includes(key));
   });
   const previousNative = nativeMessages(after);

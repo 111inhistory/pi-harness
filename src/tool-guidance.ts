@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 /** Current tool and namespace instructions, independent of historical placement. */
 export interface ToolGuidance {
   readonly id: string;
@@ -12,20 +10,23 @@ export interface ToolGuidance {
 
 export const TOOL_GUIDANCE_SECTION_PREFIX = 'harness-guidance-';
 
+const VALID_GUIDANCE_SUFFIX = /^[a-z0-9_-]+$/;
+const ENCODED_GUIDANCE_PREFIX = 'x_';
+
 /**
- * Map an arbitrary guidance identifier (e.g. `namespace:browser` or
+ * Losslessly map an arbitrary guidance identifier (e.g. `namespace:browser` or
  * `tool-permission:disabled`) into a valid SDK `systemPromptOptions.sections`
- * key matching `/^[a-z][a-z0-9_-]*$/`, preserving collision freedom.
+ * key matching `/^[a-z][a-z0-9_-]*$/`.
+ *
+ * Valid SDK suffixes not starting with `x_` pass through verbatim; everything
+ * else is encoded with `x_` plus full UTF-8 hex so valid and invalid IDs never
+ * collide.
  */
 export function toolGuidanceSection(id: string): string {
-  const slug = id
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '') || 'entry';
-  const base = `${TOOL_GUIDANCE_SECTION_PREFIX}${slug}`;
-  if (id === slug && /^[a-z0-9_-]+$/.test(id)) return base;
-  const hash = createHash('sha256').update(id).digest('hex').slice(0, 8);
-  return `${base}-${hash}`;
+  if (VALID_GUIDANCE_SUFFIX.test(id) && !id.startsWith(ENCODED_GUIDANCE_PREFIX)) {
+    return `${TOOL_GUIDANCE_SECTION_PREFIX}${id}`;
+  }
+  return `${TOOL_GUIDANCE_SECTION_PREFIX}${ENCODED_GUIDANCE_PREFIX}${Buffer.from(id, 'utf8').toString('hex')}`;
 }
 
 /** Render applicable current text once; absent entries need no removal tombstone. */

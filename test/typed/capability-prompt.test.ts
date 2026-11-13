@@ -485,3 +485,40 @@ test("real SDK extension exposes discovery on the next turn and after manual com
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("toolGuidanceSection is strictly injective across valid and invalid ids while preserving valid SDK keys", () => {
+  const sdkKeyPattern = /^[a-z][a-z0-9_-]*$/;
+  const validSimple = toolGuidanceSection("tool-permission-disabled");
+  assert.equal(validSimple, "harness-guidance-tool-permission-disabled");
+  assert.match(validSimple, sdkKeyPattern);
+
+  const validUnderscore = toolGuidanceSection("alpha_1");
+  assert.equal(validUnderscore, "harness-guidance-alpha_1");
+  assert.match(validUnderscore, sdkKeyPattern);
+
+  const colonKey = toolGuidanceSection("namespace:browser");
+  assert.match(colonKey, sdkKeyPattern);
+  const transformedSuffix = colonKey.slice("harness-guidance-".length);
+  assert.match(transformedSuffix, /^[a-z0-9_-]+$/);
+  const collidingValidInput = toolGuidanceSection(transformedSuffix);
+  assert.match(collidingValidInput, sdkKeyPattern);
+  assert.notEqual(collidingValidInput, colonKey,
+    "passing the transformed suffix of an encoded id as a second valid id must not collide");
+
+  const samples = [
+    "",
+    "entry",
+    "namespace:browser",
+    "namespace-browser",
+    "Namespace:Browser",
+    "a:b",
+    "a-b",
+    "x_already",
+    "tool-permission:disabled",
+    "tool-permission-disabled",
+    transformedSuffix,
+  ];
+  const keys = samples.map((id) => toolGuidanceSection(id));
+  for (const key of keys) assert.match(key, sdkKeyPattern);
+  assert.equal(new Set(keys).size, samples.length, "every distinct id maps to a distinct SDK section key");
+});

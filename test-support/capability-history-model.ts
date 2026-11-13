@@ -14,6 +14,7 @@ import capabilityExtension from '../src/capability/extension.ts';
 import { DEFAULT_HARNESS_CONFIG } from '../src/harness-config.ts';
 import { installPresetInstruction } from '../src/preset/instruction.ts';
 import { HARNESS_CONTEXT_SYNC_CUSTOM_TYPE } from '../src/request-instructions.ts';
+import { toolGuidanceSection } from '../src/tool-guidance.ts';
 import { appendPresetState } from '../src/preset/state.ts';
 import { serializedRequest, declaredTools } from './capability-model-wire.ts';
 
@@ -451,7 +452,7 @@ class Command implements AsyncCommand<State, World> {
       assert.deepEqual(declared.parameters, { type: 'object', properties: { [`revision_${expected.schema}`]: { type: 'string' } } });
       assert.equal(declared.description, expected.description,
         'the latest native declaration description matches the externally registered metadata');
-      assert.deepEqual(allSectionValues(latest.messages, `harness-guidance:tool-description:${name}`), [],
+      assert.deepEqual(allSectionValues(latest.messages, toolGuidanceSection(`tool-description:${name}`)), [],
         'no obsolete tool-description correction section is emitted');
     }
     assert.deepEqual(world.errors, []);

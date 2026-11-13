@@ -532,3 +532,227 @@ test('mid-run auto-compaction persists user boundary carrying capability-availab
     }
   }
 });
+
+test('mid-run auto-compaction excluding earlier sync with pruneOnCompaction=false still resynchronizes same-run discovery memory', { timeout: 30_000 }, async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'pi-midrun-evict-'));
+  const runtime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,
+  });
+  const faux = fauxProvider({ models: [{ id: 'evict-model', contextWindow: 1000 }] });
+  runtime.registerNativeProvider(faux.provider);
+  const model: Model<Api> = {
+    ...faux.models[0]!, api: 'openai-responses', contextWindow: 1000,
+    compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+  };
+  const settings = SettingsManager.inMemory({
+    packages: [], extensions: [], defaultTools: ['read', 'capability', 'codemode'],
+    retry: { enabled: false }, cacheWarming: 'off',
+    compaction: { enabled: true, reserveTokens: 900, keepRecentTokens: 1 },
+  });
+  const requests: ProjectionMessage[][] = [];
+  let session: AgentSession | undefined;
+
+  faux.provider.streamSimple = (_model, context) => {
+    requests.push(structuredClone(context.messages) as unknown as ProjectionMessage[]);
+    const step = requests.length;
+    const reply = step === 1
+      ? assistant(model, [{ type: 'toolCall', id: 'discover-1', name: 'discover_skill', arguments: {} }], 'toolUse')
+      : step === 2
+        ? assistant(model, [{ type: 'toolCall', id: 'read-big', name: 'read', arguments: { path: 'big' } }], 'toolUse')
+        : assistant(model, [{ type: 'text', text: 'done' }], 'stop');
+    const stream = new AssistantMessageEventStream();
+    stream.push({ type: 'done', reason: reply.stopReason as 'toolUse' | 'stop', message: reply });
+    stream.end();
+    return stream;
+  };
+
+  const loader = new DefaultResourceLoader({
+    cwd: dir, agentDir: dir, settingsManager: settings,
+    noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
+    extensionFactories: [{
+      name: 'midrun-evict-fixture',
+      factory(pi) {
+        capabilityExtension(pi, {
+          discovery: false,
+          config: { ...DEFAULT_HARNESS_CONFIG, capability: { ...DEFAULT_HARNESS_CONFIG.capability, pruneOnCompaction: false } },
+        });
+        pi.registerTool({
+          name: 'discover_skill', label: 'Discover skill', description: 'Persist a same-run skill discovery',
+          parameters: { type: 'object', properties: {} },
+          async execute(toolCallId) {
+            appendDiscoveryRecord(pi as never, toolCallId, {
+              status: 'ok',
+              tools: [],
+              mcp: [],
+              skills: [{ ref: 'skill://midrun', name: 'midrun', filePath: '/skills/midrun/SKILL.md' }],
+            }, coverage);
+            return { content: [{ type: 'text' as const, text: 'discovered' }], details: {} };
+          },
+        });
+        pi.registerTool({
+          name: 'read', label: 'Read fixture', description: 'Read fixture',
+          parameters: { type: 'object', properties: { path: { type: 'string' } } },
+          async execute(_id, params) {
+            const p = String((params as { path?: string }).path);
+            return { content: [{ type: 'text' as const, text: `read:${p}:${'x'.repeat(2000)}` }], details: {} };
+          },
+        });
+        pi.on('session_before_compact', (event) => {
+          // Keep from the latest assistant message only, explicitly excluding
+          // the earlier same-run `harness-context-sync` entry!
+          const kept = event.branchEntries.findLast((entry) =>
+            entry.type === 'message' && entry.message.role === 'assistant')?.id
+            ?? event.preparation.firstKeptEntryId;
+          return {
+            compaction: {
+              summary: 'Summary omits same-run discoveries',
+              firstKeptEntryId: kept,
+              tokensBefore: event.preparation.tokensBefore,
+            },
+          };
+        });
+      },
+    }],
+  });
+  await loader.reload();
+  assert.deepEqual(loader.getExtensions().errors, []);
+
+  try {
+    session = (await createAgentSession({
+      cwd: dir, agentDir: dir, modelRuntime: runtime, model,
+      settingsManager: settings, resourceLoader: loader, sessionManager: SessionManager.inMemory(dir),
+    })).session;
+    const errors: unknown[] = [];
+    await session.bindExtensions({ onError: (error) => errors.push(error) });
+
+    await session.prompt('Discover mid-run then compact');
+    assert.equal(requests.length, 3);
+
+    // Step 2 saw the first same-run sync message.
+    assert.match(JSON.stringify(requests[1]!.at(-1)), /\/skills\/midrun\/SKILL\.md/);
+
+    // Step 3 ran after mid-run auto-compaction evicted the earlier sync message
+    // while pruneOnCompaction=false left state/tools unchanged; the post-compaction
+    // request must still carry current <capabilities> memory without pre-run sections.
+    const wire3 = responsesWire(model, requests[2]!);
+    assert.equal(wire3.at(-1)?.role, 'user',
+      'post-compaction model call receives resynchronized user sync carrying current memory');
+    assert.match(JSON.stringify(requests[2]!.at(-1)), /\/skills\/midrun\/SKILL\.md/);
+
+    // Manual idle compaction with unchanged state must not emit extra sync entries.
+    const syncCountBeforeManual = session.sessionManager.getBranch().filter((entry) =>
+      entry.type === 'custom_message' && entry.customType === HARNESS_CONTEXT_SYNC_CUSTOM_TYPE).length;
+    await session.compact();
+    const syncCountAfterManual = session.sessionManager.getBranch().filter((entry) =>
+      entry.type === 'custom_message' && entry.customType === HARNESS_CONTEXT_SYNC_CUSTOM_TYPE).length;
+    assert.equal(syncCountAfterManual, syncCountBeforeManual);
+    assert.deepEqual(errors, []);
+  } finally {
+    await session?.extensionRunner?.emit({ type: 'session_shutdown', reason: 'quit' });
+    session?.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('late tool_result during abort cannot start a new run or leave queued sync messages after settled', { timeout: 30_000 }, async () => {
+  const runtime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,
+  });
+  const faux = fauxProvider({ models: [{ id: 'abort-model', contextWindow: 1_048_576 }] });
+  runtime.registerNativeProvider(faux.provider);
+  const model: Model<Api> = {
+    ...faux.models[0]!, api: 'openai-responses',
+    compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+  };
+  const settings = SettingsManager.inMemory({
+    packages: [], extensions: [], defaultTools: ['read', 'capability', 'codemode'],
+    compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: 'off',
+  });
+  const requests: ProjectionMessage[][] = [];
+  let calls = 0;
+  let toolStartedResolve!: () => void;
+  const toolStarted = new Promise<void>((resolve) => { toolStartedResolve = resolve; });
+  let releaseToolResolve!: () => void;
+  const releaseTool = new Promise<void>((resolve) => { releaseToolResolve = resolve; });
+  let session: AgentSession | undefined;
+
+  faux.provider.streamSimple = (_model, context) => {
+    requests.push(structuredClone(context.messages) as unknown as ProjectionMessage[]);
+    calls++;
+    const reply = calls === 1
+      ? assistant(model, [{ type: 'toolCall', id: 'abort-discover', name: 'abort_discover', arguments: {} }], 'toolUse')
+      : assistant(model, [{ type: 'text', text: 'after-abort-prompt' }], 'stop');
+    const stream = new AssistantMessageEventStream();
+    stream.push({ type: 'done', reason: reply.stopReason as 'toolUse' | 'stop', message: reply });
+    stream.end();
+    return stream;
+  };
+
+  const loader = new DefaultResourceLoader({
+    cwd: process.cwd(), agentDir: process.cwd(), settingsManager: settings,
+    noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
+    extensionFactories: [{
+      name: 'abort-sync-fixture',
+      factory(pi) {
+        capabilityExtension(pi, { discovery: false });
+        pi.registerTool({
+          name: 'abort_discover', label: 'Abort discover', description: 'Discover then await late completion',
+          parameters: { type: 'object', properties: {} },
+          async execute(toolCallId) {
+            // Persist a discovery record, signal that execution is active, and
+            // intentionally finish resolving only after abort() has been requested.
+            appendDiscoveryRecord(pi as never, toolCallId, {
+              status: 'ok',
+              tools: [],
+              mcp: [],
+              skills: [{ ref: 'skill://aborted-midrun', name: 'aborted-midrun', filePath: '/skills/aborted-midrun/SKILL.md' }],
+            }, coverage);
+            toolStartedResolve();
+            await releaseTool;
+            return { content: [{ type: 'text' as const, text: 'late-tool-result' }], details: {} };
+          },
+        });
+      },
+    }],
+  });
+  await loader.reload();
+  assert.deepEqual(loader.getExtensions().errors, []);
+
+  try {
+    session = (await createAgentSession({
+      cwd: process.cwd(), agentDir: process.cwd(), modelRuntime: runtime, model,
+      settingsManager: settings, resourceLoader: loader, sessionManager: SessionManager.inMemory(process.cwd()),
+    })).session;
+    const errors: unknown[] = [];
+    await session.bindExtensions({ onError: (error) => errors.push(error) });
+
+    const promptPromise = session.prompt('Trigger abort during discovery tool');
+    await toolStarted;
+
+    const abortPromise = session.abort();
+    // Release the in-flight tool after abort() has marked the run aborted so
+    // tool_result fires on the aborted run before settling.
+    releaseToolResolve();
+    await abortPromise;
+    await promptPromise;
+    await session.waitForIdle();
+
+    assert.equal(calls, 1, 'late tool_result during abort must not trigger a new LLM turn');
+    assert.equal(session.pendingMessageCount, 0, 'no pending sync message remains queued');
+    assert.equal(session.getSteeringMessages().length, 0);
+    assert.equal(session.getFollowUpMessages().length, 0);
+    const syncEntries = session.sessionManager.getBranch().filter((entry) =>
+      entry.type === 'custom_message' && entry.customType === HARNESS_CONTEXT_SYNC_CUSTOM_TYPE);
+    assert.equal(syncEntries.length, 0, 'aborted run emits no harness-context-sync message');
+
+    // A later user turn still recovers the persisted record via before_agent_start.
+    await session.prompt('Next turn after abort');
+    assert.equal(calls, 2);
+    assert.match(JSON.stringify(requests[1]), /\/skills\/aborted-midrun\/SKILL\.md/);
+    assert.equal(responsesWire(model, requests[1]!).at(-1)?.role, 'user');
+    assert.deepEqual(errors, []);
+  } finally {
+    await session?.extensionRunner?.emit({ type: 'session_shutdown', reason: 'quit' });
+    session?.dispose();
+  }
+});
