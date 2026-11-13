@@ -2,7 +2,7 @@
 
 Capability 发现采用惰性机制，但选中的能力必须在会话压缩与嵌套工具调用中保留。
 
-`src/capability/prompt.ts` 在当前会话分支上投影原生的 `<capabilities>` 系统段落。规范的 `capability-discovery` 条目持有发现事实；`harness-capability-memory` 记录保存已向模型发出的段落版本与放置位置。两者均跟随原生分支。`src/prompt-section-journal.ts` 持有共享的放置回放逻辑。
+`src/capability/prompt.ts` renders the current `<capabilities>` section from canonical `capability-discovery` facts on the selected native branch. `src/request-instructions.ts` appends current instructions as request-local system sections. Harness does not persist or replay section placements; native history and provider encoding remain SDK-owned.
 
 ## 持久化分支存储
 
@@ -10,7 +10,7 @@ Capability 发现采用惰性机制，但选中的能力必须在会话压缩与
 
 - 嵌套调用：当外层工具调用 `ctx.executeTool("capability", ...)` 时，内层发现记录直接写入分支。即使调用的外层工具丢弃或汇总了内层 `details`，该记录依然保留。
 - 规范条目是唯一的记忆来源。投影不读取 `toolResult.details`，也不从较早的结果消息中重建记忆。
-- 初始投影可通过 `toolCallId` 锚定可见结果，并将较早的发现折叠到其检查点中。一旦完成记录，后续每次发现均会追加段落更新，包含未在模型历史中出现的嵌套结果。
+- Current memory is rebuilt before every model call, including tool-result followups. Nested results need no visible message anchor: their canonical branch records are sufficient.
 - 先持久化后激活：Capability 在调用同步工具激活前，先将发现记录追加到分支中。
 
 ## 包含内容
@@ -24,7 +24,7 @@ Capability 发现采用惰性机制，但选中的能力必须在会话压缩与
 - 共享指导：在多次发现之间保留，即使某次选择未增加新工具。
 - 远程覆盖范围：发现仅搜索本地资源。覆盖范围显式将远程搜索标记为 `not_searched`。远程候选资源绝不进入分支记录、系统段落或总结。
 
-发现记忆绝不授予工具执行权限。最新段落状态在每次请求时对照当前活跃注册表与作用域校验组成员。早期已发出的版本保持其原始文本和放置位置；不可用的成员会通过后续状态更新移除。原生声明与执行检查依然是最终依据。
+Discovery memory never grants execution rights. Each current snapshot checks members against the current registry and caller scope. Earlier request-only instruction versions are not replayed. Native declarations, active tools and execution admission remain authoritative.
 
 ## 压缩与未使用能力淘汰
 
@@ -34,11 +34,9 @@ Main 和普通 Fresh／Inherited Subagent 在原生压缩成功后，若 `capabi
 
 在变更激活状态前，先向分支写入一条 `capability-prune` 记录。发现回放按分支顺序折叠这些记录：旧的选择保持移除状态，后续发现可引入新的选择。某组成员跨多个检查点全部移除后，旧组指引也应移除；重新发现仅引入新记录的元数据，不恢复旧指引。回放从分支尾部累积后续移除项，每条发现只投影一次，不在每次 prune 时重建全部已累积记录。重新打开或切换分支遵循该分支上的记录。压缩失败或取消不产生淘汰记录。
 
-重建的头部系统消息包含一个固定的 `capability-availability` 段落，列出该次压缩中移除的工具和组。该段落声明摘要中的引用仅为历史记录，重新使用前需重新发现。该段落存在于压缩后的首次生成（包括重试）之前，且不发起额外的模型轮次。后续重新发现仅追加新状态，而不改写此头部。
+The current tail snapshot includes `capability-availability` for the applicable compaction boundary, listing removed tools and groups. It explains that summary references are historical and require rediscovery before reuse. It is available before the first post-compaction request and retries, without another model turn or an SDK-head rewrite.
 
-宿主按原生会话条目来源，持续屏蔽淘汰前的旧声明。重新发现会追加新声明，不会把工具恢复到旧检查点并改变已发送的前缀。当前记忆初始化新的压缩边界时，不包含已淘汰资源。
-
-A real native declaration recorded after pruning reintroduces that name for declaration history, even after a temporary explicit enable is reset or disabled. Selection and execution permissions remain separate. When compaction hooks remove disabled tools after the SDK captures its checkpoint, the first request’s native removals fix that checkpoint; a later enable appends its declaration instead of restoring the old head.
+Current loadout and permission state determine declaration availability. Harness does not infer the age of a declaration from request ordinals or preserve a historical prefix through retirement and reintroduction. Selection memory and execution permission remain separate.
 
 内部 Capability 检索与 `/btw` 不独立执行淘汰。它们的继承视图保留父会话的当前状态与边界通知。
 
@@ -52,13 +50,15 @@ Codemode 依然可用于执行与组合。其沙箱不注册 `searchTools`。`AL
 
 ## 时序与缓存行为
 
-`context_with_system` 钩子在每次模型请求前运行。首次使用时，现有的发现事实在可见锚点或头部检查点处初始化日志。即使初始状态为空，也会在不改变提示词的情况下记录。后续每次发现、活跃命名空间指示变更或撤销，都会在当前最后一条消息之后追加一条系统更新。当嵌套结果不可见时，绝不改写较早的检查点。相同状态不追加更新。
+`context_with_system` runs before every model request. Known domain owners render their current sections at the actual request tail: tool/namespace guidance, Capability memory, Preset instructions and the applicable availability notice. Caller messages and base prompt text retain their order and content. Clearing current instructions omits the section from the next fresh snapshot; it needs no historical tombstone.
 
-共享日志记录实际发出的确切文本与固定放置位置。后续轮次与重新加载会在其原始相邻消息之间回放这些版本。当前注册表无法提供历史版本的命名空间指示，因此新的活跃命名空间指导首先在末尾传递；静态资产指导可在其首次声明时初始化。后续资产变更属于末尾追加更新。清除指导会追加原生段落移除并保留其历史。原生压缩或显式上下文编辑会创建新的上下文边界；最新记录的状态会初始化该边界一次。
+Canonical business records survive reopen, rewind and inheritance. The renderer ignores obsolete `harness-tool-guidance`, `harness-capability-memory`, `harness-preset-instruction` and description-placement records. Original session files are left untouched; no migration or runtime legacy-placement reader is used. `ctx.getSystemPrompt()` and the native checkpoint exclude request-local snapshots. Main, ordinary Subagents, internal retrieval and `/btw` share current-state rendering while retaining their role and permission boundaries.
 
-该段落属于请求状态；`ctx.getSystemPrompt()` 与原始原生检查点不包含这些投影更新。日志条目属于分支，在回退与继承中依然留存。Main 与隔离的检索会话使用相同的投影。`/btw` 在其自身记忆会话内部回放继承的已发送段落。用户显式启用记录仅作为权限存在；命名空间的指导与该授权相互分离。
+The installed SDK applies hidden filtering and complete forced-prompt projection after `context_with_system`. A complete forced prompt wins and can suppress Harness system sections. A later plugin can also replace the context according to SDK hook order. Harness does not bypass either boundary through provider hooks.
 
-兼容的 Responses 与 Anthropic 模型通过原生序列化保留增量系统更新。其他传输协议保留其原生转换，包括必要时的系统消息折叠。原生的 `ToolDefinition.promptGuidelines` 依然归 SDK 所有：SDK 对比回放段落与当前定义并追加发生变化的段落（包含恢复运行之后）。仅更改描述的工具变更使用 Harness 特定的工具指导；实际 schema 变更保持原生。显式受控的 Chat Completions 扩展及其限制详见 [Provider 传输行为](provider-transports.md)。保留前缀本身并不保证缓存命中。
+Current instruction text is resent on every request. Historical instruction placement, exact past-request reproduction and full-request prefix continuity are not guaranteed. Responses and Anthropic may retain tail system messages; other providers can fold them into the head. The SDK owns these transformations. Offline serialization observations establish encoding only, not server cache hits or billing.
+
+Native `ToolDefinition.promptGuidelines`, descriptions and schemas remain SDK-owned. Harness does not emit a second description-correction layer or store a historical description baseline. See [provider transports](provider-transports.md).
 
 ## 待解决的 SDK allowlist 差异
 
@@ -70,9 +70,9 @@ Capability 在激活工具之前先写入规范的分支记录。宿主按实际
 
 ## 回归测试覆盖
 
-- `test/typed/capability-prompt.test.ts`：验证即时可用性、请求不可变性、幂等性、去重、共享指导更新、原生与重复压缩、原始条目恢复、分支隔离以及 Responses 前缀保留。
-- `test/typed/capability-guidance-journal.test.ts`：对照 Responses 和 Anthropic 线路格式验证常规命名空间、MCP、活跃指示修订、隐藏发现、直接启用、撤销、作用域更新及恢复运行。
-- `test/typed/prompt-section-journal.test.ts` 与 `test/typed/tool-guidance-record.test.ts`：验证共享顺序、固定放置位置、领域隔离、边界变基以及畸形记录错误。
+- `test/typed/capability-prompt.test.ts`: current canonical memory, namespace prose, pruning and scope. `test/typed/capability-current-snapshot-sdk.test.ts`: real SDK same-run updates and absence of placement writes.
+- `test/typed/capability-session-sdk.test.ts` and `test/typed/btw-session.test.ts`: current Preset inheritance, role isolation and blocked parent execution through real SDK sessions.
+- `test/typed/capability-history-model.test.ts`: generated native and transformed-view histories check current instructions, business-state restore, caller-message preservation, active declarations and execution authority. Historical placement and whole-request prefix guarantees are deliberately absent.
 - `test/typed/capability-record.test.ts`：验证记录规范化、参数 schema 排除、分支序列化及覆盖范围报告。
 - `test/typed/capability-nested.test.ts`：验证在外层工具省略内层结果时，嵌套工具调用仍可在分支上保留已发现的能力。
 - `test/typed/capability-native-discovery.test.ts`：在两种扩展加载顺序下验证原生入口替换、选定 MCP 执行、带作用域的 Codemode 辅助函数、资源读取权限及后期服务器注册。

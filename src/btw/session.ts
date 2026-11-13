@@ -11,8 +11,8 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { createToolPermissionResolver } from '../capability/tool-permission.ts';
 import { createToolAdmission } from '../capability/admission.ts';
 import { projectDiscoveryDeclarations } from '../capability/declarations.ts';
-import { projectCompactionCapabilityNotice, projectPrunedToolHistory } from '../capability/compaction-context.ts';
-import { replayInheritedPromptGuidance, type InheritedSnapshot } from '../inherited-context.ts';
+import { inheritedInstructionSections, type InheritedSnapshot } from '../inherited-context.ts';
+import { appendCurrentSections } from '../request-instructions.ts';
 import { promptString } from '../prompt-text.ts';
 import { providerSessionPolicy } from '../provider-session.ts';
 import { installSessionCacheIdentity } from '../session-cache-runtime.ts';
@@ -76,6 +76,18 @@ export async function openBtwConversation(
     extensionFactories: [{
       name: 'btw-tool-boundary',
       factory(api) {
+        api.on('context_with_system', (event, childCtx) => {
+          const admission = createToolAdmission(pi, snapshot.entries);
+          const branch = childCtx.sessionManager.getBranch();
+          const declarations = projectDiscoveryDeclarations(event.messages, admission.declares,
+            () => pi.getAllTools().find(tool => tool.name === 'codemode')?.description);
+          const projected = additive ? appendSessionTranscript(additiveToolTranscript(declarations), {
+            blockedTools: tools.map(tool => tool.name),
+          }).messages : declarations;
+          const visible = new Set(snapshot.tools.filter(name => keepInherited(name) && admission.declares(name)));
+          return { messages: [...appendCurrentSections(projected as AgentMessage[],
+            inheritedInstructionSections(branch, pi.getAllTools(), visible))] };
+        });
         api.on('tool_call', () => {
           toolBlocked = true;
           return { block: true, reason: blockedReason, terminate: true };
@@ -96,20 +108,6 @@ export async function openBtwConversation(
     execution.addCleanup(installSessionCacheIdentity(session, snapshot.cacheKey));
     await session.bindExtensions({});
     execution.addCleanup(() => session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }));
-    const previous = session.agent.transformContext;
-    session.agent.transformContext = async (input, requestSignal) => {
-      const transformed = previous ? await previous(input, requestSignal) : input;
-      const admission = createToolAdmission(pi, snapshot.entries);
-      const branch = session.sessionManager.getBranch();
-      const historical = projectPrunedToolHistory(transformed, branch);
-      const declarations = projectDiscoveryDeclarations(historical, admission.declares,
-        () => pi.getAllTools().find(tool => tool.name === 'codemode')?.description);
-      const guided = replayInheritedPromptGuidance(declarations, session.sessionManager);
-      const projected = additive ? appendSessionTranscript(additiveToolTranscript(guided), {
-        blockedTools: tools.map(tool => tool.name),
-      }).messages : guided;
-      return projectCompactionCapabilityNotice(projected as AgentMessage[], branch);
-    };
     return conversation(execution, () => { toolBlocked = false; }, () => toolBlocked, blockedReason);
   } catch (error) {
     await execution.dispose();

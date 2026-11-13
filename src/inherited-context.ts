@@ -1,15 +1,17 @@
 /** Native branch capture shared by Capability, /btw and inherited Subagents. */
 import { randomUUID } from 'node:crypto';
-import type { Api, Model, SystemMessage } from '@earendil-works/pi-ai';
+import type { Api, Model } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
-import type { ExtensionContext, FileEntry, SessionManager } from '@earendil-works/pi-coding-agent';
+import type { ExtensionContext, FileEntry, SessionEntry, ToolInfo } from '@earendil-works/pi-coding-agent';
 import { isHarnessEntry, withoutEntries } from './subagent/storage.ts';
 import { physicalModelForCall } from './subagent/model-runtime.ts';
 import { resolveSessionCacheKey } from './session-cache-runtime.ts';
-import type { TranscriptMessageLike } from './session-transcript.ts';
-import { promptSectionRecords, replayPromptSections } from './prompt-section-journal.ts';
-import { TOOL_GUIDANCE_RECORD, toolGuidanceSection } from './tool-guidance.ts';
-import { CAPABILITY_PROMPT_RECORD } from './capability/prompt.ts';
+import { renderCurrentToolGuidance } from './tool-guidance.ts';
+import { capabilityPromptSections } from './capability/prompt.ts';
+import { capabilityPruneSections } from './capability/compaction-context.ts';
+import { registeredToolGuidance, toolNamespaceInstructions, projectedNamespaceRefs } from './capability/tool-instructions.ts';
+import { SUBAGENT_TOOL_GUIDANCE } from './subagent/tool-guidance.ts';
+import { presetInstructionSections } from './preset/instruction.ts';
 
 export interface InheritedSnapshot {
   readonly capturedAt: number;
@@ -66,27 +68,22 @@ export function captureInheritedContext(
   };
 }
 
-/** Replay the parent's emitted guidance inside an isolated inherited session. */
-export function replayInheritedPromptGuidance<M extends TranscriptMessageLike>(
-  messages: readonly M[],
-  manager: Pick<SessionManager, 'getBranch' | 'appendCustomEntry'>,
-): readonly (M | SystemMessage)[] {
-  const branch = manager.getBranch();
-  const checkpointId = branch.findLast(entry => entry.type === 'compaction' || entry.type === 'context_edit')?.id ?? null;
-  let projected: readonly (M | SystemMessage)[] = messages;
-  const domains = [
-    { recordType: TOOL_GUIDANCE_RECORD, sectionName: toolGuidanceSection },
-    { recordType: CAPABILITY_PROMPT_RECORD, sectionName: (id: string) => id },
-  ];
-  for (const domain of domains) {
-    const records = promptSectionRecords(branch, domain.recordType);
-    if (records.length === 0) continue;
-    const latest = new Map(records.map(record => [record.id, record.text]));
-    projected = replayPromptSections(projected,
-      [...latest].map(([id, text]) => ({ id, text, eligible: false })), records, {
-        ...domain, checkpointId,
-        appendEntry: (kind, data) => { manager.appendCustomEntry(kind, data); },
-      });
-  }
-  return projected;
+/** Rebuild inherited instructions from business facts and this caller's visible tools. */
+export function inheritedInstructionSections(
+  branch: readonly SessionEntry[],
+  tools: readonly ToolInfo[],
+  visible: ReadonlySet<string>,
+): Readonly<Record<string, string | null>> {
+  const guidance = registeredToolGuidance(tools, SUBAGENT_TOOL_GUIDANCE, visible);
+  const rendered = renderCurrentToolGuidance(guidance);
+  return {
+    ...rendered,
+    ...capabilityPromptSections(branch, {
+      allowsTool: name => visible.has(name),
+      instructions: toolNamespaceInstructions(tools),
+      nativeGuidanceRefs: projectedNamespaceRefs(guidance, tools, rendered),
+    }),
+    ...presetInstructionSections(branch),
+    ...capabilityPruneSections(branch),
+  };
 }

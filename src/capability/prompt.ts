@@ -4,26 +4,18 @@
  * Only *discovery* is request state. A user enablement (`/capability enable`) is
  * branch authority and never enters the model request: the tool it authorizes is
  * declared by the native tool list, so projecting the authorization again would
- * add nothing the model can use while changing the leading system prompt. That
- * change is what Pi's conversion folds into the prompt head for every transport
- * without mid-conversation system messages, and it would invalidate the whole
- * cached prefix for a decision the declaration already communicates. Keeping
- * authorization out of the request is therefore not an optimization: it is the
- * only placement that cannot rewrite a prefix.
+ * add nothing the model can use while changing the leading system prompt.
+ *
+ * The projection is a current-state snapshot, not a history. Every request
+ * recomputes the latest discovery memory from the branch and the live registry;
+ * no emitted placement or ordinal is persisted. The request-side helper appends
+ * the current snapshot at the actual request tail.
  */
-import { discoveryRecords, latestPruneRecord, type CapabilityHit, type DiscoveryMemory } from './discovery-record.ts';
+import { discoveryRecords, type CapabilityHit, type DiscoveryMemory } from './discovery-record.ts';
 import { promptString } from '../prompt-text.ts';
-import type { TranscriptMessageLike } from '../session-transcript.ts';
-import {
-  PROMPT_SECTION_RECORD_VERSION,
-  promptSectionRecords,
-  replayPromptSections,
-  type PromptSectionRecord,
-} from '../prompt-section-journal.ts';
 
 const memoryHeader: string = promptString('capability-policy.json', 'memoryHeader');
 export const CAPABILITY_SECTION = 'capabilities';
-export const CAPABILITY_PROMPT_RECORD = 'harness-capability-memory';
 
 export interface CapabilityPromptOptions {
   readonly allowsTool?: (name: string) => boolean;
@@ -33,16 +25,11 @@ export interface CapabilityPromptOptions {
   readonly nativeGuidanceRefs?: ReadonlySet<string>;
 }
 
-export interface CapabilityPromptJournal extends CapabilityPromptOptions {
-  readonly checkpointId: string | null;
-  appendEntry(customType: string, data: unknown): void;
-}
-
-/** Messages are copied without interpreting their model-specific content. */
+/** Minimal transcript shape for request-local projection and focused tests. */
 export interface ProjectionMessage {
   role?: string;
   content?: unknown;
-  sections?: Record<string, string>;
+  sections?: Record<string, string | null>;
   toolName?: string;
   toolCallId?: string;
   toolsAdded?: readonly unknown[];
@@ -128,146 +115,21 @@ function render(state: State): string | null {
   return `<${CAPABILITY_SECTION}>\n${memoryHeader}\n${JSON.stringify([...state.values()])}\n</${CAPABILITY_SECTION}>`;
 }
 
-/** Rebuilt from branch records after compaction, reload, branching or inheritance. */
-export function capabilityPromptTranscript(
-  messages: readonly ProjectionMessage[],
+/**
+ * The current Capability memory section for one request.
+ *
+ * Records are merged in branch order; the final map is the current state. Live
+ * instructions and the current tool-permission filter are applied here, not
+ * stored on the branch, so a reopened or inherited session reconstructs the same
+ * snapshot without placement metadata.
+ */
+export function capabilityPromptSections(
   branch: readonly unknown[] | null | undefined,
   { allowsTool = () => true, instructions, nativeGuidanceRefs }: CapabilityPromptOptions = {},
-): ProjectionMessage[] {
-  const clean = messages.flatMap((message) => {
-    if (message.role !== 'system' || !(CAPABILITY_SECTION in (message.sections ?? {}))) return [message];
-    const { [CAPABILITY_SECTION]: _owned, ...sections } = message.sections!;
-    const copy = { ...message, sections };
-    return !Object.keys(sections).length && !message.content && !message.toolsAdded?.length && !message.toolsRemoved?.length ? [] : [copy];
-  });
-  const visible = new Set(clean.filter((message) => message.role === 'toolResult' && message.toolName === 'capability').map((message) => message.toolCallId));
-  const baseline: State = new Map();
-  const anchored = new Map<string, SelectedHit[]>();
+): Readonly<Record<string, string | null>> {
+  const state: State = new Map();
   for (const record of discoveryRecords(branch)) {
-    const hits = selected(record.result, allowsTool, instructions, nativeGuidanceRefs);
-    // A visible result anchors its own update immediately after it. Anything the
-    // model can no longer see (compacted, inherited, or a nested call whose outer
-    // tool dropped the details) folds into the leading checkpoint.
-    if (record.toolCallId !== undefined && visible.has(record.toolCallId)) anchored.set(record.toolCallId, hits);
-    else merge(baseline, hits);
+    merge(state, selected(record.result, allowsTool, instructions, nativeGuidanceRefs));
   }
-  const state = new Map(baseline);
-  let previous = render(state);
-  const output: ProjectionMessage[] = [];
-  if (previous && clean[0]?.role !== 'system') {
-    output.push({ role: 'system', content: '', sections: { [CAPABILITY_SECTION]: previous }, timestamp: 0 });
-  }
-  for (const [index, message] of clean.entries()) {
-    output.push(index === 0 && message.role === 'system' && previous
-      ? { ...message, sections: { ...message.sections, [CAPABILITY_SECTION]: previous } }
-      : message);
-    if (message.role !== 'toolResult' || message.toolCallId === undefined) continue;
-    const update = anchored.get(message.toolCallId);
-    if (!update) continue;
-    merge(state, update);
-    const current = render(state);
-    if (current !== previous) {
-      output.push({ role: 'system', content: '', sections: { [CAPABILITY_SECTION]: current! }, timestamp: message.timestamp });
-      previous = current;
-    }
-  }
-  return output;
-}
-
-/**
- * Freeze every emitted Capability section, including namespace, MCP and Skill
- * guidance. Later discoveries and live instruction changes become tail updates;
- * a nested result's absence never moves a new discovery into an old checkpoint.
- */
-export function projectRecordedCapabilityPrompt(
-  messages: readonly ProjectionMessage[],
-  branch: readonly unknown[],
-  options: CapabilityPromptJournal,
-): ProjectionMessage[] {
-  const desired = capabilityPromptTranscript(messages, branch, options);
-  const text = latestCapabilityText(desired);
-  const records = promptSectionRecords(branch, CAPABILITY_PROMPT_RECORD);
-  const journal = {
-    checkpointId: options.checkpointId,
-    appendEntry: options.appendEntry,
-    recordType: CAPABILITY_PROMPT_RECORD,
-    sectionName: (id: string) => id,
-  };
-  const replay = (history: readonly PromptSectionRecord[]): ProjectionMessage[] => replayPromptSections(
-    messages as readonly TranscriptMessageLike[],
-    [{ id: CAPABILITY_SECTION, text, eligible: true }],
-    history,
-    journal,
-  ) as ProjectionMessage[];
-  if (latestPruneRecord(branch)?.checkpointId === options.checkpointId &&
-    !records.some(record => record.checkpointId === options.checkpointId)) {
-    const rebased: PromptSectionRecord = {
-      version: PROMPT_SECTION_RECORD_VERSION, checkpointId: options.checkpointId,
-      id: CAPABILITY_SECTION, text, position: 'head',
-    };
-    options.appendEntry(CAPABILITY_PROMPT_RECORD, rebased);
-    return replay([...records, rebased]);
-  }
-  if (records.length > 0) return replay(records);
-
-  const initial: PromptSectionRecord[] = [];
-  const remember = (value: string | null, position: PromptSectionRecord['position']): void => {
-    const record: PromptSectionRecord = {
-      version: PROMPT_SECTION_RECORD_VERSION,
-      checkpointId: options.checkpointId,
-      id: CAPABILITY_SECTION,
-      text: value,
-      position,
-    };
-    options.appendEntry(CAPABILITY_PROMPT_RECORD, record);
-    initial.push(record);
-  };
-
-  // Native inherited markers are already history: adopt them, then append any
-  // newly desired state instead of regenerating their bodies at older anchors.
-  for (const [ordinal, message] of messages.entries()) {
-    const value = capabilityText(message);
-    if (value !== undefined) remember(value, ordinal);
-  }
-  if (initial.length > 0) return replay(initial);
-
-  // Durable discovery records own historical prose; live registry replacements
-  // are delivered as a later desired update, including on first initialization.
-  const bootstrap = capabilityPromptTranscript(messages, branch, {
-    allowsTool: options.allowsTool ?? (() => true),
-    nativeGuidanceRefs: options.nativeGuidanceRefs ?? EMPTY_GUIDANCE_REFS,
-  });
-  // Persist even the empty initial state. Otherwise the first later hidden
-  // discovery would still bootstrap into the head and invalidate the old prefix.
-  remember(capabilityText(bootstrap[0]) ?? null, 'head');
-  let ordinal = -1;
-  let next = 0;
-  for (const message of bootstrap) {
-    if (message === messages[next]) {
-      ordinal = next++;
-      continue;
-    }
-    if (next === 0 && message.role === 'system' && messages[0]?.role === 'system') {
-      // The pure bootstrap merged its checkpoint into the first native system.
-      ordinal = next++;
-      continue;
-    }
-    const value = capabilityText(message);
-    if (value !== undefined && ordinal >= 0) remember(value, ordinal);
-  }
-  return replay(initial);
-}
-
-function capabilityText(message: ProjectionMessage | undefined): string | null | undefined {
-  if (message?.role !== 'system') return undefined;
-  const value = message.sections?.[CAPABILITY_SECTION];
-  return typeof value === 'string' || value === null ? value : undefined;
-}
-
-function latestCapabilityText(messages: readonly ProjectionMessage[]): string | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const value = capabilityText(messages[index]);
-    if (value !== undefined) return value;
-  }
-  return null;
+  return { [CAPABILITY_SECTION]: render(state) };
 }

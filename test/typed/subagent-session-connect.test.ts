@@ -380,7 +380,7 @@ test('forced Tab completes connect and live peer targets through the real comman
     'a withdrawn live record disappears without restarting the editor');
 });
 
-test('connect appends to the provider request and never rewrites its prefix', { timeout: 60_000 }, async (t) => {
+test('connect delivers contacts and preserves the native conversation', { timeout: 60_000 }, async (t) => {
   const f = await sdkFixture(t, { manual: true });
   const { session, requests, declared } = f;
 
@@ -441,15 +441,12 @@ test('connect appends to the provider request and never rewrites its prefix', { 
   assert.deepEqual(rawAfter.slice(1, rawBefore.length), rawBefore.slice(1),
     'the collapsed transport keeps the earlier conversation');
 
-  // 5) Existing baseline limitation: declaring msg_write patches Pi's tool
-  //    sections through its prompt metadata. A transport that folds system
-  //    messages can therefore change the head on the first enable. This is not
-  //    the desired long-term contract; the shared provider/context integration
-  //    and owned tool-metadata migration must remove the avoidable head drift.
-  //    Step 6 isolates contact delivery by repeating a connect with no new tool.
+  // SDK transports that fold system messages may change the head when tools
+  // or current instructions change. Repeating the connect below isolates
+  // contact delivery with an unchanged loadout and current instruction state.
 
-  // 6) A repeated connect appends the current contact and records nothing new, so
-  //    the next request extends the previous one — head included, in both modes.
+  // Current instruction snapshots are rebuilt per request. Native input and
+  // contact messages remain stable; an earlier request-only tail is not replayed.
   await f.connect(f.peer.sessionId);
   assert.match(f.notices.at(-1)!.text, /msg_write: already enabled/);
   assert.equal(f.contacts(), 2);
@@ -457,7 +454,15 @@ test('connect appends to the provider request and never rewrites its prefix', { 
   await session.prompt('Third turn, after a repeated connect.');
   assert.equal(requests.length, 3);
   const third = requests[2]!;
-  assert.deepEqual(third.slice(0, after.length), after, 'a repeated connect rewrites nothing earlier');
+  const nativeMessages = (messages: typeof after) => messages.filter(message => {
+    if (message.role !== 'system') return true;
+    const keys = Object.keys(message.sections ?? {});
+    return keys.length === 0 || !keys.every(key => key.startsWith('harness-guidance:') ||
+      ['capabilities', 'preset-instructions', 'capability-availability'].includes(key));
+  });
+  const previousNative = nativeMessages(after);
+  assert.deepEqual(nativeMessages(third).slice(0, previousNative.length), previousNative,
+    'a repeated connect preserves native messages and earlier contacts');
   const collapsedSecond = wire(after, false);
   const collapsedThird = wire(third, false);
   assert.deepEqual(collapsedThird.slice(0, collapsedSecond.length), collapsedSecond,

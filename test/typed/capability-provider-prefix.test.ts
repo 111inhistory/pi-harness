@@ -19,6 +19,7 @@
  * enablement is branch authority, never request memory. The second case below
  * measures the remaining, Pi-owned cost instead of claiming it away.
  */
+import { projectCapabilitySnapshot } from './support/capability-snapshot.ts';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -37,7 +38,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 
 import harnessExtension from '../../test-support/harness-extension.ts';
-import { capabilityPromptTranscript, type ProjectionMessage } from '../../src/capability/prompt.ts';
+import {  type ProjectionMessage } from '../../src/capability/prompt.ts';
 
 const PERMISSION_RECORD = 'capability-tool-permission';
 
@@ -68,7 +69,7 @@ function wire(messages: readonly AgentMessage[], midConversationSystemMessages: 
 }
 
 function projected(messages: readonly AgentMessage[], branch: readonly unknown[]): AgentMessage[] {
-  return capabilityPromptTranscript(
+  return projectCapabilitySnapshot(
     messages as unknown as readonly ProjectionMessage[],
     branch,
     { allowsTool: () => true },

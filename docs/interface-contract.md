@@ -126,7 +126,7 @@ API 协调应同时保证资源指引、工具状态与供应商接口声明一�
 - `reset` 只解除显式规则，不激活工具、不授予授权；migrated 记录或 `capability.manualTools` 种子仍生效时报告 `stillManaged`。
 - `capability.manualTools` 是默认 `disabled` 种子，不是独立名单：名单内工具除非显式启用，否则默认禁用。跨 session 收信时接收根会话按当前资格激活 `msg_write`；`msg_write` 被种子默认禁用时，connect 的显式启用就是用户授权。
 - 已显式启用的 MCP 工具与发现选中的 MCP 工具同等对待：通过原生 MCP 准入、出现在 Codemode 可用目录中，并可作为 `read_mcp_resource` 的服务器选择依据；`read_mcp_resource` 自身仍需被选中或显式启用。
-- 授权与提示：显式启用不产生 `<capabilities>` 段落。启用追加工具声明；Subagent 共同及专属指引分别在首个成员及对应工具声明后作为独立系统段落投影，不写进 description，也不用工具元数据改写头部 rules。第三方工具的 `promptSnippet`／`promptGuidelines` 仍遵循 Pi 原生段落更新；未支持中途 system 消息时可能折叠进头部。Chat Completions 的工具新增需要同时明确开启 `supportsMidConvoSystemMessages` 与 `supportsMidConvoToolAdditions`；仅有一个标志时不启用。标准路径仍使用顶层工具列表，同名 schema 更新可能重建前缀。共同指引与工具描述更新使用增量段落，详见[传输行为](provider-transports.md)。
+- 授权与提示：显式启用不产生 `<capabilities>` 段落。启用追加工具声明；Subagent 共同及专属指引按当前调用方工具范围在请求尾部作为当前系统段落投影，不写进 description，也不用工具元数据改写头部 rules。第三方工具的 `promptSnippet`／`promptGuidelines` 仍遵循 Pi 原生段落更新；未支持中途 system 消息时可能折叠进头部。Chat Completions 的工具新增需要同时明确开启 `supportsMidConvoSystemMessages` 与 `supportsMidConvoToolAdditions`；仅有一个标志时不启用。标准路径仍使用顶层工具列表，同名 schema 更新可能重建前缀。共同指引与工具描述更新使用增量段落，详见[传输行为](provider-transports.md)。
 - 补全覆盖 `list` 的动词与 term，以及 `enable`／`disable`／`reset` 的目标（含 `mcp://<server>` 与 `namespace://<name>` 组引用，可连续追加）。分组优先展示，避免工具较多时被候选数量上限截断；可通过命名空间别名查找分组。
 - 命令只读写当前根会话：不发送消息、不唤醒 Subagent、不改变路由或 Budget。
 
@@ -177,9 +177,9 @@ refs 去空白并去重；未知 ref 使本次提交整体拒绝，但不清除�
 
 ### 工具指引与缓存前缀
 
-增量规则适用于所有工具来源。原生 `promptGuidelines` 由 SDK 追加变化；namespace、MCP 与用户直接启用工具的共同指引使用分支记录固定正文和落点。当前目录中的新指引追加到尾部，不把它写回历史声明。指引变化、撤销与 Capability 新发现也只追加新的系统更新；重复请求和恢复不重复追加。
+Harness appends current tool/namespace guidance, Capability memory and Preset instructions before every model call, including same-run tool-result followups. It does not replay historical section versions or infer positions from native messages. Current branch facts restore the current snapshot after reopen, rewind and inheritance. Existing placement entries are left untouched and ignored.
 
-Capability 的初始投影可按可见结果建立历史落点；之后即使嵌套调用结果不可见，也在当前尾部更新，不改写旧 checkpoint。仅在原生指引已实际投递时省略同源重复正文。历史版本保留，最新状态遵守当前资格与权限，执行权仍由工具声明和宿主检查决定。
+The installed SDK owns native `promptGuidelines`, declarations and provider serialization. Complete forced prompts and later context handlers retain SDK precedence and can suppress Harness sections. Current prose is resent on every request; exact historical request reproduction, whole-request prefix continuity and server cache hits are not guaranteed. Permission and backend admission checks remain independent.
 
 ### 与 Subagent 的关系
 
@@ -240,7 +240,7 @@ Harness RPC 独立接口提供权限查询与用户管理适配，与用户命�
 
 **入口。** `/preset` 打开选择器，`/preset NAME` 应用指定项，`/preset clear`（`none`／`off`）停止管理，`--preset NAME` 在启动时应用；状态栏显示当前 Preset。这些交互入口只作用于当前 Main。Fresh routing 显式选择命名或临时 Preset，复用配置解析、应用与指引投影；Inherited 保持捕获的模型与分支状态。
 
-**应用与失败。** 先校验模型存在于目录，再 `setModel`；模型不可用则整体不应用并报错，绝不报成功；thinking 与 tools 随后应用。`instructions` 作为独立 system 段落经 `prompt-section-journal` 增量投影并在 resume／tree／fork／reload 回放，不覆盖整份 system prompt。
+**应用与失败。** 先校验模型存在于目录，再 `setModel`；模型不可用则整体不应用并报错，绝不报成功；thinking 与 tools 随后应用。`instructions` is rendered from the current resolved branch snapshot as a request-local system section on every model call. Resume, tree, fork and reload restore current business state, without historical placement replay. A complete forced prompt retains SDK precedence.
 
 **分支与清除。** `preset-state` 记录保存应用时解析快照（model／thinking／tools／codemode／instructions），快照用于恢复指令、状态标识及压缩保护基线，不在恢复时强制重放 model／thinking／tools；这些运行状态由 Pi 原生恢复。工具 loadout 随实际请求记录，应用 Preset 后尚未发起请求就退出，恢复时可能仍使用上一份工具集。首次启动的初始工具集另存为 `preset-base` 供修饰符计算；`/preset clear`（及 `none`／`off`）显式清除直接分发而不加载预设配置，配置文件损坏或目录阻塞等不可读故障不阻碍退出已应用的快照、指引与 codemode 覆盖；清除写入 null 快照并停止管理，不回滚已有 model／thinking／tools。
 

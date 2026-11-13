@@ -450,8 +450,11 @@ test('full SDK: a retired manual-only discovery record grants no MCP execution a
       },
     });
     runtime.streamSimple = (_model, context) => {
-      const last = context.messages.at(-1);
-      const reply = last?.role === 'toolResult'
+      // The Capability request snapshot is a trailing system message, so use the
+      // last user/toolResult boundary instead of assuming the tail is a result.
+      const lastUser = context.messages.findLastIndex((entry) => entry.role === 'user');
+      const lastToolResult = context.messages.findLastIndex((entry) => entry.role === 'toolResult');
+      const reply = lastToolResult > lastUser
         ? message([{ type: 'text', text: 'turn done' }], 'stop')
         : message([{ type: 'toolCall', id: `call-${phase}`, name: 'codemode', arguments: { code: scripts[phase === 'enabled' ? 'allowed' : 'denied'] } }], 'toolUse');
       const stream = new AssistantMessageEventStream();

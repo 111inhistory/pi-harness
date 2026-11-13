@@ -48,6 +48,7 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
   type ExtensionToolContext,
+  type SessionEntry,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -76,10 +77,10 @@ import { installSessionCacheIdentity } from "../session-cache-runtime.ts";
 import { captureInheritedContext, type InheritedSnapshot } from "../inherited-context.ts";
 import { discoverSessionSkills } from "./skills.ts";
 import { capabilityPublicResult } from "./result.ts";
-import { CAPABILITY_PROMPT_RECORD, projectRecordedCapabilityPrompt, type ProjectionMessage } from "./prompt.ts";
+import { CAPABILITY_SECTION, capabilityPromptSections, type ProjectionMessage } from "./prompt.ts";
 import { projectedNamespaceRefs, registeredToolGuidance, toolNamespaceInstructions } from "./tool-instructions.ts";
 import { projectDiscoveryDeclarations } from "./declarations.ts";
-import { projectCompactionCapabilityNotice, projectPrunedToolHistory } from './compaction-context.ts';
+import { capabilityPruneSections } from './compaction-context.ts';
 import { recordCompactionPruning } from './pruning.ts';
 import { appendDiscoveryRecord } from "./discovery-record.ts";
 import { openSubagentExecution } from "../subagent/execution.ts";
@@ -95,8 +96,9 @@ import { hasPresetBaseToolRemoval, restorePresetSnapshot } from "../preset/state
 import { createToolAdmission, isMcpExecutionTool } from "./admission.ts";
 import { setCapabilityPermissionDefaults } from "./scope.ts";
 import { providerSessionPolicy } from "../provider-session.ts";
-import { projectRecordedToolGuidance } from "../tool-guidance.ts";
-import { projectToolPromptUpdates } from '../tool-prompt-updates.ts';
+import { renderCurrentToolGuidance } from "../tool-guidance.ts";
+import { appendCurrentSections } from "../request-instructions.ts";
+import { presetInstructionSections } from "../preset/instruction.ts";
 import { SUBAGENT_TOOL_GUIDANCE } from "../subagent/tool-guidance.ts";
 import { appendSessionTranscript, additiveToolTranscript } from "../session-transcript.ts";
 import {
@@ -188,14 +190,15 @@ export default function capabilityExtension(
     event.systemPromptOptions.skills = [];
   });
 
-  // Discovery facts and emitted section versions follow the branch. Historical
-  // placements stay fixed; new state appends at the tail. Exposure and execution
+  // Discovery facts follow the branch. Every request recomputes the current
+  // memory and guidance, then appends one request-only snapshot at the actual
+  // tail. No emitted placement or ordinal is stored. Exposure and execution
   // remain separate.
   pi.on("context_with_system", (event, ctx) => {
     // The permission is a query/memory exclusion here, not a declaration rewrite:
-    // an already-recorded capability section must not keep advertising a disabled
-    // tool, while the native declaration of an independent tool is retained until
-    // the next successful compaction (see native-discovery.ts).
+    // the current snapshot omits a disabled tool, while the native declaration of
+    // an independent tool is retained until the next successful compaction
+    // (see native-discovery.ts).
     const branch = ctx.sessionManager.getBranch();
     const permission = createToolPermissionResolver(pi, null, branch);
     const catalog = createEligibleToolCatalog(pi, {
@@ -204,35 +207,22 @@ export default function capabilityExtension(
     const available = catalog.names;
     const admission = createToolAdmission(pi, branch, catalog);
     const callable = new Set(pi.getActiveTools().filter(admission.admits));
-    const updates = projectToolPromptUpdates({
-      messages: event.messages, tools: catalog.tools, active: callable, branch,
-      appendEntry: (kind, data) => pi.appendEntry(kind, data),
-    });
-    const guidance: ToolGuidance[] = [...registeredToolGuidance(catalog.tools, SUBAGENT_TOOL_GUIDANCE,
-      branch.some(entry => entry.type === "custom" && entry.customType === CAPABILITY_PROMPT_RECORD),
-      callable), ...updates.guidance];
+    const guidance: ToolGuidance[] = [...registeredToolGuidance(catalog.tools, SUBAGENT_TOOL_GUIDANCE, callable)];
     const permissionDisabled = permissionDisabledGuidance(pi, branch);
     if (permissionDisabled !== null) guidance.push(permissionDisabled);
-    const guided = projectRecordedToolGuidance(updates.messages, guidance, {
-      branch,
-      checkpointId: branch.findLast((entry) => entry.type === "compaction" || entry.type === "context_edit")?.id ?? null,
-      appendEntry: (customType, data) => pi.appendEntry(customType, data),
+    const guidanceSections = renderCurrentToolGuidance(guidance);
+    const memory = capabilityPromptSections(branch, {
+      allowsTool: (name) => available.has(name),
+      instructions: toolNamespaceInstructions(catalog.tools),
+      nativeGuidanceRefs: projectedNamespaceRefs(guidance, catalog.tools, guidanceSections),
     });
-    const messages = projectRecordedCapabilityPrompt(
-      guided as unknown as readonly ProjectionMessage[],
-      branch,
-      {
-        allowsTool: (name) => available.has(name),
-        instructions: toolNamespaceInstructions(catalog.tools),
-        nativeGuidanceRefs: projectedNamespaceRefs(guided, guidance, catalog.tools),
-        checkpointId: branch.findLast((entry) => entry.type === "compaction" || entry.type === "context_edit")?.id ?? null,
-        appendEntry: (customType, data) => pi.appendEntry(customType, data),
-      },
-    );
-    const policy = providerSessionPolicy(ctx.model);
-    const declarations = policy.toolAdditions ? additiveToolTranscript(messages) : messages;
+    const sections = {
+      ...guidanceSections,
+      ...(memory[CAPABILITY_SECTION] === null ? {} : memory),
+      ...capabilityPruneSections(branch),
+    };
     return {
-      messages: projectCompactionCapabilityNotice(declarations as AgentMessage[], branch),
+      messages: [...appendCurrentSections(event.messages, sections)] as AgentMessage[],
     };
   });
   pi.on("tool_call", (event, ctx) => {
@@ -452,7 +442,6 @@ function permissionDisabledGuidance(host: ExtensionAPI, branch: readonly unknown
     id: 'tool-permission:disabled',
     tools: names,
     text,
-    initialPlacement: 'tail',
     eligible: true,
   };
 }
@@ -764,6 +753,11 @@ async function openInternalSession(
         api.on("tool_call", event => retrievalNames.has(event.toolName)
           ? undefined
           : { block: true, reason: `Tool ${event.toolName} is unavailable in capability discovery. Only retrieval tools may execute.` });
+        // Compose at the public request lifecycle, never as a private
+        // transformContext suffix after the SDK's forced-prompt projection.
+        api.on("context_with_system", (event, extensionCtx) => ({
+          messages: composeInternalMessages(event.messages, extensionCtx.sessionManager.getBranch()),
+        }));
       },
     }],
     noSkills: true,
@@ -802,6 +796,41 @@ async function openInternalSession(
   const customTools = (additive
     ? retrievalToolLoadout(inheritedMessages, request.customTools)
     : request.customTools) as unknown as ToolDefinition[];
+  /** Current retrieval request composition through the public context hook. */
+  function composeInternalMessages(
+    input: readonly AgentMessage[],
+    branch: readonly SessionEntry[],
+  ): AgentMessage[] {
+    const permission = createToolPermissionResolver(pi, pi.getAllTools(), branch);
+    const catalog = createEligibleToolCatalog(pi, {
+      disabled: (name) => permission.disabled(name),
+    });
+    const admission = createToolAdmission(pi, branch, catalog);
+    const declarations = projectDiscoveryDeclarations(input,
+      name => (retrievalNames.has(name) || admission.declares(name)) && !lazyNames.has(name),
+      () => pi.getAllTools().find(tool => tool.name === "codemode")?.description);
+    const callable = new Set(pi.getActiveTools().filter((name) => admission.admits(name) && !lazyNames.has(name)));
+    const guidance = registeredToolGuidance(catalog.tools, SUBAGENT_TOOL_GUIDANCE, callable);
+    const guidanceSections = renderCurrentToolGuidance(guidance);
+    const memory = capabilityPromptSections(branch, {
+      allowsTool: (name) => catalog.names.has(name),
+      instructions: toolNamespaceInstructions(catalog.tools),
+      nativeGuidanceRefs: projectedNamespaceRefs(guidance, catalog.tools, guidanceSections),
+    });
+    const sections = {
+      ...guidanceSections,
+      ...(memory[CAPABILITY_SECTION] === null ? {} : memory),
+      ...presetInstructionSections(branch),
+      ...capabilityPruneSections(branch),
+    };
+    const withAddendum = additive
+      ? appendSessionTranscript(additiveToolTranscript(declarations) as AgentMessage[], {
+          instructions: { text: policyPrompt.additiveExecutionBlocked },
+        }).messages
+      : declarations;
+    return [...appendCurrentSections(withAddendum as AgentMessage[], sections)] as AgentMessage[];
+  }
+
   // The shared Subagent execution owns session creation, caller-abort handling,
   // budget cleanup ordering and the final session.dispose().
   const execution = await openSubagentExecution({
@@ -823,48 +852,6 @@ async function openInternalSession(
     execution.addCleanup(async () => {
       await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
     });
-    // The blocked placeholders retain interfaces only; they never call parent tools.
-    const previousTransform = session.agent.transformContext;
-    session.agent.transformContext = async (messages, signal) => {
-      const transformed = previousTransform ? await previousTransform(messages, signal) : messages;
-      const branch = session.sessionManager.getBranch();
-      const permission = createToolPermissionResolver(pi, pi.getAllTools(), branch);
-      const catalog = createEligibleToolCatalog(pi, {
-        disabled: (name) => permission.disabled(name),
-      });
-      const admission = createToolAdmission(pi, branch, catalog);
-      const historical = projectPrunedToolHistory(transformed, branch);
-      const declarations = projectDiscoveryDeclarations(historical,
-        name => (retrievalNames.has(name) || admission.declares(name)) && !lazyNames.has(name),
-        () => pi.getAllTools().find(tool => tool.name === "codemode")?.description);
-      const callable = new Set(pi.getActiveTools().filter((name) => admission.admits(name) && !lazyNames.has(name)));
-      const updates = projectToolPromptUpdates({
-        messages: declarations, tools: catalog.tools, active: callable, branch,
-        appendEntry: (kind, data) => { session.sessionManager.appendCustomEntry(kind, data); },
-      });
-      const guidance = [...registeredToolGuidance(catalog.tools, SUBAGENT_TOOL_GUIDANCE,
-        branch.some(entry => entry.type === "custom" && entry.customType === CAPABILITY_PROMPT_RECORD),
-        callable), ...updates.guidance];
-      const guided = projectRecordedToolGuidance(updates.messages, guidance, {
-        branch,
-        checkpointId: branch.findLast((entry) => entry.type === "compaction" || entry.type === "context_edit")?.id ?? null,
-        appendEntry: (customType, data) => { session.sessionManager.appendCustomEntry(customType, data); },
-      });
-      const projectedInput = guided as unknown as readonly ProjectionMessage[];
-      const remembered = projectRecordedCapabilityPrompt(projectedInput, branch, {
-        allowsTool: (name) => catalog.names.has(name),
-        instructions: toolNamespaceInstructions(catalog.tools),
-        nativeGuidanceRefs: projectedNamespaceRefs(guided, guidance, catalog.tools),
-        checkpointId: branch.findLast((entry) => entry.type === "compaction" || entry.type === "context_edit")?.id ?? null,
-        appendEntry: (customType, data) => { session.sessionManager.appendCustomEntry(customType, data); },
-      });
-      const withAddendum = additive
-        ? appendSessionTranscript(additiveToolTranscript(remembered) as AgentMessage[], {
-            instructions: { text: policyPrompt.additiveExecutionBlocked },
-          }).messages
-        : remembered;
-      return projectCompactionCapabilityNotice(withAddendum as AgentMessage[], branch);
-    };
     const cleanupBudget = installModelCallBudget(session, request.budget, {
       ...(request.beforeRequest === undefined ? {} : { beforeRequest: request.beforeRequest }),
       warningText: capabilityBudgetWarning,

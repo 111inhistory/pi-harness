@@ -4,7 +4,7 @@
  * Boots a real `AgentSession` against an offline model and asserts that a
  * `preset-state` snapshot recorded on the branch projects its instruction text
  * into an actual outgoing request as a system section. This exercises the real
- * `context_with_system` → `prompt-section-journal` path, not just the pure
+ * `context_with_system` → current request-snapshot path, not just the pure
  * helper. No provider is contacted and no wire format is reimplemented.
  *
  * The `--preset`/`/preset` command path itself is covered deterministically by

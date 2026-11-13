@@ -10,7 +10,6 @@ import { createToolAdmission, isMcpExecutionTool, isNativeDiscoveryTool } from '
 import { installCapabilityCodemode } from './codemode.ts';
 import { setIndependentDeclarations } from './declaration-visibility.ts';
 import { projectDiscoveryDeclarations } from './declarations.ts';
-import { projectPrunedToolHistory } from './compaction-context.ts';
 import { DEFAULT_HARNESS_CONFIG, type HarnessConfigProvider } from '../harness-config.ts';
 import { promptString } from '../prompt-text.ts';
 
@@ -91,8 +90,7 @@ export function installNativeDiscoveryBoundary(
     currentContext = ctx;
     const admission = admissionFor(ctx);
     const allowed = (name: string) => admission.declares(name);
-    const historical = projectPrunedToolHistory(event.messages, ctx.sessionManager.getBranch());
-    const messages = projectDiscoveryDeclarations(historical, allowed,
+    const messages = projectDiscoveryDeclarations(event.messages, allowed,
       () => pi.getAllTools().find(tool => tool.name === 'codemode')?.description);
     return { messages };
   });

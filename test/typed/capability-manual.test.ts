@@ -6,6 +6,7 @@
  * excluded from discovery and from child scopes; the user enables it explicitly,
  * which makes it root-only. Legacy manual records still migrate to `enabled`.
  */
+import { projectCapabilitySnapshot } from './support/capability-snapshot.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -17,7 +18,7 @@ import {
   CAPABILITY_DISCOVERY_RECORD,
   discoveryRecords,
 } from '../../src/capability/discovery-record.ts';
-import { CAPABILITY_SECTION, capabilityPromptTranscript } from '../../src/capability/prompt.ts';
+import { CAPABILITY_SECTION, } from '../../src/capability/prompt.ts';
 import { createToolAdmission } from '../../src/capability/admission.ts';
 import {
   capabilityArgumentCompletions, parseCapabilityCommand,
@@ -254,6 +255,6 @@ test('projecting a legacy authorization produces no system section', () => {
   const branch = entries.map((entry) => ({ type: 'custom', customType: entry.customType, data: entry.data }));
   assert.equal(discoveryRecords(branch)[0]?.result.tools.length, 0);
   const head = [{ role: 'system', content: 'base', sections: { preamble: 'Base' }, timestamp: 0 }];
-  assert.deepEqual(capabilityPromptTranscript(head, branch, { allowsTool: () => true }), head);
-  assert.deepEqual(capabilityPromptTranscript(head, branch, { allowsTool: () => false }), head);
+  assert.deepEqual(projectCapabilitySnapshot(head, branch, { allowsTool: () => true }), head);
+  assert.deepEqual(projectCapabilitySnapshot(head, branch, { allowsTool: () => false }), head);
 });

@@ -613,7 +613,7 @@ test("Inherited loads configured execution backends while retaining the captured
   }
 });
 
-test("ordinary inherited Responses keeps the serialized parent prefix stable across the native tail patch", async () => {
+test("ordinary inherited Responses preserves parent context through native child loadout updates", async () => {
   const h = await harness();
   h.parentTools.push({ name: 'manual_parent' });
   const model = {
@@ -634,7 +634,8 @@ test("ordinary inherited Responses keeps the serialized parent prefix stable acr
     const appendedTools = additionalToolNames(appended);
     assert.ok(baselineTools.includes('surface_probe'), 'the parent initial declaration is the anchor');
     assert.deepEqual(appendedTools.slice(0, baselineTools.length), baselineTools);
-    assert.doesNotMatch(JSON.stringify(run.context), /toolsRemoved|tools_removed|tool_removal/);
+    assert.ok(getCurrentTools(run.context as readonly { role: string }[]).some(tool => tool.name === 'surface_probe'),
+      'native removal and replacement events preserve the current child interface');
 
     assertNoForbiddenExecution(run);
   } finally {

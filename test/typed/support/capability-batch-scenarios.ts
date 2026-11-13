@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
 import path from "node:path";
 
-import type { Api, Message, Model, ToolResultMessage, TranscriptContext } from "@earendil-works/pi-ai";
+import type { Api, Model, ToolResultMessage, TranscriptContext } from "@earendil-works/pi-ai";
 import { getCurrentTools, getSystemMessageText } from "@earendil-works/pi-ai";
 import { createWriteToolDefinition, type DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 import { resolveTranscriptTools } from "../../../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js";
@@ -24,33 +24,6 @@ export interface CapabilityScenarioFixture extends ScenarioFixture {
   readonly model: Model<Api>;
   readonly networkAttempts: readonly string[];
   getExternalToolExecutions(): number;
-}
-
-function textOf(context: { messages: readonly Message[] }): string {
-  return context.messages
-    .map((message) => {
-      if (message.role === "system") {
-        return getSystemMessageText(message);
-      }
-      if (typeof message.content === "string") {
-        return message.content;
-      }
-      if (Array.isArray(message.content)) {
-        return message.content
-          .filter(
-            (block): block is { type: "text"; text: string } =>
-              typeof block === "object" &&
-              block !== null &&
-              "type" in block &&
-              block.type === "text" &&
-              typeof (block as { text?: unknown }).text === "string",
-          )
-          .map((block) => block.text)
-          .join("\n");
-      }
-      return "";
-    })
-    .join("\n");
 }
 
 function occurrences(text: string, needle: string): number {
@@ -204,17 +177,13 @@ export async function runResponsesOnlyScenario(fixture: CapabilityScenarioFixtur
   assert.ok(lastChat);
   const declared = getCurrentTools(lastChat.context.messages);
   assert.deepEqual(declared.map((tool) => tool.name), ["codemode"]);
-  const descriptionUpdate = lastChat.context.messages.filter(message => message.role === 'system')
-    .map(message => message.sections?.['harness-guidance:tool-description:codemode'])
-    .findLast(value => typeof value === 'string');
-  assert.match(
-    descriptionUpdate ?? '',
-    /subagent_create/,
-    'the updated Codemode catalog reaches the model as tail guidance for hidden direct declarations',
-  );
-  const initialCodemode = getCurrentTools(chats[0]!.context.messages).find(tool => tool.name === 'codemode');
-  assert.equal(declared[0]?.description, initialCodemode?.description,
-    'catalog prose changes preserve the historical Codemode declaration');
+  const descriptionGuidance = lastChat.context.messages.filter(message => message.role === 'system')
+    .flatMap(message => Object.keys(message.sections ?? {})
+      .filter(key => key.startsWith('harness-guidance:tool-description:')));
+  assert.deepEqual(descriptionGuidance, [],
+    'SDK owns the Codemode description; no request correction layer is emitted');
+  assert.match(declared[0]?.description ?? '', /subagent_create/,
+    'the SDK-owned current Codemode catalog reaches the native declaration');
 }
 
 export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixture): Promise<void> {
@@ -255,7 +224,14 @@ export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixt
       );
       const lastMessage = request.context.messages.at(-1);
       assert.ok(lastMessage && lastMessage.role === "system");
-      assert.equal(getSystemMessageText(lastMessage), promptString("capability-policy.json", "additiveExecutionBlocked"));
+      const blockedPolicy = promptString("capability-policy.json", "additiveExecutionBlocked");
+      const policyCopies = request.context.messages.filter(message => message.role === "system"
+        && getSystemMessageText(message) === blockedPolicy);
+      assert.equal(policyCopies.length, 1, "the blocked policy is present exactly once");
+      if (getSystemMessageText(lastMessage) !== blockedPolicy) {
+        assert.ok(Object.keys(lastMessage.sections ?? {}).length > 0,
+          "the request tail is the current Harness snapshot when it follows the blocked policy");
+      }
       const deniedWrite = resultOf("write");
       if (!deniedWrite) {
         return toolAnswer("write", { path: "forbidden.txt", content: "must not execute" }, "forbidden-write");
@@ -423,7 +399,10 @@ export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixt
   assert.doesNotMatch(refusedNestedText, /UNEXPECTED_EXECUTION/);
   const lastChat = chats.at(-1)!;
   assert.deepEqual(resolveTranscriptTools(lastChat.context.messages, "changes").requestTools, []);
-  assert.match(textOf(lastChat.context), /external_test_tool is unavailable/);
+  assert.ok(
+    !getCurrentTools(lastChat.context.messages).some((tool) => tool.name === "external_test_tool"),
+    "native removal flows through the current declaration instead of a description correction",
+  );
   session.setActiveToolsByName([...session.getActiveToolNames(), "external_test_tool"]);
   controls.chat = () => textAnswer("Re-enabled");
   await session.prompt("Re-enable without a second declaration.");
@@ -432,11 +411,14 @@ export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixt
   const addedTools = (
     reenabledLast.context.messages as Array<{ toolsAdded?: Array<{ name: string }> }>
   ).flatMap((message) => message.toolsAdded ?? []);
-  assert.equal(
-    addedTools.filter((tool) => tool.name === "external_test_tool").length,
-    1,
+  assert.ok(
+    addedTools.some((tool) => tool.name === "external_test_tool"),
+    "re-enable adds the SDK-native declaration again",
   );
-  assert.match(textOf(reenabledLast.context), /external_test_tool is available again/);
+  assert.ok(
+    getCurrentTools(reenabledLast.context.messages).some((tool) => tool.name === "external_test_tool"),
+    "the re-enabled tool is present in the current declaration",
+  );
 }
 
 export async function runCapabilityMissingScenario(fixture: CapabilityScenarioFixture): Promise<void> {

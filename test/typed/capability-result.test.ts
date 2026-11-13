@@ -6,6 +6,7 @@
  *    excluding remote artifacts and diagnostics. Stored records are non-authoritative
  *    and filtered by current tool permissions; tool-result details never supply memory.
  */
+import { projectCapabilitySnapshot } from './support/capability-snapshot.ts';
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -15,7 +16,7 @@ import {
   discoveryRecords,
   normalizeDiscoveryMemory,
 } from "../../src/capability/discovery-record.ts";
-import { CAPABILITY_SECTION, capabilityPromptTranscript } from "../../src/capability/prompt.ts";
+import { CAPABILITY_SECTION, } from "../../src/capability/prompt.ts";
 import {
   FAILURE_REASON_LIMIT,
   capabilityPublicResult,
@@ -272,11 +273,11 @@ test("branch records are the only source, and stored remote artifacts never reac
   assert.deepEqual(discoveryRecords(branch).map((r) => r.toolCallId), ["nested", "nested-old"]);
   assert.equal(discoveryRecords([]).length, 0);
 
-  const projected = capabilityPromptTranscript(
+  const projected = projectCapabilitySnapshot(
     [{ role: "system", content: "base", sections: { preamble: "Base" }, timestamp: 0 }, { role: "user", content: "task", timestamp: 1 }],
     branch,
   );
-  const section = projected[0]?.sections?.[CAPABILITY_SECTION];
+  const section = projected.findLast((m) => m.sections?.[CAPABILITY_SECTION])?.sections?.[CAPABILITY_SECTION];
   assert.ok(section);
   assert.match(section, /tool:\/\/slides/);
   assert.doesNotMatch(section, /npm:|needs_approval/);
@@ -286,10 +287,10 @@ test("the record does not decide execution: projection filters by current permis
   const memory = normalizeDiscoveryMemory({ status: "ok", tools: [tool, group], mcp: [], skills: [] }, coverage);
   const branch = [{ type: "custom", customType: CAPABILITY_DISCOVERY_RECORD, data: { version: 1, result: memory } }];
   const head = [{ role: "system", content: "base", sections: { preamble: "Base" }, timestamp: 0 }];
-  const allowed = capabilityPromptTranscript(head, branch, { allowsTool: () => true });
-  const denied = capabilityPromptTranscript(head, branch, { allowsTool: () => false });
-  assert.match(allowed[0]?.sections?.[CAPABILITY_SECTION] ?? "", /tool:\/\/slides/);
-  assert.doesNotMatch(denied[0]?.sections?.[CAPABILITY_SECTION] ?? "", /tool:\/\/slides|namespace:\/\/deck/);
+  const allowed = projectCapabilitySnapshot(head, branch, { allowsTool: () => true });
+  const denied = projectCapabilitySnapshot(head, branch, { allowsTool: () => false });
+  assert.match(allowed.findLast((m) => m.sections?.[CAPABILITY_SECTION])?.sections?.[CAPABILITY_SECTION] ?? "", /tool:\/\/slides/);
+  assert.doesNotMatch(denied.findLast((m) => m.sections?.[CAPABILITY_SECTION])?.sections?.[CAPABILITY_SECTION] ?? "", /tool:\/\/slides|namespace:\/\/deck/);
 });
 
 test("tool-result details never supply memory; records anchor visible and nested calls", () => {
@@ -314,7 +315,7 @@ test("tool-result details never supply memory; records anchor visible and nested
     // A nested call has a record but no transcript result at all.
     { type: "custom", id: "r2", customType: CAPABILITY_DISCOVERY_RECORD, data: { version: 1, toolCallId: "parent-1/1", result: memory } },
   ];
-  const projected = capabilityPromptTranscript(
+  const projected = projectCapabilitySnapshot(
     [{ role: "system", content: "base", sections: { preamble: "Base" }, timestamp: 0 }, visibleMessage],
     branch,
   );
@@ -325,7 +326,7 @@ test("tool-result details never supply memory; records anchor visible and nested
   assert.equal(section.match(/tool:\/\/slides/g)?.length, 1, "the same discovery is not counted twice");
 
   // Nested canonical record only (no visible result) also projects.
-  const nested = capabilityPromptTranscript(
+  const nested = projectCapabilitySnapshot(
     [{ role: "system", content: "base", sections: { preamble: "Base" }, timestamp: 0 }],
     branch,
   );

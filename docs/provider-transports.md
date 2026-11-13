@@ -30,13 +30,13 @@ Chat Completions 的两个标志必须都明确为 `true`。携带工具的 syst
 
 `toolAdditions` 与 `toolSameNameUpdates` 只描述原生工具声明能力。文本工具伪新增不在本模型内，也未实现；未来启用需要模型级检测和服务端验证，不能只凭供应商或 API 判断。
 
-所有启用的工具都参与指引更新。namespace 指引使用 Harness 段落日志；原生 `promptGuidelines` 和提示词片段使用 Pi 的段落差异机制。仅 description 变化的重复声明转为工具专属尾部指引，保留首个声明及其 schema。没有原生声明的间接工具会在分支中保存首次观察到的描述基准，用于识别后续变更，不预先发布全部描述。历史正文不从当前注册表重建。
+Harness renders current namespace instructions at the request tail. Native `promptGuidelines`, descriptions, tool declarations and schema updates remain SDK-owned. Harness stores no description baseline or placement record and emits no separate description-correction layer. Earlier instruction versions are not replayed.
 
-Description-only duplicates are sanitized independently of current activation, including while execution is disabled. New current-description guidance is published only for callable tools; enabling later cannot retroactively remove a declaration exposed by an earlier disabled request.
+Current text is resent on each request. A complete forced prompt can suppress Harness sections under the existing SDK hook order. Historical instruction placement and whole-request prefix continuity are not guaranteed; serializers may fold tail system messages into the head.
 
 参数或其他真实接口发生变化时，保留原生声明。Harness 不隐藏接口变化，也不保留过时 schema 继续执行。仅支持新增的传输路径遇到同名替换时，可能把工具重新折叠到顶层列表，从而改变请求前缀。描述文本不能代替 schema 更新。
 
-普通上下文窗口中，增量路径保留已禁用工具的历史声明，并追加禁止调用的提示；执行准入仍是最终依据。成功压缩后可以重建 checkpoint，移除未使用的发现工具，详见[压缩与未使用能力淘汰](capability-prompt-memory.md#压缩与未使用能力淘汰)。
+Current loadout and permission state determine declaration availability; Harness does not suppress native removal updates to preserve a historical prefix. Execution admission remains authoritative. Successful compaction can remove unused discovered tools; see [compaction pruning](capability-prompt-memory.md#压缩与未使用能力淘汰)。
 
 ## 对话中 effort
 

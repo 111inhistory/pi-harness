@@ -30,6 +30,7 @@ import {
   CAPABILITY_TOOL_PERMISSION_RECORD, CAPABILITY_TOOL_PERMISSION_VERSION,
 } from '../../src/capability/tool-permission.ts';
 import { providerSessionPolicy } from '../../src/provider-session.ts';
+import { appendPresetState, PRESET_STATE_VERSION } from '../../src/preset/state.ts';
 
 type ToolResult = Extract<Message, { role: 'toolResult' }>;
 
@@ -222,6 +223,12 @@ async function runScenario(api: 'openai-responses' | 'anthropic-messages'): Prom
       version: CAPABILITY_TOOL_PERMISSION_VERSION,
       set: [{ target: 'manual_parent', state: 'enabled' }],
     });
+    appendPresetState({
+      appendEntry: (customType, data) => sessionManager.appendCustomEntry(customType, data),
+    }, {
+      version: PRESET_STATE_VERSION,
+      snapshot: { name: 'parent-preset', instructions: 'CURRENT_PARENT_PRESET' },
+    });
     session = (await createAgentSession({
       cwd, agentDir, modelRuntime: runtime, model, settingsManager, resourceLoader, sessionManager,
       thinkingLevel: 'medium',
@@ -265,6 +272,11 @@ for (const api of ['openai-responses', 'anthropic-messages'] as const) {
     assert.ok(parentTools.includes('manual_parent'), 'the authorized manual tool is present in the parent request');
 
     const retrievalTools = toolNames(scenario.retrievalRequests[0]!.messages);
+    const retrievalPresets = scenario.retrievalRequests[0]!.messages.flatMap((message) =>
+      message.role === 'system' && message.sections?.['preset-instructions'] !== undefined
+        ? [message.sections['preset-instructions']] : []);
+    assert.deepEqual(retrievalPresets, ['CURRENT_PARENT_PRESET'],
+      'real internal retrieval carries the current parent preset instruction snapshot');
     const parentNonManual = parentTools.filter((name) => name !== 'manual_parent');
     assert.deepEqual(
       retrievalTools.slice(0, parentNonManual.length),

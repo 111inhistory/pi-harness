@@ -2,11 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  PRESET_INSTRUCTION_RECORD,
-  projectPresetInstruction,
-  type PresetInstructionJournal,
-} from '../../src/preset/instruction.ts';
-import {
   appendPresetBase,
   appendPresetState,
   hasPresetBaseToolRemoval,
@@ -17,16 +12,12 @@ import {
   type PresetSnapshot,
   type PresetStateWriter,
 } from '../../src/preset/state.ts';
-import type { TranscriptMessageLike } from '../../src/session-transcript.ts';
 
-/**
- * One in-memory branch for both preset record domains: resolved snapshot/clear
- * entries and instruction section placements are append-only custom entries.
- */
-function branchLog(): { branch: unknown[]; writer: PresetStateWriter; journal: PresetInstructionJournal } {
+/** Business snapshots remain append-only; request instructions have no journal. */
+function branchLog(): { branch: unknown[]; writer: PresetStateWriter } {
   const branch: unknown[] = [];
   const appendEntry = (customType: string, data: unknown) => { branch.push({ type: 'custom', customType, data }); };
-  return { branch, writer: { appendEntry }, journal: { branch, checkpointId: null, appendEntry } };
+  return { branch, writer: { appendEntry } };
 }
 
 // ---- applied snapshot persistence ----
@@ -97,31 +88,4 @@ test('preset baseline removals request pruning only until the next compaction', 
 test('a malformed entry is a hard error, not a silent skip', () => {
   const branch = [{ type: 'custom', customType: PRESET_STATE_RECORD, data: { version: 99, snapshot } }];
   assert.throws(() => readPresetState(branch), /expected version/);
-});
-
-// ---- instruction section placement ----
-
-function records(branch: unknown[]): { text: string | null }[] {
-  return branch
-    .filter((entry): entry is { type: string; customType: string; data: { text: string | null } } => {
-      const value = entry as { type?: string; customType?: string };
-      return value.type === 'custom' && value.customType === PRESET_INSTRUCTION_RECORD;
-    })
-    .map((entry) => ({ text: entry.data.text }));
-}
-
-test('re-projecting the same text does not append another record', () => {
-  const { branch, journal } = branchLog();
-  projectPresetInstruction([{ role: 'user', content: 'hi' }], 'Be terse.', journal);
-  const before = records(branch).length;
-  projectPresetInstruction([{ role: 'user', content: 'hi' }], 'Be terse.', journal);
-  assert.equal(records(branch).length, before);
-});
-
-test('no instructions and no history is a no-op', () => {
-  const { branch, journal } = branchLog();
-  const input: TranscriptMessageLike[] = [{ role: 'user', content: 'hi' }];
-  const out = projectPresetInstruction(input, null, journal);
-  assert.equal(out.length, input.length);
-  assert.equal(records(branch).length, 0);
 });

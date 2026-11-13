@@ -1,3 +1,4 @@
+import { projectCapabilitySnapshot } from './support/capability-snapshot.ts';
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -14,11 +15,10 @@ import {
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
 import capabilityExtension from "../../src/capability/extension.ts";
-import { getCurrentSystemMessage } from "../../node_modules/@earendil-works/pi-ai/dist/utils/transcript.js";
 import { convertResponsesMessages } from "../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js";
 import {
   CAPABILITY_SECTION,
-  capabilityPromptTranscript,
+
   type ProjectionMessage,
 } from "../../src/capability/prompt.ts";
 import {
@@ -27,7 +27,7 @@ import {
   type CapabilityHit,
   type CapabilitySearchCoverage,
 } from "../../src/capability/discovery-record.ts";
-import { projectToolGuidance, toolGuidanceSection } from "../../src/tool-guidance.ts";
+import { renderCurrentToolGuidance, toolGuidanceSection } from "../../src/tool-guidance.ts";
 import { SUBAGENT_TOOL_GUIDANCE } from "../../src/subagent/tool-guidance.ts";
 import type { TranscriptMessageLike } from "../../src/session-transcript.ts";
 
@@ -160,18 +160,16 @@ function appendDiscovery(manager: SessionManager, message: DiscoveryResultMessag
   return appendNativeMessage(manager, message);
 }
 
-type NativeTranscriptMessages = Parameters<typeof getCurrentSystemMessage>[0];
-
-function nativeTranscriptMessages(messages: readonly ProjectionMessage[]): NativeTranscriptMessages {
-  return messages as unknown as NativeTranscriptMessages;
-}
-
 function projectedSessionMessages(messages: readonly unknown[]): readonly ProjectionMessage[] {
   return messages as unknown as readonly ProjectionMessage[];
 }
 
 function section(messages: readonly ProjectionMessage[]): string | undefined {
-  return getCurrentSystemMessage(nativeTranscriptMessages(messages))?.sections?.[CAPABILITY_SECTION] ?? undefined;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const value = messages[index]?.sections?.[CAPABILITY_SECTION];
+    if (typeof value === 'string') return value;
+  }
+  return undefined;
 }
 
 function isRememberedHit(value: unknown): value is RememberedHit {
@@ -199,11 +197,11 @@ function occurrences(text: string, needle: string): number {
   return needle === "" ? 0 : text.split(needle).length - 1;
 }
 
-test("discovery appends a native section immediately and preserves original messages", () => {
+test("discovery appends one current section and preserves original messages", () => {
   const found = result("a");
   const messages = [head, user, found];
   const before = structuredClone(messages);
-  const projected = capabilityPromptTranscript(messages, entries(...messages));
+  const projected = projectCapabilitySnapshot(messages, entries(...messages));
   assert.deepEqual(projected.slice(0, 3), messages);
   assert.equal(projected[3]?.role, "system");
   assert.doesNotMatch(section(projected) ?? "", /skill:\/\//);
@@ -212,10 +210,9 @@ test("discovery appends a native section immediately and preserves original mess
   assert.match(section(projected) ?? "", /pages/);
   assert.doesNotMatch(section(projected) ?? "", /Large on-demand body|score|npm:\/\/candidate/);
   assert.deepEqual(messages, before);
-  assert.deepEqual(capabilityPromptTranscript(projected, entries(...messages)), projected);
 });
 
-test("native Subagent guidance is projected once while namespace memory keeps third-party instructions", () => {
+test("current guidance renderer supplies shared prose once while namespace memory keeps third-party instructions", () => {
   const common = SUBAGENT_TOOL_GUIDANCE.find((entry) => entry.id === "subagent")?.text;
   assert.ok(common && common.trim().length > 0);
   const subagent: CapabilityHit = {
@@ -231,7 +228,7 @@ test("native Subagent guidance is projected once while namespace memory keeps th
   };
   const found = result("a", { mcp: [subagent, group], guidance: [guidanceHit] });
   const messages = [head, user, found];
-  const projected = capabilityPromptTranscript(messages, entries(...messages), {
+  const projected = projectCapabilitySnapshot(messages, entries(...messages), {
     nativeGuidanceRefs: new Set([subagent.ref!]),
   });
   const remembered = records(projected);
@@ -243,27 +240,10 @@ test("native Subagent guidance is projected once while namespace memory keeps th
     "third-party guidance text is untouched");
   assert.match(section(projected) ?? "", /\/skills\/slides\/SKILL.md/);
 
-  const declaration: ProjectionMessage = {
-    role: "system",
-    content: "",
-    sections: { preamble: "Unchanging base" },
-    toolsAdded: [{ name: "subagent_list" }],
-    timestamp: 0,
-  };
-  const composed = projectToolGuidance(
-    [declaration, ...projected] as unknown as readonly TranscriptMessageLike[],
-    SUBAGENT_TOOL_GUIDANCE,
-  );
-  const sections = (message: unknown): Record<string, string> => {
-    const value = (message as { readonly sections?: unknown }).sections;
-    return typeof value === "object" && value !== null ? value as Record<string, string> : {};
-  };
-  const native = composed.flatMap((message) =>
-    message.role === "system" ? [sections(message)[toolGuidanceSection("subagent")] ?? ""] : []).join("\n");
-  assert.equal(occurrences(native, common), 1, "the native guidance path still supplies the common text once");
-  const systemText = composed.flatMap((message) =>
-    message.role === "system" ? Object.values(sections(message)) : []).join("\n");
-  assert.equal(occurrences(systemText, common), 1, "the composed request carries exactly one shared guidance copy");
+  const rendered = renderCurrentToolGuidance(SUBAGENT_TOOL_GUIDANCE);
+  assert.equal(rendered[toolGuidanceSection("subagent")], common);
+  assert.equal(occurrences(Object.values(rendered).join("\n"), common), 1,
+    "the current guidance renderer supplies the common text once");
 });
 
 test("repeated discoveries produce no redundant patches, later guidance preserves members", () => {
@@ -275,8 +255,8 @@ test("repeated discoveries produce no redundant patches, later guidance preserve
     guidance: [{ ref: "namespace://browser", name: "browser", instructions: "Updated shared guidance" }],
   });
   const messages = [head, user, first, second, third];
-  const projected = capabilityPromptTranscript(messages, entries(...messages));
-  assert.equal(projected.filter((message) => message.sections?.[CAPABILITY_SECTION]).length, 2);
+  const projected = projectCapabilitySnapshot(messages, entries(...messages));
+  assert.equal(projected.filter((message) => message.sections?.[CAPABILITY_SECTION]).length, 1);
   const remembered = records(projected).find((hit) => hit.ref === group.ref);
   assert.ok(remembered);
   assert.equal(remembered.instructions, "Updated shared guidance");
@@ -292,21 +272,21 @@ test("native compaction and repeated compaction rehydrate from branch details, n
   const keep = appendNativeMessage(sm, { ...user, content: "continue", timestamp: 3 });
   sm.appendCompaction("Summary deliberately forgets skills and browser", keep, 100);
   const branch = sm.getBranch();
-  const projected = capabilityPromptTranscript(projectedSessionMessages(sm.buildSessionProjection().messages), branch);
-  const compactedHead = projected[0]?.sections?.[CAPABILITY_SECTION];
-  assert.ok(compactedHead);
-  assert.match(compactedHead, /\/skills\/slides\/SKILL.md/);
-  assert.match(compactedHead, /namespace:\/\/browser/);
+  const projected = projectCapabilitySnapshot(projectedSessionMessages(sm.buildSessionProjection().messages), branch);
+  const compacted = section(projected);
+  assert.ok(compacted);
+  assert.match(compacted, /\/skills\/slides\/SKILL.md/);
+  assert.match(compacted, /namespace:\/\/browser/);
   const next = result("b", {
     skills: [{ ...skill, ref: "/skills/analysis/SKILL.md", filePath: "/skills/analysis/SKILL.md", name: "analysis" }],
   });
   appendDiscovery(sm, next);
-  const immediately = capabilityPromptTranscript(projectedSessionMessages(sm.buildSessionProjection().messages), sm.getBranch());
-  assert.deepEqual(immediately[0], projected[0], "new discovery must not rewrite the compacted head");
+  const immediately = projectCapabilitySnapshot(projectedSessionMessages(sm.buildSessionProjection().messages), sm.getBranch());
+  assert.deepEqual(immediately.slice(0, projected.length - 1), projected.slice(0, -1), "new discovery must not rewrite native messages");
   assert.match(section(immediately) ?? "", /\/skills\/analysis\/SKILL.md/);
   const keepAgain = appendNativeMessage(sm, { ...user, content: "continue again", timestamp: 4 });
   sm.appendCompaction("Still no discovery facts", keepAgain, 100);
-  const twice = capabilityPromptTranscript(projectedSessionMessages(sm.buildSessionProjection().messages), sm.getBranch());
+  const twice = projectCapabilitySnapshot(projectedSessionMessages(sm.buildSessionProjection().messages), sm.getBranch());
   assert.match(section(twice) ?? "", /\/skills\/slides\/SKILL.md/);
   assert.match(section(twice) ?? "", /\/skills\/analysis\/SKILL.md/);
   // Reconstructed manager models reload/inherited raw entries with no in-memory cache.
@@ -314,7 +294,7 @@ test("native compaction and repeated compaction rehydrate from branch details, n
   assert.ok(header);
   const restored = SessionManager.inMemory("/test", {}, [header, ...sm.getBranch()]);
   assert.deepEqual(
-    capabilityPromptTranscript(projectedSessionMessages(restored.buildSessionProjection().messages), restored.getBranch()),
+    projectCapabilitySnapshot(projectedSessionMessages(restored.buildSessionProjection().messages), restored.getBranch()),
     twice,
   );
 });
@@ -334,15 +314,15 @@ test("branch selection, failures and tool scope are respected without changing p
     skills: [],
   });
   const branch = entries(first, failed, partial);
-  const projected = capabilityPromptTranscript([head, user], branch, { allowsTool: (name) => name === "pages" });
+  const projected = projectCapabilitySnapshot([head, user], branch, { allowsTool: (name) => name === "pages" });
   const remembered = records(projected).find((hit) => hit.ref === group.ref);
   assert.ok(remembered?.tools);
   assert.deepEqual(remembered.tools.map((tool) => tool.name), ["pages"]);
   assert.doesNotMatch(section(projected) ?? "", /\/skills\/failed|tool:\/\/denied|tool:\/\/click/);
-  assert.deepEqual(capabilityPromptTranscript([head, user], []), [head, user], "another branch cannot retain these discoveries");
+  assert.deepEqual(projectCapabilitySnapshot([head, user], []), [head, user], "another branch cannot retain these discoveries");
 });
 
-test("Responses wire prefix is unchanged on append; folding providers retain current memory", () => {
+test("Responses wire keeps the head; folding providers retain current memory", () => {
   // The wire formatter reads only these model identity fields in this test.
   const model = {
     api: "openai-codex-responses",
@@ -355,11 +335,11 @@ test("Responses wire prefix is unchanged on append; folding providers retain cur
   type ResponsesOptions = NonNullable<Parameters<typeof convertResponsesMessages>[3]>;
   const options: ResponsesOptions = { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true };
   const first = result("a");
-  const initial = capabilityPromptTranscript([head, user, first], entries(first));
+  const initial = projectCapabilitySnapshot([head, user, first], entries(first));
   const second = result("b", {
     skills: [{ ...skill, ref: "/skills/analysis/SKILL.md", filePath: "/skills/analysis/SKILL.md" }],
   });
-  const appended = capabilityPromptTranscript([head, user, first, second], entries(first, second));
+  const appended = projectCapabilitySnapshot([head, user, first, second], entries(first, second));
   const wire = (messages: readonly ProjectionMessage[], opts: ResponsesOptions = options) =>
     convertResponsesMessages(
       model,
@@ -367,8 +347,7 @@ test("Responses wire prefix is unchanged on append; folding providers retain cur
       new Set([model.provider]),
       opts,
     );
-  const before = wire(initial);
-  assert.deepEqual(wire(appended).slice(0, before.length), before);
+  assert.deepEqual(wire(initial)[0], wire(appended)[0], "the leading system head is unchanged");
   const collapsed = JSON.stringify(wire(appended, { supportsMidConvoSystemMessages: false }));
   assert.match(collapsed, /\/skills\/slides\/SKILL.md/);
   assert.match(collapsed, /\/skills\/analysis\/SKILL.md/);
@@ -473,6 +452,7 @@ test("real SDK extension exposes discovery on the next turn and after manual com
     assert.equal(section(initialRequest), undefined);
     assert.match(section(rememberedRequest) ?? "", /\/skills\/slides\/SKILL.md/);
     assert.deepEqual(rememberedRequest.slice(0, initialRequest.length), initialRequest);
+    assert.match(JSON.stringify(rememberedRequest), /\/skills\/slides\/SKILL.md/);
     await session.compact();
     await session.prompt("Continue without rediscovery");
     assert.equal(requests.length, 3);

@@ -180,7 +180,9 @@ test("an enabled manual tool is branch authority, not request memory, and never 
   // request-memory patch would change the leading system prompt, and Pi's
   // conversion folds that into the head for transports without mid-conversation
   // system messages.
-  assert.deepEqual(projected.messages, [head], "a user enablement adds no request memory");
+  assert.equal(projected.messages.some((message) => (message as { sections?: Record<string, string> }).sections?.[CAPABILITY_SECTION]), false,
+    "a user enablement adds no Capability request memory");
+  assert.deepEqual(projected.messages[0], head, "the inherited system head is preserved");
 
   // The record is the authority the declaration and execution checks read.
   assert.deepEqual((await root.startTurn(context(branch))).systemPromptOptions.selectedTools, ["read", "deploy"]);

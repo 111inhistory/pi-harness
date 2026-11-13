@@ -220,7 +220,7 @@ test('/preset clear succeeds despite unreadable catalog source after apply persi
     .map((message) => message.sections?.['preset-instructions'])
     .filter((value) => value !== undefined)
     .at(-1);
-  assert.equal(lastSection, null, 'instructions are withdrawn with a null section placement');
+  assert.equal(lastSection, undefined, 'cleared current state emits no instruction section');
 
   assert.equal(h.calls.status.at(-1), undefined, 'status is cleared');
   assert.deepEqual(h.calls.setModel, ['p/m'], 'model is not rolled back');

@@ -1,8 +1,6 @@
 /** Namespace prose and native guidance identities from the current tool catalog. */
 import type { ToolInfo } from '@earendil-works/pi-coding-agent';
-import type { TranscriptMessageLike } from '../session-transcript.ts';
-import { promptSectionText } from '../prompt-section-journal.ts';
-import { toolGuidanceSection, type ToolGuidance } from '../tool-guidance.ts';
+import { renderCurrentToolGuidance, toolGuidanceSection, type ToolGuidance } from '../tool-guidance.ts';
 import { capabilityRef, mcpRef } from './refs.ts';
 import { mcpIdentity } from './broker.ts';
 
@@ -35,13 +33,12 @@ export function toolNamespaceInstructions(tools: readonly NamespaceTool[]): Read
 
 /**
  * Every registered namespace can supply guidance, including namespaces enabled
- * directly by the user without a Capability discovery. Live registry prose has
- * no historical version evidence, so its first delivery belongs at the tail.
+ * directly by the user without a Capability discovery. The current request
+ * renders this prose in its tail snapshot; no placement is stored.
  */
 export function registeredToolGuidance(
   tools: readonly NamespaceTool[],
   assets: readonly ToolGuidance[],
-  appendOnly = false,
   callable?: ReadonlySet<string>,
 ): readonly ToolGuidance[] {
   const covered = new Set(assets.flatMap(entry => entry.namespace ? [entry.namespace] : []));
@@ -54,10 +51,8 @@ export function registeredToolGuidance(
     groups.set(name, members);
   }
   const instructions = toolNamespaceInstructions(tools);
-  // Once downstream placements exist, even asset bootstrap must only append.
   const initialAssets = assets.filter(entry => !callable || entry.tools.some(name => callable.has(name))).map(entry => ({
     ...entry,
-    ...(appendOnly ? { initialPlacement: 'tail' as const } : {}),
     ...(callable ? { eligible: entry.tools.some(name => callable.has(name)) } : {}),
   }));
   return [...initialAssets, ...[...groups].map(([namespace, members]): ToolGuidance => ({
@@ -65,23 +60,20 @@ export function registeredToolGuidance(
     namespace,
     tools: members,
     text: instructions.get(capabilityRef('namespace', namespace)) ?? '',
-    initialPlacement: 'tail',
     ...(callable ? { eligible: members.some(name => callable.has(name)) } : {}),
   }))];
 }
 
-/** Omit shared prose from memory only when its native producer actually emitted it. */
+/** Omit shared prose from memory when the current request actually renders its native guidance. */
 export function projectedNamespaceRefs(
-  messages: readonly TranscriptMessageLike[],
   guidance: readonly ToolGuidance[],
   tools: readonly NamespaceTool[],
+  rendered: Readonly<Record<string, string>> = renderCurrentToolGuidance(guidance),
 ): ReadonlySet<string> {
-  const projected = new Set<string>();
+  const emitted = new Set<string>();
   for (const entry of guidance) {
-    if (!entry.namespace) continue;
-    const section = toolGuidanceSection(entry.id);
-    const marker = messages.findLast(message => promptSectionText(message, section) !== undefined);
-    if (marker && promptSectionText(marker, section)) projected.add(entry.namespace);
+    if (!entry.namespace || rendered[toolGuidanceSection(entry.id)] === undefined) continue;
+    emitted.add(entry.namespace);
   }
-  return new Set(tools.flatMap(tool => tool.namespace && projected.has(tool.namespace.name) ? namespaceRefs(tool) : []));
+  return new Set(tools.flatMap(tool => tool.namespace && emitted.has(tool.namespace.name) ? namespaceRefs(tool) : []));
 }

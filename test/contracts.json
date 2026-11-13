@@ -119,7 +119,7 @@
       "tests": [
         "test/typed/capability-result.test.ts",
         "test/typed/capability-prompt.test.ts",
-        "test/typed/capability-guidance-journal.test.ts"
+        "test/typed/capability-current-snapshot-sdk.test.ts"
       ]
     },
     {
@@ -293,7 +293,7 @@
       ]
     },
     {
-      "id": "tool-guidance.journal",
+      "id": "request-instructions.current",
       "kind": "design",
       "docs": [
         {
@@ -306,10 +306,10 @@
         }
       ],
       "tests": [
-        "test/typed/tool-guidance-record.test.ts",
         "test/typed/capability-history-model.test.ts",
-        "test/typed/tool-prompts.test.ts",
-        "test/typed/prompt-section-journal.test.ts"
+        "test/typed/capability-current-snapshot-sdk.test.ts",
+        "test/typed/preset-sdk.test.ts",
+        "test/typed/btw-session.test.ts"
       ]
     },
     {
@@ -968,6 +968,11 @@
     }
   ],
   "reviews": {
+    "btw.panel": {
+      "docs": "57eee677e23f8b383a92cb5c606126eccda958499e69d001904e328bec463bd0",
+      "tests": "242bae7d8852ee23651dd9a3ffebc5553143792cb52dc6ffb99b6a0f28a22a81",
+      "reason": "The real BTW fixture now uses canonical Preset and namespace facts. Terminal layout, navigation, lifecycle controls and panel sizing are unchanged; panel and session tests passed."
+    },
     "shell.preflight": {
       "docs": "ef0d1761bb256efe51f2bb912bd0b277f233ac382f0d64fcb230d106eb795517",
       "tests": "eab4e99d01d75cd7df6ba8ff4d15e76be56341c2e138888b8fb957d423959699",
@@ -984,9 +989,9 @@
       "reason": "Delete internal tool-policy catalogue and simple prompt/default copies. Surface and native factory tests retain depth and backend transplantability behavior; literal substitution and prompt block ordering stay. No product behavior changes."
     },
     "provider.transport-tools": {
-      "docs": "c74a478d332d2e480113230e1669bf4acc9745a50d3a37d7f45afd0e2e30b2f7",
+      "docs": "3570d8b88fcedfad4c2369c24538fdb0a6114fb6855bcffef23737ec25fd5ffd",
       "tests": "b6eefc194398fc23af38259305c69d5246839e4708047c5918342a2a713f13e9",
-      "reason": "The provider effort facts now evaluate the SDK-resolved auth.baseUrl before the native sign-in predicate; tool-addition classification and the existing transport-tool contract are unchanged."
+      "reason": "Documentation retires Harness placement and description-correction layers. SDK encoders, compat applicability and native API-specific transports are unchanged; existing transport tests passed."
     },
     "capability.search-broker": {
       "docs": "221b5978ff4ff74346731b8f04829f59b4db813f88736ba9d6cb774f2feddb3d",
@@ -1025,8 +1030,8 @@
     },
     "subagent.surface": {
       "docs": "6f544422e950a4220e5c1730702107bf25f7d9acde33675402cd7b45b597133c",
-      "tests": "510f36c19e7249177a04b35073ef450bc974f61184f7fd2e5f3f657e0ff840a8",
-      "reason": "The contract wording now says Preset final removals are execution-scope denials and SDK registration carries fixed depth limits; surface behavior and tests are unchanged."
+      "tests": "65b9c053e30ce6151bdef1f814bc6a408837d4c96fa1a5f411b637f363d17127",
+      "reason": "Only obsolete guidance anchor/journal/prefix cases were removed. Tool registration, schemas, depth limits, host resolution, IPC ownership and capture assertions remain and passed."
     },
     "subagent.integration": {
       "docs": "b90d935ce705b31848fc0d49fa6fb8622b39ec1ea589c4ee17279f9d9d79ad3e",
@@ -1044,19 +1049,14 @@
       "reason": "Only duplicate in-process MCP transport listener and microtask response plumbing is shared. All five real-SDK scenarios retain original server-specific capabilities, request responses, call/resource tracking, actual extension installation order, assertions and per-file environment isolation. No protocol or runtime contract changed."
     },
     "capability.activation-reachability": {
-      "docs": "0214e0cb0dd10c9ecc731941335882aa3446429d4e50020964d712c53e99daff",
+      "docs": "745288e779332fe9cc8749a9477d0e924a59689de7f4e0551205673eda911130",
       "tests": "722b6d6e33c13206362117339bb45edb4c12d99d99a7728f5538b1bf56782c6c",
-      "reason": "The bullet only narrows when MCP startup waiting applies (first request, once per session); activation reachability behavior and its tests are unchanged."
+      "reason": "Only placement replay and cache claims changed in the memory document. MCP registration waiting, reachability, coverage and backend eligibility are unchanged; their existing tests passed."
     },
     "preset.runtime": {
       "docs": "c45579af22042555801e090274dfc8a8f7f9284bd3343cecef199ead61d65a0d",
       "tests": "fcb69aebde4a4c1ababe84ae6269472aa9f1e1a75d3568d3754acdf9be1de285",
       "reason": "The Preset SDK test adds an unrelated named-section assertion to the supported projection path; Preset apply/restore semantics are unchanged."
-    },
-    "tool-guidance.journal": {
-      "docs": "f15e9720dd2e103753d12542e7ae1c0c77084c790c3a25d522e52f81149bce3a",
-      "tests": "5901047d5af9216deb73d0f94ee8d19cb756a7bc27b3eec588b852d672b5ca76",
-      "reason": "The provider transport section only clarifies the native-only tool declaration boundary and does not alter the guidance journal algorithm or its existing tests."
     },
     "cross-session.messaging": {
       "docs": "1423e639cb5e99561bd024761e74ea822d6b9ed8564a65c8fea28d271f77aa7b",
@@ -1065,13 +1065,13 @@
     },
     "subagent.command": {
       "docs": "e3b4239f1212aff9a3a7da7960317d013ed3d924687d60114a79389e3e43ea15",
-      "tests": "0cb967112b3447585c58fb34bf755c82588b27dd5eee75129787231b0b439351",
-      "reason": "Remove only an extra trailing empty line from the command regression file; degraded-current and replaced-generation assertions are unchanged."
+      "tests": "85435b569a079a1108ab53204bfd47fa6fbf08278a96e9667e4f89daed9aa3be",
+      "reason": "Connect tests compare preserved native messages apart from request-local snapshots. Parsing, lookup failures, contact insertion, idempotent grants, streaming queues and retirement refusal remain asserted."
     },
     "inherited.declarations": {
-      "docs": "bf2defe882fe848bdfe68eea636720d6fcb725e61e2b3be93b20461d1aa2ae91",
+      "docs": "6ee2c27e5244dd63baa8c65937129e8d7099d38aa1e85f28f55472cc0b42f8fa",
       "tests": "a83b7cd98703855286bcdaa50779012ac67c7ccc32ae30fada3c57c69b67d6a1",
-      "reason": "The capability memory document only updated permission terminology; inherited declaration behavior is unchanged and still covered by the prefix test."
+      "reason": "Documentation drops instruction placement and whole-request prefix guarantees. Inert inherited interfaces, lazy-schema exclusions and execution blocking are unchanged; declaration helpers and real sessions passed."
     },
     "capability.lazy-schemas": {
       "docs": "31dde3f095b94d54a1e62269119eefb18b00c5ed22df53e12eba40cdc872b638",
@@ -1080,8 +1080,8 @@
     },
     "subagent.lifecycle": {
       "docs": "08416509175ae5b2dcdbc7d2898ede41f04a7915b3d4b0f8cd056241407e0fd9",
-      "tests": "d7e82674f926a6c1bdd999ffd42d99d68b393104b1dd75c02bcd74cbc05b8710",
-      "reason": "The factory test request now carries fixed registration exclusions separately; lifecycle and ownership assertions are unchanged."
+      "tests": "5e1b49a361d6f79114b71d983532f759b39e34f31ecc9db66010862d1befa4f4",
+      "reason": "Changed shared surface/factory tests concern instruction projection only. Actor startup, cancellation, generation fences, disposal and durable lifecycle behavior are unchanged; lifecycle and Parent PBT passed."
     },
     "subagent.delivery": {
       "docs": "3b8cc6a2e08fea413d06c642fb553d75e5591c5352989b1389df1c0b9ef8f456",
@@ -1100,13 +1100,13 @@
     },
     "capability.scope-admission": {
       "docs": "4393d3c918137e6171a7bd47b85e5d4786688cf2b5a0bbb4b200c761617509d1",
-      "tests": "784d81985fc420e31fbd886094e117f2ca942f6cb927b4770820577d864cdce1",
-      "reason": "Only the provider policy expected object changed from toolSupport to explicit toolAdditions/toolSameNameUpdates plus midConversationEffort; Capability scope and admission behavior are unchanged."
+      "tests": "4536c8d20bc33245c75b033fd78b426d70d7d6ca1531e6dc99aeb35541762367",
+      "reason": "The manual assembly fixture permits current namespace sections while retaining no authorization-derived memory, preserved head, ancestor restrictions and backend checks. Admission semantics are unchanged."
     },
     "capability.tool-permission": {
-      "docs": "933c40fa5b88746a4f1f08c966226bdc0951fb0f10948f621b0bd370140572f4",
+      "docs": "c11f50ab4af2c601645677b52e9964b2e069cb36932d840b2b95057e09d911e2",
       "tests": "3cdebb6ee648ad662df3a0ba9217cabc9726824c2a2023d18ed42b23a2c7659d",
-      "reason": "The architecture ownership table now names the native Go async-shell modules, and the child-permission paragraph clarifies Preset loadout selection versus existing ancestor denials. Permission targets, precedence, persistence and root-only explicit enables are unchanged. Real RootService propagation now additionally asserts a named Preset cannot reintroduce a root-disabled tool; existing permission suites passed."
+      "reason": "Memory timing documentation changed. Canonical formats, target resolution, root-only enables, ancestor denials, write-before-effect ordering and execution checks are unchanged; permission suites passed."
     },
     "capability.manual-enable": {
       "docs": "e4e5e4b4c213f9d9dd36e9cee79a0643aaea294f9710e790c9bba83820105bc4",
@@ -1135,8 +1135,8 @@
     },
     "inherited.capture": {
       "docs": "9371c4089685ad4e47b101ca42c249d3c4bc22b38289c62b71cd15e19de2a179",
-      "tests": "94679a4ea5d94aa163fa881189129325c00469bf79642ad6c3709c0296d806ff",
-      "reason": "The factory test request now carries fixed registration exclusions separately; inherited capture and captured prompt/tool fields are unchanged."
+      "tests": "fffddbb2ad244268e196f3d19b4c5638dc2cf101c2455920d44f5de8ac573ac1",
+      "reason": "Changed factory and surface assertions retire placement and removal suppression. Capture still preserves entries, removes pending calls, gives independent headers and restricts transferable tools; capture tests passed."
     },
     "harness.rpc-interface": {
       "docs": "594d0ef01f83c003dc7d2479e4d899731b402db84eec8b5fbae215cf42d8c973",
@@ -1150,13 +1150,13 @@
     },
     "session-cache.identity": {
       "docs": "9c69a306080d0d53a5f0f687f4279cda47cf5cc2b524146a2d55ef7225357cbe",
-      "tests": "30173713760491d429a8f97384199cafe348b296b88e7dc8cd8132629d36ff1a",
-      "reason": "Only the native session factory test request shape gained fixed registration exclusions; cache identity and payload assertions are unchanged."
+      "tests": "843bfc793ac7e40bc6f727358f073481d7d6bdda8fcdbdadcd37c756a312bc39",
+      "reason": "Changed BTW and native-factory fixtures concern current instructions and native removals. Cache identity hooks, payload precedence, generation fences and lineage records are unchanged and passed."
     },
     "config.resolve": {
       "docs": "edf77e31dbe00a54ecb6d1d77f7c647f643621bf7d40a887402be41b48c3e23b",
-      "tests": "6ce2d34a2dc0ce4b945fe401760e10bab418b13191c24b08f7510d88ed0bdae0",
-      "reason": "The factory test request now carries fixed registration exclusions separately; configuration resolution is unchanged."
+      "tests": "da72b3d1a3e4f08310e8302e6270881a8598e1d0344aa2e59be5528692feb8f2",
+      "reason": "Shared tests only retire journal cases and update current instruction expectations. Configuration lookup, trust, precedence, defaults and capacity resolution are unchanged and passed."
     },
     "subagent.routing": {
       "docs": "5f7985e8e485204910c46b8defe449cfee3ce392a6df0a06aa90fbfcd14c752a",

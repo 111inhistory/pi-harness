@@ -253,6 +253,7 @@ async function openHarness(options: HarnessOptions): Promise<Harness> {
             name: 'parent_probe',
             label: 'Parent probe',
             description: 'A parent-only tool that /btw must never execute.',
+            namespace: { name: 'fixture', instructions: 'CURRENT_NAMESPACE_GUIDANCE' },
             parameters: { type: 'object', properties: {} },
             defaultActive: true,
             async execute() {
@@ -283,6 +284,9 @@ async function openHarness(options: HarnessOptions): Promise<Harness> {
     session.sessionManager.appendCustomEntry('harness-capability-memory', {
       version: 1, checkpointId: null, id: 'capabilities',
       text: 'RECORDED_MCP_GUIDANCE', position: 'head',
+    });
+    session.sessionManager.appendCustomEntry('preset-state', {
+      version: 1, snapshot: { name: 'fixture', instructions: 'CURRENT_PRESET_GUIDANCE' },
     });
     const snapshot = captureInheritedContext(parentApi, parentCtx);
     phase = 'btw';
@@ -360,8 +364,10 @@ for (const scenario of [
       assert.ok(first);
       assert.deepEqual(toolNames(first.messages), ['read', 'parent_probe']);
       const inherited = systemText(first.messages);
-      assert.ok(inherited.includes('RECORDED_BROWSER_GUIDANCE'));
-      assert.ok(inherited.includes('RECORDED_MCP_GUIDANCE'));
+      assert.ok(inherited.includes('CURRENT_NAMESPACE_GUIDANCE'));
+      assert.ok(inherited.includes('CURRENT_PRESET_GUIDANCE'));
+      assert.ok(!inherited.includes('RECORDED_BROWSER_GUIDANCE'));
+      assert.ok(!inherited.includes('RECORDED_MCP_GUIDANCE'));
       const btwInstruction = promptString('btw.json', 'system');
       assert.ok(inherited.includes('PARENT_SYSTEM_MARKER'), 'the parent system prompt is inherited');
       assert.ok(inherited.includes(btwInstruction), 'the /btw instruction is appended');
@@ -426,8 +432,10 @@ test('real /btw plain no-additive model inherits the prompt but exposes no tools
     assert.ok(first);
     assert.deepEqual(toolNames(first.messages), [], 'a no-additive transport receives no tool declarations');
     const inherited = systemText(first.messages);
-    assert.ok(inherited.includes('RECORDED_BROWSER_GUIDANCE'));
-    assert.ok(inherited.includes('RECORDED_MCP_GUIDANCE'));
+    assert.ok(inherited.includes('CURRENT_NAMESPACE_GUIDANCE'));
+    assert.ok(inherited.includes('CURRENT_PRESET_GUIDANCE'));
+    assert.ok(!inherited.includes('RECORDED_BROWSER_GUIDANCE'));
+    assert.ok(!inherited.includes('RECORDED_MCP_GUIDANCE'));
     assert.ok(inherited.includes('PARENT_SYSTEM_MARKER'));
     assert.ok(inherited.includes(promptString('btw.json', 'system')));
     assert.ok(!inherited.includes('unavailable in this session'), 'no additive blocked-tool notes are sent');

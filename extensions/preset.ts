@@ -4,10 +4,9 @@
  * Composes the pure preset modules into a Pi extension: it loads `presets.json`
  * (global + trusted project), exposes `/preset` and the `--preset` startup flag,
  * applies model / thinking / tools live, records a resolved snapshot on the
- * branch, and projects the preset's instruction text as a journaled system
- * section. Model/thinking/tool selection go through the public SDK session API;
- * the instruction text goes through `prompt-section-journal` so it survives
- * resume, tree navigation, fork and reload.
+ * branch, and renders its current instructions as request-local system sections.
+ * Model/thinking/tool selection use the public SDK session API; resume, tree
+ * navigation, fork and reload restore instructions from the resolved snapshot.
  *
  * Registered in `package.json` `pi.extensions`. Codemode mode is applied through
  * a `codemode-mode` branch record, which the harness loadout reads from the next
