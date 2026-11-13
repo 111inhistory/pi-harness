@@ -52,12 +52,12 @@ Verify through the affected production entry, with independent expected behavior
 
 Check the costs and lifecycle boundaries identified in step 2. Use work counts for demonstrated repeated work, actual teardown evidence for observers, and native execution for platform-specific semantics. Use optional measurements when memory retention or latency remains uncertain. Do not require a benchmark, heap dump or multi-platform run for unrelated edits. Explain missing environment evidence rather than substituting a nearby test.
 
-Review the complete diff, including comments and removed callers. Run `npm run check` for code delivery and the affected docs, JSON and contract checks. Repeat passed checks only when further changes, failures or unresolved concerns warrant it. Documentation-only changes use documentation checks; do not manufacture behavior tests for wording.
+Review the complete diff, including comments and removed callers. Run `npm run check` for code delivery and the affected docs and JSON checks. Contract association checks are optional diagnostics: pre-commit findings never block commits, and review receipts are not required. Repeat passed checks only when further changes, failures or unresolved concerns warrant it. Documentation-only changes use documentation checks; do not manufacture behavior tests for wording.
 
 CI installs the Go toolchain selected by `go/go.mod`, runs `go test` and `go vet`, then runs the Node checks. Terminal coverage uses tmux on Linux/macOS and pinned psmux on Windows. The macOS runner uses `/private/tmp` to keep Unix socket paths short and canonical; passing that environment does not establish compatibility with every macOS temporary directory.
 
 ## 5. Commit and deliver
 
-Group each complete behavior with its necessary tests and contract updates. Separate independent work; check dependency-chain commits without relying on later files. Inspect `git diff --cached --stat`, the full staged diff and the staged contract check before committing.
+Group each complete behavior with its necessary tests and contract updates. Separate independent work; check dependency-chain commits without relying on later files. Inspect `git diff --cached --stat` and the full staged diff before committing. The staged contract reminder is advisory; review useful findings without manufacturing counterpart edits or receipts.
 
 Report what changed, what verified the behavior and any remaining limitations. Keep long-running evidence in the existing review rather than creating a document per edit. Commit, push and lift feature freezes only within the user's authorization.

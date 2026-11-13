@@ -2,6 +2,7 @@
 /** Compare documented contracts and behavioral tests in HEAD and the Git index. */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
 
 const MANIFEST = 'test/contracts.json';
 const TEST_FILE = /^test\/.+\.test\.(?:ts|mjs)$/;
@@ -124,7 +125,7 @@ function associations(oldItem, newItem) {
 }
 
 function usage() {
-  return 'Usage: node scripts/check-test-contracts.mjs [--staged | --all | --review ID --reason TEXT]';
+  return 'Usage: node scripts/check-test-contracts.mjs [--staged | --all | --review ID --reason TEXT [--write]]';
 }
 
 function main() {
@@ -132,9 +133,12 @@ function main() {
   let reviewId;
   let reason;
   let all = false;
+  let writeReview = false;
   if (args.length === 1 && args[0] === '--all') all = true;
-  else if (args.length === 4 && args[0] === '--review' && args[2] === '--reason') {
+  else if ((args.length === 4 || (args.length === 5 && args[4] === '--write'))
+      && args[0] === '--review' && args[2] === '--reason') {
     reviewId = args[1]; reason = args[3];
+    writeReview = args.length === 5;
     if (reason.trim() === '') fail('Review reason must not be empty');
   } else if (args.length !== 0 && !(args.length === 1 && args[0] === '--staged')) fail(usage());
 
@@ -183,7 +187,14 @@ function main() {
   if (reviewId !== undefined) {
     if (!ids.has(reviewId)) fail(`Unknown contract: ${reviewId}`);
     const { after } = stateFor(reviewId);
-    console.log(JSON.stringify({ [reviewId]: { ...after, reason } }, null, 2));
+    const receipt = { ...after, reason };
+    if (writeReview) {
+      // Preserve unrelated working-tree edits; fingerprints still describe the index.
+      const working = parseManifest(readFileSync(MANIFEST, 'utf8'), MANIFEST);
+      working.reviews[reviewId] = receipt;
+      writeFileSync(MANIFEST, `${JSON.stringify(working, null, 2)}\n`);
+      console.log(`Updated ${MANIFEST} reviews.${reviewId}; not staged automatically.`);
+    } else console.log(JSON.stringify({ [reviewId]: receipt }, null, 2));
     return;
   }
 
@@ -208,9 +219,9 @@ function main() {
     if (docChanged && testChanged) { paired++; continue; }
     const review = newManifest.reviews[id];
     if (review?.docs === after.docs && review?.tests === after.tests) continue;
-    errors.push(`${id}: ${docChanged ? 'documented section' : 'behavioral test'} changed, but its ${docChanged ? 'tests did' : 'documented sections did'} not. Update the counterpart or explicitly review it:\n`
-      + `  node scripts/check-test-contracts.mjs --review ${id} --reason '<why no counterpart change is needed>'\n`
-      + `  Add the printed receipt to ${MANIFEST} reviews, then stage the manifest. Only staged content is checked.`);
+    errors.push(`${id}: ${docChanged ? 'documented section' : 'behavioral test'} changed, but its ${docChanged ? 'tests did' : 'documented sections did'} not. Update the counterpart if needed, or optionally record a review:\n`
+      + `  node scripts/check-test-contracts.mjs --review ${id} --reason '<why no counterpart change is needed>' --write\n`
+      + `  This updates ${MANIFEST}; stage it when desired. Pre-commit reports these findings without blocking commits.`);
   }
   if (errors.length) fail(`Test/document contract check failed:\n${errors.map(error => `- ${error}`).join('\n')}`);
   console.log(`Test/document contracts passed (${newItems.size} associations, ${paired} paired changes; ${all ? 'all indexed tests' : 'staged tests'} checked).`);

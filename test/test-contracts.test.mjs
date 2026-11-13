@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const checker = fileURLToPath(new URL('../scripts/check-test-contracts.mjs', import.meta.url));
+const hook = fileURLToPath(new URL('../.githooks/pre-commit', import.meta.url));
 const docPath = 'docs/contract.md';
 const testPath = 'test/behavior.test.ts';
 const manifestPath = 'test/contracts.json';
@@ -40,7 +41,7 @@ function repository(t) {
   git('add', '.');
   git('-c', 'core.hooksPath=/dev/null', 'commit', '--no-verify', '-qm', 'fixture baseline');
   return {
-    cwd, git, write, entry,
+    cwd, git, write, entry, run,
     read: name => readFileSync(path.join(cwd, name), 'utf8'),
     setManifest: value => { manifest = value; saveManifest(); },
     manifest: () => manifest,
@@ -133,6 +134,43 @@ test('removing a mapping cannot bypass coupling; missing and ambiguous staged he
   r.write(docPath, `${initialDoc}\n## Behavior\n\nAmbiguous second section.\n`);
   r.git('add', docPath);
   rejected(r.check(), /ambiguous heading/);
+});
+
+test('one-command review updates the working manifest without staging or losing unrelated edits', t => {
+  const r = repository(t);
+  r.write(testPath, `${r.read(testPath)}// Fixture-only change.\n`);
+  r.git('add', testPath);
+  const indexed = r.git('show', `:${manifestPath}`);
+  const unrelated = { docs: '0'.repeat(64), tests: '1'.repeat(64), reason: 'Another review.' };
+  r.setManifest({ ...r.manifest(), reviews: { other: unrelated } });
+  passed(r.check('--review', r.entry.id, '--reason', 'Fixture only.', '--write'));
+  const updated = JSON.parse(r.read(manifestPath));
+  assert.deepEqual(updated.reviews.other, unrelated);
+  assert.equal(updated.reviews[r.entry.id].reason, 'Fixture only.');
+  assert.equal(r.git('show', `:${manifestPath}`), indexed, 'the command does not stage changes');
+  rejected(r.check(), /behavioral test changed/);
+  r.git('add', manifestPath);
+  passed(r.check());
+});
+
+test('pre-commit reports contract findings without rejecting the commit', t => {
+  const r = repository(t);
+  r.write('scripts/check-test-contracts.mjs', readFileSync(checker, 'utf8'));
+  r.write('.githooks/pre-commit', readFileSync(hook, 'utf8'));
+  chmodSync(path.join(r.cwd, '.githooks/pre-commit'), 0o755);
+  r.git('config', 'core.hooksPath', '.githooks');
+  r.write(testPath, `${r.read(testPath)}// One-sided change.\n`);
+  r.git('add', testPath);
+  rejected(r.check(), /behavioral test changed/);
+  const reminder = r.run('git', ['commit', '-qm', 'fixture one-sided change']);
+  passed(reminder);
+  assert.match(reminder.stderr, /behavioral test changed/);
+  assert.match(reminder.stderr, /Contract reminder only/);
+  r.write(docPath, '# Missing associated heading\n');
+  r.git('add', docPath);
+  const malformed = r.run('git', ['commit', '-qm', 'fixture missing heading']);
+  passed(malformed);
+  assert.match(malformed.stderr, /staged heading not found/);
 });
 
 test('full audit finds untouched legacy tests without blocking unrelated staged commits', t => {

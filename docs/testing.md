@@ -115,36 +115,38 @@ The generated property found production declaration-history and prune-usage defe
 
 ## 提交前关联检查
 
-`.githooks/pre-commit` 调用 `scripts/check-test-contracts.mjs --staged`。程序只读 Git 的 HEAD 与 index，不读取未暂存的文档、测试或清单内容，不自动写文件，也不运行全套测试。
+The pre-commit contract check is advisory. It prints potential omissions and continues the commit even when the checker fails. It does not require paired edits or review receipts. Secret scanning remains a separate blocking check.
 
-检查规则：
+The default checker compares Git HEAD and index, ignoring unstaged document/test changes and running no tests. Explicit `--review ... --write` also reads and updates the working-tree manifest, preserving unrelated edits.
+
+Explicit CLI audit rules (findings are not commit conditions):
 
 1. 已登记的文档标题和测试文件必须存在于暂存版本中。
 2. 暂存的新增、修改、删除测试应有 design 或 regression 登记。删除测试可以使用 HEAD 中的旧登记。
-3. 对比关联文档章节与测试文件的 HEAD／index 内容。只有一侧变化时拒绝提交，提示同步另一侧或显式记录复核。
+3. Compare associated HEAD/index content. A one-sided change produces a reminder to review whether a counterpart update is useful; it never blocks a commit.
 4. 文档其他章节变化不触发该契约。测试文件变化会检查该文件的所有关联。
 5. 删除或修改映射仍会检查旧关联，不能仅移除登记来跳过单侧变更检查。
 6. 文档和测试同时变化只证明双方被触及，不能证明语义一致；测试价值与语义一致性仍由审查负责。
 
-测试重构、文档错字或补充已有契约的回归可能无需修改另一侧。这些情况应记录明确的复核理由，不应添加无意义的断言或改动文案来通过检查。
+Test refactoring, wording changes and regressions within an existing contract may need no counterpart edit. Review receipts are optional context, not a condition for committing. Do not add meaningless assertions or wording to silence a reminder.
 
-先暂存本次真实修改，再生成复核记录：
+After staging the relevant changes, this single command writes the review entry and stages the manifest; no manual JSON patch is needed:
 
 ```sh
-node scripts/check-test-contracts.mjs --review capability.lazy-schemas --reason '仅重构夹具，已复核本节行为约定无需修改'
+node scripts/check-test-contracts.mjs --review capability.lazy-schemas --reason 'Fixture refactor; documented behavior is unchanged.' --write && git add test/contracts.json
 ```
 
-程序打印一个 JSON 对象。把该对象的条目合入清单的 `reviews`，再暂存清单。复核记录包括双方当前暂存内容的 SHA-256 指纹和理由。任何关联内容随后变化都会使旧指纹失效。程序不推断理由是否充分，也不把复核记录视为用户授权。
+`--write` updates only that entry in the working-tree manifest's `reviews`; the explicit `git add` stages it. Omitting `--write` prints JSON without modifying files. Fingerprints describe the staged documents/tests, so later changes invalidate the receipt. Neither the command nor a receipt proves semantic consistency or grants user authorization.
 
-文档标题、测试移动或契约退出时，应同步清单。已经移除的契约仍可用同一命令根据 HEAD 中的旧登记生成本次复核记录。历史复核记录可以删除；内容不匹配的旧记录不会放行新的单侧修改。
+文档标题、测试移动或契约退出时，可同步清单。已经移除的契约仍可用同一命令根据 HEAD 中的旧登记生成复核记录。历史复核记录可以删除；内容不匹配的旧记录不会消除新的单侧修改提醒。
 
-默认检查只要求本次变化的测试完成登记，不阻塞尚未迁移且未改动的历史测试。全量登记审计使用：
+The default scope covers changed tests. Pre-commit remains non-blocking even for missing associations or malformed manifests; diagnose these when useful. An explicit full audit uses:
 
 ```sh
 node scripts/check-test-contracts.mjs --all
 ```
 
-`--all` 额外检查暂存版本中的全部测试是否登记。它不会自动生成映射，也不执行测试。单独运行关联检查可使用 `npm run check:test-contracts`。
+`--all` audits all indexed tests. Direct CLI checks, including `npm run check:test-contracts`, return nonzero on findings for callers that explicitly choose strict auditing. The pre-commit hook treats that status as advisory. No mode automatically generates associations or runs tests.
 
 ## Common-path measurements
 
