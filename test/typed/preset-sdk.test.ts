@@ -12,6 +12,8 @@
  * not expose extension flag injection.
  */
 import assert from 'node:assert/strict';
+import { setCapabilityPermissionDefaults } from '../../src/capability/scope.ts';
+import { createToolPermissionResolver } from '../../src/capability/tool-permission.ts';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -114,8 +116,11 @@ test('preset switching retains Capability tools and compaction protects the pres
   const dynamic = 'fixture_discovered';
   const manual = 'fixture_user_enabled';
   const oldDefault = 'fixture_old_default';
+  const patch = 'fixture_apply_patch';
   const presetTools = ['+codemode', '+grep', `+${pinned}`, `-${oldDefault}`];
   await writeFile(path.join(agentDir, 'presets.json'), JSON.stringify({
+    strong: { tools: [`+${patch}`] },
+    weak: { tools: ['+edit'] },
     only: { tools: presetTools, codemode: { mode: 'only' } },
     next: { tools: ['+codemode', '+find', `+${pinned}`, `-${oldDefault}`] },
     exclude: { tools: ['+codemode', `-${dynamic}`, `-${manual}`] },
@@ -137,9 +142,9 @@ test('preset switching retains Capability tools and compaction protects the pres
         { name: 'preset', factory: presetExtension },
         { name: 'preset-tools-fixture', factory(pi) {
           api = pi;
-          for (const name of [pinned, dynamic, manual, oldDefault]) pi.registerTool({
+          for (const name of [pinned, dynamic, manual, oldDefault, patch]) pi.registerTool({
             name, label: name, description: name, defaultActive: name === oldDefault,
-            ...(name === manual ? { exposure: 'deferred' as const } : {}),
+            ...([manual, patch].includes(name) ? { exposure: 'deferred' as const } : {}),
             parameters: { type: 'object', properties: {} },
             execute: async () => ({ content: [{ type: 'text', text: 'ok' }], details: {} }),
           });
@@ -174,6 +179,17 @@ test('preset switching retains Capability tools and compaction protects the pres
       isProjectTrusted: () => true,
       getSystemPrompt: () => session!.systemPrompt,
     };
+    assert.ok(api);
+    setCapabilityPermissionDefaults(api, [patch]);
+    await command.handler('strong', ctx as never);
+    assert.ok(session.getActiveToolNames().includes(patch));
+    assert.equal(createToolPermissionResolver(api, api.getAllTools(), session.sessionManager.getBranch()).enabled(patch), true);
+    await command.handler('weak', ctx as never);
+    assert.ok(!session.getActiveToolNames().includes(patch), 'switching withdraws the previous preset grant');
+    assert.equal(createToolPermissionResolver(api, api.getAllTools(), session.sessionManager.getBranch()).disabled(patch), true);
+    await command.handler('strong', ctx as never);
+    await command.handler('clear', ctx as never);
+    assert.equal(createToolPermissionResolver(api, api.getAllTools(), session.sessionManager.getBranch()).disabled(patch), true, 'clear restores the manual default');
     await command.handler('only', ctx as never);
 
     const after = session.getActiveToolNames();
@@ -213,7 +229,7 @@ test('preset switching retains Capability tools and compaction protects the pres
     assert.ok(!active.includes(dynamic), 'an unused dynamic tool is pruned');
     assert.ok(!active.includes(oldDefault), 'the preset baseline replaces Settings protection');
     assert.deepEqual([...latestPruneRecord(session.sessionManager.getBranch())!.removedTools].sort(),
-      [dynamic, oldDefault].sort());
+      [dynamic].sort(), 'the explicit minus is already disabled, not a pruning candidate');
 
     // Clearing returns pruning to Settings, without replaying the old loadout.
     await command.handler('clear', ctx as never);
@@ -236,6 +252,9 @@ test('preset switching retains Capability tools and compaction protects the pres
     await command.handler('exclude', ctx as never);
     assert.ok(!session.getActiveToolNames().includes(dynamic), 'explicit minus removes a discovered tool');
     assert.ok(!session.getActiveToolNames().includes(manual), 'explicit minus removes a user-enabled tool');
+    const excludedPermission = createToolPermissionResolver(api, api.getAllTools(), session.sessionManager.getBranch());
+    assert.equal(excludedPermission.disabled(manual), true, 'minus disables even a separately user-enabled tool');
+    assert.equal(excludedPermission.disabled(dynamic), true, 'minus prevents rediscovery of a previously discovered tool');
     api.setActiveTools([...session.getActiveToolNames(), dynamic, manual]);
     await command.handler('exact', ctx as never);
     assert.deepEqual(session.getActiveToolNames(), ['read', 'capability', 'codemode'],

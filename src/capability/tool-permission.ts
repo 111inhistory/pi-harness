@@ -14,7 +14,9 @@
  *   defaults; it never scans the retired records.
  * - Resolution precedence per tool: a canonical entry (tool > mcp > namespace
  *   > prefix, latest within a rank) outranks a config default; the config
- *   default is a `disabled` entry from `capability.manualTools`.
+ *   defaults include `disabled` from `capability.manualTools` and `enabled`
+ *   from the current Preset tool selection. Preset grants override manual seeds
+ *   and expire on switch/clear; canonical user permissions override both.\n *   A current Preset's final minus is an execution exclusion and wins over enable.
  *
  * The public query only exposes the four-state result. Provenance (which old
  * record, which rule, which seed) is internal: explicit and migrated `disabled`
@@ -28,6 +30,7 @@
  */
 
 import { independentDeclarations } from './declaration-visibility.ts';
+import { PRESET_STATE_RECORD, restorePresetSnapshot } from '../preset/state.ts';
 import {
   matchesEntry,
   parseToolPermissionTarget,
@@ -273,6 +276,8 @@ function parseRecord(data: unknown): RecordMutation | null {
 }
 
 interface ExplicitState {
+  readonly presetTools: readonly string[];
+  readonly presetDisabled: readonly string[];
   /** The live explicit assignments after replaying set/unset in branch order. */
   readonly sets: Map<string, ManagedEntry>;
   /** Ids whose latest explicit mutation is an unset tombstone. */
@@ -283,7 +288,14 @@ function explicitState(branch: readonly unknown[] | null | undefined): ExplicitS
   const sets = new Map<string, ManagedEntry>();
   const unsets = new Set<string>();
   let order = 0;
+  let presetTools: readonly string[] = [];
+  let presetDisabled: readonly string[] = [];
   for (const entry of branch ?? []) {
+    if (isRecord(entry) && entry['type'] === 'custom' && entry['customType'] === PRESET_STATE_RECORD) {
+      const preset = restorePresetSnapshot([entry]);
+      presetTools = preset?.tools ?? [];
+      presetDisabled = preset?.disabledTools ?? [];
+    }
     if (!isRecord(entry) || entry['type'] !== 'custom' || entry['customType'] !== CAPABILITY_TOOL_PERMISSION_RECORD) continue;
     const mutation = parseRecord(entry['data']);
     if (mutation === null) continue;
@@ -305,7 +317,7 @@ function explicitState(branch: readonly unknown[] | null | undefined): ExplicitS
       unsets.delete(parsed.id);
     }
   }
-  return { sets, unsets };
+  return { sets, unsets, presetTools, presetDisabled };
 }
 
 function explicitEntries(branch: readonly unknown[] | null | undefined): ManagedEntry[] {
@@ -322,7 +334,7 @@ function storedEntries(
   host: ToolPermissionHost,
   branch: readonly unknown[] | null | undefined,
 ): ManagedEntry[] {
-  const { sets, unsets } = explicitState(branch);
+  const { sets, unsets, presetTools, presetDisabled } = explicitState(branch);
   const byId = new Map<string, ManagedEntry>();
   let defaultOrder = 0;
   for (const raw of permissionDefaults(host)) {
@@ -335,12 +347,35 @@ function storedEntries(
       defaulted: true,
     });
   }
+  // Preset grants belong to the current snapshot, not permanent user rules.
+  // A switch/clear withdraws them; explicit user permissions still take priority.
+  const defaults = [...byId.values()];
+  const toolsByName = presetTools.length > 0 && defaults.length > 0
+    ? new Map(host.getAllTools().map(tool => [tool.name, tool]))
+    : new Map<string, ToolPermissionTool>();
+  for (const name of defaults.length > 0 ? presetTools : []) {
+    const target = parseToolPermissionTarget(name);
+    if (target === null) continue;
+    // Ordinary baseline tools stay unmanaged so they remain inheritable.
+    if (!findWinningEntry(defaults, toolsByName.get(name), name)) continue;
+    defaultOrder += 1;
+    byId.set(target.id, {
+      entry: { ...target, state: 'enabled', scope: 'branch' },
+      order: defaultOrder,
+      defaulted: true,
+    });
+  }
   // Canonical entries keep the order of their latest mutation. Iterating the
   // Map must not replace it with the key's original insertion order: aliases
   // (`mcp__git` / `git`) share a target, and the latest same-rank rule wins.
   for (const stored of sets.values()) {
     if (unsets.has(stored.entry.id)) continue;
     byId.set(stored.entry.id, stored);
+  }
+  for (const name of presetDisabled) {
+    const target = parseToolPermissionTarget(name);
+    if (target === null) continue;
+    byId.set(target.id, { entry: { ...target, state: 'disabled', scope: 'branch' }, order: Number.MAX_SAFE_INTEGER, defaulted: false });
   }
   return [...byId.values()];
 }
@@ -446,7 +481,10 @@ function createToolPermissionResolverWithStored(
   return {
     enabled: (name) => resolveTool(undefined, name).decision?.state === 'enabled',
     disabled: (name) => resolveTool(undefined, name).decision?.state === 'disabled',
-    seedDisabled: (name) => resolveTool(undefined, name).decision?.defaulted === true,
+    seedDisabled: (name) => {
+      const decision = resolveTool(undefined, name).decision;
+      return decision?.defaulted === true && decision.state === 'disabled';
+    },
     disabledFor: (tool) => resolveTool(tool, tool.name).decision?.state === 'disabled',
     decide: (name) => resolveTool(undefined, name).decision,
     resolve: (name, active) => resolveInfo(undefined, name, active),

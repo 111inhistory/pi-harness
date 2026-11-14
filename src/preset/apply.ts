@@ -115,6 +115,7 @@ export async function applyPresetPlan(
     ...(plan.model === undefined ? {} : { model: plan.model }),
     ...(plan.thinkingLevel === undefined ? {} : { thinkingLevel: plan.thinkingLevel }),
     ...(plan.tools === undefined ? {} : { tools: plan.tools }),
+    ...(plan.disabledTools === undefined ? {} : { disabledTools: plan.disabledTools }),
     ...(plan.codemode === undefined ? {} : { codemode: plan.codemode }),
     instructions: plan.instructions,
   };

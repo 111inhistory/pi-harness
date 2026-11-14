@@ -96,7 +96,7 @@ export function createPresetApplyHost(
       const { selected } = branchToolSelection(branch);
       const permission = createToolPermissionResolver(host.pi, host.pi.getAllTools(), branch);
       const active = host.pi.getActiveTools()
-        .filter((name) => selected.has(name) || permission.enabled(name));
+        .filter((name) => selected.has(name) || (permission.enabled(name) && !permission.decide(name)?.defaulted));
       // The same native modifiers honor explicit removals and bare-name
       // replacements; intersecting with active never resurrects an old grant.
       const retained = applyToolModifiers(active, parseToolModifiers(modifiers).tokens)

@@ -12,6 +12,17 @@ import { resolvePreset, type PresetCatalogView } from '../../src/preset/resolve.
 // is the catalog's default active set.
 const baseTools = ['read', 'bash', 'edit'];
 
+test('plain selection replaces the base and cannot mix with modifiers', () => {
+  const view: PresetCatalogView = { hasModel: () => true, allToolNames: () => [...baseTools, 'apply_patch'], baseToolSet: () => baseTools };
+  assert.deepEqual(resolvePreset('plain', { tools: ['read', 'apply_patch'] }, view).plan?.tools, ['read', 'apply_patch']);
+  for (const tools of [['read', '+apply_patch'], ['read', '-edit']]) {
+    const result = resolvePreset('mixed', { tools }, view);
+    assert.equal(result.plan, null);
+    assert.ok(result.issues.some(issue => issue.severity === 'error' && issue.kind === 'invalid_tool_modifier'));
+  }
+  assert.deepEqual(resolvePreset('minus', { tools: ['-edit'] }, view).plan?.disabledTools, ['edit']);
+});
+
 // ---- configuration loading ----
 
 function readerFrom(files: Record<string, string>): PresetFileReader {

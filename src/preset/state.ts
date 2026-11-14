@@ -49,6 +49,7 @@ export interface PresetSnapshot {
   readonly thinkingLevel?: ThinkingLevelName;
   /** Stable preset selection; excludes dynamically retained Capability tools. */
   readonly tools?: readonly string[];
+  readonly disabledTools?: readonly string[];
   readonly codemode?: { readonly mode: CodemodeMode };
   /** Resolved instruction text; null means the preset carried no instructions. */
   readonly instructions: string | null;
@@ -88,6 +89,7 @@ function parseSnapshot(raw: unknown): PresetSnapshot {
     model?: PresetModel;
     thinkingLevel?: ThinkingLevelName;
     tools?: readonly string[];
+    disabledTools?: readonly string[];
     codemode?: { readonly mode: CodemodeMode };
     instructions: string | null;
   } = { name, instructions: raw['instructions'] as string | null };
@@ -105,6 +107,11 @@ function parseSnapshot(raw: unknown): PresetSnapshot {
   if (thinkingLevel !== undefined) {
     if (typeof thinkingLevel !== 'string') malformed('snapshot.thinkingLevel must be a string');
     snapshot.thinkingLevel = thinkingLevel as ThinkingLevelName;
+  }
+  const disabledTools = raw['disabledTools'];
+  if (disabledTools !== undefined) {
+    if (!isStringArray(disabledTools)) malformed('snapshot.disabledTools must be a string array');
+    snapshot.disabledTools = disabledTools;
   }
   const tools = raw['tools'];
   if (tools !== undefined) {

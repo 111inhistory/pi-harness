@@ -214,7 +214,7 @@ Capability 调用仍等待检索完成，再返回筛选后的资源。复用执
 - 显式禁用后立即阻止后续调用；已开始的执行不自动取消，Agent 也不自动停止。Capability 发现候选、`/capability list` 与 Codemode 的 `ALL_TOOLS`、`describeTool`、`describeNamespace` 在全部模式下都不返回被禁工具及其接口信息；已记录的 `<capabilities>` 记忆段与工具指引投影同样排除。
 - 已启用且当前具有独立声明的工具被禁用后，钩子立即阻止调用，声明保留到下一次成功 compaction 再定向移除；没有独立声明的成员（按真实 loadout 的 `hiddenDeclarations` 与 `lazySchemas` mask 判定，包括 Codemode-only、生效模式 `only` 下被隐藏的 direct，以及被 lazy 组遮蔽的成员）立即从有效工具集移除，原始注册保留。
 - 解除（`reset`）写入 `unset` 标记，统一覆盖显式、显式迁移与 config 默认条目，回到 `not managed`；不自动激活工具、不授予授权。被更宽组规则覆盖的精确目标解除后仍由组规则管理，结果报告 `stillManaged`。
-- 管理状态不改变 SDK 的选择语义：`--tools -name` 不激活工具但仍注册；`--exclude-tools` 从注册表排除；Preset 修改 active 集不修改管理状态；Capability 自动发现不产生显式管理记录。
+- 管理状态不改变 SDK 的选择语义：`--tools -name` 不激活工具但仍注册；`--exclude-tools` 从注册表排除；Preset 工具选择同时提供当前快照范围的 enabled 授权，覆盖 manualTools 默认禁用，显式减项禁用优先，其余不覆盖独立用户权限；Capability 自动发现不产生显式管理记录。
 - 工具权限管理工具使用资格，不自动禁用同名扩展命令或领域控制操作。
 
 ### 模型提示与 compaction
@@ -236,7 +236,9 @@ Harness RPC 独立接口提供权限查询与用户管理适配，与用户命�
 
 `extensions/preset.ts`（随包默认加载）提供模型切换、思考级别、模型专属指引和工具选择。
 
-**配置。** 读取全局 agent 目录的 `presets.json` 与受信项目的 `.pi/presets.json`，项目同名项整体覆盖全局。每项可含 `model`（`provider`＋`id`）、`thinkingLevel`、`tools`、`codemode`（`mode`）与 `instructions`。`tools` 使用原生 `+name`／`-name`／裸名语义，始终基于会话首次启动捕获的初始工具集（原生默认工具、CLI 修饰与默认启用扩展工具，如 `capability`）计算，并记录为 Preset 工具基线；先应用 A 再应用 B 与直接应用 B 得到同一基线，跨 reload 不被前一个 Preset 污染。只有增减修饰符时，另保留当前已激活且有 Capability 发现或显式启用记录的工具；显式减项仍移除对应工具，裸名列表仍完整替换工具选择。保留的动态工具不写入 Preset 基线，继续由压缩淘汰策略管理。前后 Preset 基线比较时，若旧集合有工具不在新集合中，则下一次成功压缩执行淘汰，即使 `capability.pruneOnCompaction` 为 `false`；首次应用与初始基线比较，仅增加工具不触发，不改变全局配置。
+**配置。** 读取全局 agent 目录的 `presets.json` 与受信项目的 `.pi/presets.json`，项目同名项整体覆盖全局。每项可含 `model`（`provider`＋`id`）、`thinkingLevel`、`tools`、`codemode`（`mode`）与 `instructions`。`tools` 支持 `+name` 启用、`-name` 禁用；纯裸名列表替换 base tool 集合，禁止与任何带 `+`／`-` 前缀的项混用，混用拒绝整个 Preset 应用。工具选择始终基于会话首次启动捕获的初始工具集（原生默认工具、CLI 修饰与默认启用扩展工具，如 `capability`）计算，并记录为 Preset 工具基线；先应用 A 再应用 B 与直接应用 B 得到同一基线，跨 reload 不被前一个 Preset 污染。只有增减修饰符时，另保留当前已激活且有 Capability 发现或显式启用记录的工具；显式减项仍移除对应工具，裸名列表仍完整替换工具选择。保留的动态工具不写入 Preset 基线，继续由压缩淘汰策略管理。前后 Preset 基线比较时，若旧集合有工具不在新集合中，则下一次成功压缩执行淘汰，即使 `capability.pruneOnCompaction` 为 `false`；首次应用与初始基线比较，仅增加工具不触发，不改变全局配置。
+
+Preset 选中的 manual tool 具有 enable 语义，可声明与执行；普通基线工具保持原有继承资格。显式最终减项具有 disable 语义，覆盖用户 enable，并从发现与执行中排除。授权从当前 `preset-state` 快照派生，切换或 clear 撤销旧快照授权，不追加永久用户 enable 记录；除显式减项外，独立 `/capability` 权限记录优先；祖先与深度限制仍生效。未选中的 manual tool 继续默认禁用，不参与发现。
 
 **入口。** `/preset` 打开选择器，`/preset NAME` 应用指定项，`/preset clear`（`none`／`off`）停止管理，`--preset NAME` 在启动时应用；状态栏显示当前 Preset。这些交互入口只作用于当前 Main。Fresh routing 显式选择命名或临时 Preset，复用配置解析、应用与指引投影；Inherited 保持捕获的模型与分支状态。
 

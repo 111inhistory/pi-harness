@@ -24,7 +24,7 @@ import {
   type PresetModel,
   type ThinkingLevelName,
 } from './config.ts';
-import { applyToolModifiers, parseToolModifiers } from './modifiers.ts';
+import { applyToolModifiers, parseToolModifiers, excludedPresetTools } from './modifiers.ts';
 
 /** What the resolver needs to know about the live session. */
 export interface PresetCatalogView {
@@ -56,6 +56,7 @@ export interface PresetApplyPlan {
   readonly thinkingLevel?: ThinkingLevelName;
   /** Absolute final tool selection, when the preset configured tools. */
   readonly tools?: readonly string[];
+  readonly disabledTools?: readonly string[];
   readonly codemode?: { readonly mode: CodemodeMode };
   /** Resolved instruction text; null when the preset carries none. */
   readonly instructions: string | null;
@@ -92,6 +93,9 @@ export function resolvePreset(name: string, preset: PresetConfig, view: PresetCa
     for (const raw of parsed.invalid) {
       issues.push({ severity: 'warning', kind: 'invalid_tool_modifier', detail: `ignored tool token "${raw}"` });
     }
+    if (parsed.tokens.some(token => token.op === '=') && parsed.tokens.some(token => token.op !== '=')) {
+      issues.push({ severity: 'error', kind: 'invalid_tool_modifier', detail: 'plain tool names cannot be mixed with + or - modifiers' });
+    }
     const known = new Set(view.allToolNames());
     const resolved = applyToolModifiers(view.baseToolSet(), parsed.tokens);
     const kept: string[] = [];
@@ -113,7 +117,7 @@ export function resolvePreset(name: string, preset: PresetConfig, view: PresetCa
     name,
     ...(model === undefined ? {} : { model }),
     ...(preset.thinkingLevel === undefined ? {} : { thinkingLevel: preset.thinkingLevel }),
-    ...(tools === undefined ? {} : { tools }),
+    ...(tools === undefined ? {} : { tools, disabledTools: excludedPresetTools(preset.tools) }),
     ...(preset.codemode === undefined ? {} : { codemode: preset.codemode }),
     instructions: preset.instructions ?? null,
   };
