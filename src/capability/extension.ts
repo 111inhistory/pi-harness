@@ -72,7 +72,7 @@ import { capabilityPruneSections } from './compaction-context.ts';
 import { recordCompactionPruning } from './pruning.ts';
 import { appendDiscoveryRecord } from "./discovery-record.ts";
 import { installNativeDiscoveryBoundary } from "./native-discovery.ts";
-import { createEligibleToolCatalog, retainEligibleSelectedTools, retainReachableSelectedTools, supplySelectedToolInterfaces } from "./tool-catalog.ts";
+import { createEligibleToolCatalog, retainSelectedToolMembers, retainReachableSelectedTools, supplySelectedToolInterfaces } from "./tool-catalog.ts";
 import { activateToolNames, codemodeAvailable, toolReachability } from "./activation.ts";
 import { activeToolsAfterDisabled, createToolPermissionResolver, noticedToolPermissionNames } from "./tool-permission.ts";
 import type { ToolGuidance } from "../tool-guidance.ts";
@@ -435,7 +435,9 @@ export default function capabilityExtension(
                 lazySelectedNames(pi, config, activation.active, ctx.sessionManager.getBranch()),
               );
             } catch (error) {
-              result = retainSelectedTools(pi, result, "activation", new Set(pi.getActiveTools()));
+              const active = new Set(pi.getActiveTools());
+              const eligible = createEligibleToolCatalog(pi).names;
+              result = retainSelectedTools(pi, result, "activation", new Set([...active].filter(name => eligible.has(name))));
               result = withOuterWarnings(result, [`selected tools could not be activated: ${errorMessage(error)}`]);
             }
           } else if (result.status !== "failed") {
@@ -568,7 +570,11 @@ function activateSelectedTools(pi: ExtensionAPI, result: CapabilityDiscoveryResu
   });
   const kindOf = new Map(named.map((hit) => [hit.name, hit.kind]));
   const warnings: string[] = [];
+  // Reuse activation's decisions, including a rejected name that was already
+  // active. The SDK active set alone does not grant current scope eligibility.
+  const active = new Set(outcome.active);
   for (const skip of outcome.skipped) {
+    active.delete(skip.name);
     if (skip.reason === "not_registered" && kindOf.get(skip.name) === "tool") {
       warnings.push(`selected tool "${skip.name}" is not registered in this session`);
     }
@@ -576,7 +582,7 @@ function activateSelectedTools(pi: ExtensionAPI, result: CapabilityDiscoveryResu
     if (skip.reason === "disabled") warnings.push(`selected tool "${skip.name}" is disabled by the tool permission`);
     if (skip.reason === "unreachable") warnings.push(`selected tool "${skip.name}" has no usable call path because Codemode is not enabled in this session`);
   }
-  return { activated: outcome.activated, warnings, active: outcome.active };
+  return { activated: outcome.activated, warnings, active };
 }
 
 /**
@@ -593,10 +599,9 @@ function retainSelectedTools(
   active?: ReadonlySet<string>,
 ): CapabilityDiscoveryResult {
   if (result.status === "failed") return result;
-  const retained = retainEligibleSelectedTools(
+  const retained = retainSelectedToolMembers(
     result,
-    pi,
-    active === undefined ? {} : { active },
+    active ?? createEligibleToolCatalog(pi).names,
   );
   if (retained.dropped.length === 0) return result;
   const names = [...new Set(retained.dropped)];

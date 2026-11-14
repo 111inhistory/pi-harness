@@ -100,16 +100,6 @@ export interface RetainedSelectedTools<TResult> {
   readonly retained: number;
 }
 
-/**
- * The current eligible catalog, optionally narrowed to the tools that are
- * actually active after activation. Already-active selection semantics are
- * preserved: a tool that is active may stay published even when it was active
- * before this call.
- */
-export interface RetainedSelectionOptions {
-  readonly active?: ReadonlySet<string>;
-}
-
 function isSelectedToolHit(value: unknown): value is SelectedToolHit {
   return typeof value === "object" && value !== null;
 }
@@ -120,36 +110,31 @@ function selectedName(hit: SelectedToolHit): string {
 }
 
 /**
- * Re-read current eligibility for a completed selection before it is persisted
- * or activated.
+ * Filter a completed selection before persistence, or project the authoritative
+ * active set returned by activation without rechecking its eligibility.
  *
- * The search result is a snapshot. A tool can be unregistered, hidden or denied
- * between the search and publication, so every selected tool member is checked
- * against one fresh eligible catalog. Group hits lose the members that no longer
- * qualify and keep a recomputed `toolCount`; a group without members is dropped.
+ * Discovery spans asynchronous model calls, during which MCP registration or
+ * permissions may change. Before persistence use a fresh eligible catalog; after
+ * synchronous activation use its actual active set. Group hits lose excluded
+ * members and keep a recomputed `toolCount`; empty groups are dropped.
  * Non-tool identities (for example a server-level ref) and skills are not tool
  * members and stay untouched.
  */
-export function retainEligibleSelectedTools<
+export function retainSelectedToolMembers<
   TResult extends {
     readonly tools: readonly THit[];
     readonly mcp: readonly THit[];
   },
   THit extends SelectedToolHit,
-  TTool extends CapabilityScopedTool,
 >(
   result: TResult,
-  catalog: TypedToolCatalog<TTool>,
-  options: RetainedSelectionOptions = {},
+  eligible: ReadonlySet<string>,
 ): RetainedSelectedTools<TResult> {
-  const eligible = createEligibleToolCatalog(catalog).byName;
-  const active = options.active;
   const dropped: string[] = [];
   let selected = 0;
   let retainedCount = 0;
   const qualifies = (hit: SelectedToolHit): boolean => {
-    if (typeof hit.name !== "string" || !eligible.has(hit.name)) return false;
-    return active === undefined || active.has(hit.name);
+    return typeof hit.name === "string" && eligible.has(hit.name);
   };
   const retainHit = (hit: THit): THit | null => {
     if (Array.isArray(hit.tools)) {
@@ -203,7 +188,7 @@ export interface ReachableSelectedTools<TResult> {
  * Drop selected tool members the session cannot call.
  *
  * Eligibility (registered, permitted, not hidden) is handled by
- * {@link retainEligibleSelectedTools}; this keeps the orthogonal question of
+ * {@link retainSelectedToolMembers}; this keeps the orthogonal question of
  * reachability: whether an already-eligible member has any execution entry the
  * model can use. A member whose entry depends on a disabled capability is
  * dropped here, before the discovery record is written, while non-tool

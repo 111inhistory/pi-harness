@@ -16,7 +16,7 @@ import { CAPABILITY_DISCOVERY_RECORD } from "../../src/capability/discovery-reco
 import { capabilityAllowsTool, setCapabilityParent } from "../../src/capability/scope.ts";
 import {
   createEligibleToolCatalog,
-  retainEligibleSelectedTools,
+  retainSelectedToolMembers,
   supplySelectedToolInterfaces,
   type CapabilityInterfaceTool,
   type TypedToolCatalog,
@@ -304,7 +304,7 @@ test("a completed selection is refreshed against the current eligible catalog be
     warnings: ["search diagnostic"],
   };
 
-  const retained = retainEligibleSelectedTools(result, child.catalog);
+  const retained = retainSelectedToolMembers(result, createEligibleToolCatalog(child.catalog).names);
   assert.deepEqual(retained.result.tools.map((hit) => hit.ref), ["tool://read", "namespace://mixed", "mcp://server"]);
   assert.equal(retained.result.tools[1]?.toolCount, 1, "the group count reflects only retained members");
   assert.deepEqual(retained.result.tools[1]?.tools?.map((hit) => hit.name), ["read"]);
@@ -315,9 +315,9 @@ test("a completed selection is refreshed against the current eligible catalog be
   assert.deepEqual(retained.result.warnings, ["search diagnostic"]);
   assert.equal(result.tools.length, 6, "the earlier search snapshot is never mutated");
 
-  const active = retainEligibleSelectedTools(result, child.catalog, { active: new Set(["read"]) });
+  const active = retainSelectedToolMembers(result, new Set(["read"]));
   assert.deepEqual(active.result.tools.map((hit) => hit.ref), ["tool://read", "namespace://mixed", "mcp://server"]);
-  const inactive = retainEligibleSelectedTools(result, child.catalog, { active: new Set() });
+  const inactive = retainSelectedToolMembers(result, new Set<string>());
   assert.deepEqual(inactive.result.tools.map((hit) => hit.ref), ["mcp://server"], "server identities are not activatable members");
   assert.equal(inactive.retained, 0);
   assert.equal(inactive.selected, 8);
