@@ -15,18 +15,35 @@ const ControlTimeoutMs = 20000
 // CommandResult is the result of one backend control command.
 type CommandResult = proc.Result
 
+// ServerState is the backend's tri-state answer. Suspect means the transport
+// refused or the path was absent, which is never by itself proof that the
+// server process exited.
+type ServerState int
+
+const (
+	ServerRunning ServerState = iota
+	ServerStopped
+	ServerSuspect
+	ServerMissing
+	ServerUnknown
+)
+
 // ShellBackend is the task's terminal multiplexer.
 type ShellBackend interface {
 	Kind() string
 	AssertAvailable()
 	Run(dir string, args []string, stdin *string) CommandResult
-	KillServer(dir string)
-	ServerRunning(dir string) bool
-	Start(dir string, selfArgv []string, rawPath string)
+	RunOk(dir string, args []string, code string, stdin *string) CommandResult
+	KillServer(dir string) error
+	KillServerWithin(dir string, timeoutMs int) error
+	ServerState(dir string, timeoutMs int) (ServerState, error)
+	ServerPid(dir string) (int, error)
+	Start(dir string, selfArgv []string, rawPath string, afterBind func() error)
 	SendInput(dir string, input string)
 	SendKey(dir string, key string)
 	PaneGone(dir string) bool
 	OwnsProcess(pid int, marker string, dir string) bool
+	OwnsProcessWithin(pid int, marker string, dir string, timeoutMs int) bool
 }
 
 // ControlClient issues one control command against a task's server.

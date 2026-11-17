@@ -513,15 +513,17 @@ func createTask(options CreateTaskOptions) ShellResult {
 	}
 	var id string
 	var dir string
+	var directoryIdentity ownershipID
 	for {
 		entropy := make([]byte, 4)
 		if _, err := rand.Read(entropy); err != nil {
 			panic(err)
 		}
 		id = "job_" + hexEncode(entropy)
-		dir = taskDirectory(id, root)
-		err := os.Mkdir(dir, 0o700)
+		created, identity, err := createOwnedDirectory(root, id)
 		if err == nil {
+			dir = created
+			directoryIdentity = identity
 			break
 		}
 		if !os.IsExist(err) {
@@ -537,6 +539,11 @@ func createTask(options CreateTaskOptions) ShellResult {
 	writeJSONAtomic(paths.Task, task)
 	writePrivateFile(paths.Raw, nil)
 	writePrivateFile(paths.Filtered, nil)
+	// Identity lives outside the replaceable task directory and is captured from
+	// the fd used to allocate that directory, before any backend action.
+	if err := recordDirectoryOwnership(root, dir, directoryIdentity); err != nil {
+		panic(err)
+	}
 
 	if options.Callback != nil {
 		r := sendFrame(*options.Callback, AsyncShellRegisterFrame{Kind: AsyncShellKind, Token: options.Callback.Token, Operation: "register", ID: id, Directory: dir, PID: os.Getpid()})
@@ -553,10 +560,18 @@ func createTask(options CreateTaskOptions) ShellResult {
 	}
 
 	failed := func(message string) ShellResult {
-		backend.KillServer(dir)
-		state := taskState{ID: id, Status: StatusFailed, ExitCode: nil, CreatedAt: createdAt, FinalizedAt: int64Ptr(nowMs())}
+		status := StatusFailed
+		if releaseErr := releaseTaskBackend(dir); releaseErr != nil {
+			status = StatusInternalError
+			appendPrivateFile(paths.Filtered, []byte("async-shell: cleanup unknown: "+messageOf(releaseErr)+"\n"))
+		}
+		state := taskState{ID: id, Status: status, ExitCode: nil, CreatedAt: createdAt, FinalizedAt: int64Ptr(nowMs())}
 		appendPrivateFile(paths.Filtered, []byte("async-shell: "+message+"\n"))
 		writeState(paths, state)
+		if status == StatusFailed {
+			// A clean no-server failure has no resource fence left.
+			writePrivateFile(paths.Closed, nil)
+		}
 		return consumeOutput(paths, state)
 	}
 
@@ -565,7 +580,10 @@ func createTask(options CreateTaskOptions) ShellResult {
 		if selfErr != nil {
 			panic(selfErr)
 		}
-		backend.Start(dir, selfArgv, paths.Raw)
+		if err := markBindUnknown(root, id); err != nil {
+			panic(err)
+		}
+		backend.Start(dir, selfArgv, paths.Raw, func() error { return recordBoundOwnership(root, dir) })
 		// Go equivalent of node execPath + execArgv + script: the binary re-runs
 		// itself with the internal mode and the task directory.
 		monitorArgs := []string{"__monitor", dir}
@@ -582,6 +600,9 @@ func createTask(options CreateTaskOptions) ShellResult {
 		}
 	})
 	if r != nil {
+		if aserr.Code(r) == "session_failed" {
+			_ = markBindNone(root, id)
+		}
 		result := failed(messageOf(r))
 		if options.Callback != nil {
 			if sendErr := sendFrame(*options.Callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, Token: options.Callback.Token, Operation: "complete", ID: id, Notify: false, Result: result}); sendErr != nil {
@@ -689,42 +710,78 @@ func cancelTask(dir string, rootArg ...string) {
 		panic(checkErr)
 	}
 	paths := taskPaths(checked)
+	cleanupErr := func(err error) {
+		panic(aserr.New("cancel_incomplete", "Task "+filepath.Base(checked)+" cleanup is incomplete: "+messageOf(err)))
+	}
+	// The sidecar and task directory are the ownership root for every later
+	// read and signal. Refuse before touching task.json/monitor.pid or signalling
+	// a monitor if that identity is not proven.
+	verifyCancelOwnership := func() {
+		if _, err := verifyTaskOwnership(root, paths.Dir); err != nil {
+			cleanupErr(err)
+		}
+	}
+	verifyCancelOwnership()
 	if exists(paths.Closed) {
+		if err := releaseTaskBackend(paths.Dir); err != nil {
+			cleanupErr(err)
+		}
 		return
 	}
 	task := readTaskFile(paths)
 	writePrivateFile(paths.Cancel, nil)
-	backend.KillServer(paths.Dir)
-	if waitForClose(paths, 400) {
-		return
-	}
-	if backend.ServerRunning(paths.Dir) {
-		panic(aserr.New("cancel_incomplete", "The multiplexer server of task "+task.ID+" did not stop."))
-	}
 
-	// The monitor is the only finalizer; only signal a pid that proves it is ours.
+	// The monitor is the only finalizer while it is provably alive. Do not act
+	// destructively in parallel with it: wait for its closed marker first.
 	monitorPid := readPid(paths.MonitorPid)
-	ours := monitorPid != nil && alive(*monitorPid) && backend.OwnsProcess(*monitorPid, "__monitor", paths.Dir)
-	if ours && waitForClose(paths, CancelWaitMs) {
-		return
-	}
-	if ours && monitorPid != nil {
-		_ = caught(func() { _ = proc.Kill(*monitorPid, "SIGKILL") })
-		if waitForClose(paths, 2000) {
+	if monitorPid != nil && alive(*monitorPid) {
+		// Wait without destructive action while the monitor may still finalize.
+		if waitForClose(paths, CancelWaitMs) {
+			if err := releaseTaskBackend(paths.Dir); err != nil {
+				cleanupErr(err)
+			}
 			return
 		}
-	}
-	if waitForClose(paths, 200) {
-		return
+		if exists(paths.Closed) {
+			if err := releaseTaskBackend(paths.Dir); err != nil {
+				cleanupErr(err)
+			}
+			return
+		}
+		// Re-prove ownership immediately before SIGKILL; the pid or task
+		// directory may have been reused/replaced during the wait. Unknown/false
+		// never signals. A monitor that exited without closing leaves no live
+		// finalizer, so release can run.
+		if alive(*monitorPid) {
+			verifyCancelOwnership()
+			owned := false
+			_ = caught(func() {
+				owned = backend.OwnsProcessWithin(*monitorPid, "__monitor", paths.Dir, CancelControlTimeoutMs)
+			})
+			if !owned {
+				if alive(*monitorPid) {
+					cleanupErr(aserr.New("monitor_unknown", "the monitor ownership is not proven after the wait"))
+				}
+			} else {
+				// The ownership call above can take up to 5s; re-read the task
+				// directory/sidecar identity immediately before the signal too.
+				verifyCancelOwnership()
+				_ = caught(func() { _ = proc.Kill(*monitorPid, "SIGKILL") })
+				deadline := nowMs() + 2000
+				for alive(*monitorPid) && nowMs() < deadline {
+					sleep(10)
+				}
+				if alive(*monitorPid) {
+					cleanupErr(aserr.New("monitor_alive", "the monitor did not exit after SIGKILL"))
+				}
+			}
+		}
 	}
 
-	if backend.ServerRunning(paths.Dir) {
-		panic(aserr.New("cancel_incomplete", "The multiplexer server of task "+task.ID+" is still running."))
+	// No live monitor owns finalization now: one release path, no retry.
+	if err := releaseTaskBackend(paths.Dir); err != nil {
+		cleanupErr(err)
 	}
-	if monitorPid != nil && alive(*monitorPid) && backend.OwnsProcess(*monitorPid, "__monitor", paths.Dir) {
-		panic(aserr.New("cancel_incomplete", "The monitor of task "+task.ID+" did not report cleanup."))
-	}
-
 	state := readStateFile(paths, task)
 	if state.Status == StatusRunning {
 		writeState(paths, taskState{ID: task.ID, Status: StatusCancelled, ExitCode: nil, CreatedAt: task.CreatedAt, FinalizedAt: int64Ptr(nowMs())})
@@ -838,7 +895,11 @@ func MonitorMain(dir string) {
 			})
 			state := taskState{ID: safe.ID, Status: StatusInternalError, ExitCode: nil, CreatedAt: safe.CreatedAt, FinalizedAt: int64Ptr(nowMs())}
 			_ = caught(func() { writeState(paths, state) })
-			_ = caught(func() { backend.KillServer(dir) })
+			if releaseErr := releaseTaskBackend(dir); releaseErr != nil {
+				_ = caught(func() {
+					appendPrivateFile(paths.Filtered, []byte("async-shell: cleanup unknown: "+messageOf(releaseErr)+"\n"))
+				})
+			}
 			if !frameAttempted {
 				var callback *CallbackTarget
 				_ = caught(func() { callback = CallbackFromEnv() })
@@ -973,10 +1034,14 @@ func MonitorMain(dir string) {
 			appendPrivateFile(paths.Filtered, []byte("async-shell: the task exited without reporting a status\n"))
 		}
 
+		if releaseErr := releaseTaskBackend(dir); releaseErr != nil {
+			status = StatusInternalError
+			exitCode = nil
+			appendPrivateFile(paths.Filtered, []byte("async-shell: cleanup unknown: "+messageOf(releaseErr)+"\n"))
+		}
 		finalizedAt := nowMs()
 		state := taskState{ID: task.ID, Status: status, ExitCode: exitCode, CreatedAt: task.CreatedAt, FinalizedAt: int64Ptr(finalizedAt)}
 		writeState(paths, state)
-		backend.KillServer(dir)
 
 		callback := CallbackFromEnv()
 		if callback != nil {
@@ -988,7 +1053,9 @@ func MonitorMain(dir string) {
 			frameAttempted = true
 			_ = sendFrame(*callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, Token: callback.Token, Operation: "complete", ID: task.ID, Notify: decision == "async", Result: result})
 		}
-		writePrivateFile(paths.Closed, nil)
+		if status != StatusInternalError {
+			writePrivateFile(paths.Closed, nil)
+		}
 	}
 
 	for {
@@ -1006,7 +1073,6 @@ func MonitorMain(dir string) {
 		}
 		if (cancelled || timedOut) && !closing {
 			closing = true
-			backend.KillServer(dir)
 		}
 
 		if !closing {

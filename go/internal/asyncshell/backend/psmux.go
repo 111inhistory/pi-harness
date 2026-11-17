@@ -3,9 +3,11 @@
 package backend
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"pijob/internal/asyncshell/aserr"
 	"pijob/internal/asyncshell/proc"
@@ -49,14 +51,18 @@ type WindowsBackend struct{}
 
 func (WindowsBackend) Kind() string { return "windows" }
 
-func (WindowsBackend) Run(dir string, args []string, stdin *string) CommandResult {
+func (WindowsBackend) runWithTimeout(dir string, args []string, timeoutMs int, stdin *string) CommandResult {
 	full := append([]string{"-L", labelOf(dir)}, args...)
-	timeout := ControlTimeoutMs
+	timeout := timeoutMs
 	result := proc.Run(psmuxBinary, full, proc.Options{TimeoutMs: &timeout, Input: stdin, Hide: true})
 	if result.Error != nil {
 		panic(aserr.New("psmux_unavailable", describeWin(result.Error)))
 	}
 	return CommandResult{Code: result.Code, Stdout: result.Stdout, Stderr: result.Stderr}
+}
+
+func (WindowsBackend) Run(dir string, args []string, stdin *string) CommandResult {
+	return WindowsBackend{}.runWithTimeout(dir, args, ControlTimeoutMs, stdin)
 }
 
 func (WindowsBackend) RunOk(dir string, args []string, code string, stdin *string) CommandResult {
@@ -122,13 +128,56 @@ func (WindowsBackend) AssertAvailable() {
 	}
 }
 
-func (WindowsBackend) KillServer(dir string) {
-	WindowsBackend{}.Run(dir, []string{"kill-server"}, nil)
+func (WindowsBackend) KillServerWithin(dir string, timeoutMs int) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = aserr.AsError(recovered)
+		}
+	}()
+	result := WindowsBackend{}.runWithTimeout(dir, []string{"kill-server"}, timeoutMs, nil)
+	if result.Code == nil || *result.Code != 0 {
+		return fmt.Errorf("psmux kill-server failed: %s", strings.TrimSpace(result.Stderr))
+	}
+	return nil
 }
 
-func (WindowsBackend) ServerRunning(dir string) bool {
-	result := WindowsBackend{}.Run(dir, []string{"list-sessions"}, nil)
-	return result.Code != nil && *result.Code == 0
+func (WindowsBackend) KillServer(dir string) error {
+	return WindowsBackend{}.KillServerWithin(dir, ControlTimeoutMs)
+}
+
+// ServerState accepts only an explicit no-server answer as stopped. "no
+// sessions" does not prove the server exited. Spawn errors and timeouts return
+// ServerUnknown/error instead of panicking past this classification.
+func (WindowsBackend) ServerState(dir string, timeoutMs int) (state ServerState, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			state = ServerUnknown
+			err = aserr.AsError(recovered)
+		}
+	}()
+	if timeoutMs <= 0 {
+		return ServerUnknown, nil
+	}
+	result := WindowsBackend{}.runWithTimeout(dir, []string{"list-sessions"}, timeoutMs, nil)
+	if result.Code != nil && *result.Code == 0 {
+		return ServerRunning, nil
+	}
+	if isExplicitNoServer(result.Stderr) {
+		return ServerStopped, nil
+	}
+	return ServerUnknown, fmt.Errorf("cannot determine the psmux server state: %s", strings.TrimSpace(result.Stderr))
+}
+
+func (WindowsBackend) ServerPid(dir string) (int, error) {
+	result := WindowsBackend{}.runWithTimeout(dir, []string{"display-message", "-p", "#{pid}"}, ControlTimeoutMs, nil)
+	if result.Code == nil || *result.Code != 0 {
+		return 0, fmt.Errorf("psmux display-message failed: %s", strings.TrimSpace(result.Stderr))
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(result.Stdout))
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("psmux returned an invalid server pid: %q", strings.TrimSpace(result.Stdout))
+	}
+	return pid, nil
 }
 
 // captureSink is TS captureSink: the server writes the pane's raw bytes; no shell.
@@ -139,9 +188,12 @@ func captureSink(rawPath string) string {
 	return `cat >> "` + rawPath + `"`
 }
 
-func (WindowsBackend) Start(dir string, selfArgv []string, rawPath string) {
+func (WindowsBackend) Start(dir string, selfArgv []string, rawPath string, afterBind func() error) {
 	newArgs := append([]string{"new-session", "-d", "-s", Session, "-x", "200", "-y", "50", "--"}, selfArgv...)
 	WindowsBackend{}.RunOk(dir, newArgs, "session_failed", nil)
+	if err := afterBind(); err != nil {
+		panic(err)
+	}
 	WindowsBackend{}.RunOk(dir, []string{"pipe-pane", "-o", "-t", Session, captureSink(rawPath)}, "capture_failed", nil)
 }
 
@@ -162,9 +214,17 @@ func (WindowsBackend) PaneGone(dir string) bool {
 }
 
 // shellForQuery is TS shellForQuery: pwsh when present, else Windows PowerShell.
-func shellForQuery() []string {
+func shellForQueryWithin(timeoutMs int) []string {
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 	for _, candidate := range []string{"pwsh", "powershell"} {
-		timeout := 5000
+		remaining := int(time.Until(deadline).Milliseconds())
+		if remaining <= 0 {
+			break
+		}
+		timeout := remaining
+		if timeout > 5000 {
+			timeout = 5000
+		}
 		probe := proc.Run(candidate, []string{"-NoProfile", "-NonInteractive", "-Command", "exit 0"}, proc.Options{TimeoutMs: &timeout, Hide: true})
 		if probe.Error == nil && probe.Code != nil && *probe.Code == 0 {
 			return []string{candidate, "-NoProfile", "-NonInteractive", "-Command"}
@@ -174,10 +234,16 @@ func shellForQuery() []string {
 		"Neither pwsh nor Windows PowerShell could be started to inspect process ownership; the task fence is kept."))
 }
 
+func shellForQuery() []string { return shellForQueryWithin(ownershipTimeoutMs) }
+
 const ownershipScriptPrefix = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)"
 
-func (WindowsBackend) OwnsProcess(pid int, marker string, dir string) bool {
-	shell := shellForQuery()
+func (WindowsBackend) OwnsProcessWithin(pid int, marker string, dir string, timeoutMs int) bool {
+	if timeoutMs <= 0 {
+		panic(aserr.New("process_inspection_failed", "No time remains to inspect pid "+strconv.Itoa(pid)+"."))
+	}
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	shell := shellForQueryWithin(timeoutMs)
 	script := strings.Join([]string{
 		ownershipScriptPrefix,
 		`$p = Get-CimInstance Win32_Process -Filter "ProcessId=` + strconv.Itoa(pid) + `" -ErrorAction Stop`,
@@ -187,7 +253,13 @@ func (WindowsBackend) OwnsProcess(pid int, marker string, dir string) bool {
 		"[Console]::Out.Write($answer)",
 	}, "; ")
 	args := append(append([]string{}, shell[1:]...), script)
-	timeout := ownershipTimeoutMs
+	timeout := int(time.Until(deadline).Milliseconds())
+	if timeout <= 0 {
+		panic(aserr.New("process_inspection_failed", "No time remains to inspect pid "+strconv.Itoa(pid)+"."))
+	}
+	if timeout > ownershipTimeoutMs {
+		timeout = ownershipTimeoutMs
+	}
 	probe := proc.Run(shell[0], args, proc.Options{TimeoutMs: &timeout, Hide: true})
 	if probe.Error != nil {
 		panic(aserr.New("process_inspection_failed", "Could not inspect pid "+strconv.Itoa(pid)+": "+describeWin(probe.Error)))
@@ -208,6 +280,10 @@ func (WindowsBackend) OwnsProcess(pid int, marker string, dir string) bool {
 	}
 	command := strings.TrimPrefix(answer, "cmd:")
 	return strings.Contains(command, marker) && strings.Contains(command, dir)
+}
+
+func (WindowsBackend) OwnsProcess(pid int, marker string, dir string) bool {
+	return WindowsBackend{}.OwnsProcessWithin(pid, marker, dir, ControlTimeoutMs)
 }
 
 // Default is tmux.ts's `backend` selection for Windows builds.
