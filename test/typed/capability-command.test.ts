@@ -48,6 +48,7 @@ function drivePicker(steps: readonly string[]) {
       'tui.select.up': '\x1b[A', 'tui.select.down': '\x1b[B',
       'tui.select.confirm': '\r', 'tui.select.cancel': '\x1b',
       'tui.editor.cursorLeft': '\x1b[D', 'tui.editor.cursorRight': '\x1b[C',
+      'tui.input.tab': '\t',
     };
     const component = factory(
       { requestRender() {} },
@@ -334,7 +335,7 @@ test('base overrides a local blacklist until base removal; the raw ban then resu
 
 test('an activate picker selects through the hierarchical component and cancellation writes nothing', async () => {
   const fixture = capabilityHost(tools, [], 'all');
-  const command = capabilityCommand(fixture, { custom: drivePicker(['\x1b[B', ' ', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\r']) });
+  const command = capabilityCommand(fixture, { custom: drivePicker(['\x1b[B', '\t', '\x1b[B', '\x1b[B', '\x1b[B', '\x1b[B', '\r']) });
   await command.run('activate');
   assert.ok(fixture.activeNames().includes('deck_pages'));
 
@@ -349,7 +350,7 @@ test('an activate picker selects through the hierarchical component and cancella
 test('a deactivate picker offers only dynamic members', async () => {
   const { fixture } = install(tools, ['codemode']);
   await capabilityCommand(fixture).run('activate script_only');
-  const command = capabilityCommand(fixture, { custom: drivePicker([' ', '\x1b[B', '\r']) });
+  const command = capabilityCommand(fixture, { custom: drivePicker(['\t', '\x1b[B', '\r']) });
   await command.run('deactivate');
   assert.equal(fixture.activeNames().includes('script_only'), false);
 });
@@ -376,7 +377,7 @@ test('deactivate picker emits exact selected names, never a namespace modifier',
   const { fixture } = install(tools, ['codemode']);
   await capabilityCommand(fixture).run('activate namespace://subagent[ns] msg_write subagent_list');
   const command = capabilityCommand(fixture, {
-    custom: drivePicker(['\x1b[C', ' ', '\x1b[D', '\x1b[B', '\r']),
+    custom: drivePicker(['\x1b[C', '\t', '\x1b[D', '\x1b[B', '\r']),
   });
   await command.run('deactivate');
   const text = command.notifications.at(-1)?.text ?? '';

@@ -16,7 +16,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import type { AutocompleteItem } from '@earendil-works/pi-tui';
 
-import { createCapabilityPicker } from '../tui/capability-picker.ts';
+import { createCapabilityPicker, requiredPickerTerminalRows } from '../tui/capability-picker.ts';
 
 import {
   addBaseTools,
@@ -184,10 +184,13 @@ Picker
   activate/deactivate with no targets opens a one-page hierarchical multi-select: standalone tools,
   namespaces and MCP servers. Root Up/Down moves among siblings; Right enters a container, Left returns
   and remembers its child cursor. PageUp/PageDown moves siblings, Home/End jumps to first/last sibling.
-  Tab focuses a capability field and Space changes it: tool selection/schema, container load/schema.
-  Rows show config defaults separately from explicit branch overrides and actual withholding; long
-  member lists fold with "...N tools remain" and navigation reveals the range. Enter confirms once;
-  browse/cancel never writes.`;
+  Tab selects a tool or bulk-toggles a container's members; child Tab toggles one member.
+  On a container only, Space cycles its schema default/lazy/no-lazy.
+  Every root container previews up to seven members with an indented "...N tools remain" summary;
+  entering it shows the full scrolling member list without other containers. Container rows show
+  compact config, explicit override and actual state. Enter confirms once; browse/cancel never writes.
+  The picker needs 12 terminal rows (8 picker + 4 host reserve); below that it shows a read-only
+  refusal line and only Esc cancels.`;
 const LIST_USAGE = 'Usage: /capability list [--activatable] [--usable] [--filter=<text>]';
 const TARGET_USAGE = 'Usage: /capability base add|remove <targets> | blacklist add|remove <targets> | activate|deactivate [targets]';
 
@@ -385,7 +388,10 @@ async function pickTargets(
 ): Promise<readonly string[] | null> {
   const result = queryToolAccess(pi, branch, pi.getActiveTools(),
     mode === 'activate' ? { includeActivatable: true, schemaRefs } : { schemaRefs });
-  if (result.entries.every((entry) => mode === 'activate' ? !entry.activatable : !entry.dynamic)) {
+  const hasCandidate = result.entries.some((entry) => mode === 'activate'
+    ? entry.activatable || entry.usable || (entry.base && entry.blacklisted)
+    : entry.dynamic);
+  if (!hasCandidate) {
     ctx.ui.notify(mode === 'activate'
       ? 'No activatable tools are registered in this scope.'
       : 'No dynamically activated tools are recorded on this branch.', 'info');
