@@ -20,7 +20,7 @@ import {
   type Terminal,
 } from '@earendil-works/pi-tui';
 
-import { BtwPanel, type BtwPanelOptions } from '../../src/btw/panel.ts';
+import { BtwPanel, type BtwPanelOptions } from '../../src/tui/btw-panel.ts';
 
 /** Public `Terminal` that records writes and replays input and resize events. */
 class RecordingTerminal implements Terminal {

@@ -13,7 +13,7 @@ import {
   type TuiMouseEvent,
 } from '@earendil-works/pi-tui';
 
-import { BtwPanel, type BtwPanelOptions } from '../../src/btw/panel.ts';
+import { BtwPanel, type BtwPanelOptions } from '../../src/tui/btw-panel.ts';
 
 class FakeTui {
   readonly terminal = { rows: 20, columns: 80 };

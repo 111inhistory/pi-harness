@@ -20,7 +20,7 @@ import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS, type TUI 
 import { mkdir, writeFile } from 'node:fs/promises';
 import { registerSessionResourceCleanup } from '@earendil-works/pi-ai';
 import { installBtwCommand } from '../../src/btw/command.ts';
-import type { BtwPanel } from '../../src/btw/panel.ts';
+import type { BtwPanel } from '../../src/tui/btw-panel.ts';
 
 type Command = Parameters<ExtensionAPI['registerCommand']>[1];
 

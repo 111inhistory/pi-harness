@@ -32,7 +32,7 @@
 | `listeners.ts`、`ipc/` | 端点目录、监听、NDJSON 分帧、平台资源归属校验，以及“端点属于哪个 session 命名空间”的地址分类（Unix 为目录包含，Windows 为管道名前缀） | 用显示窗口决定可达性、另写广播状态机、用文件系统路径推断管道归属 |
 | `session-peers.ts`、`session-directory.ts` | 根持有的跨 session 操作对象、连接与目录名称同步；目录发布、存活校验与归属删除，受管 `Main` 寻址、复合发送者身份与单帧写入 | 根代次、压缩闸门、Runtime、认证协议或跨主机调度 |
 | `native-delivery.ts`、`delivery.ts` | 独立通知封装、检查原生交接结果、明确拒收后的保留会话追加 | 模型已读回执、自动重发或消息合并 |
-| `btw/command.ts`、`btw/session.ts`、`btw/panel.ts` | `/btw` 命令、内存继承会话、工具阻断和临时问答面板；关闭与根生命周期清理 | Actor／Job、持久化问答或主会话消息写入 |
+| `btw/command.ts`、`btw/session.ts`、`tui/btw-panel.ts`、`tui/btw-transcript.ts` | `/btw` 命令、内存继承会话、工具阻断和临时问答面板；关闭与根生命周期清理 | Actor／Job、持久化问答或主会话消息写入 |
 | `inherited-context.ts` | 共享分支捕获，在清理未决工具前锁定物理模型，并捕获独立的出站缓存标识 | 伪造身份或跨分支泄漏 |
 | `provider-session.ts`、`session-transcript.ts` | 按明确模型能力判断原生追加路径并投影工具声明；请求编码交给 Pi | 路由、执行授权、手写协议请求 |
 | `session-cache.ts`、`session-cache-runtime.ts` | Main 最终 payload 缓存标识观察、Responses 继承适配、原生分支记录与生命周期围栏 | 改写本地 Session ID、账号路由或保证缓存命中 |
@@ -206,3 +206,5 @@ Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返�
 提示词正文存放在 `prompts/`；代码保留参数结构、动态装配、权限和生命周期判断。运行时只读取原命名的 `subagent-tools.json` 与 `subagent-turns.json`。共同 namespace 指引随工具提供，`create.guideline` 仅挂到 create；所有子会话注入 turns 的 `context`，Fresh 添加路由角色，Fresh 和 Inherited 均添加非空的 common，Inherited 另添加解析后的非空 inherited；后两段可在 `harness.json` 中逐层替换或追加。`native-runner.ts` 按已保留的路由身份识别模式，续跑不因当前 Job 是 continuation 而丢失 Inherited 定位。`prompt.ts` 负责原样拼装，参数说明按工具及数组项嵌套读取。字段与状态见[提示词装配](interface-contract.md#subagent-提示词装配)。正文在模块初始化时读取，修改后应重启 Pi，`/reload` 不保证刷新全部 ESM 依赖。
 
 未交付的功能与待验收边界见[已知问题](known-issues.md)。
+
+BTW 的纯显示组件位于 `src/tui/`，`tui/terminal-layout.ts` 负责终端行数与可用高度预算；会话运行和工具约束仍由 `src/btw/` 持有。

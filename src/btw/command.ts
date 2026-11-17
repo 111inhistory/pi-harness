@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { harnessConfigFor } from '../harness-config.ts';
 import { captureInheritedContext } from '../inherited-context.ts';
-import { BtwPanel, btwRequiredTerminalRows } from './panel.ts';
+import { BtwPanel, btwRequiredTerminalRows } from '../tui/btw-panel.ts';
 import { openBtwConversation, type BtwConversation } from './session.ts';
 
 interface OpenPanel {

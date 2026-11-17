@@ -15,7 +15,8 @@ import {
   type TuiMouseEventResult,
 } from '@earendil-works/pi-tui';
 
-import { BtwTranscript, type BtwTurnState } from './transcript.ts';
+import { availableInlineRows, terminalRows } from './terminal-layout.ts';
+import { BtwTranscript, type BtwTurnState } from './btw-transcript.ts';
 
 export interface BtwPanelOptions {
   /** Fewest rows the dock may occupy; configured through `btw.panelMinRows`. */
@@ -54,11 +55,6 @@ interface PanelGeometry {
   readonly scrollbarColumn: number;
   readonly contentHeight: number;
   readonly scrollable: boolean;
-}
-
-function terminalRows(tui: TUI): number {
-  const rows = tui.terminal.rows;
-  return Number.isFinite(rows) ? Math.max(1, Math.floor(rows)) : 24;
 }
 
 /**
@@ -335,7 +331,7 @@ export class BtwPanel implements Component, Focusable {
 
   /** Rows left for the dock once the main conversation keeps one row above it. */
   private availableRows(): number {
-    return Math.max(1, terminalRows(this.tui) - 1);
+    return availableInlineRows(this.tui);
   }
 
   /** Best-effort floor: the preferred minimum rows plus one for the main conversation. */
