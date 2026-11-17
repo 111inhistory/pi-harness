@@ -1,6 +1,6 @@
 {
-  "id": "perm-1",
-  "method": "tools.permission.enable",
+  "id": "blacklist-1",
+  "method": "tools.blacklist.add",
   "params": {
     "targets": [
       "mcp://git",

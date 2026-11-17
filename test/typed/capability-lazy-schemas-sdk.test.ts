@@ -17,17 +17,20 @@ import type { CapabilityStepFeedback } from '../../src/capability/agent.ts';
 import { installCapabilityMcp } from '../../src/capability/native-discovery.ts';
 import { waitFor } from '../../test-support/async.ts';
 
-test('only mode + lazySchemas keeps matched group names but withholds its schema from declarations and the Codemode directory', async () => {
+test('only mode + lazySchemas keeps matched group names but withholds only the schema from declarations and the Codemode directory', async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), 'pi-lazy-schemas-'));
   const oldAgentDir = process.env['PI_CODING_AGENT_DIR'];
   const agentDir = path.join(cwd, 'agent');
   process.env['PI_CODING_AGENT_DIR'] = agentDir;
   await mkdir(agentDir, { recursive: true });
-  await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({ capability: { lazySchemas: ['mcp://big', 'namespace://reports'] } }));
+  // One group ref (MCP server) and one exact tool ref: both withhold the same way,
+  // and the exact ref must not touch peers of the tool's namespace.
+  await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({ capability: { lazySchemas: ['mcp://big', 'tool://fixture-report'] } }));
   let session: AgentSession | undefined;
   let pi: ExtensionAPI | undefined;
   const calls: { server: string; arguments: unknown }[] = [];
   const reports: unknown[] = [];
+  const lateReports: unknown[] = [];
   const requests: { messages: { role: string }[] }[] = [];
   const internalToolNames: string[][] = [];
   const errors: unknown[] = [];
@@ -54,6 +57,18 @@ test('only mode + lazySchemas keeps matched group names but withholds its schema
     ], 'toolUse');
     let rootStep = 0;
     let childStep = 0;
+    let plainOnly = false;
+    let directScript = false;
+    let scriptCode = `
+          const d = await describeTool('mcp__big__search');
+          const raw = await describeTool('fixture-report');
+          const callable = await describeTool('fixture_report');
+          const ns = await describeNamespace('mcp__big');
+          if (!ns || !ns.tools || !ns.tools.includes('mcp__big__search')) throw Error('describeNamespace missing member');
+          const out = await tools.mcp__big__search({ q: 'x', options: { mode: 'exact' } });
+          const report = await tools.fixture_report({ title: 'Selected document' });
+          return { status: 'LAZY_OK', mcp: d, raw, callable, out, report };
+        `;
     runtime.streamSimple = (_model, context) => {
       const stream = new AssistantMessageEventStream();
       const internal = getCurrentTools(context.messages).some((entry) => entry.name === CAPABILITY_STEP_TOOL_NAME);
@@ -77,17 +92,10 @@ test('only mode + lazySchemas keeps matched group names but withholds its schema
       } else {
         requests.push(structuredClone(context));
         rootStep++;
-        if (rootStep % 3 === 1) message = toolCall('capability', {});
-        else if (rootStep % 3 === 2) message = toolCall('codemode', { code: `
-          const d = await describeTool('mcp__big__search');
-          const raw = await describeTool('fixture-report');
-          const callable = await describeTool('fixture_report');
-          const ns = await describeNamespace('mcp__big');
-          if (!ns || !ns.tools || !ns.tools.includes('mcp__big__search')) throw Error('describeNamespace missing member');
-          const out = await tools.mcp__big__search({ q: 'x', options: { mode: 'exact' } });
-          const report = await tools.fixture_report({ title: 'Selected document' });
-          return { status: 'LAZY_OK', mcp: d, raw, callable, out, report };
-        ` });
+        if (plainOnly) message = response([{ type: 'text', text: 'Done' }], 'stop');
+        else if (directScript) { directScript = false; plainOnly = true; message = toolCall('codemode', { code: scriptCode }); }
+        else if (rootStep % 3 === 1) message = toolCall('capability', {});
+        else if (rootStep % 3 === 2) message = toolCall('codemode', { code: scriptCode });
         else message = response([{ type: 'text', text: 'Done' }], 'stop');
       }
       stream.push({ type: 'done', reason: message.stopReason as 'stop' | 'toolUse', message });
@@ -187,8 +195,11 @@ test('only mode + lazySchemas keeps matched group names but withholds its schema
       'the lazy member must not be independently declared');
     const codemode = declared.find((entry) => entry.name === 'codemode');
     assert.ok(codemode, 'codemode stays declared');
-    assert.doesNotMatch(String(codemode.description), /mcp__big__search/,
-      'the lazy member schema must not be inlined in the Codemode directory');
+    const directoryOf = (request: { messages: { role: string }[] }): string =>
+      String(getCurrentTools(request.messages as unknown as never)
+        .find((entry) => entry.name === 'codemode')?.description ?? '');
+    assert.doesNotMatch(String(codemode.description), /mcp__big__search\(args:/,
+      'the lazy MCP schema is on demand');
     assert.doesNotMatch(String(codemode.description), /q\?*:\s*string/,
       'the parameter schema of the lazy member never reaches the Codemode declaration');
 
@@ -208,8 +219,23 @@ test('only mode + lazySchemas keeps matched group names but withholds its schema
     const executed = session.messages.findLast((message) => message.role === 'toolResult' && message.toolName === 'codemode');
     assert.ok(executed?.role === 'toolResult');
     assert.equal(executed.isError, false, JSON.stringify(executed.content));
-    assert.doesNotMatch(String(codemode.description), /fixture[_-]report|REPORT_GUIDELINE/,
-      'the selected report also requires an on-demand interface lookup');
+    assert.match(String(codemode.description), /fixture[_-]report/,
+      'the selected report name stays in the Codemode directory');
+    assert.match(String(codemode.description), /Build a selected document report\./,
+      'the selected report description stays');
+    assert.doesNotMatch(String(codemode.description), /REPORT_GUIDELINE/,
+      'the withheld guideline is projected by the guidance section, not the directory');
+    assert.doesNotMatch(String(codemode.description), /fixture_report\(args:/,
+      'the selected report schema is on demand');
+    const guidanceCounts = requests.map((request) => {
+      const sections = JSON.stringify(request.messages
+        .filter((message) => message.role === 'system' && 'sections' in message)
+        .map((message) => (message as { sections?: unknown }).sections ?? {}));
+      return sections.split('REPORT_GUIDELINE').length - 1;
+    });
+    assert.ok(guidanceCounts.every((count) => count <= 1),
+      'the withheld guideline is never duplicated in one request');
+    assert.ok(guidanceCounts.includes(1), 'the withheld guideline is still projected once');
     const executedBody = executed.content.find((part) => part.type === 'text');
     assert.ok(executedBody?.type === 'text');
     const output = JSON.parse(executedBody.text.split('Output:\n')[1]!) as {
@@ -248,6 +274,133 @@ test('only mode + lazySchemas keeps matched group names but withholds its schema
       assert.ok(!names.includes('mcp__big__search'),
         'no Capability internal retrieval request may re-declare the lazy member');
     }
+
+    // Per-tool suffix modifiers through the real command: an explicit no-lazy
+    // override restores the inlined interface, an explicit lazy override withholds
+    // it again, and a conflicting duplicate batch is rejected without a write.
+    const inspectTurn = async (prompt: string): Promise<string> => {
+      assert.ok(session);
+      plainOnly = true;
+      requests.length = 0;
+      await session.prompt(prompt);
+      const request = requests.at(-1);
+      assert.ok(request, 'the inspection turn issues a request');
+      return directoryOf(request);
+    };
+
+    await session.prompt('/capability activate fixture-report[no-lazy]');
+    assert.match(await inspectTurn('Inspect the explicit schema-backed report'),
+      /fixture_report\(args:/, 'no-lazy restores the inlined interface');
+
+    await session.prompt('/capability activate fixture-report[lazy]');
+    assert.doesNotMatch(await inspectTurn('Inspect the explicit schema-on-demand report'),
+      /fixture_report\(args:/, 'lazy withholds the interface again');
+
+    await session.prompt('/capability activate fixture-report[lazy] fixture-report[no-lazy]');
+    assert.doesNotMatch(await inspectTurn('Inspect after the rejected conflicting batch'),
+      /fixture_report\(args:/, 'the rejected batch leaves the previous lazy mode in force');
+
+    // A manual lazy activation of a tool that was NEVER discovered must still
+    // show its name and description: the Codemode directory is the only catalog
+    // a only-mode model reads, and no discovery memory may be invented.
+    assert.ok(pi);
+    pi.registerTool({
+      name: 'fixture-late', label: 'Fixture late', description: 'Late undiscovered report.',
+      namespace: { name: 'reports', description: 'Search document reports' }, defaultActive: false,
+      parameters: { type: 'object', properties: { title: { type: 'string' } }, required: ['title'] },
+      async execute(_id, input) {
+        lateReports.push(input);
+        return { content: [{ type: 'text', text: `Late: ${input['title']}` }], details: {} };
+      },
+    });
+    await session.prompt('/capability activate fixture-late[lazy]');
+    plainOnly = true;
+    requests.length = 0;
+    await session.prompt('Inspect the undiscovered schema-on-demand tool');
+    const auditRequest = requests.at(-1);
+    assert.ok(auditRequest, 'the audit turn issues a request');
+    const auditTools = getCurrentTools(auditRequest.messages as unknown as never);
+    assert.ok(!auditTools.some((entry) => entry.name === 'fixture-late'),
+      'the undiscovered tool has no native declaration');
+    const auditRecords = session.sessionManager.getBranch().filter((entry) => entry.type === 'custom');
+    const membershipRecords = auditRecords.filter((entry) => entry.customType === 'capability-tool-base' || entry.customType === 'capability-tool-dynamic');
+    assert.match(JSON.stringify(membershipRecords), /fixture-late/,
+      'the manual command writes base/dynamic membership records');
+    const discoveryRecords = auditRecords.filter((entry) => /discover/i.test(String(entry.customType)));
+    assert.doesNotMatch(JSON.stringify(discoveryRecords), /fixture-late/,
+      'the manual command writes no discovery record for the tool');
+    const auditDirectory = directoryOf(auditRequest);
+    assert.match(auditDirectory, /fixture[_-]late/, 'the undiscovered tool name is visible');
+    assert.match(auditDirectory, /Late undiscovered report\./, 'the undiscovered tool description is visible');
+    assert.doesNotMatch(auditDirectory, /fixture_late\(args:/, 'the undiscovered tool schema is on demand');
+    const auditSections = JSON.stringify(auditRequest.messages
+      .filter((message) => message.role === 'system' && 'sections' in message)
+      .map((message) => (message as { sections?: unknown }).sections ?? {}));
+    assert.doesNotMatch(auditSections, /fixture[_-]late/,
+      'a manual activation writes no discovery memory for the tool');
+
+    // The sandbox still builds the full interface, so the undiscovered tool runs.
+    scriptCode = 'const out = await tools.fixture_late({ title: "late" }); return out;';
+    plainOnly = false;
+    directScript = true;
+    await session.prompt('Run the undiscovered report through Codemode');
+    const lateResult = session.messages.findLast((message) => message.role === 'toolResult' && message.toolName === 'codemode');
+    assert.ok(lateResult?.role === 'toolResult');
+    assert.equal(lateResult.isError, false, JSON.stringify(lateResult.content));
+    assert.deepEqual(lateReports, [{ title: 'late' }], 'the withheld tool executes through the sandbox');
+
+    // A dynamic member covered only by the local blacklist is denied. Base
+    // membership then overrides that same recorded ban (the ban stays stored),
+    // and removing base reasserts it immediately.
+    await session.prompt('/capability blacklist add fixture-report');
+    scriptCode = `
+          const out = await tools.mcp__big__search({ q: 'x', options: { mode: 'exact' } });
+          const report = await tools.fixture_report({ title: 'Blocked document' });
+          return { out, report };
+        `;
+    plainOnly = false;
+    directScript = true;
+    const reportsBefore = reports.length;
+    await session.prompt('Try the blacklisted report through Codemode');
+    const blocked = session.messages.findLast((message) => message.role === 'toolResult' && message.toolName === 'codemode');
+    assert.ok(blocked?.role === 'toolResult');
+    assert.equal(blocked.isError, true, 'the blacklisted dynamic member is denied inside the sandbox');
+    assert.equal(reports.length, reportsBefore, 'the blocked call never reaches the extension');
+
+    plainOnly = true;
+    await session.prompt('/capability base add fixture-report');
+    const branchBlacklist = JSON.stringify(session.sessionManager.getBranch()
+      .filter((entry) => entry.type === 'custom' && entry.customType === 'capability-tool-blacklist'));
+    assert.match(branchBlacklist, /fixture-report/, 'the local ban stays recorded after base add');
+
+    requests.length = 0;
+    await session.prompt('Inspect the base exception with the recorded ban');
+    const exceptionRequest = requests.at(-1);
+    assert.ok(exceptionRequest, 'the base-exception inspection turn issues a request');
+    const exceptionDirectory = directoryOf(exceptionRequest);
+    assert.match(exceptionDirectory, /fixture[_-]report/, 'the base member stays in the directory');
+    assert.match(exceptionDirectory, /Build a selected document report\./);
+    assert.doesNotMatch(exceptionDirectory, /fixture_report\(args:/, 'its schema stays withheld by mode');
+
+    plainOnly = false;
+    directScript = true;
+    const reportsBeforeException = reports.length;
+    await session.prompt('Run the base exception through Codemode');
+    const exceptionResult = session.messages.findLast((message) => message.role === 'toolResult' && message.toolName === 'codemode');
+    assert.ok(exceptionResult?.role === 'toolResult');
+    assert.equal(exceptionResult.isError, false, JSON.stringify(exceptionResult.content));
+    assert.equal(reports.length, reportsBeforeException + 1, 'base overrides the recorded local ban');
+
+    plainOnly = true;
+    await session.prompt('/capability base remove fixture-report');
+    plainOnly = false;
+    directScript = true;
+    const reportsBeforeReassert = reports.length;
+    await session.prompt('Try the reasserted ban through Codemode');
+    const reasserted = session.messages.findLast((message) => message.role === 'toolResult' && message.toolName === 'codemode');
+    assert.ok(reasserted?.role === 'toolResult');
+    assert.equal(reasserted.isError, true, 'removing base reasserts the recorded local ban');
+    assert.equal(reports.length, reportsBeforeReassert, 'the reasserted ban stops execution');
 
     assert.deepEqual(errors, []);
   } finally {

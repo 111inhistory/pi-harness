@@ -15,12 +15,10 @@ import { capabilityHost as host, type CapabilityTestTool as FakeTool } from './s
 import {
   activateToolNames, codemodeAvailable, toolReachability,
 } from '../../src/capability/activation.ts';
-import {
-  describeEnableSkip, enableCapabilityTargets,
-} from '../../src/capability/enable.ts';
+import { activateToolTargets } from '../../src/capability/tool-access.ts';
+import { createToolAccessView } from '../../src/capability/tool-access-view.ts';
 import { retainReachableSelectedTools } from '../../src/capability/tool-catalog.ts';
-import { setCapabilityPermissionDefaults } from '../../src/capability/scope.ts';
-import { explicitlyDisabled } from '../../src/capability/tool-permission.ts';
+import { setCapabilityStartupBlacklist } from '../../src/capability/scope.ts';
 
 const baseTools: readonly FakeTool[] = [
   { name: 'deferred_tool', description: 'Deferred', exposure: 'deferred' },
@@ -67,15 +65,15 @@ test('a script-only tool activates once Codemode is active and eligible', () => 
   assert.deepEqual(outcome.skipped, []);
 });
 
-test('reachability is checked after the existing hidden/disabled/scope reasons', () => {
+test('reachability is checked after the existing hidden/blacklisted/scope reasons', () => {
   const fixture = host(baseTools, []);
-  setCapabilityPermissionDefaults(fixture.api, ['manual_script']);
+  setCapabilityStartupBlacklist(fixture.api, ['manual_script']);
   const outcome = activateToolNames(fixture.api, ['hidden_tool', 'manual_script', 'codemode_only'], {
-    disabled: (name) => explicitlyDisabled(fixture.api, [], name),
+    blocked: createToolAccessView(fixture.api, []).blacklisted,
   });
   assert.deepEqual(outcome.skipped, [
     { name: 'hidden_tool', reason: 'hidden' },
-    { name: 'manual_script', reason: 'disabled' },
+    { name: 'manual_script', reason: 'blacklisted' },
     { name: 'codemode_only', reason: 'unreachable' },
   ]);
 });
@@ -105,25 +103,21 @@ test('retainReachableSelectedTools drops only unreachable members and keeps non-
   assert.equal((retained.result.mcp[0] as { toolCount?: number } | undefined)?.toolCount, 1);
 });
 
-test('/capability enable records an enabled rule and reports an unreachable tool', () => {
+test('/capability activate records dynamic membership and reports an unreachable tool', () => {
   const fixture = host(baseTools, []);
-  const result = enableCapabilityTargets(fixture.api, ['codemode_only']);
-  assert.deepEqual(result.enabled, ['codemode_only'], 'the durable enabled rule is written');
-  assert.deepEqual(result.skipped, [{ name: 'codemode_only', reason: 'unreachable' }]);
-  assert.equal(fixture.entries().length, 1, 'one permission record is written');
+  const result = activateToolTargets(fixture.api, fixture.api, fixture.branch(), ['codemode_only']);
+  assert.deepEqual(result.changed.map(change => change.target), ['codemode_only'], 'the durable dynamic membership is written');
+  assert.deepEqual(result.skipped, [{ target: 'codemode_only', reason: 'unreachable' }]);
+  assert.equal(fixture.entries().length, 1, 'one dynamic record is written');
   assert.equal(fixture.api.getActiveTools().includes('codemode_only'), false, 'an unreachable tool is not activated');
 });
 
-test('/capability enable records a script-only tool once Codemode is active', () => {
+test('/capability activate records a script-only tool once Codemode is active', () => {
   const fixture = host(baseTools, ['codemode']);
-  const result = enableCapabilityTargets(fixture.api, ['codemode_only']);
-  assert.deepEqual(result.enabled, ['codemode_only']);
+  const result = activateToolTargets(fixture.api, fixture.api, fixture.branch(), ['codemode_only']);
+  assert.deepEqual(result.changed.map(change => change.target), ['codemode_only']);
   assert.deepEqual(result.skipped, []);
   assert.equal(fixture.entries().length, 1);
-});
-
-test('the refusal text names the missing Codemode entry', () => {
-  assert.match(describeEnableSkip({ name: 'codemode_only', reason: 'unreachable' }), /Codemode/);
 });
 
 test('the model-facing partial result keeps which members were not enabled', async () => {
@@ -151,7 +145,7 @@ test('the model-facing partial result keeps which members were not enabled', asy
 const reachableUnder = (context: { codemodeAvailable: boolean }) =>
   (tool: { exposure?: string | undefined }) => toolReachability(tool.exposure, context) === null;
 
-test('discovery and /capability enable agree: deferred/direct pass, codemode-only is refused while Codemode is off', () => {
+test('discovery and /capability activate agree: deferred/direct pass, codemode-only is refused while Codemode is off', () => {
   const off = host(baseTools, []);
   const context = { codemodeAvailable: codemodeAvailable(off.api) };
   const selection = {
@@ -168,18 +162,18 @@ test('discovery and /capability enable agree: deferred/direct pass, codemode-onl
   assert.deepEqual(retained.result.tools.map((hit) => hit.name), ['deferred_tool', 'direct_tool']);
   assert.deepEqual(retained.dropped, ['codemode_only']);
 
-  const enabled = enableCapabilityTargets(off.api, ['deferred_tool', 'direct_tool', 'codemode_only']);
-  assert.deepEqual([...enabled.enabled].sort(), ['codemode_only', 'deferred_tool', 'direct_tool'],
-    'the enabled rules are durable for every resolved target');
-  assert.deepEqual(enabled.skipped, [{ name: 'codemode_only', reason: 'unreachable' }]);
+  const enabled = activateToolTargets(off.api, off.api, off.branch(), ['deferred_tool', 'direct_tool', 'codemode_only']);
+  assert.deepEqual([...enabled.changed.map(change => change.target)].sort(), ['codemode_only', 'deferred_tool', 'direct_tool'],
+    'the dynamic memberships are durable for every resolved target');
+  assert.deepEqual(enabled.skipped, [{ target: 'codemode_only', reason: 'unreachable' }]);
 });
 
-test('a mixed selection records both rules and activates only the reachable member', () => {
+test('a mixed selection records both memberships and activates only the reachable member', () => {
   const off = host(baseTools, []);
-  const result = enableCapabilityTargets(off.api, ['deferred_tool', 'codemode_only']);
-  assert.deepEqual([...result.enabled].sort(), ['codemode_only', 'deferred_tool']);
-  assert.deepEqual(result.skipped, [{ name: 'codemode_only', reason: 'unreachable' }]);
-  assert.equal(off.entries().length, 1, 'one permission record carries both rules');
+  const result = activateToolTargets(off.api, off.api, off.branch(), ['deferred_tool', 'codemode_only']);
+  assert.deepEqual([...result.changed.map(change => change.target)].sort(), ['codemode_only', 'deferred_tool']);
+  assert.deepEqual(result.skipped, [{ target: 'codemode_only', reason: 'unreachable' }]);
+  assert.equal(off.entries().length, 1, 'one dynamic record carries both memberships');
   const recorded = JSON.stringify(off.entries()[0]);
   assert.match(recorded, /deferred_tool/);
   assert.match(recorded, /codemode_only/);
@@ -203,7 +197,7 @@ test('a Skill survives losing its only tool to reachability', () => {
   assert.deepEqual(retained.result.skills.map((skill) => skill.name), ['helpful'], 'a Skill is independent of tool reachability');
 });
 
-test('with Codemode active, both discovery and enable paths accept a codemode-only member', () => {
+test('with Codemode active, both discovery and activation paths accept a codemode-only member', () => {
   const on = host(baseTools, ['codemode']);
   const context = { codemodeAvailable: codemodeAvailable(on.api) };
   const selection = {
@@ -213,7 +207,7 @@ test('with Codemode active, both discovery and enable paths accept a codemode-on
     skills: [],
   };
   assert.deepEqual(retainReachableSelectedTools(selection, on.api, reachableUnder(context)).dropped, []);
-  const enabled = enableCapabilityTargets(on.api, ['codemode_only']);
-  assert.deepEqual(enabled.enabled, ['codemode_only']);
+  const enabled = activateToolTargets(on.api, on.api, on.branch(), ['codemode_only']);
+  assert.deepEqual(enabled.changed.map(change => change.target), ['codemode_only']);
   assert.deepEqual(enabled.skipped, []);
 });

@@ -185,13 +185,16 @@ await runRpcMode(runtime); // SDK 循环安装自己的 normal setRebindSession 
 | 方法 | `params` 必需 | 结果 | 语义 |
 | --- | --- | --- | --- |
 | `harness.info` | 否 | `HarnessInfoResult` | 协议版本、Root 会话、进程 |
-| `tools.catalog` | 否 | `ToolCatalogResult` | 当前作用域候选工具；包含可管理的 `disabled` 项，运行时事实与权限分开 |
-| `tools.detail` | 是 | `ToolDetail` | 单个已注册工具；运行时状态、权限与参数 schema |
-| `tools.enable` | 是 | `EnableResult` | 用户启用工具或分组；与 `/capability enable` 共用领域操作 |
-| `tools.permission.query` | 否 | `ToolPermissionQueryResult` | 派生四态视图与管理条目；不返回来源/命中规则 |
-| `tools.permission.enable` | 是 | `ToolPermissionSetResult` | 显式启用 |
-| `tools.permission.disable` | 是 | `ToolPermissionSetResult` | 显式禁用 |
-| `tools.permission.reset` | 是 | `ToolPermissionResetResult` | 解除显式规则 |
+| `tools.catalog` | 否 | `ToolCatalogResult` | 当前有效成员事实；`includeUsable` 过滤可调用集合，`includeActivatable` 展开候选，二者同时为并集 |
+| `tools.detail` | 是 | `ToolDetail` | 单个已注册工具；成员关系、黑名单来源、运行时状态与参数 schema |
+| `tools.base.add` | 是 | `ToolWriteResult` | 加入会话 BASE 集合 |
+| `tools.base.remove` | 是 | `ToolWriteResult` | 从 BASE 移除，不触碰 DYNAMIC |
+| `tools.base.list` | 否 | `ToolBaseListResult` | 记录中的 BASE 目标及当前成员 |
+| `tools.activate` | 是 | `ToolWriteResult` | 加入 DYNAMIC 集合并在资格允许时激活 |
+| `tools.deactivate` | 是 | `ToolWriteResult` | 仅移除 DYNAMIC，不触碰 BASE |
+| `tools.blacklist.add` | 是 | `ToolWriteResult` | 加入黑名单；覆盖 BASE/DYNAMIC 并立即阻止发现与执行 |
+| `tools.blacklist.remove` | 是 | `ToolWriteResult` | 清除分支贡献及匹配的 config 覆盖；当前 Preset 与 SDK 限制保留 |
+| `tools.blacklist.list` | 否 | `ToolBlacklistListResult` | 黑名单目标与当前来源 |
 | `agents.tree` | 否 | `AgentsTreeResult` | Root Agent 树；可为 `null` |
 | `jobs.list` | 否 | `JobsListResult` | Job 列表；可按 `jobIds` 过滤 |
 | `jobs.get` | 是 | `JobGetResult` | Job 视图与可空终态记录 |
@@ -249,20 +252,20 @@ await runRpcMode(runtime); // SDK 循环安装自己的 normal setRebindSession 
 - 方法拒绝通过 `ok:false` 响应表达；已准入 Main 输入的后续错误通过 `main.subscribe` 的 `input_error` 事件提供，不撤销先前的准入回执。连接断开是传输层事实。
 - `error.code` 是字符串。传输/路由稳定集合包括 `invalid_request`、`method_not_found`、`not_found`、`not_ready`、`unavailable`、`internal`；端口还会产生 `invalid_target`、`unmanaged_endpoint`、`unknown_endpoint`。领域 `SubagentError` 与 `MainControlError` 的 `code`、`message` 会原样保留；只有真正未预期的异常才归为 `internal`。
 - `error.detail` 可选，结构由产生错误的操作决定；解析器应保留原始 JSON。例如 `subagent.create` 的启动失败使用 `start_failed`，`detail` 含已登记的 `registered` 项与每个失败的 `{agentId, code, message}`；客户端不得因为整批报错而重放已登记项。
-- 部分结果不是错误：`subagent.create` 成功的 `items`/`warnings`、`message.send` 广播的 `sent`/`errors`、权限写的 `skipped`/`unresolved`、`reset` 的 `notManaged`/`stillManaged` 都在 `ok:true` 结果中。启动失败则走 `ok:false` + `start_failed` detail，而不是虚构一个成功的部分结果。
-- 权限写操作先写记录再应用效果；`recordError` 非 `null` 表示记录未写入，相关效果未应用（fail-closed）。`tools.enable` 同样经 `setToolPermission`；记录失败时 `enabled` 为空。
-- `disable` 的 `removedActive` 是立即移出 active 的工具；`pendingCompaction` 是等待下一次 compaction 才解除声明的工具。二者不是同一状态。
+- 部分结果不是错误：`subagent.create` 成功的 `items`/`warnings`、`message.send` 广播的 `sent`/`errors`、工具集合写的 `skipped`/`unresolved`/`notRequested`/`stillBlacklisted` 都在 `ok:true` 结果中。启动失败则走 `ok:false` + `start_failed` detail，而不是虚构一个成功的部分结果。
+- 工具集合写操作先写记录再应用效果；`recordError` 非 `null` 表示记录未写入，相关效果未应用（fail-closed），改变的逐项会出现在 `skipped`。
+- `removedActive` 是立即移出 active 的工具；`pendingCompaction` 是等待下一次 compaction 才解除声明的工具。二者不是同一状态。`stillBlacklisted`/`remainingSources` 说明移除后仍生效的禁止来源。
 - 结果未知的控制输入不得自动重放；客户端应让用户或上层决定是否重新发起。
 
 ## 8. 工具管理模型
 
-管理与运行时事实分开：
+BASE、DYNAMIC 与 BLACKLIST 是三份独立集合，不压成单一状态枚举：
 
-- `not managed`：没有管理条目；不是第三个字面量。
-- `enabled` / `disabled`：显式管理态，写入分支记录。
-- `permission`：派生四态 `enabled`、`disabled`、`active`、`inactive`。
-- `managed`：是否存在显式管理条目。
-- `registered`：宿主已注册；`eligible`：当前作用域允许进入候选目录；`active`：当前激活集成员。三者是独立运行时事实，不由 `permission` 推导。
+- **BASE**：会话基线成员；来源 `baseline`、`preset`、`branch`。
+- **DYNAMIC**：用户激活或 Capability 发现得到的动态成员；来源 `discovery`、`branch`。
+- **BLACKLIST**：除非分支显式移除或 Preset 生命周期结束，否则始终禁止；来源 `startup`、`preset`、`branch`。
+- 有效请求成员为 `(base ∪ dynamic) − blacklist`，并继续受注册、作用域与 SDK 限制。
+- `registered`、`eligible`、`active`、`base`、`dynamic`、`blacklisted`、`activatable`、`usable` 是独立事实。`active` 只是 SDK 激活集；`usable` 表示当前真正可调用，黑名单成员即使属于 BASE 也不可用。
 
 目标形式：
 
@@ -275,7 +278,7 @@ await runRpcMode(runtime); // SDK 循环安装自己的 normal setRebindSession 
 
 `id` 为 `${kind}:${name}`；`kind` 为 `tool`、`mcp`、`namespace`、`prefix`。
 
-`tools.catalog` 与用户选择器共用候选视图：可管理的 `disabled` 工具保留在结果中（`permission:"disabled"`、`eligible:false`），供权限管理；隐藏工具与不可执行的 native discovery 工具不进入目录。`tools.detail` 仍可显示被禁用的已注册工具。`tools.permission.query` 只返回派生 `entries` 与用户管理数据 `managed`，不返回来源、命中规则或解释。写操作的逐项字段见 `ToolPermissionSetResult` 与 `ToolPermissionResetResult`；不要把 `enabled` 当成 `active`，也不要把 `active` 当成显式启用。
+`tools.catalog` 默认返回当前有效成员（含 dynamic）；`includeActivatable` 在当前成员上展开可自加载的已注册/作用域合格工具；`includeUsable` 过滤为当前真正可调用集合；两者同时使用时只列 usable ∪ activatable，不包含不可用的请求基线成员。`tools.detail` 报告同一组事实与 `blacklistSources`；目录与详情还分别报告 `schemaMode`、`configLazy` 与 `schemaWithheld`。六个写方法共用 `ToolWriteResult`，以 `action` 区分；`changed`、`selected`、`containers`、`excluded`、`rejected`、`alreadySet`、`unresolved`、`skipped`、`activated`、`alreadyActive`、`removedActive`、`pendingCompaction`、`noticed`、`notRequested`、`stillBlacklisted`、`remainingSources`、`recordError`、`effectError` 都是独立事实。`targets` 原样接受完整选择 token：`namespace://name`/`mcp://server` 展开当前全部合格成员；`namespace://name[ns]`/`mcp://server[ns]` 只加载容器，后续裸工具 token 是显式正选成员，`-tool` 只排除本次选择。工具和容器都可带 `[lazy]`/`[no-lazy]` 按工具覆盖，容器可用 `[ns,lazy]` 给显式成员设默认；显式成员覆盖容器默认，冲突整批拒绝。`noSchema`/`schema` 分别报告本次请求 lazy/schema-backed 的具体成员，`schemaWithheld` 只列当前实际隐藏 schema 的成员。`containers` 与具体工具分开报告；`rejected` 非空时整批在选择校验阶段拒绝，未写记录、未应用效果。`blacklist remove` 只清除分支贡献与匹配的 config 覆盖；当前 Preset 的 `-tool` 要等到 switch/clear，SDK `--exclude-tools`/`--tools` 限制不会解除。`recordError` 表示记录未写入且无效果；`effectError` 表示记录已持久化但 SDK 效果调用失败，不回滚或重试。
 
 ## 9. 订阅、快照与增量交接
 

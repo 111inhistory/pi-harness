@@ -115,16 +115,43 @@ Pi 用户目录默认为 `~/.pi/agent/`；设置 `PI_CODING_AGENT_DIR` 时使用
 
 | 命令 | 用途 |
 | --- | --- |
-| `/capability` | 浏览当前可用工具 |
-| `/capability list mcp` | 只看 MCP 工具；也支持 `tool`、`namespace` 和筛选词 |
-| `/capability enable` | 打开选择列表，选中即启用 |
-| `/capability enable <工具名>` | 启用指定工具，可一次填写多个目标 |
-| `/capability enable mcp://<服务器名>` | 启用该 MCP 服务器当前已注册的工具 |
-| `/capability enable namespace://<名称>` | 启用指定工具组 |
+| `/capability` 或 `/capability list` | 查看当前会话已有的工具 |
+| `/capability list --activatable` | 同时查看可以按需激活的工具 |
+| `/capability list --usable` | 只看当前可使用的工具，包含符合条件的基线成员；与 `--activatable` 同用时取两者并集 |
+| `/capability base list` | 查看当前工具基线 |
+| `/capability base add <目标...>`、`base remove <目标...>` | 修改基线，不改变黑名单 |
+| `/capability activate <目标...>`、`deactivate <目标...>` | 加入或移出按需激活集合 |
+| `/capability blacklist list` | 查看禁用工具及其生效来源 |
+| `/capability blacklist add <目标...>`、`blacklist remove <目标...>` | 管理手动黑名单 |
 
 命令支持 Tab 补全。通过 Pi 原生 `/mcp` 命令重连后，新注册的工具可以直接浏览和启用，不需要重启 Harness。
 
-如需把某些工具保留给用户明确授权，可在 `capability.manualTools` 中配置。模型发现不会推荐这些工具，子会话也不会继承。详细配置见[Harness 参数配置](docs/harness-configuration.md)。
+目标可以是工具名、`mcp://<服务器名>` 或 `namespace://<名称>`。基线与按需激活是独立集合，移出其中一个集合不会清除另一个集合的成员关系。当前会话的优先级为「基线白名单 > 黑名单 > 普通按需激活／发现」。加入基线覆盖本会话黑名单，但不删除它；移除基线后原禁止重新生效。Preset 的显式减项也属于当前 Preset 的黑名单，切换或清除 Preset 时撤销该来源。祖先禁止、角色／深度与 SDK 限制仍是外层约束，不能通过子会话白名单绕过。
+
+批量操作用空格分隔目标，例如 `/capability activate read write apply_patch`、`/capability deactivate read write`、`/capability base remove read write` 或 `/capability blacklist remove read write`。各目标的结果分别报告；activate／deactivate 省略目标时打开分层多选器，按独立工具、Namespace 和 MCP 分组，确认前不应用变更。完整语法见 `/capability help`。
+
+Namespace 与 MCP 组默认加载其说明和当前可激活成员；成员选择按当前目录展开，不形成持续启用所有成员的规则：
+
+```text
+/capability activate namespace://subagent
+/capability activate namespace://subagent[ns] msg_write
+/capability activate namespace://subagent -subagent_create
+/capability activate mcp://git[ns] mcp__git__status
+```
+
+`[ns]` 表示只加载容器本身，工具由同一条命令显式指定；每个 `[ns]` 容器都必须至少有一个有效成员，否则警告并拒绝整条命令，不留下部分加载。`-工具名` 只从本次选择中排除成员，不写黑名单，也不取消已有成员关系。之后可以独立 deactivate 某个成员，容器说明与其他成员保留；禁用整个 Namespace 或单个工具则使用黑名单。
+
+Schema 策略默认遵守配置与已有显式覆盖；需要覆盖时给目标附加 `[lazy]` 或 `[no-lazy]`，可与 `ns` 组合：
+
+```text
+/capability activate namespace://subagent[ns,lazy] msg_write
+/capability activate mcp://git[lazy] mcp__git__status[no-lazy]
+/capability activate tool_a[lazy] tool_b[no-lazy]
+```
+
+`lazy` 保留名称、描述和指引，参数接口通过 Codemode 按需读取；`no-lazy` 显式使用完整 schema，即使配置命中了 lazy。成员自身的显式修饰优先于同批容器策略。不带修饰符不会清除既有覆盖。显式 lazy 加载要求当前存在可用的 Codemode `only` 调用路径，否则写入前拒绝，不自动切换模式。选择器分别显示配置匹配、当前覆盖及 schema 是否实际延迟加载。
+
+如需默认禁用某些工具，可在 `capability.blacklist` 中配置。模型发现不会推荐或激活这些工具，子会话同样受黑名单约束；用户须通过黑名单操作解除相应禁止，不能靠加入基线或激活绕过。详细配置见[Harness 参数配置](docs/harness-configuration.md)。
 
 ### 切换模型 Preset
 

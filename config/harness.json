@@ -28,7 +28,7 @@
     }
   },
   "capability": {
-    "manualTools": [],
+    "blacklist": [],
     "lazySchemas": [],
     "noSelectionLimit": 3,
     "pruneOnCompaction": true,

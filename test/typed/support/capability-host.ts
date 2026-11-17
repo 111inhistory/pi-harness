@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand } from '@earendil-works/pi-coding-agent';
 import { installCapabilityCommand } from '../../../src/capability/command.ts';
-import type { ToolPermissionTool } from '../../../src/capability/tool-permission.ts';
+import type { ToolTargetRecord } from '../../../src/capability/targets.ts';
 
-export interface CapabilityTestTool extends ToolPermissionTool { readonly description?: string }
+export interface CapabilityTestTool extends ToolTargetRecord { readonly description?: string }
 export interface CapabilityTestEntry { type: string; customType?: string; data?: unknown; message?: unknown }
 
-/** Registry and persistence ports only; permission decisions run in production code. */
+/** Registry and persistence ports only; authorization decisions run in production code. */
 export function capabilityHost(
   initial: readonly CapabilityTestTool[], active: readonly string[] = [],
   selection: 'visible' | 'registered' | 'all' = 'visible',
@@ -47,9 +47,16 @@ export function capabilityHost(
   };
 }
 
+export interface CapabilityCommandOptions {
+  /** Drive the returned custom picker component through real input transitions. */
+  readonly custom?: (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: unknown) => void) => {
+    handleInput(data: string): void;
+  }, options?: unknown) => Promise<unknown>;
+}
+
 export function capabilityCommand(
   fixture: ReturnType<typeof capabilityHost>,
-  select?: (labels: readonly string[]) => string | undefined,
+  options: CapabilityCommandOptions = {},
   readBranch: () => readonly unknown[] = fixture.branch,
 ) {
   const notifications: { text: string; type: string }[] = [];
@@ -65,7 +72,10 @@ export function capabilityCommand(
   const context = {
     ui: {
       notify(text: string, type = 'info') { notifications.push({ text, type }); },
-      select: async (_title: string, labels: string[]) => select?.(labels),
+      custom: (factory: Parameters<NonNullable<CapabilityCommandOptions['custom']>>[0], customOptions?: unknown) =>
+        options.custom
+          ? options.custom(factory, customOptions)
+          : Promise.reject(new Error('custom picker not configured')),
     },
     sessionManager: { getBranch: readBranch },
   } as unknown as ExtensionCommandContext;

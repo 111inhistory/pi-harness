@@ -146,7 +146,8 @@ test("extractUsedToolsFromWindow counts completed direct executions and filters 
     },
     {
       type: "message",
-      // Exact capability `tool_call` guard refusal recorded for the attempted name.
+      // Historical sessions may still contain the retired permission-model
+      // denial. Pruning must treat it as an admission refusal, not an execution.
       message: toolResultMessage("tool_disabled_denial", "call_9", "Tool tool_disabled_denial is disabled by the tool permission.", true),
     },
     {
@@ -488,10 +489,12 @@ test("createToolAdmission gates declares() against derived pruned set and restor
     coverage,
   );
 
-  // Canonical enable for manual_edit
-  writer.appendEntry("capability-tool-permission", {
+  // Recorded availability baseline: manual_edit is base; the discovered tools are
+  // dynamic only, so the prune boundary can remove them.
+  writer.appendEntry("capability-tool-base", {
     version: 1,
-    set: [{ target: "manual_edit", state: "enabled" }],
+    baseline: ["manual_edit"],
+    add: ["manual_edit"],
   });
 
   // Before compaction: admission declares all three
@@ -743,4 +746,36 @@ test("protectedTools preserves an unused discovered tool that unprotected candid
   });
   assert.deepEqual(prunable.removedTools, ["disc_tool"]);
   assert.equal(prunable.removedTools.includes("protected_tool"), false);
+});
+
+test("availableTools filters discovery history down to still-requested capabilities", () => {
+  const { pi, entries } = memoryWriter();
+  appendDiscoveryRecord(
+    pi,
+    "call_available",
+    {
+      status: "ok",
+      tools: [
+        { ref: "tool://history_alpha", name: "history_alpha" },
+        { ref: "tool://history_beta", name: "history_beta" },
+      ],
+      mcp: [],
+      skills: [],
+    },
+    coverage,
+  );
+  const branch = [
+    { id: "e1", type: "custom", customType: "capability-discovery", data: entries[0]!.data },
+    { id: "comp_available", type: "compaction", summary: "c" },
+  ];
+
+  // history_beta was deactivated earlier: it stays in discovery history but is
+  // not an active capability, so this compaction cannot report it as removed.
+  const result = computePrunableCapabilities({
+    branch,
+    checkpointId: "comp_available",
+    availableTools: ["history_alpha"],
+  });
+  assert.deepEqual(result.removedTools, ["history_alpha"]);
+  assert.equal(result.removedTools.includes("history_beta"), false);
 });

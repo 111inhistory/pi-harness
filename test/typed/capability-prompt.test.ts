@@ -32,7 +32,10 @@ import {
   nativelyGuidedNamespaces,
   projectedNamespaceRefs,
   registeredToolGuidance,
+  withheldToolGuidance,
 } from "../../src/capability/tool-instructions.ts";
+import { createToolAccessView, listLoadedContainers } from "../../src/capability/tool-access-view.ts";
+import { createEligibleToolCatalog } from "../../src/capability/tool-catalog.ts";
 import type { TranscriptMessageLike } from "../../src/session-transcript.ts";
 
 interface DiscoveryDetails {
@@ -315,7 +318,7 @@ test("native compaction and repeated compaction rehydrate from branch details, n
   );
 });
 
-test("branch selection, failures and tool scope are respected without changing permissions", () => {
+test("branch selection, failures and tool scope are respected without changing membership or blacklist", () => {
   const first = result("a");
   const failed: DiscoveryResultMessage = {
     ...result("b", {
@@ -371,6 +374,8 @@ test("Responses wire keeps the head; folding providers retain current memory", (
 
 test("real SDK extension exposes discovery on the next turn and after manual compaction", async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-capability-prompt-"));
+  const originalAgentDir = process.env['PI_CODING_AGENT_DIR'];
+  process.env['PI_CODING_AGENT_DIR'] = cwd;
   let session: AgentSession | undefined;
   try {
     const runtime = await ModelRuntime.create({ authPath: path.join(cwd, "auth.json"), modelsPath: null, refreshOnCreate: false });
@@ -482,14 +487,16 @@ test("real SDK extension exposes discovery on the next turn and after manual com
     assert.deepEqual(errors, []);
   } finally {
     session?.dispose();
+    if (originalAgentDir === undefined) delete process.env['PI_CODING_AGENT_DIR'];
+    else process.env['PI_CODING_AGENT_DIR'] = originalAgentDir;
     await rm(cwd, { recursive: true, force: true });
   }
 });
 
 test("toolGuidanceSection is strictly injective across valid and invalid ids while preserving valid SDK keys", () => {
   const sdkKeyPattern = /^[a-z][a-z0-9_-]*$/;
-  const validSimple = toolGuidanceSection("tool-permission-disabled");
-  assert.equal(validSimple, "harness-guidance-tool-permission-disabled");
+  const validSimple = toolGuidanceSection("tool-disabled");
+  assert.equal(validSimple, "harness-guidance-tool-disabled");
   assert.match(validSimple, sdkKeyPattern);
 
   const validUnderscore = toolGuidanceSection("alpha_1");
@@ -514,11 +521,241 @@ test("toolGuidanceSection is strictly injective across valid and invalid ids whi
     "a:b",
     "a-b",
     "x_already",
-    "tool-permission:disabled",
-    "tool-permission-disabled",
+    "tool:disabled",
+    "tool-disabled",
     transformedSuffix,
   ];
   const keys = samples.map((id) => toolGuidanceSection(id));
   for (const key of keys) assert.match(key, sdkKeyPattern);
   assert.equal(new Set(keys).size, samples.length, "every distinct id maps to a distinct SDK section key");
+});
+
+test("real loaded-container replay keeps one namespace guide and its alias refs in every state", () => {
+  const shared = "Shared guidance from the registered namespace";
+  const tools = [
+    {
+      name: "mcp__git__status",
+      namespace: { name: "mcp__git", description: "Git server", instructions: shared, aliases: ["git"] },
+    },
+    {
+      name: "mcp__git__log",
+      namespace: { name: "mcp__git", description: "Git server", instructions: shared, aliases: ["git"] },
+    },
+  ];
+  const host = { getAllTools: () => tools, getActiveTools: () => [] as string[] };
+  const inactive = new Set<string>();
+  const load = (container: string): readonly unknown[] => [{
+    type: "custom",
+    customType: "capability-tool-base",
+    data: { version: 1, baseline: [], load: [container] },
+  }];
+
+  // The alias and namespace refs resolve to one real container; guidance joins
+  // on its members, so the alias cannot duplicate it. A local container ban is
+  // overridden per member by explicit base membership.
+  const containers = listLoadedContainers(host, load("mcp://git"));
+  assert.deepEqual(containers.map((container) => ({
+    target: container.target,
+    members: container.members,
+    blocked: container.blocked,
+    instructions: container.instructions,
+  })), [{
+    target: "mcp://git",
+    members: ["mcp__git__status", "mcp__git__log"],
+    blocked: false,
+    instructions: shared,
+  }]);
+  const guidance = registeredToolGuidance(tools, [], inactive, inactive, containers);
+  assert.deepEqual(guidance.map((entry) => entry.id), ["namespace:mcp__git"],
+    "one real container yields one guidance entry");
+  assert.equal(guidance[0]?.text, shared);
+  assert.notEqual(guidance[0]?.eligible, false,
+    "a loaded container stays guidance-eligible while every member is inactive");
+  assert.deepEqual(guidance[0]?.tools, ["mcp__git__status", "mcp__git__log"]);
+  const rendered = renderCurrentToolGuidance(guidance);
+  assert.equal(Object.keys(rendered).length, 1, "the shared server text is rendered once");
+  const refs = projectedNamespaceRefs(guidance, tools, rendered, inactive, inactive);
+  assert.ok(refs.has("mcp://git"));
+  assert.ok(refs.has("namespace://mcp__git"),
+    "both alias refs are suppressed in request memory once guidance renders them");
+
+  // A loaded container whose eligible catalog no longer holds any member has no
+  // text source; it must not invent metadata.
+  assert.deepEqual(registeredToolGuidance([], [], inactive, inactive, containers), []);
+
+  // A local container ban is stored but an explicit base member overrides it:
+  // the namespace guide remains for that member, while the banned peer never
+  // enters the guide's tool list.
+  const localBanBranch = [
+    {
+      type: "custom",
+      customType: "capability-tool-base",
+      data: { version: 1, baseline: [], load: ["mcp://git"], add: ["mcp__git__status"] },
+    },
+    { type: "custom", customType: "capability-tool-blacklist", data: { version: 1, add: ["mcp://git"] } },
+  ];
+  const localView = createToolAccessView(host, localBanBranch);
+  assert.equal(localView.blacklisted("mcp__git__status"), true, "the raw ban stays stored");
+  assert.equal(localView.banOverridden("mcp__git__status"), true, "base overrides the local ban");
+  const localCatalog = createEligibleToolCatalog(host, { blocked: (tool) => localView.blocked(tool.name) });
+  const localContainers = localView.loadedContainers;
+  assert.equal(localContainers[0]?.blocked, false, "an allowed base member keeps the container unblocked");
+  const localGuidance = registeredToolGuidance(localCatalog.tools, [], inactive, inactive, localContainers);
+  assert.deepEqual(localGuidance.map((entry) => entry.id), ["namespace:mcp__git"]);
+  assert.deepEqual(localGuidance[0]?.tools, ["mcp__git__status"],
+    "the guide lists only the effective base member, never its locally banned peer");
+  assert.equal(localCatalog.names.has("mcp__git__log"), false, "the banned peer is not in the eligible catalog");
+
+  // Without any allowed member the same container ban hides the guide.
+  const blockedBranch = [
+    ...load("mcp://git"),
+    { type: "custom", customType: "capability-tool-blacklist", data: { version: 1, add: ["mcp://git"] } },
+  ];
+  const blockedContainers = listLoadedContainers(host, blockedBranch);
+  assert.equal(blockedContainers[0]?.blocked, true);
+  assert.deepEqual(registeredToolGuidance(tools, [], inactive, inactive, blockedContainers), [],
+    "a container-level ban with no allowed member hides the namespace guidance");
+});
+
+test("withheld declarations keep tool-specific guidance without repeating the namespace text", () => {
+  const shared = "Shared namespace instructions";
+  const tools = [
+    {
+      name: "browser_click",
+      namespace: { name: "browser", description: "Browser", instructions: shared },
+      promptGuidelines: [shared, "Click one element by ref."],
+    },
+    {
+      name: "browser_type",
+      namespace: { name: "browser", description: "Browser", instructions: shared },
+      promptGuidelines: [shared, "Click one element by ref."],
+    },
+    {
+      name: "browser_read",
+      namespace: { name: "browser", description: "Browser", instructions: shared },
+      promptGuidelines: [`${shared} Read a page before acting.`],
+    },
+  ];
+  const withheld = new Set(["browser_click", "browser_type", "browser_read"]);
+  const declared = new Set<string>();
+  const guidance = [
+    ...registeredToolGuidance(tools, [], new Set(), declared, [{ members: tools.map(tool => tool.name), blocked: false }], withheld),
+    ...withheldToolGuidance(tools, withheld),
+  ];
+  const rendered = renderCurrentToolGuidance(guidance);
+
+  const namespaceBody = rendered[toolGuidanceSection("namespace:browser")];
+  assert.equal(namespaceBody, shared, "the namespace guide renders through the loaded container");
+  const text = Object.values(rendered).join("\n");
+  assert.equal(text.split(shared).length - 1, 1,
+    "the full namespace instructions appear exactly once across namespace and per-tool guidance");
+  assert.match(text, /Click one element by ref\./);
+  assert.equal(text.split("Click one element by ref.").length - 1, 1,
+    "identical per-tool lines are emitted once even across withheld tools");
+  assert.match(text, /Read a page before acting\./,
+    "text that only partially matched the shared instructions keeps its specific remainder");
+
+  const clickEntry = guidance.find(entry => entry.id === "tool:browser_click");
+  assert.deepEqual(clickEntry, { id: "tool:browser_click", tools: ["browser_click"], text: "Click one element by ref." });
+  const readEntry = guidance.find(entry => entry.id === "tool:browser_read");
+  assert.equal(readEntry?.text, "Read a page before acting.",
+    "a line that embeds the namespace text keeps only the tool-specific part");
+
+  const sharedOnly = [{ name: "plain", namespace: { name: "group", instructions: shared }, promptGuidelines: [shared] }];
+  assert.deepEqual(withheldToolGuidance(sharedOnly, new Set(["plain"])), [],
+    "a withheld tool with no specific instruction emits no extra section");
+  assert.deepEqual(withheldToolGuidance(tools, new Set(["not_selected"])), [],
+    "a tool outside the withheld set is not guessed from its absence");
+
+  // Withheld declarations do not count as native coverage: the namespace guide
+  // stays dynamic exactly once while their own lines are projected separately.
+  assert.equal(guidance.filter(entry => entry.namespace === "browser").length, 1);
+});
+
+test("a withheld declaration keeps its per-tool guidance and one namespace guide in a real request", async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-capability-noschema-"));
+  const oldAgentDir = process.env['PI_CODING_AGENT_DIR'];
+  process.env['PI_CODING_AGENT_DIR'] = cwd;
+  let session: AgentSession | undefined;
+  const requests: ProjectionMessage[][] = [];
+  try {
+    const runtime = await ModelRuntime.create({ authPath: path.join(cwd, "auth.json"), modelsPath: null, refreshOnCreate: false });
+    const model = runtime.getModel("openai-codex", "gpt-6.1-sol");
+    assert.ok(model);
+    runtime.getAuth = async () => ({ auth: { apiKey: "offline-only" }, env: {} });
+    runtime.hasConfiguredAuth = () => true;
+    runtime.streamSimple = (_model, context) => {
+      requests.push(structuredClone(context.messages) as unknown as ProjectionMessage[]);
+      const message: AssistantMessage = {
+        role: "assistant", api: model.api, provider: model.provider, model: model.id,
+        content: [{ type: "text", text: "done" }], stopReason: "stop", timestamp: Date.now(),
+        usage: { input: 1, output: 1, totalTokens: 2, cacheRead: 0, cacheWrite: 0,
+          cost: { input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0 } },
+      };
+      const stream = new AssistantMessageEventStream();
+      stream.push({ type: "done", reason: "stop", message });
+      stream.end();
+      return stream;
+    };
+    const settingsManager = SettingsManager.inMemory({
+      retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: "off",
+      codemode: { mode: "only" }, defaultTools: ["+codemode"],
+    });
+    const resourceLoader = new DefaultResourceLoader({
+      cwd, agentDir: cwd, settingsManager,
+      noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
+      extensionFactories: [{
+        name: "no-schema-guidance-fixture",
+        factory(pi) {
+          capabilityExtension(pi, { discovery: false });
+          pi.registerTool({
+            name: "fixture_guided",
+            label: "Fixture guided",
+            description: "A fixture whose schema is withheld",
+            defaultActive: true,
+            namespace: { name: "fixtures", description: "Fixture group", instructions: "SHARED_FIXTURE_RULE" },
+            promptGuidelines: ["SHARED_FIXTURE_RULE", "SPECIFIC_FIXTURE_RULE"],
+            parameters: { type: "object", properties: { value: { type: "string" } } },
+            async execute() { return { content: [{ type: "text", text: "ok" }], details: {} }; },
+          });
+        },
+      }],
+    });
+    await resourceLoader.reload();
+    assert.deepEqual(resourceLoader.getExtensions().errors, []);
+    const sessionManager = SessionManager.inMemory(cwd);
+    sessionManager.appendCustomEntry("capability-tool-base", {
+      version: 1,
+      baseline: ["read", "bash", "edit", "write", "codemode", "fixture_guided"],
+      noSchema: ["fixture_guided"],
+    });
+    session = (await createAgentSession({
+      cwd, agentDir: cwd, modelRuntime: runtime, model, sessionManager, settingsManager, resourceLoader,
+    })).session;
+    await session.bindExtensions({ onError: (error) => { throw error; } });
+    await session.prompt("Use the fixture");
+
+    const sections = requests.flatMap((messages) => messages.flatMap((message) =>
+      message.role === "system" && message.sections ? [message.sections] : []));
+    const toolSection = sections.map(section => section[toolGuidanceSection("tool:fixture_guided")])
+      .find((value) => value !== undefined);
+    assert.match(toolSection ?? "", /SPECIFIC_FIXTURE_RULE/,
+      "the withheld declaration's tool-specific guideline is projected dynamically");
+    const namespaceSection = sections.map(section => section[toolGuidanceSection("namespace:fixtures")])
+      .find((value) => value !== undefined);
+    assert.match(namespaceSection ?? "", /SHARED_FIXTURE_RULE/,
+      "the canonical namespace guide renders once through its loaded container");
+    const rules = sections.map(section => section["rules"] ?? "").join("\n");
+    assert.doesNotMatch(rules, /SPECIFIC_FIXTURE_RULE|SHARED_FIXTURE_RULE/,
+      "a withheld declaration contributes no native promptGuidelines to <rules>");
+    assert.equal(JSON.stringify(requests).split("SPECIFIC_FIXTURE_RULE").length - 1, 1,
+      "the tool-specific line is not duplicated");
+    assert.equal(JSON.stringify(requests).split("SHARED_FIXTURE_RULE").length - 1, 1,
+      "the namespace instructions are not duplicated per tool");
+  } finally {
+    session?.dispose();
+    if (oldAgentDir === undefined) delete process.env['PI_CODING_AGENT_DIR'];
+    else process.env['PI_CODING_AGENT_DIR'] = oldAgentDir;
+    await rm(cwd, { recursive: true, force: true });
+  }
 });

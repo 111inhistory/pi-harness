@@ -40,12 +40,12 @@ import {
 import harnessExtension from '../../test-support/harness-extension.ts';
 import {  type ProjectionMessage } from '../../src/capability/prompt.ts';
 
-const PERMISSION_RECORD = 'capability-tool-permission';
+const BASE_RECORD = 'capability-tool-base';
 
-function permissionRecordCount(branch: readonly unknown[]): number {
+function baseAddRecordCount(branch: readonly unknown[]): number {
   return branch.filter((entry) => {
-    const record = entry as { type?: string; customType?: string };
-    return record.type === 'custom' && record.customType === PERMISSION_RECORD;
+    const record = entry as { type?: string; customType?: string; data?: { add?: unknown[] } };
+    return record.type === 'custom' && record.customType === BASE_RECORD && Array.isArray(record.data?.add);
   }).length;
 }
 
@@ -114,7 +114,7 @@ async function scenario(options: {
   let session: AgentSession | undefined;
   try {
     await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
-      capability: { manualTools: [TOOL] },
+      capability: { blacklist: [TOOL] },
     }));
     const runtime = await ModelRuntime.create({
       credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,
@@ -170,7 +170,7 @@ async function scenario(options: {
 
     await session.prompt('First turn, before enablement.');
     const before = requests.at(-1)!;
-    assert.ok(!getCurrentTools(before).some((tool) => tool.name === TOOL), 'the unauthorized tool is not declared');
+    assert.ok(!getCurrentTools(before).some((tool) => tool.name === TOOL), 'the blacklisted tool is not declared');
     assert.ok(!session.getActiveToolNames().includes(TOOL), 'the declaration prune removed the manual tool');
 
     const command = session.extensionRunner.getRegisteredCommands().find((entry) => entry.name === 'capability');
@@ -180,18 +180,20 @@ async function scenario(options: {
     Object.defineProperty(commandContext, 'ui', {
       value: { notify: (text: string, type: string = 'info') => { notices.push({ text, type }); } },
     });
-    await command.handler(`enable ${TOOL}`, commandContext);
-    assert.match(notices.at(-1)?.text ?? '', new RegExp(`Capability · enable ${TOOL}`));
-    assert.match(notices.at(-1)?.text ?? '', new RegExp(`✔ ${TOOL}`));
+    await command.handler(`blacklist remove ${TOOL}`, commandContext);
+    assert.match(notices.at(-1)?.text ?? '', new RegExp(`Capability · blacklist remove ${TOOL}`));
+    await command.handler(`base add ${TOOL}`, commandContext);
+    assert.match(notices.at(-1)?.text ?? '', new RegExp(`Capability · base add ${TOOL}`));
+    assert.match(notices.at(-1)?.text ?? '', new RegExp(`● ${TOOL}`));
     assert.ok(session.getActiveToolNames().includes(TOOL), 'the user command activated it');
 
     await session.prompt('Second turn, after enablement.');
     const after = requests.at(-1)!;
     const branch = session.sessionManager.getBranch();
-    assert.equal(permissionRecordCount(branch), 1, 'the branch carries the user authorization');
+    assert.equal(baseAddRecordCount(branch), 1, 'the branch carries the base membership record');
 
-    await command.handler(`enable ${TOOL}`, commandContext);
-    assert.match(notices.at(-1)?.text ?? '', new RegExp(`Already enabled\\n {2}· ${TOOL}`));
+    await command.handler(`base add ${TOOL}`, commandContext);
+    assert.match(notices.at(-1)?.text ?? '', new RegExp(`Already set\\n {2}· ${TOOL}`));
     await session.prompt('Third turn, after a repeated enable.');
     assert.deepEqual(errors, []);
     return { before, after, branch, third: requests.at(-1)! };
@@ -247,7 +249,7 @@ test('enabling a tool appends to the request and never rewrites the head', { tim
 
   // 7) A repeated enable appends nothing.
   assert.deepEqual(third.slice(0, after.length), after, 'a repeated enable appends nothing');
-  assert.equal(permissionRecordCount(branch), 1, 'and records nothing');
+  assert.equal(baseAddRecordCount(branch), 1, 'and records nothing');
 });
 
 test('a measured limitation: a tool with a prompt snippet patches Pi\'s prompt sections', { timeout: 60_000 }, async () => {

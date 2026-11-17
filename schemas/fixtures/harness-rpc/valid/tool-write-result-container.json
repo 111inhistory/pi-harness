@@ -1,0 +1,57 @@
+{
+  "action": "activate",
+  "changed": [
+    {
+      "target": "msg_write",
+      "kind": "tool",
+      "name": "msg_write",
+      "id": "tool:msg_write",
+      "affectedTools": [
+        "msg_write"
+      ]
+    }
+  ],
+  "alreadySet": [],
+  "unresolved": [],
+  "skipped": [],
+  "affectedTools": [
+    "msg_write"
+  ],
+  "selected": [
+    "msg_write"
+  ],
+  "noSchema": [
+    "msg_write"
+  ],
+  "schema": [],
+  "schemaWithheld": [],
+  "containers": [
+    {
+      "target": "namespace://subagent",
+      "kind": "namespace",
+      "name": "subagent",
+      "id": "namespace:subagent",
+      "explicit": true,
+      "members": [
+        "msg_write"
+      ]
+    }
+  ],
+  "excluded": [
+    "subagent_create"
+  ],
+  "rejected": null,
+  "activated": [
+    "msg_write"
+  ],
+  "alreadyActive": [],
+  "removedActive": [],
+  "pendingCompaction": [],
+  "noticed": [],
+  "notRequested": [],
+  "stillBlacklisted": [],
+  "banOverridden": [],
+  "remainingSources": [],
+  "recordError": null,
+  "effectError": null
+}

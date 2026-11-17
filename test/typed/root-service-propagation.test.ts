@@ -2,7 +2,7 @@
  * Real RootService permission propagation into a grandchild loadout.
  *
  * The root child is created through the production `subagent_create` tool, a
- * canonical root disable is appended while that child is live, and the child
+ * canonical root blacklist entry is appended while that child is live, and the child
  * then creates a Fresh grandchild through its own tool. Assertions read the
  * prompted SDK AgentSession loadouts, so no filtered-root or refresh
  * simulation stands in for the production ancestor chain.
@@ -21,7 +21,7 @@ import { fauxProvider, InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import type { AssistantMessage, Usage } from '@earendil-works/pi-ai';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 import subagentExtension from '../../extensions/harness.ts';
-import { setToolPermission } from '../../src/capability/tool-permission.ts';
+import { addBaseTools, addBlacklistTargets } from '../../src/capability/tool-access.ts';
 import { deferred } from '../../test-support/async.ts';
 import { restorePresetSnapshot } from '../../src/preset/state.ts';
 import { readCodemodeModeOverride } from '../../src/capability/codemode-mode.ts';
@@ -177,8 +177,9 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
     const create = session.getToolDefinition('subagent_create');
     assert.ok(create);
     assert.ok(rootApi);
-    const messageGrant = setToolPermission(rootApi, rootApi, session.sessionManager.getBranch(), ['msg_write'], 'enabled');
+    const messageGrant = addBaseTools(rootApi, rootApi, session.sessionManager.getBranch(), ['msg_write']);
     assert.equal(messageGrant.recordError, null);
+    assert.deepEqual(messageGrant.activated, ['msg_write'], 'the root base addition makes the reply tool available');
     const created = await create.execute('create-child', { tasks: [{ task: 'CHILD_MARKER', inheritContext: true }] },
       undefined, undefined, session.extensionRunner.createToolContext('create-child', undefined));
     assert.ok((created.details as { items: unknown[] }).items[0]);
@@ -190,9 +191,9 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
     assert.ok(childPrompt.tools.includes('write'), 'the live child keeps the loadout it started with');
     assert.ok(childPrompt.tools.includes('edit'));
     assert.ok(childPrompt.tools.includes('msg_write'),
-      'the inherited child keeps the independent Harness grant despite the root enable');
+      'the inherited child keeps the independent Harness grant despite the root base addition');
 
-    const mutation = setToolPermission(rootApi, rootApi, session.sessionManager.getBranch(), ['write'], 'disabled');
+    const mutation = addBlacklistTargets(rootApi, rootApi, session.sessionManager.getBranch(), ['write']);
     assert.deepEqual(mutation.changed.map((change) => change.target), ['write']);
     assert.equal(mutation.recordError, null);
 
@@ -202,11 +203,11 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
     const grandchildPrompt = prompted.find((entry) => entry.text.includes('NESTED_MARKER'));
     assert.ok(grandchildPrompt, 'the child created a Fresh grandchild through its own tool');
     assert.equal(grandchildPrompt.tools.includes('write'), false,
-      'a root denial applies to the loadout of a grandchild created after it');
+      'a root blacklist applies to the loadout of a grandchild created after it');
     assert.ok(grandchildPrompt.tools.includes('edit'), 'an unmanaged sibling tool stays available');
     assert.equal(grandchildPrompt.tools.includes('bash'), false, 'the named Preset removes bash from the real child');
     assert.ok(grandchildPrompt.tools.includes('msg_write'),
-      'the local Preset +msg_write survives the root explicit enable');
+      'the local Preset +msg_write survives the root base addition');
     assert.equal(grandchildPrompt.preset, 'nested-worker');
     assert.equal(grandchildPrompt.mode, 'only', 'the shared Preset application writes the child Codemode override');
     assert.equal(grandchildPrompt.thinking, 'low');

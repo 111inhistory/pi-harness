@@ -14,6 +14,9 @@
  * - Unknown tool names and invalid modifier tokens are warnings. The known part
  *   of the selection still applies, and the dropped names are reported, the way
  *   Pi's own `defaultTools` tolerates a stale name.
+ * - The resolved selection is a base contribution, not a grant: a final `-name`
+ *   token becomes the current-preset blacklist entry, and every blacklist source
+ *   still wins when the tool-access domain recomputes the loadout.
  * - Thinking level is carried as-is; clamping to what a model supports is a
  *   runtime concern of the apply step, not a config error.
  */
@@ -32,7 +35,7 @@ export interface PresetCatalogView {
   hasModel(provider: string, id: string): boolean;
   /** Every registered tool name eligible for a preset selection. */
   allToolNames(): readonly string[];
-  /** The stable base selection modifiers are computed against. */
+  /** The stable session tool baseline modifiers are computed against. */
   baseToolSet(): readonly string[];
 }
 
@@ -54,8 +57,9 @@ export interface PresetApplyPlan {
   readonly name: string;
   readonly model?: PresetModel;
   readonly thinkingLevel?: ThinkingLevelName;
-  /** Absolute final tool selection, when the preset configured tools. */
+  /** Base selection the preset contributes, when it configured tools. */
   readonly tools?: readonly string[];
+  /** Current-preset blacklist: explicit final minus tokens. */
   readonly disabledTools?: readonly string[];
   readonly codemode?: { readonly mode: CodemodeMode };
   /** Resolved instruction text; null when the preset carries none. */

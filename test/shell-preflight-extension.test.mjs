@@ -2,8 +2,20 @@ import assert from 'node:assert/strict';
 import { mkdtemp, access, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import shellPreflight from '../extensions/shell-preflight.ts';
+
+let agentDir;
+const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+before(async () => {
+  agentDir = await mkdtemp(path.join(os.tmpdir(), 'shell-preflight-agent-'));
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+});
+after(async () => {
+  if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+  if (agentDir !== undefined) await rm(agentDir, { recursive: true, force: true });
+});
 
 function handlers() {
   const registered = new Map();

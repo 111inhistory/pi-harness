@@ -88,121 +88,8 @@ export const RpcEventFrameSchema = Type.Object({
 export const RpcServerFrameSchema = Type.Union([RpcResponseSchema, RpcEventFrameSchema]);
 
 // ---------------------------------------------------------------------------
-// Tool management: one three-state model plus independent runtime facts
+// Tool management: base members, dynamic activation and blacklist
 // ---------------------------------------------------------------------------
-
-export const ToolPermissionManagedStateSchema = Type.Union(
-  [Type.Literal('enabled'), Type.Literal('disabled')],
-  description('Explicit management state. "not managed" is the absence of an entry, not a third literal.'),
-);
-
-export const ToolPermissionStateSchema = Type.Union([
-  Type.Literal('enabled'),
-  Type.Literal('disabled'),
-  Type.Literal('active'),
-  Type.Literal('inactive'),
-], description('Derived four-state view: managed enabled/disabled, or unmanaged active/inactive.'));
-
-export const ToolPermissionKindSchema = Type.Union([
-  Type.Literal('tool'),
-  Type.Literal('mcp'),
-  Type.Literal('namespace'),
-  Type.Literal('prefix'),
-], description('Target grammar kind; "prefix" is the config-default `foo*` form.'));
-
-export const ToolPermissionCategorySchema = Type.Union([Type.Literal('tool'), Type.Literal('namespace')]);
-
-const toolPermissionTargetFields = {
-  target: Type.String({ minLength: 1, description: 'The user-facing target string, e.g. "read", "mcp://git", "namespace://subagent", "mcp__prod__*".' }),
-  kind: ToolPermissionKindSchema,
-  name: Type.String({ minLength: 1, description: 'The parsed name after the scheme/prefix marker.' }),
-  id: Type.String({ minLength: 1, description: 'Stable internal identity: `${kind}:${name}`.' }),
-};
-
-export const ToolPermissionTargetSchema = Type.Object(toolPermissionTargetFields);
-
-export const ToolPermissionEntrySchema = Type.Object({
-  ...toolPermissionTargetFields,
-  state: ToolPermissionManagedStateSchema,
-  scope: Type.Literal('branch'),
-}, { additionalProperties: false, description: 'One effective management entry; no provenance is exposed.' });
-
-export const ToolPermissionInfoSchema = Type.Object({
-  name: Type.String({ minLength: 1 }),
-  kind: ToolPermissionKindSchema,
-  category: ToolPermissionCategorySchema,
-  state: ToolPermissionStateSchema,
-  managed: Type.Boolean(description('Whether an explicit management entry resolves for this tool.')),
-  registered: Type.Boolean(),
-  active: Type.Boolean(description('Live active-set membership; independent of the permission state.')),
-}, { additionalProperties: false });
-
-export const ToolPermissionChangeSchema = Type.Object({
-  ...toolPermissionTargetFields,
-  affectedTools: stringArray(),
-}, { additionalProperties: false, description: 'One target a write applied to, with the registered tools it currently hits.' });
-
-export const ToolPermissionSkipSchema = Type.Object({
-  target: Type.String({ minLength: 1 }),
-  reason: Type.String({ minLength: 1 }),
-}, { additionalProperties: false });
-
-export const ToolPermissionQueryResultSchema = Type.Object({
-  scope: Type.Literal('branch'),
-  expression: Type.String({ description: 'The effective expression; defaults to "enabled+active".' }),
-  entries: Type.Array(ToolPermissionInfoSchema),
-  managed: Type.Array(ToolPermissionEntrySchema),
-}, { additionalProperties: false });
-
-export const ToolPermissionSetResultSchema = Type.Object({
-  state: ToolPermissionManagedStateSchema,
-  changed: Type.Array(ToolPermissionChangeSchema),
-  alreadySet: stringArray(),
-  unresolved: stringArray(),
-  skipped: Type.Array(ToolPermissionSkipSchema),
-  affectedTools: stringArray(),
-  activated: stringArray(description('Tools activated by an enable.')),
-  removedActive: stringArray(description('Active Codemode-only tools removed immediately by a disable.')),
-  pendingCompaction: stringArray(description('Active declared tools blocked until the next successful compaction.')),
-  noticed: stringArray(description('Enabled-and-used tools for which a model-facing notice was recorded.')),
-  scope: Type.Literal('branch'),
-  recordError: nullable(Type.String(description('Set when the permission record could not be written; effects are then not applied.'))),
-}, { additionalProperties: false });
-
-export const ToolPermissionResetResultSchema = Type.Object({
-  reset: Type.Array(ToolPermissionChangeSchema),
-  notManaged: stringArray(description('Targets that were not explicitly managed; a tombstone may still have been written.')),
-  stillManaged: Type.Array(Type.Object({
-    name: Type.String({ minLength: 1 }),
-    state: ToolPermissionManagedStateSchema,
-  }, { additionalProperties: false }), description('Tools still managed by another entry or the config default after the reset.')),
-  scope: Type.Literal('branch'),
-  recordError: nullable(Type.String()),
-}, { additionalProperties: false });
-
-export const ActivationSkipReasonSchema = Type.Union([
-  Type.Literal('not_registered'),
-  Type.Literal('hidden'),
-  Type.Literal('disabled'),
-  Type.Literal('not_permitted'),
-  Type.Literal('not_activated'),
-  Type.Literal('unreachable'),
-]);
-
-export const EnableResultSchema = Type.Object({
-  enabled: stringArray(),
-  alreadyEnabled: stringArray(),
-  skipped: Type.Array(Type.Object({
-    name: Type.String({ minLength: 1 }),
-    reason: ActivationSkipReasonSchema,
-  }, { additionalProperties: false })),
-  unresolved: stringArray(),
-  expanded: Type.Array(Type.Object({
-    target: Type.String({ minLength: 1 }),
-    tools: stringArray(),
-  }, { additionalProperties: false })),
-  recordError: nullable(Type.String()),
-}, { additionalProperties: false });
 
 export const CapabilityCategorySchema = Type.Union([
   Type.Literal('tool'),
@@ -210,12 +97,146 @@ export const CapabilityCategorySchema = Type.Union([
   Type.Literal('namespace'),
 ]);
 
+export const ToolTargetKindSchema = Type.Union([
+  Type.Literal('tool'),
+  Type.Literal('mcp'),
+  Type.Literal('namespace'),
+  Type.Literal('prefix'),
+], description('Target grammar kind; "prefix" is the config-default `foo*` form.'));
+
+const toolTargetFields = {
+  target: Type.String({ minLength: 1, description: 'The user-facing target string, e.g. "read", "mcp://git", "namespace://subagent", "mcp__prod__*".' }),
+  kind: ToolTargetKindSchema,
+  name: Type.String({ minLength: 1, description: 'The parsed name after the scheme/prefix marker.' }),
+  id: Type.String({ minLength: 1, description: 'Stable internal identity: `${kind}:${name}`.' }),
+};
+
+export const ToolTargetSchema = Type.Object(toolTargetFields);
+
+export const ToolTargetChangeSchema = Type.Object({
+  ...toolTargetFields,
+  affectedTools: stringArray(),
+}, { additionalProperties: false, description: 'One target a write applied to, with the registered tools it currently hits.' });
+
+export const ToolWriteSkipSchema = Type.Object({
+  target: Type.String({ minLength: 1 }),
+  reason: Type.String({ minLength: 1 }),
+}, { additionalProperties: false });
+
+export const ToolWriteContainerSchema = Type.Object({
+  target: Type.String({ minLength: 1 }),
+  kind: Type.Union([Type.Literal('namespace'), Type.Literal('mcp')]),
+  name: Type.String({ minLength: 1 }),
+  id: Type.String({ minLength: 1 }),
+  explicit: Type.Boolean(description('True for a [ns] selection marker: the container was loaded without default expansion.')),
+  members: stringArray(description('Concrete members this write selected under the container.')),
+}, { additionalProperties: false, description: 'One namespace or MCP container selected by a write, kept separate from concrete tool targets.' });
+
+export const ToolBatchRejectionCodeSchema = Type.Union([
+  Type.Literal('selection_not_supported'),
+  Type.Literal('no_schema_unsupported'),
+  Type.Literal('conflicting_schema_modes'),
+  Type.Literal('invalid_selection'),
+  Type.Literal('container_without_members'),
+  Type.Literal('foreign_member'),
+  Type.Literal('blocked_selection'),
+  Type.Literal('empty_selection'),
+]);
+
+export const ToolBatchRejectionSchema = Type.Object({
+  code: ToolBatchRejectionCodeSchema,
+  targets: stringArray(description('Container or selection tokens that caused the whole-batch refusal.')),
+  members: stringArray(description('Currently registered members considered for the refused selection.')),
+  reason: Type.Optional(Type.Union([
+    Type.Literal('codemode_unavailable'),
+    Type.Literal('mode_not_only'),
+    Type.Literal('tool_not_codemode_callable'),
+  ], { description: 'Concise reason for a no_schema_unsupported refusal; no separate error channel.' })),
+}, { additionalProperties: false, description: 'Whole-batch refusal; null means the write was considered normally. Nothing is written or applied when this is set.' });
+
+export const ToolBlacklistSourceSchema = Type.Union([
+  Type.Literal('startup'),
+  Type.Literal('preset'),
+  Type.Literal('branch'),
+], description('Where a blacklist contribution comes from. A branch blacklist remove clears branch and startup/config contributions at the current branch position; a current preset contribution remains until switch/clear and SDK hard limits are unchanged.'));
+
+export const ToolBaseSourceSchema = Type.Union([
+  Type.Literal('baseline'),
+  Type.Literal('preset'),
+  Type.Literal('branch'),
+], description('Where a base membership currently comes from.'));
+
+export const ToolCollectionTargetSchema = Type.Object({
+  target: ToolTargetSchema,
+  sources: Type.Array(ToolBaseSourceSchema, description('Base sources that currently contribute this target.')),
+  affectedTools: stringArray(),
+}, { additionalProperties: false });
+
+export const ToolWriteActionSchema = Type.Union([
+  Type.Literal('base-add'),
+  Type.Literal('base-remove'),
+  Type.Literal('activate'),
+  Type.Literal('deactivate'),
+  Type.Literal('blacklist-add'),
+  Type.Literal('blacklist-remove'),
+], description('The membership write that produced this result.'));
+
+export const ToolWriteResultSchema = Type.Object({
+  action: ToolWriteActionSchema,
+  changed: Type.Array(ToolTargetChangeSchema),
+  alreadySet: stringArray(description('Targets already in the requested membership state.')),
+  unresolved: stringArray(),
+  skipped: Type.Array(ToolWriteSkipSchema),
+  affectedTools: stringArray(),
+  selected: stringArray(description('Concrete positive members resolved by this batch, including snapshot-expanded container members.')),
+  noSchema: stringArray(description('Selected names whose latest explicit modifier requests schema on demand (lazy).')),
+  schema: stringArray(description('Selected names whose latest explicit modifier requests schema-backed (no-lazy).')),
+  schemaWithheld: stringArray(description('Selected names whose schema is actually withheld now by the live only-mode projection.')),
+  containers: Type.Array(ToolWriteContainerSchema, description('Containers loaded or selected by this batch; never represented as fake tools.')),
+  excluded: stringArray(description('Exact -name exclusions applied to this selection only; they are neither blacklist writes nor membership removals.')),
+  rejected: nullable(ToolBatchRejectionSchema),
+  activated: stringArray(description('Tools activated by a base add or activation.')),
+  alreadyActive: stringArray(),
+  removedActive: stringArray(description('Codemode-only members removed from the active set immediately.')),
+  pendingCompaction: stringArray(description('Declared members whose declaration survives until the next successful compaction.')),
+  noticed: stringArray(description('Used tools that received one model-facing notice for this change.')),
+  notRequested: stringArray(description('Targets with no preserved base/dynamic membership after a deactivation or blacklist removal.')),
+  stillBlacklisted: stringArray(description('Affected tools still covered by a raw blacklist source after the write; preset contributions and SDK hard limits are not lifted.')),
+  banOverridden: stringArray(description('Affected tools whose raw local ban is retained but overridden by base membership.')),
+  remainingSources: Type.Array(ToolBlacklistSourceSchema, description('Blacklist sources still effective for the affected targets after the write.')),
+  recordError: nullable(Type.String(description('Set when the membership record could not be written; effects are then not applied.'))),
+  effectError: nullable(Type.String(description('Set when the membership record was written but applying an SDK/active-set effect failed; nothing is rolled back.'))),
+}, { additionalProperties: false, description: 'Shared result for base, dynamic and blacklist membership writes.' });
+
+export const ToolBaseListResultSchema = Type.Object({
+  targets: Type.Array(ToolCollectionTargetSchema),
+}, { additionalProperties: false, description: 'Recorded base targets with their current registered members.' });
+
+export const ToolBlacklistTargetSchema = Type.Object({
+  target: ToolTargetSchema,
+  affectedTools: stringArray(),
+  sources: Type.Array(ToolBlacklistSourceSchema),
+}, { additionalProperties: false, description: 'One effective blacklist target and every source currently contributing it.' });
+
+export const ToolBlacklistListResultSchema = Type.Object({
+  entries: Type.Array(ToolBlacklistTargetSchema),
+}, { additionalProperties: false });
+
 const toolStatusFields = {
   registered: Type.Boolean(description('Registered on the host; not a guarantee that this scope may use it.')),
   eligible: Type.Boolean(description('Scope-level eligibility for the candidate catalog.')),
-  active: Type.Boolean(description('Live active-set membership.')),
-  permission: ToolPermissionStateSchema,
-  managed: Type.Boolean(),
+  base: Type.Boolean(description('An effective base target currently covers this tool.')),
+  dynamic: Type.Boolean(description('Recorded dynamic activation currently covers this tool.')),
+  active: Type.Boolean(description('Live SDK active-set membership; independent of base/dynamic/blacklist.')),
+  blacklisted: Type.Boolean(description('Raw local blacklist fact; a base member does not delete it.')),
+  blocked: Type.Boolean(description('Effective blacklist prohibition after base override; outer ancestor bans always block.')),
+  banOverridden: Type.Boolean(description('A raw local ban is retained but currently overridden by base membership.')),
+  activatable: Type.Boolean(description('Registered and scope-eligible, not blacklisted, and available for self-loading.')),
+  usable: Type.Boolean(description('Actually callable now after base/dynamic/blacklist and registration/scope/SDK constraints.')),
+  blacklistSources: Type.Array(ToolBlacklistSourceSchema, description('Every source contributing to the blacklist for this tool.')),
+  schemaMode: Type.Union([Type.Literal('no-schema'), Type.Literal('schema'), Type.Null()], description('Latest explicit branch schema override; null means none.')),
+  configLazy: Type.Boolean(description('Configured lazy default explicitly matches this tool or group; independent of the branch override and actual projection.')),
+  schemaWithheld: Type.Boolean(description('The schema is actually withheld now by the live only-mode projection.')),
 };
 
 export const ToolStatusSchema = Type.Object(toolStatusFields);
@@ -532,6 +553,8 @@ export const NoParamsSchema = Type.Object({}, {
 export const ToolsCatalogParamsSchema = Type.Object({
   filter: Type.Optional(Type.String({ description: 'Case-insensitive text over name, description and group.' })),
   category: Type.Optional(CapabilityCategorySchema),
+  includeActivatable: Type.Optional(Type.Boolean({ description: 'Expand the requested membership with registered, scope-eligible tools available for self-loading.' })),
+  includeUsable: Type.Optional(Type.Boolean({ description: 'Filter to currently usable tools (requested, eligible, registered, active, not blacklisted). With includeActivatable, list the union of both populations.' })),
 }, { additionalProperties: true });
 
 export const ToolsDetailParamsSchema = Type.Object({
@@ -540,10 +563,6 @@ export const ToolsDetailParamsSchema = Type.Object({
 
 export const TargetsParamsSchema = Type.Object({
   targets: stringArray({ minItems: 1 }),
-}, { additionalProperties: true });
-
-export const PermissionQueryParamsSchema = Type.Object({
-  expr: Type.Optional(Type.String({ description: 'term (("+"|"-")term)*; defaults to enabled+active.' })),
 }, { additionalProperties: true });
 
 export const JobsListParamsSchema = Type.Object({
@@ -689,6 +708,11 @@ export const PresetApplyProblemSchema = Type.Union([
     codemode: PresetCodemodeSchema,
     detail: Type.String(),
   }, { additionalProperties: false }),
+  Type.Object({
+    severity: Type.Literal('warning'),
+    kind: Type.Literal('tool_sync_failed'),
+    detail: Type.String(),
+  }, { additionalProperties: false }),
 ]);
 
 export const PresetApplyOutcomeSchema = Type.Object({
@@ -703,6 +727,7 @@ export const PresetClearOutcomeSchema = Type.Object({
   cleared: Type.Literal(true),
   snapshot: Type.Null(),
   codemodeCleared: Type.Boolean(),
+  toolSyncError: nullable(Type.String(description('Set when the clear is durable but the blacklist-withdrawal loadout sync failed; nothing is rolled back.'))),
 }, { additionalProperties: false });
 
 // ---------------------------------------------------------------------------
@@ -943,20 +968,21 @@ export const SHARED_CONTRACT_DEFS = {
   RpcEventEnvelope: RpcEventEnvelopeSchema,
   RpcEventFrame: RpcEventFrameSchema,
   RpcServerFrame: RpcServerFrameSchema,
-  ToolPermissionManagedState: ToolPermissionManagedStateSchema,
-  ToolPermissionState: ToolPermissionStateSchema,
-  ToolPermissionKind: ToolPermissionKindSchema,
-  ToolPermissionCategory: ToolPermissionCategorySchema,
-  ToolPermissionTarget: ToolPermissionTargetSchema,
-  ToolPermissionEntry: ToolPermissionEntrySchema,
-  ToolPermissionInfo: ToolPermissionInfoSchema,
-  ToolPermissionChange: ToolPermissionChangeSchema,
-  ToolPermissionSkip: ToolPermissionSkipSchema,
-  ToolPermissionQueryResult: ToolPermissionQueryResultSchema,
-  ToolPermissionSetResult: ToolPermissionSetResultSchema,
-  ToolPermissionResetResult: ToolPermissionResetResultSchema,
-  ActivationSkipReason: ActivationSkipReasonSchema,
-  EnableResult: EnableResultSchema,
+  ToolTargetKind: ToolTargetKindSchema,
+  ToolTarget: ToolTargetSchema,
+  ToolTargetChange: ToolTargetChangeSchema,
+  ToolWriteSkip: ToolWriteSkipSchema,
+  ToolWriteContainer: ToolWriteContainerSchema,
+  ToolBatchRejectionCode: ToolBatchRejectionCodeSchema,
+  ToolBatchRejection: ToolBatchRejectionSchema,
+  ToolWriteAction: ToolWriteActionSchema,
+  ToolWriteResult: ToolWriteResultSchema,
+  ToolBaseListResult: ToolBaseListResultSchema,
+  ToolBaseSource: ToolBaseSourceSchema,
+  ToolCollectionTarget: ToolCollectionTargetSchema,
+  ToolBlacklistSource: ToolBlacklistSourceSchema,
+  ToolBlacklistTarget: ToolBlacklistTargetSchema,
+  ToolBlacklistListResult: ToolBlacklistListResultSchema,
   CapabilityCategory: CapabilityCategorySchema,
   ToolStatus: ToolStatusSchema,
   ToolCatalogEntry: ToolCatalogEntrySchema,
@@ -1000,7 +1026,6 @@ export const SHARED_CONTRACT_DEFS = {
   ToolsCatalogParams: ToolsCatalogParamsSchema,
   ToolsDetailParams: ToolsDetailParamsSchema,
   TargetsParams: TargetsParamsSchema,
-  PermissionQueryParams: PermissionQueryParamsSchema,
   JobsListParams: JobsListParamsSchema,
   JobIdParams: JobIdParamsSchema,
   SubagentTask: SubagentTaskSchema,
@@ -1102,32 +1127,44 @@ export const HARNESS_RPC_CONTRACT = {
     params: 'NoParams', result: 'HarnessInfoResult', paramsRequired: false,
   }),
   [RPC_METHODS.toolsCatalog]: defineMethod({
-    description: 'Query registered tools and capabilities with independent runtime and permission facts.',
+    description: 'List tool facts and current effective members, optionally expanding to activatable and usable tools.',
     params: 'ToolsCatalogParams', result: 'ToolCatalogResult', paramsRequired: false,
   }),
   [RPC_METHODS.toolsDetail]: defineMethod({
-    description: 'Return runtime status, permission state and parameter schema for one registered tool.',
+    description: 'Return runtime, membership and blacklist facts plus the parameter schema for one registered tool.',
     params: 'ToolsDetailParams', result: 'ToolDetail', paramsRequired: true,
   }),
-  [RPC_METHODS.toolsEnable]: defineMethod({
-    description: 'User control-plane enable and activation of capability targets.',
-    params: 'TargetsParams', result: 'EnableResult', paramsRequired: true,
+  [RPC_METHODS.toolsBaseAdd]: defineMethod({
+    description: 'Add targets to the session base tool collection.',
+    params: 'TargetsParams', result: 'ToolWriteResult', paramsRequired: true,
   }),
-  [RPC_METHODS.permissionQuery]: defineMethod({
-    description: 'Query effective branch tool permissions matching an expression.',
-    params: 'PermissionQueryParams', result: 'ToolPermissionQueryResult', paramsRequired: false,
+  [RPC_METHODS.toolsBaseRemove]: defineMethod({
+    description: 'Remove targets from the session base tool collection without touching dynamic membership.',
+    params: 'TargetsParams', result: 'ToolWriteResult', paramsRequired: true,
   }),
-  [RPC_METHODS.permissionEnable]: defineMethod({
-    description: 'Set explicit branch permission state to enabled for the given targets.',
-    params: 'TargetsParams', result: 'ToolPermissionSetResult', paramsRequired: true,
+  [RPC_METHODS.toolsBaseList]: defineMethod({
+    description: 'List recorded base targets with their current registered members.',
+    params: 'NoParams', result: 'ToolBaseListResult', paramsRequired: false,
   }),
-  [RPC_METHODS.permissionDisable]: defineMethod({
-    description: 'Set explicit branch permission state to disabled for the given targets.',
-    params: 'TargetsParams', result: 'ToolPermissionSetResult', paramsRequired: true,
+  [RPC_METHODS.toolsActivate]: defineMethod({
+    description: 'Activate targets as dynamic session members within scope and SDK constraints.',
+    params: 'TargetsParams', result: 'ToolWriteResult', paramsRequired: true,
   }),
-  [RPC_METHODS.permissionReset]: defineMethod({
-    description: 'Clear explicit branch management for the given targets.',
-    params: 'TargetsParams', result: 'ToolPermissionResetResult', paramsRequired: true,
+  [RPC_METHODS.toolsDeactivate]: defineMethod({
+    description: 'Remove targets from dynamic session membership without touching base membership.',
+    params: 'TargetsParams', result: 'ToolWriteResult', paramsRequired: true,
+  }),
+  [RPC_METHODS.toolsBlacklistAdd]: defineMethod({
+    description: 'Add branch blacklist targets; base overrides local bans without deleting them, while dynamic additions do not.',
+    params: 'TargetsParams', result: 'ToolWriteResult', paramsRequired: true,
+  }),
+  [RPC_METHODS.toolsBlacklistRemove]: defineMethod({
+    description: 'Remove branch and matching startup/config blacklist contributions for the targets; the current preset contribution and SDK hard limits remain.',
+    params: 'TargetsParams', result: 'ToolWriteResult', paramsRequired: true,
+  }),
+  [RPC_METHODS.toolsBlacklistList]: defineMethod({
+    description: 'List effective blacklist targets and every source contributing them.',
+    params: 'NoParams', result: 'ToolBlacklistListResult', paramsRequired: false,
   }),
   [RPC_METHODS.agentsTree]: defineMethod({
     description: 'Return the full agent tree and history directories for the root session.',
@@ -1275,10 +1312,18 @@ export type ToolStatus = DeepReadonly<Static<typeof ToolStatusSchema>>;
 export type ToolCatalogEntry = DeepReadonly<Static<typeof ToolCatalogEntrySchema>>;
 export type ToolCatalogResult = DeepReadonly<Static<typeof ToolCatalogResultSchema>>;
 export type ToolDetail = DeepReadonly<Static<typeof ToolDetailSchema>>;
-export type EnableResult = DeepReadonly<Static<typeof EnableResultSchema>>;
-export type ToolPermissionQueryResult = DeepReadonly<Static<typeof ToolPermissionQueryResultSchema>>;
-export type ToolPermissionSetResult = DeepReadonly<Static<typeof ToolPermissionSetResultSchema>>;
-export type ToolPermissionResetResult = DeepReadonly<Static<typeof ToolPermissionResetResultSchema>>;
+export type ToolTargetKind = DeepReadonly<Static<typeof ToolTargetKindSchema>>;
+export type ToolTarget = DeepReadonly<Static<typeof ToolTargetSchema>>;
+export type ToolTargetChange = DeepReadonly<Static<typeof ToolTargetChangeSchema>>;
+export type ToolWriteSkip = DeepReadonly<Static<typeof ToolWriteSkipSchema>>;
+export type ToolWriteAction = DeepReadonly<Static<typeof ToolWriteActionSchema>>;
+export type ToolWriteResult = DeepReadonly<Static<typeof ToolWriteResultSchema>>;
+export type ToolBaseListResult = DeepReadonly<Static<typeof ToolBaseListResultSchema>>;
+export type ToolBaseSource = DeepReadonly<Static<typeof ToolBaseSourceSchema>>;
+export type ToolCollectionTarget = DeepReadonly<Static<typeof ToolCollectionTargetSchema>>;
+export type ToolBlacklistSource = DeepReadonly<Static<typeof ToolBlacklistSourceSchema>>;
+export type ToolBlacklistTarget = DeepReadonly<Static<typeof ToolBlacklistTargetSchema>>;
+export type ToolBlacklistListResult = DeepReadonly<Static<typeof ToolBlacklistListResultSchema>>;
 export type DetailedAgentItem = DeepReadonly<Static<typeof DetailedAgentItemSchema>>;
 export type JobView = DeepReadonly<Static<typeof JobViewSchema>>;
 export type JobRecordView = DeepReadonly<Static<typeof JobRecordViewSchema>>;
@@ -1331,7 +1376,6 @@ export type NoParams = Static<typeof NoParamsSchema>;
 export type ToolsCatalogParams = Static<typeof ToolsCatalogParamsSchema>;
 export type ToolsDetailParams = Static<typeof ToolsDetailParamsSchema>;
 export type TargetsParams = Static<typeof TargetsParamsSchema>;
-export type PermissionQueryParams = Static<typeof PermissionQueryParamsSchema>;
 export type JobsListParams = Static<typeof JobsListParamsSchema>;
 export type JobIdParams = Static<typeof JobIdParamsSchema>;
 export type SubagentTask = Static<typeof SubagentTaskSchema>;

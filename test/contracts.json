@@ -46,7 +46,7 @@
       ],
       "tests": [
         "test/typed/capability-reachability.test.ts",
-        "test/typed/capability-enable.test.ts"
+        "test/typed/capability-command.test.ts"
       ]
     },
     {
@@ -914,11 +914,11 @@
         }
       ],
       "tests": [
-        "test/typed/capability-tool-permission.test.ts",
+        "test/typed/capability-tool-access.test.ts",
         "test/typed/capability-history-model.test.ts",
         "test/typed/offline-permission-migration.test.ts",
         "test/typed/root-service-boundary.test.ts",
-        "test/typed/capability-enable.test.ts",
+        "test/typed/capability-command.test.ts",
         "test/typed/declaration-visibility.test.ts"
       ]
     },

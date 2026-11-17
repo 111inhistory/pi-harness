@@ -1,0 +1,7 @@
+{
+  "id": "r-bad-base-add",
+  "method": "tools.base.add",
+  "params": {
+    "targets": []
+  }
+}

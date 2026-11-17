@@ -24,7 +24,7 @@ import {
   applyPresetToSession,
   clearPresetFromSession,
   currentPreset,
-  ensurePresetBase,
+  ensureSessionToolBase,
   loadPresets,
   type PresetConfig,
 } from '../src/preset/application.ts';
@@ -47,14 +47,37 @@ export default function presetExtension(pi: ExtensionAPI): void {
   };
 
   const clear = (ctx: ExtensionContext): void => {
-    clearPresetFromSession(sessionHost(ctx));
+    const outcome = clearPresetFromSession(sessionHost(ctx));
     currentName = undefined;
     renderStatus(ctx);
-    ctx.ui.notify('Preset cleared; model, thinking and tools are unchanged.', 'info');
+    // Clearing ends the preset's blacklist lifetime without rolling the base,
+    // model or thinking level back. The records are already withdrawn, so never
+    // claim the live loadout was synchronized when that effect failed.
+    if (outcome.toolSyncError !== null) {
+      ctx.ui.notify(
+        `Preset cleared; its tool blacklist was withdrawn, but the tool loadout could not be synchronized: ${outcome.toolSyncError}. `
+        + 'Model, thinking and the tool baseline are unchanged.',
+        'warning',
+      );
+      return;
+    }
+    ctx.ui.notify(
+      'Preset cleared; its tool blacklist was withdrawn. Model, thinking and the tool baseline are unchanged.',
+      'info',
+    );
   };
 
   const apply = async (ctx: ExtensionContext, name: string, preset: PresetConfig): Promise<void> => {
-    const outcome = await applyPresetToSession(sessionHost(ctx), name, preset);
+    let outcome: Awaited<ReturnType<typeof applyPresetToSession>>;
+    try {
+      outcome = await applyPresetToSession(sessionHost(ctx), name, preset);
+    } catch (error) {
+      // A record write can fail before any outcome exists. Report it instead of
+      // escaping the event/command handler; there is no rollback or retry.
+      const detail = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`Preset "${name}" could not be applied: ${detail}`, 'error');
+      return;
+    }
     for (const issue of outcome.issues) {
       ctx.ui.notify(`Preset "${name}": ${issue.detail}`, issue.severity);
     }
@@ -62,12 +85,16 @@ export default function presetExtension(pi: ExtensionAPI): void {
       ctx.ui.notify(`Preset "${name}": ${problem.detail}`, problem.severity);
     }
     if (outcome.applied) {
-      ctx.ui.notify(
-        outcome.codemodeNotApplied
-          ? `Preset "${name}" applied; codemode mode was recorded but not switched.`
-          : `Preset "${name}" applied.`,
-        outcome.codemodeNotApplied ? 'warning' : 'info',
-      );
+      if (outcome.problems.some((problem) => problem.kind === 'tool_sync_failed')) {
+        ctx.ui.notify(`Preset "${name}" applied; the tool loadout could not be synchronized.`, 'warning');
+      } else {
+        ctx.ui.notify(
+          outcome.codemodeNotApplied
+            ? `Preset "${name}" applied; codemode mode was recorded but not switched.`
+            : `Preset "${name}" applied.`,
+          outcome.codemodeNotApplied ? 'warning' : 'info',
+        );
+      }
       currentName = name;
       renderStatus(ctx);
     } else if (outcome.issues.length === 0 && outcome.problems.length === 0) {
@@ -82,13 +109,22 @@ export default function presetExtension(pi: ExtensionAPI): void {
   };
 
   pi.on('session_start', async (_event, ctx) => {
-    // Stable base: the true initial active set — native defaults, CLI `--tools`
-    // modifier results and default-active extension tools such as `capability`.
-    // Capture it once and persist it on the branch; a resume/reload that already
-    // reflects a prior preset then reads the recorded base instead of the live
-    // (preset-shaped) active set, so B computes from the same base as a fresh
-    // apply and no extension tool is silently dropped.
-    ensurePresetBase(sessionHost(ctx));
+    // Shared session tool baseline: the true initial active set — native
+    // defaults, CLI initial-selection modifiers and default-active extension
+    // tools such as `capability`. Captured once before any `--preset` applies, so
+    // a resume/reload that already reflects a prior preset cannot become the new
+    // baseline while every modifier still computes from the same starting set.
+    // The capability extension may already have reported the same write
+    // failure; never let a second unguarded attempt abort the startup handler.
+    try {
+      ensureSessionToolBase(sessionHost(ctx));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(
+        `Preset: the tool baseline could not be recorded: ${detail}. Tool selections are unavailable until it can be written.`,
+        'error',
+      );
+    }
     currentName = currentPreset(sessionHost(ctx))?.name;
     const presets = loaded(ctx);
     const flag = pi.getFlag('preset');

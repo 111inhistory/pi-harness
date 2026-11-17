@@ -8,10 +8,9 @@
  * catalog change does not revoke it. Role denials always win, including a
  * denial added after a descendant already learned the name.
  *
- * Config permission defaults are not eligibility: they are read by the
- * permission domain, which every catalog filter and admission check consults.
- * A child therefore excludes a default-disabled or explicitly disabled tool by
- * its denial set, not by a root-only matcher here.
+ * The configured blacklist is not eligibility: the tool-access domain reads it
+ * as the startup blacklist source, so a child excludes a blacklisted tool by
+ * its denial set, not by a matcher here.
  *
  * A synchronous operation must resolve the ancestor chain once and then ask
  * {@link CapabilityScopeView.allows} for every tool. Eligibility can grow
@@ -76,8 +75,8 @@ interface ScopeState {
   denied: ReadonlySet<string>;
   /** Append-only qualification learned by earlier operations. */
   learned: Set<string>;
-  /** Config permission patterns (disabled defaults); only the chain root sets them. */
-  permissionDefaults: readonly string[];
+  /** Configured blacklist patterns (startup source); only the chain root sets them. */
+  startupBlacklist: readonly string[];
 }
 
 interface ScopeNode {
@@ -95,7 +94,7 @@ function stateFor(pi: CapabilityToolCatalog): ScopeState {
   if (state === undefined) {
     const exchange: ScopeExchange = {};
     pi.events?.emit(SCOPE_CHANNEL, exchange);
-    state = exchange.state ?? { parent: null, denied: NO_DENIALS, learned: new Set<string>(), permissionDefaults: [] };
+    state = exchange.state ?? { parent: null, denied: NO_DENIALS, learned: new Set<string>(), startupBlacklist: [] };
     scopes.set(pi, state);
     if (exchange.state === undefined) {
       const shared = state;
@@ -187,22 +186,25 @@ export function createCapabilityScopeView(pi: CapabilityToolCatalog): Capability
 }
 
 /**
- * Declare the config permission defaults for the chain.
+ * Declare the configured blacklist patterns for the chain.
  *
- * These are the `capability.manualTools` patterns. They are not a matcher and
- * grant nothing: the permission domain turns each pattern into a default
- * `disabled` entry, and a reset tombstone can override it like any other entry.
+ * These are the `capability.blacklist` patterns (exact names, `foo*` prefixes,
+ * or group schemes). They are not a matcher and grant nothing: the tool-access
+ * domain reads them as the `startup` blacklist source, and an explicit branch
+ * `blacklist remove` can override the matching target for this session.
+ * Only the chain root applies them, so a child never gains availability the
+ * root did not have.
  */
-export function setCapabilityPermissionDefaults(
+export function setCapabilityStartupBlacklist(
   pi: CapabilityToolCatalog,
   patterns: readonly string[],
 ): void {
-  stateFor(pi).permissionDefaults = [...patterns];
+  stateFor(pi).startupBlacklist = [...patterns];
 }
 
-/** The config permission defaults that govern this catalog's chain. */
-export function capabilityPermissionDefaults(pi: CapabilityToolCatalog): readonly string[] {
-  return ancestorChain(pi)[0]?.state.permissionDefaults ?? [];
+/** The configured startup blacklist patterns that govern this catalog's chain. */
+export function capabilityStartupBlacklist(pi: CapabilityToolCatalog): readonly string[] {
+  return ancestorChain(pi)[0]?.state.startupBlacklist ?? [];
 }
 
 /**

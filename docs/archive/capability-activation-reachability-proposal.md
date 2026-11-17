@@ -30,7 +30,7 @@ Capability 应拒绝启用当前会话没有可用调用入口的工具。模型
 
 ## 改动范围
 
-[激活入口](../../src/capability/activation.ts) 提供共用的可达性判断及拒绝原因。[模型发现](../../src/capability/extension.ts) 与 [用户启用](../../src/capability/enable.ts) 使用同一规则，并分别渲染结果。
+[激活入口](../../src/capability/activation.ts) 提供共用的可达性判断及拒绝原因。[模型发现](../../src/capability/extension.ts) 与 `src/capability/enable.ts`（历史实现） 使用同一规则，并分别渲染结果。
 
 模型发现应在写入成功选择记录与激活前排除已知不可达成员，避免把未启用工具记录为可用。SDK 激活后的实际集合仍需读取，以处理现有激活掩码。
 

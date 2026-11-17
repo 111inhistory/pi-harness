@@ -1,113 +1,98 @@
 /**
- * Tool-information and permission port for the Harness RPC endpoint.
+ * Tool-information and collection port for the Harness RPC endpoint.
  *
- * This is a read/adapt layer over the existing capability and tool-permission
- * domains; it never re-implements eligibility, activation or permission rules.
- * It reuses the capability catalogue, scope eligibility, and the unified
- * three-state permission module (`tool-permission.ts`).
+ * This is a read/adapt layer over the capability tool-access domain. Base,
+ * dynamic and blacklist membership, their sources, activation effects and
+ * persistence remain owned by `tool-access.ts`; the port only shapes domain
+ * results for the wire and resolves per-tool registry metadata for detail.
  */
 
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 
-import { createCapabilityCatalog } from '../../capability/catalog.ts';
-import { createEligibleToolCatalog } from '../../capability/tool-catalog.ts';
-import { enableCapabilityTargets, type EnableResult } from '../../capability/enable.ts';
 import {
-  createToolPermissionResolver,
-  queryToolPermissions,
-  setToolPermission,
-  resetToolPermission,
-  ToolPermissionQueryError,
-  type ToolPermissionInfo,
-  type ToolPermissionQueryResult,
-  type ToolPermissionSetResult,
-  type ToolPermissionResetResult,
-} from '../../capability/tool-permission.ts';
+  addBaseTools,
+  addBlacklistTargets,
+  activateToolTargets,
+  deactivateToolTargets,
+  removeBaseTools,
+  removeBlacklistTargets,
+  type ToolWriteResult as DomainToolWriteResult,
+} from '../../capability/tool-access.ts';
+import { createToolAccessView, listBaseTools, listBlacklist, queryToolAccess } from '../../capability/tool-access-view.ts';
 import type {
-  PermissionQueryParams,
   TargetsParams,
+  ToolBaseListResult,
+  ToolBlacklistListResult,
   ToolCatalogEntry,
   ToolCatalogResult,
   ToolDetail,
-  ToolStatus,
+  ToolWriteResult,
   ToolsCatalogParams,
   ToolsDetailParams,
 } from '../contract.ts';
 import { RPC_ERROR } from '../protocol.ts';
 import { RpcRequestError } from '../error.ts';
 
-export type { ToolStatus, ToolCatalogEntry, ToolCatalogResult, ToolDetail };
+export type {
+  ToolBaseListResult,
+  ToolBlacklistListResult,
+  ToolCatalogEntry,
+  ToolCatalogResult,
+  ToolDetail,
+  ToolWriteResult,
+};
 
 export interface ToolPort {
   catalog(params: ToolsCatalogParams): ToolCatalogResult;
   detail(params: ToolsDetailParams): ToolDetail;
-  enable(params: TargetsParams): EnableResult;
-  permissionQuery(params: PermissionQueryParams): ToolPermissionQueryResult;
-  permissionEnable(params: TargetsParams): ToolPermissionSetResult;
-  permissionDisable(params: TargetsParams): ToolPermissionSetResult;
-  permissionReset(params: TargetsParams): ToolPermissionResetResult;
+  baseAdd(params: TargetsParams): ToolWriteResult;
+  baseRemove(params: TargetsParams): ToolWriteResult;
+  baseList(): ToolBaseListResult;
+  activate(params: TargetsParams): ToolWriteResult;
+  deactivate(params: TargetsParams): ToolWriteResult;
+  blacklistAdd(params: TargetsParams): ToolWriteResult;
+  blacklistRemove(params: TargetsParams): ToolWriteResult;
+  blacklistList(): ToolBlacklistListResult;
 }
 
-/** One consistent read of every state source for a single request. */
-interface StateSnapshot {
-  readonly registered: Map<string, { namespace?: { name: string } | undefined; exposure?: string | undefined }>;
-  readonly eligible: ReadonlySet<string>;
-  readonly active: ReadonlySet<string>;
-  readonly permission: ReadonlyMap<string, ToolPermissionInfo>;
-}
-
-function snapshot(api: ExtensionAPI, ctx: ExtensionContext): StateSnapshot {
-  const branch = ctx.sessionManager.getBranch();
-  const active = api.getActiveTools();
-  const allTools = api.getAllTools();
-  const registered = new Map(allTools.map((tool) => [tool.name, tool]));
-  const resolver = createToolPermissionResolver(api, allTools, branch);
-  const activeSet = new Set(active);
-  const permission = new Map<string, ToolPermissionInfo>();
-  for (const tool of allTools) {
-    permission.set(tool.name, resolver.resolveFor(tool, activeSet.has(tool.name)));
-  }
-  return {
-    registered,
-    eligible: createEligibleToolCatalog(api, {
-      disabled: (name) => resolver.disabled(name),
-    }).names,
-    active: activeSet,
-    permission,
-  };
-}
-
-function statusOf(name: string, state: StateSnapshot): ToolStatus {
-  const info = state.permission.get(name);
-  return {
-    registered: info?.registered ?? state.registered.has(name),
-    eligible: state.eligible.has(name),
-    active: info?.active ?? state.active.has(name),
-    permission: info?.state ?? 'inactive',
-    managed: info?.managed ?? false,
-  };
+function branchOf(ctx: ExtensionContext): readonly unknown[] {
+  return ctx.sessionManager.getBranch();
 }
 
 export function buildToolPort(api: ExtensionAPI, ctx: ExtensionContext): ToolPort {
   return {
     catalog(params: ToolsCatalogParams): ToolCatalogResult {
-      const state = snapshot(api, ctx);
-      // Match the user picker: disabled entries remain visible for permission management.
-      const view = createCapabilityCatalog(api, {
+      const result = queryToolAccess(api, branchOf(ctx), api.getActiveTools(), {
+        ...(params.includeActivatable === undefined ? {} : { includeActivatable: params.includeActivatable }),
+        ...(params.includeUsable === undefined ? {} : { includeUsable: params.includeUsable }),
         ...(params.filter === undefined ? {} : { filter: params.filter }),
         ...(params.category === undefined ? {} : { category: params.category }),
       });
-      const entries = view.entries.map((entry): ToolCatalogEntry => {
-        const info = state.registered.get(entry.name);
+      const registered = new Map(api.getAllTools().map((tool) => [tool.name, tool]));
+      const entries = result.entries.map((entry): ToolCatalogEntry => {
+        const tool = registered.get(entry.name);
         return {
           name: entry.name,
           display: entry.display,
           description: entry.description,
           category: entry.category,
           group: entry.group,
-          namespace: info?.namespace?.name ?? null,
-          exposure: info?.exposure ?? null,
-          ...statusOf(entry.name, state),
+          namespace: tool?.namespace?.name ?? null,
+          exposure: tool?.exposure ?? null,
+          registered: entry.registered,
+          eligible: entry.eligible,
+          base: entry.base,
+          dynamic: entry.dynamic,
+          active: entry.active,
+          blacklisted: entry.blacklisted,
+          blocked: entry.blocked,
+          banOverridden: entry.banOverridden,
+          blacklistSources: [...entry.blacklistSources],
+          activatable: entry.activatable,
+          usable: entry.usable,
+          schemaMode: entry.schemaMode,
+          configLazy: entry.configLazy,
+          schemaWithheld: entry.schemaWithheld,
         };
       });
       return { entries, total: entries.length };
@@ -115,51 +100,118 @@ export function buildToolPort(api: ExtensionAPI, ctx: ExtensionContext): ToolPor
 
     detail(params: ToolsDetailParams): ToolDetail {
       const name = params.name;
-      const state = snapshot(api, ctx);
-      const info = state.registered.get(name);
-      if (info === undefined) {
+      const full = api.getAllTools().find((tool) => tool.name === name);
+      if (full === undefined) {
         throw new RpcRequestError(RPC_ERROR.notFound, `No registered tool named "${name}".`);
       }
-      const full = api.getAllTools().find((tool) => tool.name === name);
+      const view = createToolAccessView(api, branchOf(ctx));
+      const facts = view.factsFor(full);
+      const listing = queryToolAccess(api, branchOf(ctx), api.getActiveTools(), {
+        includeActivatable: true,
+        includeUsable: true,
+      }).entries.find((entry) => entry.name === name);
       return {
         name,
-        description: typeof full?.description === 'string' ? full.description : '',
-        namespace: info.namespace?.name ?? null,
-        exposure: info.exposure ?? null,
-        parameters: full?.parameters ?? null,
-        promptGuidelines: Array.isArray(full?.promptGuidelines) ? full.promptGuidelines : null,
-        ...statusOf(name, state),
+        description: typeof full.description === 'string' ? full.description : '',
+        namespace: full.namespace?.name ?? null,
+        exposure: full.exposure ?? null,
+        parameters: full.parameters ?? null,
+        promptGuidelines: Array.isArray(full.promptGuidelines) ? [...full.promptGuidelines] : null,
+        registered: true,
+        eligible: listing?.eligible ?? false,
+        active: listing?.active ?? api.getActiveTools().includes(name),
+        base: facts.base,
+        dynamic: facts.dynamic,
+        blacklisted: facts.blacklisted,
+        blocked: facts.blocked,
+        banOverridden: facts.banOverridden,
+        blacklistSources: [...facts.blacklistSources],
+        activatable: listing?.activatable ?? false,
+        usable: listing?.usable ?? false,
+        schemaMode: facts.schemaMode,
+        configLazy: listing?.configLazy ?? false,
+        schemaWithheld: listing?.schemaWithheld ?? false,
       };
     },
 
-    // The user control plane: capability user-enable keeps its own activation and
-    // branch record semantics; the model never reaches this path.
-    enable(params: TargetsParams): EnableResult {
-      return enableCapabilityTargets(api, params.targets, { branch: ctx.sessionManager.getBranch() });
+    baseAdd(params: TargetsParams): ToolWriteResult {
+      return writeResult(addBaseTools(api, api, branchOf(ctx), params.targets));
     },
 
-    permissionQuery(params: PermissionQueryParams): ToolPermissionQueryResult {
-      try {
-        // No source/entry/explain: the shared domain answers with derived state.
-        return queryToolPermissions(api, ctx.sessionManager.getBranch(), api.getActiveTools(), params.expr);
-      } catch (error) {
-        if (error instanceof ToolPermissionQueryError) {
-          throw new RpcRequestError(RPC_ERROR.invalidRequest, error.message);
-        }
-        throw error;
-      }
+    baseRemove(params: TargetsParams): ToolWriteResult {
+      return writeResult(removeBaseTools(api, api, branchOf(ctx), params.targets));
     },
 
-    permissionEnable(params: TargetsParams): ToolPermissionSetResult {
-      return setToolPermission(api, api, ctx.sessionManager.getBranch(), params.targets, 'enabled');
+    baseList(): ToolBaseListResult {
+      return { targets: [...listBaseTools(api, branchOf(ctx))] };
     },
 
-    permissionDisable(params: TargetsParams): ToolPermissionSetResult {
-      return setToolPermission(api, api, ctx.sessionManager.getBranch(), params.targets, 'disabled');
+    activate(params: TargetsParams): ToolWriteResult {
+      return writeResult(activateToolTargets(api, api, branchOf(ctx), params.targets));
     },
 
-    permissionReset(params: TargetsParams): ToolPermissionResetResult {
-      return resetToolPermission(api, api, ctx.sessionManager.getBranch(), params.targets);
+    deactivate(params: TargetsParams): ToolWriteResult {
+      return writeResult(deactivateToolTargets(api, api, branchOf(ctx), params.targets));
     },
+
+    blacklistAdd(params: TargetsParams): ToolWriteResult {
+      return writeResult(addBlacklistTargets(api, api, branchOf(ctx), params.targets));
+    },
+
+    blacklistRemove(params: TargetsParams): ToolWriteResult {
+      return writeResult(removeBlacklistTargets(api, api, branchOf(ctx), params.targets));
+    },
+
+    blacklistList(): ToolBlacklistListResult {
+      return { entries: [...listBlacklist(api, branchOf(ctx))] };
+    },
+  };
+}
+
+/** The domain write result and the wire result share one structure; keep the copy explicit. */
+function writeResult(result: DomainToolWriteResult): ToolWriteResult {
+  return {
+    action: result.action,
+    changed: result.changed.map((change) => ({
+      target: change.target,
+      kind: change.kind,
+      name: change.name,
+      id: change.id,
+      affectedTools: [...change.affectedTools],
+    })),
+    alreadySet: [...result.alreadySet],
+    unresolved: [...result.unresolved],
+    skipped: result.skipped.map((skip) => ({ target: skip.target, reason: skip.reason })),
+    affectedTools: [...result.affectedTools],
+    selected: [...result.selected],
+    noSchema: [...result.noSchema],
+    schema: [...result.schema],
+    schemaWithheld: [...result.schemaWithheld],
+    containers: result.containers.map((container) => ({
+      target: container.target,
+      kind: container.kind,
+      name: container.name,
+      id: container.id,
+      explicit: container.explicit,
+      members: [...container.members],
+    })),
+    excluded: [...result.excluded],
+    rejected: result.rejected === null ? null : {
+      code: result.rejected.code,
+      targets: [...result.rejected.targets],
+      members: [...result.rejected.members],
+      ...(result.rejected.reason === undefined ? {} : { reason: result.rejected.reason }),
+    },
+    activated: [...result.activated],
+    alreadyActive: [...result.alreadyActive],
+    removedActive: [...result.removedActive],
+    pendingCompaction: [...result.pendingCompaction],
+    noticed: [...result.noticed],
+    notRequested: [...result.notRequested],
+    stillBlacklisted: [...result.stillBlacklisted],
+    banOverridden: [...result.banOverridden],
+    remainingSources: [...result.remainingSources],
+    recordError: result.recordError,
+    effectError: result.effectError,
   };
 }

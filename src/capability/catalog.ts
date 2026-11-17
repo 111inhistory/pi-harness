@@ -15,8 +15,9 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 import { isNativeDiscoveryTool } from './admission.ts';
 import { createEligibleToolCatalog } from './tool-catalog.ts';
+import { classifyTool, type ToolCategory } from './tool-classify.ts';
 
-export type CapabilityCategory = 'tool' | 'mcp' | 'namespace';
+export type CapabilityCategory = ToolCategory;
 
 /** Category order and headings, stable across sessions. */
 export const CATEGORY_ORDER: readonly CapabilityCategory[] = ['tool', 'mcp', 'namespace'];
@@ -59,19 +60,8 @@ export interface CapabilityCatalogOptions {
   readonly category?: CapabilityCategory;
   /** Case-insensitive text over name, description and group. */
   readonly filter?: string;
-  /** Names prohibited by an effective permission; excluded from the catalog. */
-  readonly disabled?: (name: string) => boolean;
-}
-
-const NATIVE_MCP_TOOLS = new Set(['read_mcp_resource', 'list_mcp_resources', 'list_mcp_resource_templates']);
-
-function isMcpTool(name: string): boolean {
-  return name.startsWith('mcp__') || NATIVE_MCP_TOOLS.has(name);
-}
-
-function stripNamespace(name: string, namespace: string | undefined): string {
-  if (namespace !== undefined && name.startsWith(`${namespace}__`)) return name.slice(namespace.length + 2);
-  return name;
+  /** Prohibited names (blacklist); excluded from the catalog. */
+  readonly blocked?: (name: string) => boolean;
 }
 
 function compareText(left: string, right: string): number {
@@ -97,7 +87,9 @@ export function createCapabilityCatalog(
   pi: ExtensionAPI,
   options: CapabilityCatalogOptions = {},
 ): CapabilityCatalogView {
-  const catalog = createEligibleToolCatalog(pi, options.disabled === undefined ? {} : { disabled: options.disabled });
+  const catalog = createEligibleToolCatalog(pi, options.blocked === undefined
+    ? {}
+    : { blocked: (tool) => options.blocked?.(tool.name) ?? false });
   const active = new Set(pi.getActiveTools());
   const needle = (options.filter ?? '').trim().toLowerCase();
   const entries = catalog.tools
@@ -105,18 +97,13 @@ export function createCapabilityCatalog(
     // offer an activation that the execution guard always refuses.
     .filter((tool) => !isNativeDiscoveryTool(tool.name))
     .map((tool): CapabilityCatalogEntry => {
-      const namespace = tool.namespace?.name;
-      const mcp = isMcpTool(tool.name);
-      const category: CapabilityCategory = mcp ? 'mcp' : namespace === undefined ? 'tool' : 'namespace';
-      const group = mcp
-        ? tool.namespace?.aliases?.[0] ?? namespace?.replace(/^mcp__/, '') ?? 'MCP'
-        : namespace ?? 'Tools';
+      const classification = classifyTool(tool);
       return {
         name: tool.name,
-        display: stripNamespace(tool.name, namespace),
+        display: classification.display,
         description: typeof tool.description === 'string' ? tool.description : '',
-        category,
-        group,
+        category: classification.category,
+        group: classification.group,
         active: active.has(tool.name),
       };
     })

@@ -20,7 +20,7 @@
       ]
     },
     {
-      "path": "valid/request-permission-enable.json",
+      "path": "valid/request-tools-blacklist-add.json",
       "kind": "frame",
       "schema": "MethodRequest",
       "valid": true,
@@ -113,10 +113,28 @@
       ]
     },
     {
-      "path": "valid/tool-permission-query.json",
+      "path": "valid/tool-write-result.json",
       "kind": "frame",
-      "schema": "ToolPermissionQueryResult",
+      "schema": "ToolWriteResult",
       "valid": true,
+      "conformance": [
+        "payload"
+      ]
+    },
+    {
+      "path": "valid/tool-write-result-container.json",
+      "kind": "frame",
+      "schema": "ToolWriteResult",
+      "valid": true,
+      "conformance": [
+        "payload"
+      ]
+    },
+    {
+      "path": "invalid/tool-write-result-rejected.json",
+      "kind": "frame",
+      "schema": "ToolWriteResult",
+      "valid": false,
       "conformance": [
         "payload"
       ]
@@ -235,7 +253,7 @@
       ]
     },
     {
-      "path": "invalid/request-permission-query-bad-expr.json",
+      "path": "invalid/request-tools-base-add-empty.json",
       "kind": "frame",
       "schema": "MethodRequest",
       "valid": false,

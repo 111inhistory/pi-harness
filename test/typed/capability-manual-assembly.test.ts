@@ -23,7 +23,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import capabilityExtension from "../../src/capability/extension.ts";
-import { CAPABILITY_TOOL_PERMISSION_RECORD } from "../../src/capability/tool-permission.ts";
+import { TOOL_BASE_RECORD, TOOL_BLACKLIST_RECORD } from "../../src/capability/tool-access.ts";
 import { CAPABILITY_SECTION } from "../../src/capability/prompt.ts";
 import { resolveHarnessConfig } from "../../src/harness-config.ts";
 import { setCapabilityParent } from "../../src/capability/scope.ts";
@@ -39,7 +39,7 @@ interface FakeTool {
 }
 
 const MANUAL = resolveHarnessConfig([
-  { source: "test", value: { capability: { manualTools: ["deploy", "mcp__demo__*"] } } },
+  { source: "test", value: { capability: { blacklist: ["deploy", "mcp__demo__*"] } } },
 ]);
 
 /** Registration-only assembly: real extension factories, no session or provider. */
@@ -91,13 +91,18 @@ function assemble(tools: FakeTool[], active: string[]) {
   };
 }
 
-/** The branch shape the handlers read: canonical enabled entries. */
-function manualBranch(names: readonly string[]): unknown[] {
-  return [{
-    type: "custom",
-    customType: CAPABILITY_TOOL_PERMISSION_RECORD,
-    data: { version: 1, set: names.map((name) => ({ target: name, state: "enabled" })) },
-  }];
+/**
+ * The branch shape the handlers read: an explicit user override of the
+ * configured blacklist plus base membership. A base add alone never overrides
+ * a blacklist source.
+ */
+function manualBranch(names: readonly string[], overrides: readonly string[] = names): unknown[] {
+  // A branch removal only overrides the same target id: an exact name does not
+  // silently lift a configured prefix, so a prefix case removes the prefix.
+  return [
+    { type: "custom", customType: TOOL_BLACKLIST_RECORD, data: { version: 1, remove: [...overrides] } },
+    { type: "custom", customType: TOOL_BASE_RECORD, data: { version: 1, add: [...names] } },
+  ];
 }
 
 function context(branch: readonly unknown[]): ExtensionContext {
@@ -124,31 +129,29 @@ const tools: FakeTool[] = [
   { name: "read_mcp_resource", description: "Read a resource", exposure: "deferred", sourceInfo: { source: "mcp", path: "mcp" } },
 ];
 
-test("a default-active manual tool is not declared or callable before the user's record", async () => {
-  const assembly = assemble(tools, ["read", "deploy"]);
-  const ctx = context([]);
-
-  const payload = await assembly.startTurn(ctx);
-  assert.deepEqual(assembly.active(), ["read"], "an active manual tool is dropped from the loadout");
-  assert.deepEqual(payload.systemPromptOptions.selectedTools, ["read"]);
-
-  assert.equal(blocked(await assembly.run("tool_call", { toolName: "deploy" }, toolContext([]))), true,
+test("the user's base selection authorizes a default-active manual tool", async () => {
+  // Without a record the tool is neither declared nor callable, even when it
+  // registered as default-active.
+  const withoutRecord = assemble(tools, ["read", "deploy"]);
+  const empty = context([]);
+  const dropped = await withoutRecord.startTurn(empty);
+  assert.deepEqual(withoutRecord.active(), ["read"], "an active manual tool is dropped from the loadout");
+  assert.deepEqual(dropped.systemPromptOptions.selectedTools, ["read"]);
+  assert.equal(blocked(await withoutRecord.run("tool_call", { toolName: "deploy" }, toolContext([]))), true,
     "the execution guard refuses it even if some other path activated it");
-  assert.equal(blocked(await assembly.run("tool_call", { toolName: "read" }, toolContext([]))), false);
-});
+  assert.equal(blocked(await withoutRecord.run("tool_call", { toolName: "read" }, toolContext([]))), false);
 
-test("the user's enablement record authorizes the manual tool", async () => {
+  // The same tool stays declared and callable once the user's base selection
+  // records it on this branch.
   const branch = manualBranch(["deploy"]);
-  const assembly = assemble(tools, ["read", "deploy"]);
-  const ctx = context(branch);
-
-  const payload = await assembly.startTurn(ctx);
-  assert.deepEqual(assembly.active(), ["read", "deploy"], "a recorded manual tool stays active");
+  const withRecord = assemble(tools, ["read", "deploy"]);
+  const payload = await withRecord.startTurn(context(branch));
+  assert.deepEqual(withRecord.active(), ["read", "deploy"], "a recorded manual tool stays active");
   assert.deepEqual(payload.systemPromptOptions.selectedTools, ["read", "deploy"]);
-  assert.equal(blocked(await assembly.run("tool_call", { toolName: "deploy" }, toolContext(branch))), false);
+  assert.equal(blocked(await withRecord.run("tool_call", { toolName: "deploy" }, toolContext(branch))), false);
 });
 
-test("a manual MCP tool with the user's record passes native MCP admission", async () => {
+test("an MCP tool with a blacklist override and base membership passes native admission", async () => {
   const name = "mcp__demo__deploy";
   const withoutRecord = assemble(tools, ["read", name]);
   assert.equal(blocked(await withoutRecord.run("tool_call", { toolName: name }, toolContext([]))), true,
@@ -157,7 +160,7 @@ test("a manual MCP tool with the user's record passes native MCP admission", asy
     "the native boundary removes the unselected MCP declaration");
 
   // The generic reader is a tool of its own; the user authorizes it explicitly.
-  const branch = manualBranch([name, "read_mcp_resource"]);
+  const branch = manualBranch([name, "read_mcp_resource"], ["mcp__demo__*", "read_mcp_resource"]);
   const withRecord = assemble(tools, ["read", name, "read_mcp_resource"]);
   assert.equal(blocked(await withRecord.run("tool_call", { toolName: name }, toolContext(branch))), false,
     "a manual record is a selection for native MCP admission");
@@ -169,7 +172,7 @@ test("a manual MCP tool with the user's record passes native MCP admission", asy
     toolContext(branch))), true);
 });
 
-test("an enabled manual tool is branch authority, not request memory, and never a child's", async () => {
+test("base membership is availability, not request memory or a child denial", async () => {
   const branch = manualBranch(["deploy"]);
   const root = assemble(tools, ["read", "deploy"]);
   const head = { role: "system", content: "base", sections: { preamble: "Base" }, timestamp: 0 };
@@ -188,15 +191,18 @@ test("an enabled manual tool is branch authority, not request memory, and never 
   assert.deepEqual((await root.startTurn(context(branch))).systemPromptOptions.selectedTools, ["read", "deploy"]);
   assert.equal(blocked(await root.run("tool_call", { toolName: "deploy" }, toolContext(branch))), false);
 
-  const child = assemble(tools, ["read"]);
+  const child = assemble(tools, ["read", "deploy"]);
   setCapabilityParent(child.pi, root.pi);
   const childProjection = await child.run("context_with_system", { messages: [head] }, context(branch)) as {
     messages: { sections?: Record<string, string> }[];
   };
   assert.equal(childProjection.messages.some((message) => message.sections?.[CAPABILITY_SECTION]), false,
-    "a subagent never sees the manual capability");
-  assert.equal(blocked(await child.run("tool_call", { toolName: "deploy" }, toolContext(branch))), true,
-    "a subagent never holds a manual tool, even with the root's record");
+    "base membership adds no Capability request memory");
+  // Base/dynamic availability is not a grant and not a denial: the child is
+  // bounded by the blacklist and its own scope, so it is not blocked merely
+  // because the root selected the tool.
+  assert.equal(blocked(await child.run("tool_call", { toolName: "deploy" }, toolContext(branch))), false,
+    "a base record is not propagated as a child denial");
 });
 
 test("Codemode's callable catalog follows the same manual gate", async () => {
@@ -224,6 +230,6 @@ test("Codemode's callable catalog follows the same manual gate", async () => {
   assert.doesNotMatch(callable(denied), /demo MCP server/);
 
   const allowed = assemble(tools, [name]);
-  await allowed.startTurn(context(manualBranch([name])));
+  await allowed.startTurn(context(manualBranch([name], ["mcp__demo__*"])));
   assert.match(callable(allowed), /demo MCP server/);
 });

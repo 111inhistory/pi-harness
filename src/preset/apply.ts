@@ -2,13 +2,19 @@
  * Execute a resolved preset plan against a session, honestly.
  *
  * The resolver already decided *what* to change. This step performs the minimal,
- * ordered mutations and reports exactly what happened. Two rules drive it:
+ * ordered mutations and reports exactly what happened. Three rules drive it:
  *
  * 1. Validate before success. If the model cannot be selected (for example its
  *    provider is not authenticated), the apply stops before touching thinking,
  *    tools or the branch snapshot and reports failure. It never announces an
  *    activation that did not happen.
- * 2. Do not fake unsupported effects. The harness host applies `codemode.mode`
+ * 2. Persist before effect. The preset's tool contributions and Codemode intent
+ *    are branch records, so both are appended before the live loadout is
+ *    recomputed from them. A failed record write changes no tool membership.
+ *    A loadout sync failure is reported as a warning on the durable outcome
+ *    instead of escaping: the records stay authoritative and there is no
+ *    automatic retry or rollback.
+ * 3. Do not fake unsupported effects. The harness host applies `codemode.mode`
  *    through a branch override for the next request. Hosts without that
  *    capability record the mode but report that it was not switched.
  *
@@ -25,7 +31,13 @@ export interface PresetApplyHost {
   /** Select a model; resolves false when its provider is not authenticated. */
   setModel(provider: string, id: string): Promise<boolean>;
   setThinkingLevel(level: ThinkingLevelName): void;
-  setActiveTools(tools: readonly string[]): void;
+  /**
+   * Recompute the live tool loadout from the branch after {@link appendState}.
+   * The tool-access domain owns baseline/dynamic/blacklist collections; this
+   * host method only applies its result. Returns the error text when the effect
+   * failed, or null when it was applied; a failure never un-writes the records.
+   */
+  syncTools(): string | null;
   appendState(record: { readonly snapshot: PresetSnapshot | null }): void;
   /** Apply a live Codemode mode on the harness loadout; omitted hosts cannot. */
   applyCodemodeMode?(mode: 'on' | 'only'): void;
@@ -46,6 +58,11 @@ export type PresetApplyProblem =
       readonly kind: 'codemode_not_applied';
       readonly codemode: { readonly mode: CodemodeMode };
       readonly detail: string;
+    }
+  | {
+      readonly severity: 'warning';
+      readonly kind: 'tool_sync_failed';
+      readonly detail: string;
     };
 
 export interface PresetApplyOutcome {
@@ -63,9 +80,18 @@ export interface PresetClearOutcome {
   readonly cleared: true;
   readonly snapshot: null;
   readonly codemodeCleared: boolean;
+  /**
+   * The loadout effect failed after the clear was durable. Null means the
+   * withdrawal was applied; either way the cleared state is authoritative.
+   */
+  readonly toolSyncError: string | null;
 }
 
-/** Apply a resolved plan. Never reports success when a hard step failed. */
+/**
+ * Apply a resolved plan. A failed hard validation (model authentication) reports
+ * `applied: false`; a durable apply whose loadout effect failed stays
+ * `applied: true` with an explicit warning, because the records are the truth.
+ */
 export async function applyPresetPlan(
   plan: PresetApplyPlan,
   issues: readonly PresetIssue[],
@@ -90,7 +116,20 @@ export async function applyPresetPlan(
   }
 
   if (plan.thinkingLevel !== undefined) host.setThinkingLevel(plan.thinkingLevel);
-  if (plan.tools !== undefined) host.setActiveTools(plan.tools);
+
+  const snapshot: PresetSnapshot = {
+    name: plan.name,
+    ...(plan.model === undefined ? {} : { model: plan.model }),
+    ...(plan.thinkingLevel === undefined ? {} : { thinkingLevel: plan.thinkingLevel }),
+    ...(plan.tools === undefined ? {} : { tools: plan.tools }),
+    ...(plan.disabledTools === undefined ? {} : { disabledTools: plan.disabledTools }),
+    ...(plan.codemode === undefined ? {} : { codemode: plan.codemode }),
+    instructions: plan.instructions,
+  };
+  // Durable records first: the snapshot is the base/blacklist contribution, and
+  // the Codemode intent is a projection record. The loadout sync is the only
+  // effect and reads both back, so it runs last.
+  host.appendState({ snapshot });
 
   const problems: PresetApplyProblem[] = [];
   let codemodeNotApplied = false;
@@ -110,29 +149,34 @@ export async function applyPresetPlan(
     }
   }
 
-  const snapshot: PresetSnapshot = {
-    name: plan.name,
-    ...(plan.model === undefined ? {} : { model: plan.model }),
-    ...(plan.thinkingLevel === undefined ? {} : { thinkingLevel: plan.thinkingLevel }),
-    ...(plan.tools === undefined ? {} : { tools: plan.tools }),
-    ...(plan.disabledTools === undefined ? {} : { disabledTools: plan.disabledTools }),
-    ...(plan.codemode === undefined ? {} : { codemode: plan.codemode }),
-    instructions: plan.instructions,
-  };
-  host.appendState({ snapshot });
+  const syncError = host.syncTools();
+  if (syncError !== null) {
+    problems.push({
+      severity: 'warning',
+      kind: 'tool_sync_failed',
+      detail: `the tool loadout could not be synchronized from the recorded collections: ${syncError}`,
+    });
+  }
+
   return { applied: true, snapshot, issues, problems, codemodeNotApplied };
 }
 
 /**
- * Clear the active preset: stop managing without rolling anything back.
+ * Clear the active preset: stop managing without rolling the session back.
  *
- * The model, thinking level and tool set are left exactly as they are; only the
- * instruction section is withdrawn (the next request projects a null section) and
- * a null snapshot is recorded so resume knows the session is no longer managed.
+ * The model, thinking level and base membership stay exactly as they are. The
+ * null snapshot ends the preset's contributions, so its blacklist lifetime ends
+ * too and the loadout is recomputed: a tool whose only prohibition was this
+ * preset becomes available again, while the base selection it established stays
+ * as ordinary session membership. The instruction section is withdrawn (the
+ * next request projects a null section).
  */
 export function clearActivePreset(host: PresetApplyHost): PresetClearOutcome {
+  // Durable withdrawal first: the null snapshot and the Codemode intent both
+  // stop the preset's contribution; the loadout sync is the last effect.
   host.appendState({ snapshot: null });
   const codemodeCleared = host.clearCodemodeMode !== undefined;
   host.clearCodemodeMode?.();
-  return { cleared: true, snapshot: null, codemodeCleared };
+  const toolSyncError = host.syncTools();
+  return { cleared: true, snapshot: null, codemodeCleared, toolSyncError };
 }

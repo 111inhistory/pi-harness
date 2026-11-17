@@ -98,9 +98,9 @@ compaction 后的声明清理可共用底层移除投影；集合、时机和文
 
 现有复用基础：
 
-- [manual-tools.ts](../../src/capability/manual-tools.ts)的工具名匹配语义，应在统一管理中承接。
+- `src/capability/manual-tools.ts`（历史实现）的工具名匹配语义，应在统一管理中承接。
 - [admission.ts](../../src/capability/admission.ts)与[scope.ts](../../src/capability/scope.ts)负责准入和祖先限制。
-- [activation.ts](../../src/capability/activation.ts)与[enable.ts](../../src/capability/enable.ts)负责实际激活和用户启用路径。
+- [activation.ts](../../src/capability/activation.ts)与`src/capability/enable.ts`（历史实现）负责实际激活和用户启用路径。
 - [Preset](../../extensions/preset.ts)与[修饰符](../../src/preset/modifiers.ts)负责工具选择。
 - [retrieval-tools.ts](../../src/capability/retrieval-tools.ts)、[内部检索装配](../../src/capability/extension.ts)和[session-transcript.ts](../../src/session-transcript.ts)提供历史声明保留、尾部提示和 hook 拦截基础。
 

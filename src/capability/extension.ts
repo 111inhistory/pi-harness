@@ -67,20 +67,26 @@ import { captureInheritedContext } from "../inherited-context.ts";
 import { discoverSessionSkills } from "./skills.ts";
 import { capabilityPublicResult } from "./result.ts";
 import { capabilityPromptSections } from "./prompt.ts";
-import { projectedNamespaceRefs, registeredToolGuidance, toolNamespaceInstructions } from "./tool-instructions.ts";
+import { projectedNamespaceRefs, registeredToolGuidance, toolNamespaceInstructions, withheldToolGuidance } from "./tool-instructions.ts";
 import { capabilityPruneSections } from './compaction-context.ts';
 import { recordCompactionPruning } from './pruning.ts';
 import { appendDiscoveryRecord } from "./discovery-record.ts";
 import { installNativeDiscoveryBoundary } from "./native-discovery.ts";
 import { createEligibleToolCatalog, retainSelectedToolMembers, retainReachableSelectedTools, supplySelectedToolInterfaces } from "./tool-catalog.ts";
 import { activateToolNames, codemodeAvailable, toolReachability } from "./activation.ts";
-import { activeToolsAfterDisabled, createToolPermissionResolver, noticedToolPermissionNames } from "./tool-permission.ts";
+import {
+  activeToolsAfterCollections,
+  blacklistedNoticeNames,
+  ensureToolBase,
+  sessionBaseNames,
+} from "./tool-access.ts";
+import { createToolAccessView, listBaseTools, listLoadedContainers } from "./tool-access-view.ts";
 import type { ToolGuidance } from "../tool-guidance.ts";
 import { argumentCompletionProvider } from "../autocomplete.ts";
 import { installCapabilityCommand } from "./command.ts";
-import { hasPresetBaseToolRemoval, restorePresetSnapshot } from "../preset/state.ts";
+import { hasPresetBaseToolRemoval } from "../preset/state.ts";
 import { createToolAdmission, isMcpExecutionTool } from "./admission.ts";
-import { setCapabilityPermissionDefaults } from "./scope.ts";
+import { setCapabilityStartupBlacklist } from "./scope.ts";
 import { renderCurrentToolGuidance } from "../tool-guidance.ts";
 import {
   applySystemPromptSections,
@@ -93,7 +99,7 @@ import {
 } from "./model-result.ts";
 import { openInternalSession } from "./session.ts";
 import { CapabilityManager } from "./manager.ts";
-import { lazySchemasActive, matchesLazySchemaRef, parseLazySchemaRefs } from "./lazy-schemas.ts";
+import { lazySchemasActive, matchesLazySchemaRef, parseLazySchemaRefs, planNoSchema } from "./lazy-schemas.ts";
 
 const toolsPrompt = readToolsPrompt();
 
@@ -140,15 +146,19 @@ export default function capabilityExtension(
   pi.on("session_shutdown", () => manager.dispose());
   const declaredTools = installNativeDiscoveryBoundary(pi, configFor);
   /**
-   * Publish the configured manual-tool policy on this surface. The root sets it
-   * once per session; a child surface reads the root's policy through the scope
-   * chain, so a manual tool never becomes eligible below Main.
+   * Publish the configured blacklist on this surface as the `startup` source.
+   * The root sets it once per session; a child surface reads the root's policy
+   * through the scope chain, so a configured prohibition never becomes usable
+   * below Main.
    */
-  const applyPermissionDefaults = (patterns: readonly string[]): void => {
-    setCapabilityPermissionDefaults(pi, patterns);
+  const applyStartupBlacklist = (patterns: readonly string[]): void => {
+    setCapabilityStartupBlacklist(pi, patterns);
   };
-  if (config !== undefined) applyPermissionDefaults(config.capability.manualTools);
-  installCapabilityCommand(pi, { prepare: (ctx) => applyPermissionDefaults(configFor(ctx).capability.manualTools) });
+  if (config !== undefined) applyStartupBlacklist(config.capability.blacklist);
+  installCapabilityCommand(pi, {
+    prepare: (ctx) => applyStartupBlacklist(configFor(ctx).capability.blacklist),
+    schemaRefs: (ctx) => configFor(ctx).capability.lazySchemas,
+  });
   let autocompleteInstalled = false;
   const service = {
     agentDir: getAgentDir(),
@@ -156,7 +166,15 @@ export default function capabilityExtension(
   };
   pi.on("session_start", (_event, ctx) => {
     service.projectTrusted = ctx.isProjectTrusted();
-    applyPermissionDefaults(configFor(ctx).capability.manualTools);
+    applyStartupBlacklist(configFor(ctx).capability.blacklist);
+    // Capture the availability baseline once. A resumed branch already records
+    // it, so the historical base is never rebuilt from the current active set.
+    // A failed append is reported, never treated as a captured baseline.
+    try {
+      ensureToolBase(pi, pi, ctx.sessionManager.getBranch());
+    } catch (error) {
+      ctx.ui.notify(`Capability: the tool baseline could not be recorded: ${error instanceof Error ? error.message : String(error)}. Base-list changes are unavailable until it can be written.`, "error");
+    }
     // The editor's Tab request skips slash-command arguments; this wrapper only
     // restores them for /capability (see argumentCompletionProvider).
     if (!autocompleteInstalled) {
@@ -186,23 +204,37 @@ export default function capabilityExtension(
 
   const computeCurrentState = (
     branch: readonly SessionEntry[],
+    ctx: ExtensionContext,
   ): {
     readonly sections: Record<string, string>;
     readonly sectionsKey: string;
     readonly toolsKey: string;
   } => {
-    const permission = createToolPermissionResolver(pi, null, branch);
+    const access = createToolAccessView(pi, branch);
     const catalog = createEligibleToolCatalog(pi, {
-      blocked: (tool) => permission.disabledFor(tool),
+      blocked: (tool) => access.blocked(tool.name),
     });
     const available = catalog.names;
     const admission = createToolAdmission(pi, branch, catalog);
     const active = pi.getActiveTools();
     const callable = new Set(active.filter(admission.admits));
-    const declared = declaredTools();
-    const guidance: ToolGuidance[] = [...registeredToolGuidance(catalog.tools, [], callable, declared)];
-    const permissionDisabled = permissionDisabledGuidance(pi, branch);
-    if (permissionDisabled !== null) guidance.push(permissionDisabled);
+    const plan = planNoSchema({
+      host: pi,
+      branch,
+      refs: configFor(ctx).capability.lazySchemas,
+      selection: { mode: (name) => access.schemaMode(name) },
+      tools: catalog.tools,
+      codemodeUsable: active.includes('codemode') && catalog.names.has('codemode'),
+    });
+    // Withheld declarations are not native declarations: dropping them here is
+    // what lets the canonical namespace guide render exactly once.
+    const declared = new Set([...declaredTools()].filter((name) => !plan.withheld.has(name)));
+    const guidance: ToolGuidance[] = [
+      ...registeredToolGuidance(catalog.tools, [], callable, declared, access.loadedContainers, plan.withheld),
+      ...withheldToolGuidance(catalog.tools, plan.withheld),
+    ];
+    const blacklistGuidance = blacklistedGuidance(pi, branch);
+    if (blacklistGuidance !== null) guidance.push(blacklistGuidance);
     const guidanceSections = renderCurrentToolGuidance(guidance);
     const memory = capabilityPromptSections(branch, {
       allowsTool: (name) => available.has(name),
@@ -245,7 +277,7 @@ export default function capabilityExtension(
 
   pi.on("before_agent_start", (event, ctx) => {
     event.systemPromptOptions.skills = [];
-    const { sections, sectionsKey, toolsKey } = computeCurrentState(ctx.sessionManager.getBranch());
+    const { sections, sectionsKey, toolsKey } = computeCurrentState(ctx.sessionManager.getBranch(), ctx);
     applySystemPromptSections(event.systemPromptOptions.sections ??= {}, sections, ownedSectionKeys);
     ownedSectionKeys.clear();
     for (const key of Object.keys(sections)) ownedSectionKeys.add(key);
@@ -256,7 +288,7 @@ export default function capabilityExtension(
   const emitMidRunBoundarySync = (ctx: ExtensionContext, options?: { force?: boolean }): void => {
     if (ctx.signal?.aborted) return;
     const expectedGeneration = generation;
-    const { sections, sectionsKey, toolsKey } = computeCurrentState(ctx.sessionManager.getBranch());
+    const { sections, sectionsKey, toolsKey } = computeCurrentState(ctx.sessionManager.getBranch(), ctx);
     const stateChanged = sectionsKey !== lastSyncedSectionsKey || toolsKey !== lastSyncedToolsKey;
     if (!options?.force && !stateChanged) return;
     if (options?.force && Object.keys(sections).length === 0 && toolsKey === lastSyncedToolsKey) return;
@@ -295,14 +327,14 @@ export default function capabilityExtension(
 
   pi.on("tool_call", (event, ctx) => {
     // This entry owns declaration/activation; the shared admission view owns the
-    // common rule (scope, MCP selection, three-state permission).
+    // common rule (scope, MCP selection, blacklist).
     const tool = pi.getAllTools().find((entry) => entry.name === event.toolName);
     if (!tool || (!pi.getActiveTools().includes(event.toolName) && !["codemode", "deferred"].includes(tool.exposure ?? ""))) {
       return { block: true, reason: `Tool ${event.toolName} is unavailable in this session; retained declarations do not enable execution.` };
     }
     const admission = createToolAdmission(pi, ctx.sessionManager.getBranch());
-    if (admission.disabled(event.toolName)) {
-      return { block: true, reason: `Tool ${event.toolName} is disabled by the tool permission.` };
+    if (admission.blocked(event.toolName)) {
+      return { block: true, reason: `Tool ${event.toolName} is blacklisted in this session.` };
     }
     // MCP execution keeps its dedicated selection/server check in
     // native-discovery.ts; every other tool also has to pass current scope
@@ -321,33 +353,41 @@ export default function capabilityExtension(
     // independent declaration; a Codemode-only member was removed when the
     // permission was set.
     const current = pi.getActiveTools();
-    const kept = activeToolsAfterDisabled(pi, branch, current);
+    const kept = activeToolsAfterCollections(pi, branch, current);
     if (kept.length !== current.length) pi.setActiveTools(kept);
     // The active branch identifies the boundary even when summaries repeat.
     const checkpointId = branch.findLast(entry => entry.type === 'compaction')!.id;
-    if (configFor(ctx).capability.pruneOnCompaction || hasPresetBaseToolRemoval(branch, checkpointId)) {
-      // A preset's stable selection replaces the Settings baseline. Dynamic
-      // Capability tools retained during a switch remain eligible for pruning.
-      const protectedTools = new Set(restorePresetSnapshot(branch)?.tools
-        ?? SettingsManager.inMemory(pi.getSettings()).getDefaultTools()
-        ?? ['read', 'bash', 'edit', 'write']);
+    const baseline = sessionBaseNames(branch);
+    if (configFor(ctx).capability.pruneOnCompaction || hasPresetBaseToolRemoval(branch, checkpointId, baseline)) {
+      // Base membership is the session's availability choice and always
+      // survives a prune; only dynamic discovery memory is prunable.
+      const protectedTools = new Set<string>(baseline);
+      for (const entry of listBaseTools(pi, branch)) {
+        for (const name of entry.affectedTools) protectedTools.add(name);
+      }
+      for (const name of SettingsManager.inMemory(pi.getSettings()).getDefaultTools() ?? ['read', 'bash', 'edit', 'write']) {
+        protectedTools.add(name);
+      }
       // Keep discovery and its indirect execution path available for recovery.
       protectedTools.add('capability');
       protectedTools.add('codemode');
-      // An explicit enable is a user decision and outranks the prune heuristic;
-      // the old manual protection contract carries over to the unified record.
       const allTools = pi.getAllTools();
-      const permission = createToolPermissionResolver(pi, allTools, branch);
+      const access = createToolAccessView(pi, branch);
       for (const tool of allTools) {
-        if (permission.enabled(tool.name)) protectedTools.add(tool.name);
+        if (access.base(tool.name)) protectedTools.add(tool.name);
       }
-      // A tool whose current permission is disabled must keep that prohibition;
-      // pruning it back to "rediscoverable" would contradict the disabled notice.
+      // A blacklisted tool keeps its prohibition; pruning it back to
+      // "rediscoverable" would contradict the blacklist notice.
       const excludedTools = allTools
-        .filter((tool) => permission.disabled(tool.name))
+        .filter((tool) => access.blocked(tool.name))
         .map((tool) => tool.name);
+      // Discovery history is cumulative; only names that are still requested
+      // now can be truthfully reported as removed at this boundary.
+      const availableTools = new Set(allTools
+        .filter((tool) => access.requested(tool.name))
+        .map((tool) => tool.name));
       const pruning = recordCompactionPruning(pi, {
-        branch, checkpointId, protectedTools, excludedTools,
+        branch, checkpointId, protectedTools, excludedTools, availableTools,
       });
       if (pruning?.removedTools.length) {
         const removed = new Set(pruning.removedTools);
@@ -419,9 +459,9 @@ export default function capabilityExtension(
               previouslyActive = new Set(pi.getActiveTools());
               const branch = ctx.sessionManager.getBranch();
               const activation = activateSelectedTools(pi, result, branch);
-              const permission = createToolPermissionResolver(pi, pi.getAllTools(), branch);
+              const access = createToolAccessView(pi, branch);
               const eligible = createEligibleToolCatalog(pi, {
-                disabled: (name) => permission.disabled(name),
+                blocked: (tool) => access.blocked(tool.name),
               }).names;
               // Publication follows what is actually active, not what the search
               // hoped to activate. This is a synchronous read of the SDK's state,
@@ -510,16 +550,21 @@ function discoveryNotDurable(result: CapabilityDiscoveryResult, error: unknown):
   return result.endReason === undefined ? failed : { ...failed, endReason: result.endReason };
 }
 
-function permissionDisabledGuidance(host: ExtensionAPI, branch: readonly unknown[]): ToolGuidance | null {
-  const noticed = noticedToolPermissionNames(branch);
+/**
+ * Model-facing reminder for tools a blacklist notice announced and that are
+ * still prohibited. The notice is only guidance; the execution guard and the
+ * discovery filter read the same blacklist.
+ */
+function blacklistedGuidance(host: ExtensionAPI, branch: readonly unknown[]): ToolGuidance | null {
+  const noticed = blacklistedNoticeNames(branch);
   if (noticed.size === 0) return null;
-  const permission = createToolPermissionResolver(host, host.getAllTools(), branch);
-  const names = [...noticed].filter((name) => permission.disabled(name)).sort();
+  const access = createToolAccessView(host, branch);
+  const names = [...noticed].filter((name) => access.blocked(name)).sort();
   if (names.length === 0) return null;
-  const text = promptString('capability-policy.json', 'toolPermissionDisabled')
+  const text = promptString('capability-policy.json', 'toolBlacklisted')
     .replace('{tools}', names.map((name) => `- ${name}`).join('\n'));
   return {
-    id: 'tool-permission:disabled',
+    id: 'capability-blacklisted',
     tools: names,
     text,
     eligible: true,
@@ -532,11 +577,11 @@ function createProviders(
   branch: () => readonly unknown[] | null,
 ): CapabilityProviders {
   return {
-    // A disabled tool never becomes a discovery candidate. The branch is read
-    // now so a rule added after the picker opened is honoured.
+    // A blacklisted tool never becomes a discovery candidate. The branch is
+    // read now so a rule added after the picker opened is honoured.
     listTools: () => {
-      const permission = createToolPermissionResolver(pi, null, branch());
-      return createEligibleToolCatalog(pi).tools.filter((tool) => !permission.disabledFor(tool));
+      const access = createToolAccessView(pi, branch());
+      return createEligibleToolCatalog(pi, { blocked: (tool) => access.blocked(tool.name) }).tools;
     },
     listActiveTools: () => pi.getActiveTools(),
     discoverSkills: (cwd: string) => discoverSessionSkills(pi, {
@@ -564,9 +609,9 @@ function activateSelectedTools(pi: ExtensionAPI, result: CapabilityDiscoveryResu
     else selected.push(hit);
   }
   const named = selected.flatMap((hit) => typeof hit.name === "string" && hit.name !== "" ? [{ name: hit.name, kind: hit.kind }] : []);
-  const permission = createToolPermissionResolver(pi, pi.getAllTools(), branch);
+  const access = createToolAccessView(pi, branch);
   const outcome = activateToolNames(pi, named.map((hit) => hit.name), {
-    disabled: (name: string) => permission.disabled(name),
+    blocked: (name: string) => access.blocked(name),
   });
   const kindOf = new Map(named.map((hit) => [hit.name, hit.kind]));
   const warnings: string[] = [];
@@ -579,7 +624,7 @@ function activateSelectedTools(pi: ExtensionAPI, result: CapabilityDiscoveryResu
       warnings.push(`selected tool "${skip.name}" is not registered in this session`);
     }
     if (skip.reason === "hidden") warnings.push(`selected tool "${skip.name}" is hidden and cannot be activated`);
-    if (skip.reason === "disabled") warnings.push(`selected tool "${skip.name}" is disabled by the tool permission`);
+    if (skip.reason === "blacklisted") warnings.push(`selected tool "${skip.name}" is blacklisted in this session`);
     if (skip.reason === "unreachable") warnings.push(`selected tool "${skip.name}" has no usable call path because Codemode is not enabled in this session`);
   }
   return { activated: outcome.activated, warnings, active };
@@ -748,12 +793,13 @@ function lazySelectedNames(
   branch: readonly unknown[] | null,
 ): ReadonlySet<string> | undefined {
   if (!lazySchemasActive(pi, branch)) return undefined;
-  const refs = parseLazySchemaRefs(config.capability.lazySchemas);
-  if (refs.empty) return undefined;
-  const names = new Set<string>();
-  for (const tool of pi.getAllTools()) {
-    if (active.has(tool.name) && matchesLazySchemaRef(refs, tool.name, tool.namespace)) names.add(tool.name);
-  }
+  const tools = pi.getAllTools();
+  const view = createToolAccessView(pi, branch, tools);
+  const plan = planNoSchema({
+    host: pi, branch, refs: config.capability.lazySchemas,
+    selection: { mode: (name) => view.schemaMode(name) }, tools,
+  });
+  const names = new Set([...plan.withheld].filter((name) => active.has(name)));
   return names.size === 0 ? undefined : names;
 }
 
@@ -764,13 +810,13 @@ function lazyGroupMemberNames(
   branch: readonly unknown[] | null,
 ): ReadonlySet<string> {
   if (!lazySchemasActive(pi, branch)) return new Set();
-  const refs = parseLazySchemaRefs(config.capability.lazySchemas);
-  if (refs.empty) return new Set();
-  const names = new Set<string>();
-  for (const tool of pi.getAllTools()) {
-    if (matchesLazySchemaRef(refs, tool.name, tool.namespace)) names.add(tool.name);
-  }
-  return names;
+  const tools = pi.getAllTools();
+  const view = createToolAccessView(pi, branch, tools);
+  const plan = planNoSchema({
+    host: pi, branch, refs: config.capability.lazySchemas,
+    selection: { mode: (name) => view.schemaMode(name) }, tools,
+  });
+  return plan.withheld;
 }
 
 

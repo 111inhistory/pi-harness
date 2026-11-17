@@ -24,7 +24,7 @@ import type { LiveSession } from './session-directory.ts';
 import { SessionPeers, type SessionConnect } from './session-peers.ts';
 import { ensurePrivateSocketRoot } from '../ipc/platform.ts';
 import { activateToolNames } from '../capability/activation.ts';
-import { createToolPermissionResolver, explicitlyDisabled } from '../capability/tool-permission.ts';
+import { createToolAccessView } from '../capability/tool-access-view.ts';
 import { setCapabilityParent, type CapabilityToolCatalog } from '../capability/scope.ts';
 import { ActorSessionStore } from './actor-sessions.ts';
 import { AgentListeners } from './listeners.ts';
@@ -32,7 +32,6 @@ import { NativeJobRunner } from './native-runner.ts';
 import { NativeDeliveryRouter } from './native-delivery.ts';
 import type { DeliveryCustomMessage } from './delivery.ts';
 import { createNativeSessionFactory } from './native-session.ts';
-import { isHarnessTool } from '../harness-tools.ts';
 import { installSessionSurface, type SubagentSurfaceCreateOptions } from './surface.ts';
 import type { ManagedWriteHost, SessionEndpoint } from './managed-send.ts';
 import type { NativeCustomHandoff, NativeLiveSnapshot, NativeRouteResult, NativeRoutingPort, NativeSessionEvent, NativeStartedJob } from './native-types.ts';
@@ -478,8 +477,9 @@ export class RootService implements ManagedWriteHost {
     if (this.#options.api.getActiveTools().includes('msg_write')) return;
     const api = this.#options.api;
     const branch = this.#options.context.sessionManager.getBranch();
+    const access = createToolAccessView(api, branch);
     const outcome = activateToolNames(api, ['msg_write'], {
-      disabled: (name) => explicitlyDisabled(api, branch, name),
+      blocked: (name) => access.blocked(name),
     });
     if (outcome.activated.length > 0 || outcome.alreadyActive.length > 0) return;
     const reason = outcome.skipped.find((skip) => skip.name === 'msg_write')?.reason ?? 'not_activated';
@@ -675,17 +675,18 @@ export class RootService implements ManagedWriteHost {
   }
 
   /**
-   * Tools a child must not inherit right now: hard-disabled names and root-only
-   * enabled names that are not independent depth-owned Harness grants.
+   * Tools a child must not inherit right now.
+   *
+   * Only the blacklist and the role/depth scope exclusions are prohibitions:
+   * base and dynamic membership are session-local availability, not grants, so
+   * they neither add nor remove a child's eligibility here.
    */
   #childDeniedNames(): string[] {
     const api = this.#options.api;
     const branch = this.#options.context.sessionManager.getBranch();
-    const tools = api.getAllTools();
-    const permissions = createToolPermissionResolver(api, tools, branch);
-    return tools
-      .filter((tool) => permissions.disabled(tool.name)
-        || (permissions.enabled(tool.name) && !isHarnessTool(tool.name)))
+    const access = createToolAccessView(api, branch);
+    return api.getAllTools()
+      .filter((tool) => access.blocked(tool.name))
       .map((tool) => tool.name);
   }
 

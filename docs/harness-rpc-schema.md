@@ -51,11 +51,14 @@ sha256sum --check schemas/SHA256SUMS
 | `harness.info` | `NoParams` | `HarnessInfoResult` |
 | `tools.catalog` | `ToolsCatalogParams` | `ToolCatalogResult` |
 | `tools.detail` | `ToolsDetailParams` | `ToolDetail` |
-| `tools.enable` | `TargetsParams` | `EnableResult` |
-| `tools.permission.query` | `PermissionQueryParams` | `ToolPermissionQueryResult` |
-| `tools.permission.enable` | `TargetsParams` | `ToolPermissionSetResult` |
-| `tools.permission.disable` | `TargetsParams` | `ToolPermissionSetResult` |
-| `tools.permission.reset` | `TargetsParams` | `ToolPermissionResetResult` |
+| `tools.base.add` | `TargetsParams` | `ToolWriteResult` |
+| `tools.base.remove` | `TargetsParams` | `ToolWriteResult` |
+| `tools.base.list` | `NoParams` | `ToolBaseListResult` |
+| `tools.activate` | `TargetsParams` | `ToolWriteResult` |
+| `tools.deactivate` | `TargetsParams` | `ToolWriteResult` |
+| `tools.blacklist.add` | `TargetsParams` | `ToolWriteResult` |
+| `tools.blacklist.remove` | `TargetsParams` | `ToolWriteResult` |
+| `tools.blacklist.list` | `NoParams` | `ToolBlacklistListResult` |
 | `agents.tree` | `NoParams` | `AgentsTreeResult` |
 | `jobs.list` | `JobsListParams` | `JobsListResult` |
 | `jobs.get` | `JobIdParams` | `JobGetResult` |
@@ -91,13 +94,13 @@ sha256sum --check schemas/SHA256SUMS
 
 ## 工具管理模型与目标形式
 
-schema 与实现使用同一套三态管理模型，不新增独立 schema 状态：
+schema 与实现使用同一套集合模型，不把成员关系压成单一状态枚举：
 
-- `ToolPermissionManagedState` 只有 `enabled` 与 `disabled`；`not managed` 是“没有管理条目”，不是第三个字面量。
-- `ToolPermissionState` 是派生的四态：`enabled`、`disabled`、`active`、`inactive`。`active` 是运行时激活集事实，不由 `permission` 推导；`ToolStatus` 同时保留 `registered`、`eligible`、`active`、`managed` 与 `permission`。
-- `ToolPermissionTarget` 的 `kind` 为 `tool`、`mcp`、`namespace` 或 `prefix`；目标形式分别为精确工具名、`mcp://server`、`namespace://name` 与 config 默认的 `foo*`。`id` 是 `${kind}:${name}`。
-- `tools.catalog` 与用户选择器共用候选视图，保留可管理的 `disabled` 工具供权限管理；隐藏工具与不可执行的 native discovery 工具不进入目录。`tools.detail` 可显示被禁用的注册工具。`tools.permission.query` 返回派生 `entries` 与用户管理数据 `managed`，不返回来源、命中规则或解释。
-- 写操作结果保留逐项目标：`changed`、`alreadySet`、`unresolved`、`skipped`；`disable` 区分立即移出 active 的 `removedActive` 与等待 compaction 的 `pendingCompaction`；`reset` 区分 `reset`、`notManaged` 与仍被其他规则管理的 `stillManaged`。
+- BASE 是会话基线成员，DYNAMIC 是用户或 Capability 发现激活的动态成员，BLACKLIST 是无视前两者的禁止项。有效请求成员为 `(base ∪ dynamic) − blacklist`，仍受注册、作用域与 SDK 限制。
+- `ToolAccessEntry` 分别报告 `base`、`dynamic`、`active`、`blacklisted`、`activatable`、`usable`；`active` 只是 SDK 激活集事实。`blacklistSources` 报告 `startup`、`preset`、`branch` 中当前贡献禁止的来源。
+- `tools.catalog` 默认返回当前有效成员（含 dynamic）；`includeActivatable` 在当前请求成员上展开可自加载的已注册/作用域合格工具；`includeUsable` 过滤为当前真正可调用集合。两者同时使用时只列 usable ∪ activatable，不包含不可用的请求基线成员。黑名单成员即使属于 base 也不是 usable。
+- `ToolTarget` 的 `kind` 为 `tool`、`mcp`、`namespace` 或 `prefix`；目标形式分别为精确工具名、`mcp://server`、`namespace://name` 与 config 默认的 `foo*`。`id` 是 `${kind}:${name}`。
+- 六个写方法共用 `ToolWriteResult`，以 `action` 区分；`changed`、`selected`、`noSchema`、`schema`、`schemaWithheld`、`containers`、`excluded`、`rejected`、`alreadySet`、`unresolved`、`skipped`、`activated`、`alreadyActive`、`removedActive`、`pendingCompaction`、`noticed`、`notRequested`、`stillBlacklisted` 与 `remainingSources` 都是独立事实。`containers` 单独报告已加载的 namespace/MCP 容器与本次选中的具体成员，不伪装为工具；`excluded` 只表示本次选择排除的精确工具名，不是黑名单或成员移除；`noSchema`/`schema` 是本次选中的具体工具请求的按工具模式（无策略写入时为空），`schemaWithheld` 只列当前实际被投影隐藏的 schema；`stillBlacklisted` 保留原始本地禁令，`banOverridden` 列出被 base 覆盖的原始禁令。`rejected` 非空表示整批在选择校验阶段被拒绝，未写记录、未应用效果，`reason` 仅用于 `no_schema_unsupported`。`blacklist remove` 不清除当前 Preset 的 `-tool` 贡献，也不解除 SDK 限制。`recordError` 表示记录写入失败且未应用效果；`effectError` 表示记录已持久化但 SDK 效果调用失败，不回滚或重试。
 
 ## 可选、null、错误与部分结果
 

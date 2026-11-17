@@ -79,7 +79,7 @@ Pi 已提供的接口继续走原生 RPC。Harness 不复制 Main 的 prompt、s
 | --- | --- | --- |
 | 工具目录 | 名称、描述、分类、namespace／server、资格、激活及三态管理状态 | [catalog.ts](../../src/capability/catalog.ts)、[tool-catalog.ts](../../src/capability/tool-catalog.ts)、[admission.ts](../../src/capability/admission.ts) |
 | 工具详情 | 参数 schema、描述、exposure、namespace；仅在来源支持时提供返回 schema | 原生 `ToolInfo` 及工具 catalog |
-| 用户启用工具或分组 | 支持工具、MCP 分组及 namespace；返回启用、已启用、跳过、未解析目标和记录失败 | [enable.ts](../../src/capability/enable.ts) |
+| 用户启用工具或分组 | 支持工具、MCP 分组及 namespace；返回启用、已启用、跳过、未解析目标和记录失败 | `src/capability/enable.ts`（历史实现） |
 | 工具管理查询、显式启用、显式禁用及解除管理 | 将统一三态领域操作的结果适配为 RPC 响应 | 依赖[工具权限管理提案](tool-permission-management-proposal.md)中的共享领域 API |
 
 工具状态应分别表达：

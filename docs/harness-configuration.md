@@ -135,15 +135,17 @@ Fresh 与 Inherited 直接子节点在同一 Subagent 树内使用独立的父�
 
 ### 默认禁用种子
 
-`capability.manualTools` 默认为空数组，列出默认禁用（`disabled`）的工具名。每项是精确工具名，或以 `*` 结尾的名字前缀（如 `mcp__prod__*`）。后一层配置整体替换前一层，不做合并。
+`capability.blacklist` 默认为空数组，提供启动默认黑名单。支持精确工具名、工具组引用与名字前缀（如 `mcp__prod__*`）。后一层配置整体替换前一层，不做合并。
 
-名单归一为同一 target/state 结构的默认 `disabled` 条目（精确名或 `prefix`），不是独立 matcher 或 rootOnly 策略；`reset` 可将它解除为 `not managed`。模型侧发现与准入按 `disabled` 条目排除，不进入检索候选、不能激活；子会话通过 denial 阻止继承，显式启用本身也是 root-only。用户通过 `/capability enable` 显式启用（无参数打开终端原生选择列表，也可直接给出目标），`/subagent sessions connect` 同样通过用户启用路径为 `msg_write` 授权。启用写入同一份 `capability-tool-permission` 记录，执行权仍按每次请求的当前资格过滤。
+当前会话按「基线白名单 > 黑名单 > 普通按需激活／发现」计算可用性。`base add` 与 Preset 正项可覆盖本会话的配置、Preset 或分支黑名单，但不删除禁止记录；移除白名单后禁止重新生效。普通 activate、发现和跨会话 connect 不能自行覆盖有效禁止。用户可通过 `/capability blacklist remove <target>` 在当前分支解除同目标的配置默认项；当前 Preset 的禁止记录仍独立存在。祖先禁止、角色／深度与 SDK 限制是外层约束，不能通过子会话白名单绕过。具体行为见[工具权限管理](interface-contract.md#工具权限管理)。
 
-显式状态看记录，不看激活状态：名单内工具因 `defaultActive`、历史恢复或其他扩展而激活时，`before_agent_start` 仍会把它从声明中移除，`tool_call` 与 Codemode 准入也会拒绝，直到用户显式启用。已启用的 MCP 工具参与原生 MCP 准入与资源读取资格。名单解析只按名字匹配（精确或 prefix），不读取工具描述、来源或 MCP 服务器名。
+黑名单看有效规则，不看 SDK active 状态：工具因 `defaultActive`、历史恢复或其他扩展而激活，也不能绕过执行检查。已有独立声明按协议保留到成功压缩再移除；没有独立声明的成员立即移出 active。MCP 工具仍需当前请求集合和作用域允许，才能参与调用与资源读取资格。目标匹配读取工具名与命名空间元数据，不从描述推断规则。
 
 ### 延迟 schema
 
-`capability.lazySchemas` 默认为空数组，列出需要延迟暴露 schema 的 MCP 服务器或 namespace。每项必须是明确的 `mcp://<server>` 或 `namespace://<name>` 引用（成员引用 `mcp://<server>/<tool>` 归并到其 server）；未知 scheme 被忽略，后一层配置整体替换前一层，不做合并。
+`capability.lazySchemas` 默认为空数组，列出需要延迟暴露 schema 的 MCP 服务器、Namespace 或单个工具。每项使用 `mcp://<server>`、`namespace://<name>` 或 `tool://<exact-name>` 引用（成员引用 `mcp://<server>/<tool>` 归并到其 server；精确选择单个工具使用 `tool://`）；未知 scheme 被忽略，后一层配置整体替换前一层，不做合并。
+
+配置是默认策略。`/capability activate` 与 `base add` 中的目标后缀 `[lazy]`／`[no-lazy]` 为选中成员记录显式覆盖，后者也可覆盖配置命中；不带后缀的操作不改写已有策略。容器可组合使用 `[ns,lazy]` 或 `[ns,no-lazy]`，其中 `ns` 要求同批显式成员。成员自身的显式后缀优先于容器给出的策略。选择器分别展示配置命中、显式覆盖和实际 schema 投影状态；配置声明不等于当前模式下已生效。
 
 该配置仅在 Codemode 已启用且生效模式为 `only` 时生效；Codemode 未启用或为 `on` 模式时配置保留但不生效，沿用原生声明方式。生效模式可以来自 Pi 设置，也可由模型 Preset 通过分支记录覆盖（见下节）。命中组的成员仍以名称出现在发现结果与 `describeNamespace` 中，但参数与返回值 schema 不进入原生工具声明，也不内联进 Codemode 描述；模型通过 `describeTool` 读取完整接口后经 Codemode 执行。命中组中 model-only 工具不能经 Codemode 调用，配置命中时应显式报告而不能隐藏其声明。命中组的内部继承检索同样不重发这些 schema。模式切换只改变声明投影，不改变启用集合、授权记录或工具 exposure。未生效的配置本身不是拒绝理由。
 

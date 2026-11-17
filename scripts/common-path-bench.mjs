@@ -24,7 +24,7 @@ const cleanups = [];
 let report;
 try {
   const { SessionManager } = await import('@earendil-works/pi-coding-agent');
-  const { queryToolPermissions } = await import('../src/capability/tool-permission.ts');
+  const { queryToolAccess } = await import('../src/capability/tool-access-view.ts');
   const { createCapabilityBroker } = await import('../src/capability/broker.ts');
   const { RootService } = await import('../src/subagent/root-service.ts');
   const { createOwnedNdjsonServer, getAgentSocketPath, writeSocket } = await import('../src/ipc/socket.ts');
@@ -62,14 +62,17 @@ try {
     const branch = [...Array.from({ length: input.users }, () => ({ type: 'message', message: { role: 'user' } })),
       ...Array.from({ length: input.calls }, () => ({ type: 'message', message: { role: 'assistant' } })),
       ...Array.from({ length: input.results }, () => ({ type: 'message', message: { role: 'toolResult' } })),
-      { type: 'custom', customType: 'capability-tool-permission', data: { version: 1,
-        set: [{ target: 'synthetic_0', state: 'enabled' }, { target: 'synthetic_1', state: 'disabled' }] } }];
+      { type: 'custom', customType: 'capability-tool-base', data: { version: 1,
+        add: ['synthetic_0', 'synthetic_1'] } },
+      { type: 'custom', customType: 'capability-tool-blacklist', data: { version: 1,
+        add: ['synthetic_1'] } }];
     let catalogReads = 0;
-    const permission = await measure(() => queryToolPermissions({ getAllTools: () => { catalogReads++; return tools; } },
-      branch, active, 'enabled+disabled+active+inactive'), result => {
-      assert.equal(result.entries.length, tools.length);
-      assert.equal(result.entries.find(t => t.name === 'synthetic_0').state, 'enabled');
-      assert.equal(result.entries.find(t => t.name === 'synthetic_1').state, 'disabled');
+    const permission = await measure(() => queryToolAccess({ getAllTools: () => { catalogReads++; return tools; } },
+      branch, active, { includeActivatable: true }), result => {
+      assert.ok(result.base.some(entry => entry.target.target === 'synthetic_0'));
+      assert.ok(result.blacklist.some(entry => entry.target.target === 'synthetic_1'));
+      assert.equal(result.entries.find(t => t.name === 'synthetic_0').base, true);
+      assert.equal(result.entries.some(t => t.name === 'synthetic_1'), false);
     });
     assert.equal(catalogReads, iterations + 1);
     permission.catalogReadsPerOperation = catalogReads / (iterations + 1);

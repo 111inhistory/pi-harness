@@ -58,11 +58,11 @@ interface Recorded {
   readonly registered: Map<string, { name: string; exposure?: string }>;
 }
 
-function permissionGrants(branch: readonly unknown[]): Array<{ target: string; state: string }> {
+function baseAddGrants(branch: readonly unknown[]): Array<{ target: string }> {
   return branch.flatMap((entry) => {
-    const record = entry as { type?: string; customType?: string; data?: { set?: Array<{ target: string; state: string }> } };
-    return record.type === 'custom' && record.customType === 'capability-tool-permission'
-      ? record.data?.set ?? []
+    const record = entry as { type?: string; customType?: string; data?: { add?: string[] } };
+    return record.type === 'custom' && record.customType === 'capability-tool-base'
+      ? (record.data?.add ?? []).map((target) => ({ target }))
       : [];
   });
 }
@@ -83,7 +83,7 @@ async function fixture(t: TestContext, options: { readonly failRecord?: boolean 
       for (const name of names) if (recorded.registered.has(name)) recorded.active.add(name);
     },
     appendEntry(customType: string, data?: unknown) {
-      if (options.failRecord === true && customType === 'capability-tool-permission') {
+      if (options.failRecord === true && customType === 'capability-tool-base') {
         throw new Error('the session branch is read-only');
       }
       recorded.entries.push({ customType, data });
@@ -135,11 +135,10 @@ test('connect appends the peer contact and grants msg_write once', async (t) => 
   assert.ok(text.includes(`Main address: ${address}`));
   assert.match(text, /Use msg_write/);
 
-  const record = recorded.entries.filter((entry) => entry.customType === 'capability-tool-permission');
+  const record = recorded.entries.filter((entry) => entry.customType === 'capability-tool-base');
   assert.equal(record.length, 1, 'the grant is one branch record');
-  const memory = record[0]!.data as { set: Array<{ target: string; state: string }> };
-  assert.deepEqual(memory.set.map((item) => item.target), ['msg_write']);
-  assert.equal(memory.set[0]!.state, 'enabled');
+  const memory = record[0]!.data as { add: string[] };
+  assert.deepEqual(memory.add, ['msg_write']);
 
   // A repeat is allowed and appends the current contact again, without a second
   // record: connect keeps no connection state of its own.
@@ -147,7 +146,7 @@ test('connect appends the peer contact and grants msg_write once', async (t) => 
   assert.deepEqual([...again.enabled], []);
   assert.deepEqual([...again.alreadyEnabled], ['msg_write']);
   assert.equal(recorded.messages.length, 2);
-  assert.equal(recorded.entries.filter((entry) => entry.customType === 'capability-tool-permission').length, 1);
+  assert.equal(recorded.entries.filter((entry) => entry.customType === 'capability-tool-base').length, 1);
 
   assert.equal(existsSync(address), false, 'connect writes no frame to the peer');
 });
@@ -165,13 +164,13 @@ test('connect records its explicit grant even when msg_write was already discove
     },
   });
   recorded.active.add('msg_write');
-  assert.equal(permissionGrants(manager.getBranch()).length, 0, 'no permission record yet');
+  assert.equal(baseAddGrants(manager.getBranch()).length, 0, 'no permission record yet');
 
   const result = await service.connectSession(peer.uid);
   assert.deepEqual([...result.enabled], ['msg_write']);
   assert.deepEqual([...result.alreadyEnabled], []);
   assert.equal(recorded.entries.length, 1, 'discovery does not suppress the explicit user grant');
-  assert.deepEqual(permissionGrants(manager.getBranch()).map((item) => item.target), ['msg_write']);
+  assert.deepEqual(baseAddGrants(manager.getBranch()).map((item) => item.target), ['msg_write']);
   assert.equal(recorded.messages.length, 1);
 });
 
@@ -257,16 +256,17 @@ function userText(messages: readonly AgentMessage[]): string[] {
 }
 
 /** A real SDK session running the real harness, with a scripted offline model. */
-async function sdkFixture(t: TestContext, options: { manual?: boolean } = {}) {
+async function sdkFixture(t: TestContext, options: { blacklist?: boolean } = {}) {
   const cwd = await mkdtemp(path.join(tmpdir(), 'pi-session-connect-sdk-'));
   const agentDir = path.join(cwd, 'agent');
   await mkdir(agentDir);
   const previousAgentDir = process.env['PI_CODING_AGENT_DIR'];
   process.env['PI_CODING_AGENT_DIR'] = agentDir;
-  // `msg_write` is manual here: the user's connect must be enough authorization.
-  if (options.manual === true) {
+  // A configured blacklist is a startup source: connect cannot override it, so
+  // the refusal case proves the honest failure instead of an implicit grant.
+  if (options.blacklist === true) {
     await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
-      capability: { manualTools: ['msg_write'] },
+      capability: { blacklist: ['msg_write'] },
     }));
   }
   const [{ default: harnessExtension }, directory, root] = await Promise.all([
@@ -336,7 +336,10 @@ async function sdkFixture(t: TestContext, options: { manual?: boolean } = {}) {
     cwd, session, model, requests, declared, errors, notices, peer, held, command, directory,
     address: directory.sessionMainAddress(peer),
     contacts: () => entries().filter((entry) => entry.type === 'custom_message' && entry.customType === root.SESSION_CONTACT).length,
-    grants: () => entries().filter((entry) => entry.type === 'custom' && entry.customType === 'capability-tool-permission').length,
+    grants: () => entries().filter((entry) => {
+      const record = entry as { type?: string; customType?: string; data?: { add?: unknown[] } };
+      return record.type === 'custom' && record.customType === 'capability-tool-base' && Array.isArray(record.data?.add);
+    }).length,
     connect: async (target: string = peer.uid) => { await command.handler(`sessions connect ${target}`, ctx); },
     hold: (): AssistantMessageEventStream => {
       const stream = new AssistantMessageEventStream();
@@ -380,15 +383,24 @@ test('forced Tab completes connect and live peer targets through the real comman
     'a withdrawn live record disappears without restarting the editor');
 });
 
+test('connect base grant overrides a configured local blacklist without deleting it', { timeout: 60_000 }, async (t) => {
+  const f = await sdkFixture(t, { blacklist: true });
+  await f.session.prompt('Before connect.');
+  await f.connect();
+  assert.equal(f.contacts(), 1, 'the base grant makes msg_write callable despite the local ban');
+  assert.equal(f.grants(), 1, 'the durable base intent is recorded for later restoration');
+  assert.ok(f.session.getActiveToolNames().includes('msg_write'));
+});
+
 test('connect delivers contacts and preserves the native conversation', { timeout: 60_000 }, async (t) => {
-  const f = await sdkFixture(t, { manual: true });
+  const f = await sdkFixture(t);
   const { session, requests, declared } = f;
 
   assert.ok(!session.getActiveToolNames().includes('msg_write'), 'Main starts without the write tool');
   await session.prompt('First turn, before connect.');
   assert.equal(requests.length, 1);
   const before = requests[0]!;
-  assert.ok(!declared[0]!.includes('msg_write'), 'the unauthorized manual tool is not declared');
+  assert.ok(!declared[0]!.includes('msg_write'), 'the inactive write tool is not declared');
 
   await f.connect();
   assert.deepEqual(f.notices.map((notice) => notice.type), ['info'], JSON.stringify(f.notices));

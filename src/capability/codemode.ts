@@ -7,8 +7,9 @@ import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { ClassifierContext, ImagesContext, ModelType, Usage } from '@earendil-works/pi-ai';
 import { DEFAULT_HARNESS_CONFIG, type HarnessConfigProvider } from '../harness-config.ts';
 import { promptString } from '../prompt-text.ts';
-import { lazySchemasActive, matchesLazySchemaRef, parseLazySchemaRefs } from './lazy-schemas.ts';
+import { planNoSchema } from './lazy-schemas.ts';
 import { effectiveCodemodeMode } from './codemode-mode.ts';
+import { createToolAccessView } from './tool-access-view.ts';
 
 const codemodeScope = promptString('native-discovery.json', 'codemodeScope');
 
@@ -159,6 +160,53 @@ function scopeDescription(description: string): string {
 }
 
 /**
+ * Remove the inlined declaration block of each no-schema tool from the Codemode
+ * directory, keeping its heading and original description only.
+ *
+ * The directory is the one catalog a `only`-mode model reads, and a manually
+ * activated tool may have no discovery memory. Keeping the name and description
+ * there lets the model learn the tool without a second memory ledger. The
+ * parameter/output schema is omitted, and the guideline bullets are projected
+ * once by the tool guidance path instead of being copied into the directory.
+ *
+ * Entry boundaries are resolved in one pass: a withheld entry without an inlined
+ * declaration (the SDK may omit one under its inline budget) must never consume
+ * the following entry's declaration.
+ */
+export function withoutWithheldDeclarations(description: string, withheld: ReadonlySet<string>): string {
+  if (withheld.size === 0) return description;
+  const names = new Set<string>();
+  for (const name of withheld) {
+    names.add(name);
+    names.add(toCodemodeIdentifier(name));
+  }
+  const starts: number[] = [0];
+  for (let index = description.indexOf('\n\n#', 0); index >= 0; index = description.indexOf('\n\n#', index + 3)) {
+    const at = index + 2;
+    if (description.startsWith('### ', at) || description.startsWith('## ', at)) starts.push(at);
+  }
+  const marker = '\n\ncodemode tool declaration:\n';
+  const parts: string[] = [];
+  for (let position = 0; position < starts.length; position += 1) {
+    const start = starts[position]!;
+    const block = description.slice(start, starts[position + 1] ?? description.length);
+    if (!block.startsWith('### ')) { parts.push(block); continue; }
+    const lineEnd = block.indexOf('\n');
+    const header = lineEnd < 0 ? block : block.slice(0, lineEnd);
+    const match = /^### `([^`]+)`(?: \(`([^`]+)`\))?$/.exec(header);
+    if (match === null || (!names.has(match[1]!) && !names.has(match[2] ?? ''))) { parts.push(block); continue; }
+    const markerIndex = block.indexOf(marker);
+    if (markerIndex < 0) { parts.push(block); continue; }
+    const fenceStart = markerIndex + marker.length;
+    if (!block.startsWith('```ts\n', fenceStart)) { parts.push(block); continue; }
+    const fenceEnd = block.indexOf('\n```', fenceStart);
+    if (fenceEnd < 0) { parts.push(block); continue; }
+    parts.push(block.slice(0, markerIndex) + block.slice(fenceEnd + 4));
+  }
+  return parts.join('');
+}
+
+/**
  * The sandbox only reads a tool's name and description: `ALL_TOOLS` lists
  * `{ name, description }` and declarations are rendered host-side for
  * `describeTool`. One plain line keeps that catalog small; the parameter schema
@@ -215,25 +263,40 @@ export function installCapabilityCodemode(
         ...native,
         description: scopeDescription(native.description),
         prepareLoadout(loadout) {
+          // `loadout.declared` is the loadout being prepared; `getActiveTools()`
+          // still reports the previous set while this hook runs.
           const active = new Set(loadout.declared.map((tool) => tool.name));
           const admits = permitsDeclarationFor();
-          // Lazy schemas: while Codemode is active in only mode, matched groups
-          // are withheld from the Codemode directory and from their own native
-          // declaration. execute() still builds the full sandbox declarations, so
-          // describeTool/executeTool keep working.
-          const refs = parseLazySchemaRefs(currentContext ? configFor(currentContext).capability.lazySchemas : []);
-          const lazy = lazySchemasActive(pi, branchOf()) && !refs.empty
-            ? new Set(loadout.callable
-                .filter((tool) => active.has(tool.name) && matchesLazySchemaRef(refs, tool.name, loadout.getNamespace(tool.name)))
-                .map((tool) => tool.name))
-            : new Set<string>();
-          const scoped = { ...loadout, callable: loadout.callable.filter((tool) => active.has(tool.name) && admits(tool.name) && !lazy.has(tool.name)) };
+          // No-schema projection: one plan per loadout combines configured refs
+          // with the branch's recorded per-tool modes. Withheld tools keep their
+          // name and description in the Codemode directory only; they lose the
+          // inlined declaration, their native declaration and the directory copy
+          // of their guidelines (projected once by the tool guidance path). The
+          // sandbox still declares them, so describeTool/executeTool keep working.
+          const branch = branchOf();
+          const config = currentContext ? configFor(currentContext) : DEFAULT_HARNESS_CONFIG;
+          const catalog = loadout.registered.map((tool) => ({
+            name: tool.name, exposure: loadout.getExposure(tool.name), namespace: loadout.getNamespace(tool.name),
+          }));
+          const view = createToolAccessView(pi, branch, catalog);
+          const plan = planNoSchema({ host: pi, branch, refs: config.capability.lazySchemas,
+            selection: { mode: view.schemaMode }, tools: catalog });
+          const lazy = new Set([...plan.withheld].filter((name) => active.has(name)));
+          // Withheld entries keep their name and description in the directory,
+          // but their guidelines are projected once by the tool guidance path.
+          // Omitting the bullets here preserves the original description text
+          // instead of duplicating the guidance in two prompt sections.
+          const scoped = {
+            ...loadout,
+            callable: loadout.callable.filter((tool) => active.has(tool.name) && admits(tool.name)),
+            getPromptGuidelines: (name: string) => (lazy.has(name) ? [] : loadout.getPromptGuidelines(name)),
+          };
           const changes = native.prepareLoadout?.(scoped);
           hiddenDeclarations = new Set([...(changes?.hiddenDeclarations ?? []), ...lazy]);
           const codemodeDescription = changes?.descriptions?.['codemode'];
           const descriptions = codemodeDescription === undefined
             ? changes?.descriptions
-            : { ...changes?.descriptions, codemode: scopeDescription(codemodeDescription) };
+            : { ...changes?.descriptions, codemode: scopeDescription(withoutWithheldDeclarations(codemodeDescription, lazy)) };
           if (changes === undefined && lazy.size === 0) return undefined;
           return { ...(changes ?? {}), hiddenDeclarations: [...hiddenDeclarations], ...(descriptions === undefined ? {} : { descriptions }) };
         },
@@ -358,14 +421,12 @@ export function installCapabilityCodemode(
     const active = pi.getActiveTools();
     const codemodeActive = active.includes('codemode');
     const cfg = currentContext ? configFor(currentContext) : DEFAULT_HARNESS_CONFIG;
-    const refs = parseLazySchemaRefs(cfg.capability.lazySchemas);
-    const lazy = lazySchemasActive(pi, branchOf()) && !refs.empty
-      ? new Set(active.filter((name) => {
-          const tool = pi.getAllTools().find((entry) => entry.name === name);
-          return tool !== undefined && tool.exposure !== 'model-only'
-            && matchesLazySchemaRef(refs, name, tool.namespace);
-        }))
-      : new Set<string>();
+    const branch = branchOf();
+    const catalog = pi.getAllTools();
+    const view = createToolAccessView(pi, branch, catalog);
+    const plan = planNoSchema({ host: pi, branch, refs: cfg.capability.lazySchemas,
+      selection: { mode: view.schemaMode }, tools: catalog });
+    const lazy = new Set(active.filter((name) => plan.withheld.has(name)));
     return new Set(active.filter((name) =>
       (!codemodeActive || !hiddenDeclarations.has(name)) && !lazy.has(name)));
   };

@@ -31,20 +31,23 @@ import {
 import harnessExtension from '../../test-support/harness-extension.ts';
 import { waitFor } from '../../test-support/async.ts';
 
-const PERMISSION_RECORD = 'capability-tool-permission';
+const BASE_RECORD = 'capability-tool-base';
 
-function permissionGrants(branch: readonly unknown[]): string[] {
+function baseGrants(branch: readonly unknown[]): string[] {
   return branch.flatMap((entry) => {
-    const record = entry as { type?: string; customType?: string; data?: { set?: Array<{ target: string }> } };
-    return record.type === 'custom' && record.customType === PERMISSION_RECORD
-      ? (record.data?.set ?? []).map((item) => item.target)
-      : [];
+    const record = entry as { type?: string; customType?: string; data?: { add?: string[]; load?: string[] } };
+    if (record.type !== 'custom' || record.customType !== BASE_RECORD) return [];
+    // Concrete members plus the loaded container identity both describe the
+    // durable selection; a container is never stored as a member rule.
+    return [...(record.data?.add ?? []), ...(record.data?.load ?? [])];
   });
 }
 
-function permissionRecordCount(branch: readonly unknown[]): number {
-  return branch.filter((entry) => (entry as { type?: string; customType?: string }).type === 'custom'
-    && (entry as { customType?: string }).customType === PERMISSION_RECORD).length;
+function baseRecordCount(branch: readonly unknown[]): number {
+  return branch.filter((entry) => {
+    const record = entry as { type?: string; customType?: string; data?: { add?: unknown[] } };
+    return record.type === 'custom' && record.customType === BASE_RECORD && Array.isArray(record.data?.add);
+  }).length;
 }
 
 const SERVER = 'reconnect';
@@ -71,7 +74,7 @@ async function start(options: { manual?: readonly string[] } = {}): Promise<Fixt
   const toolsFile = path.join(cwd, 'tools.json');
   await writeFile(toolsFile, JSON.stringify([{ name: 'stable' }, { name: 'secret' }]));
   await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
-    ...(options.manual === undefined ? {} : { capability: { manualTools: [...options.manual] } }),
+    ...(options.manual === undefined ? {} : { capability: { blacklist: [...options.manual] } }),
   }));
   await writeFile(path.join(agentDir, 'mcp.json'), JSON.stringify({
     mcpServers: {
@@ -174,7 +177,7 @@ test('a tool registered by /mcp reconnect is browsable and enableable without a 
   try {
     const { session } = fixture;
     assert.ok(session.getAllTools().some((tool) => tool.name === name('stable')));
-    assert.match(await fixture.run('capability', 'list namespace+inactive'), new RegExp(name('stable')));
+    assert.match(await fixture.run('capability', 'list --activatable'), new RegExp(name('stable')));
 
     // The server changes its tool list; only the native reconnect runs.
     await fixture.setTools(['stable', 'added']);
@@ -182,31 +185,32 @@ test('a tool registered by /mcp reconnect is browsable and enableable without a 
     await waitFor(() => session.getAllTools().some((tool) => tool.name === name('added')),
       { label: 'the re-registered MCP tool', timeoutMs: 15_000 });
 
-    const listed = await fixture.run('capability', 'list namespace+inactive');
+    const listed = await fixture.run('capability', 'list --activatable');
     assert.match(listed, new RegExp(name('added')), 'a newly registered tool is browsable');
     assert.doesNotMatch(listed, /secret/, 'a withdrawn tool is re-registered hidden and disappears');
 
-    const enabled = await fixture.run('capability', `enable mcp://${SERVER}`);
-    assert.match(enabled, new RegExp(`Enabled[\\s\\S]*${name('stable')}[\\s\\S]*${name('added')}`));
+    const enabled = await fixture.run('capability', `base add mcp://${SERVER}`);
+    assert.match(enabled, new RegExp(`Activated[\\s\\S]*${name('added')}`));
     assert.ok(session.getActiveToolNames().includes(name('added')));
-    assert.ok(permissionGrants(session.sessionManager.getBranch()).includes(`mcp://${SERVER}`),
+    assert.ok(baseGrants(session.sessionManager.getBranch()).includes(`mcp://${SERVER}`),
       'the server target is recorded as a group rule');
     // A withdrawn registration is still refused when it is named directly.
-    assert.match(await fixture.run('capability', `enable ${name('secret')}`),
-      /Skipped[\s\S]*hidden by its registration/);
+    assert.match(await fixture.run('capability', `base add ${name('secret')}`),
+      /Refused[\s\S]*hidden/);
 
     // The declaration is real: the next model request carries the enabled tool.
     await session.prompt('Use the reconnected MCP tools.');
     assert.ok(fixture.requests.at(-1)!.includes(name('added')), 'the enabled MCP tool is declared');
 
     // A reconnect after the enable keeps the same tool enabled and recorded once.
+    const recordsBeforeReconnect = baseRecordCount(session.sessionManager.getBranch());
     await fixture.reconnect();
     await waitFor(() => session.getActiveToolNames().includes(name('added')) ||
       session.getAllTools().some((tool) => tool.name === name('added')),
     { label: 'the tool after a second reconnect', timeoutMs: 15_000 });
     await session.prompt('After a second reconnect.');
     assert.ok(fixture.requests.at(-1)!.includes(name('added')), 'the enablement survives the reconnect');
-    assert.equal(permissionRecordCount(session.sessionManager.getBranch()), 1, 'one record, not one per reconnect');
+    assert.equal(baseRecordCount(session.sessionManager.getBranch()), recordsBeforeReconnect, 'a reconnect records nothing');
   } finally {
     await fixture.close();
   }
@@ -225,24 +229,26 @@ test('a choice made before a reconnect is re-resolved against the new registry',
       { label: 'the withdrawn registration', timeoutMs: 15_000 });
 
     // The stale picker result is re-resolved at execution time and refused.
-    const refused = await fixture.run('capability', `enable ${name('secret')}`);
-    assert.match(refused, /Skipped[\s\S]*hidden by its registration/);
-    assert.equal(permissionRecordCount(session.sessionManager.getBranch()), 0, 'a refused target writes no record');
+    const refused = await fixture.run('capability', `base add ${name('secret')}`);
+    assert.match(refused, /Refused[\s\S]*hidden/);
+    assert.equal(baseRecordCount(session.sessionManager.getBranch()), 1, 'the refused target stays a durable intent, not an activation');
     assert.ok(!session.getActiveToolNames().includes(name('secret')));
   } finally {
     await fixture.close();
   }
 });
 
-test('manualTools still governs an MCP tool that a reconnect registers', { timeout: 90_000 }, async () => {
+test('the configured blacklist still governs an MCP tool that a reconnect registers', { timeout: 90_000 }, async () => {
   const fixture = await start({ manual: [`mcp__${SERVER}__secret`, `mcp__${SERVER}__added`] });
   try {
     const { session } = fixture;
     await session.prompt('Before any MCP enablement.');
-    assert.ok(!fixture.requests.at(-1)!.includes(name('secret')), 'a manual MCP tool is never declared before the user enables it');
+    assert.ok(!fixture.requests.at(-1)!.includes(name('secret')), 'a blacklisted MCP tool is never declared before the user overrides it');
     assert.ok(!session.getActiveToolNames().includes(name('secret')));
-    const refusal = await fixture.run('capability', `enable ${name('secret')}`);
-    assert.match(refusal, /Enabled/, 'the user command is the one path that authorizes a manual tool');
+    const removed = await fixture.run('capability', `blacklist remove ${name('secret')}`);
+    assert.match(removed, /blacklist remove/);
+    const refusal = await fixture.run('capability', `base add ${name('secret')}`);
+    assert.match(refusal, /Activated/, 'the user override plus base membership is the path that makes it available');
     await session.prompt('After enabling the manual MCP tool.');
     assert.ok(fixture.requests.at(-1)!.includes(name('secret')), 'the authorized manual MCP tool is declared');
 
@@ -253,12 +259,16 @@ test('manualTools still governs an MCP tool that a reconnect registers', { timeo
       { label: 'the new manual MCP tool', timeoutMs: 15_000 });
     await session.prompt('After the reconnect that added a manual tool.');
     assert.ok(!fixture.requests.at(-1)!.includes(name('added')), 'a new manual registration needs its own authorization');
-    assert.equal(permissionGrants(session.sessionManager.getBranch()).includes(name('added')), false);
+    assert.equal(baseGrants(session.sessionManager.getBranch()).includes(name('added')), false);
 
-    const enabled = await fixture.run('capability', `enable mcp://${SERVER}`);
-    assert.match(enabled, /Enabled[\s\S]*added/);
-    assert.match(enabled, /Already enabled[\s\S]*secret/, 'the earlier authorization is not repeated');
-    assert.equal(permissionRecordCount(session.sessionManager.getBranch()), 2, 'one record per user enablement');
+    const enabled = await fixture.run('capability', `base add mcp://${SERVER}`);
+    assert.match(enabled, /stable/, 'the current container snapshot is recorded as concrete members');
+    assert.ok(session.getActiveToolNames().includes(name('added')),
+      'a base namespace snapshot overrides the local member ban');
+    assert.ok(baseGrants(session.sessionManager.getBranch()).includes(name('added')),
+      'the concrete member is recorded in base without deleting the blacklist');
+
+    assert.equal(baseRecordCount(session.sessionManager.getBranch()), 2, 'one record per user enablement');
   } finally {
     await fixture.close();
   }

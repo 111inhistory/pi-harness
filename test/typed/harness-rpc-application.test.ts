@@ -285,7 +285,7 @@ test("preset RPC apply/clear records the same branch state and tool selection as
   assert.equal(asRecord(current?.["preset"])?.["name"], "rpc-apply");
 
   const cleared = asRecord(await fixture.client.request("presets.clear"));
-  assert.deepEqual(cleared, { cleared: true, snapshot: null, codemodeCleared: true });
+  assert.deepEqual(cleared, { cleared: true, snapshot: null, codemodeCleared: true, toolSyncError: null });
   assert.equal(fixture.session.getActiveToolNames().includes("read"), true,
     "clear does not roll back the selected tool set");
   assert.equal(fixture.session.getActiveToolNames().includes("write"), false,

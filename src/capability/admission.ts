@@ -2,25 +2,25 @@
  * One operation's tool-admission view.
  *
  * Direct declarations, direct execution and Codemode all need the same answer:
- * may this session use this tool right now? The answer combines the scope chain,
- * the branch's capability records, the active set and the three-state permission
- * (explicitly enabled / explicitly disabled / unmanaged).
+ * may this session use this tool right now? The answer combines the scope
+ * chain, the branch's BASE/DYNAMIC/BLACKLIST collections, the active set and
+ * the SDK's own selection.
  *
  * The view is a value for one synchronous operation. It is never cached across
  * requests, never invalidated and holds no authority of its own: every caller
  * still reads the current branch and registry, exactly like
  * `createCapabilityScopeView`.
  *
- * A disabled tool stops execution and Codemode access immediately, but its
- * recorded native declaration is kept until the next successful compaction, so
- * the declaration removal is a compaction concern while the execution hook
- * already blocks it. An enabled tool is root-only unless the child has its own
- * depth-owned Harness grant. Ancestor and role denials still bound that grant.
+ * Declarations and execution are two questions. A blacklisted tool is blocked
+ * from execution immediately, but an already-active independent declaration is
+ * kept until the next successful compaction, so removing it never rewrites the
+ * provider prefix mid-window. Base and dynamic membership are availability, not
+ * authorization grants: only the blacklist and the role/depth/scope denials
+ * can remove a name from a child.
  */
 
-import { isHarnessTool } from '../harness-tools.ts';
 import { discoveryRecords, prunedToolNames } from './discovery-record.ts';
-import { createToolPermissionResolver } from './tool-permission.ts';
+import { createToolAccessView } from './tool-access-view.ts';
 import {
   createCapabilityScopeView,
   type CapabilityScopeView,
@@ -43,20 +43,25 @@ export function isMcpExecutionTool(name: string): boolean {
 /** The admission answers of one operation. */
 export interface ToolAdmission {
   /**
-   * Declaration rule: not a disabled native tool, selected on the branch when it
-   * is an MCP tool (or explicitly enabled), and not pruned.
-   *
-   * A disabled tool is deliberately not excluded here: its independent native
-   * declaration is removed at the next successful compaction, while `admits`
-   * blocks it now.
+   * Declaration rule: not a disabled native tool, still selected while it is an
+   * MCP tool, in scope, not pruned, and not newly blacklisted. A blacklisted
+   * tool that is still active keeps its existing declaration until compaction.
    */
   readonly declares: (name: string) => boolean;
-  /** Execution rule: the declaration rule, scope qualification and not disabled. */
+  /**
+   * Execution rule: the declaration rule, not blacklisted, and not awaiting a
+   * completed removal. A retained declaration is not permission: a tool whose
+   * base/dynamic membership was removed stops executing now even though its
+   * declaration stays until the next compaction. A name this surface never
+   * managed (for example a child session's own loadout) is not blocked.
+   */
   readonly admits: (name: string) => boolean;
-  /** Whether the effective permission prohibits `name` right now. */
-  readonly disabled: (name: string) => boolean;
-  /** Whether the effective permission explicitly enables `name`. */
-  readonly enabled: (name: string) => boolean;
+  /** Raw stored blacklist fact, for display. */
+  readonly blacklisted: (name: string) => boolean;
+  /** Effective prohibition after the base override; authority uses this. */
+  readonly blocked: (name: string) => boolean;
+  /** Whether base or dynamic membership requests `name` and no blacklist blocks it. */
+  readonly requested: (name: string) => boolean;
   /** Whether a selected, active MCP member of `server` qualifies a resource read. */
   readonly admitsServer: (server: unknown) => boolean;
 }
@@ -81,8 +86,8 @@ export interface BranchSelection {
 /**
  * One pass over the branch records yields discovered tool names.
  *
- * Retired legacy manual records are not scanned; canonical tool permissions and
- * normalized config defaults are the only management authority.
+ * Retired legacy permission records are not scanned; the discovery memory and
+ * the BASE/DYNAMIC/BLACKLIST records are the only sources.
  */
 export function branchToolSelection(branch: readonly unknown[] | null | undefined): BranchSelection {
   const selected = new Set<string>();
@@ -112,40 +117,45 @@ export function createToolAdmission(
   catalog?: { readonly scope: CapabilityScopeView; readonly tools: readonly AdmissionTool[] },
 ): ToolAdmission {
   const scope = catalog?.scope ?? createCapabilityScopeView(host);
-  const { selected } = branchToolSelection(branch);
+  // One registry snapshot per operation: an already-read catalog is reused, and
+  // a caller without one pays exactly one read.
+  const tools = catalog?.tools ?? host.getAllTools();
+  const access = createToolAccessView(host, branch, tools, scope);
   const pruned = prunedToolNames(branch);
   const active = new Set(host.getActiveTools());
-  const tools = catalog?.tools ?? host.getAllTools();
-  const permission = createToolPermissionResolver(host, tools, branch);
-  const disabled = permission.disabled;
-  const enabled = permission.enabled;
-  // A `manualTools` seed is disabled from the start: it is pruned from the
-  // declaration immediately. An explicit/migrated disable keeps an already-active
-  // independent declaration until the next successful compaction; `admits`
-  // already blocks it.
-  const seedDisabled = permission.seedDisabled;
-  const deferredDisabled = (name: string): boolean => disabled(name) && !seedDisabled(name);
-  const mcpSelected = (name: string): boolean => selected.has(name) || enabled(name);
-  // An inherited enabled record must not cancel an independent child grant.
-  // Scope qualification still enforces ancestor and role prohibitions.
-  const enabledHere = (name: string): boolean => !enabled(name) || scope.root || isHarnessTool(name);
-  const declares = (name: string): boolean =>
-    !seedDisabled(name) &&
-    !isNativeDiscoveryTool(name) &&
-    (!isMcpExecutionTool(name) || mcpSelected(name)) &&
-    (!pruned.has(name) || enabled(name)) &&
-    enabledHere(name) &&
-    (!deferredDisabled(name) || active.has(name));
+  const blacklisted = access.blacklisted;
+  const blocked = access.blocked;
+  const requested = access.requested;
+  const declares = (name: string): boolean => {
+    if (isNativeDiscoveryTool(name)) return false;
+    // Scope is an execution check, not a declaration rewrite: a role denial must
+    // not drop an already-published declaration (provider prefix stability).
+    // A configured or preset blacklist is session-start policy: its declaration
+    // goes at once. A branch blacklist is a mid-session user action, so an
+    // already-active declaration is kept until compaction (execution is already
+    // blocked) instead of rewriting the provider prefix.
+    if (blocked(name)) return access.blacklistSources(name).includes('branch') && active.has(name);
+    if (isMcpExecutionTool(name) && !requested(name)) return false;
+    if (!pruned.has(name)) return true;
+    // A prune removes dynamic membership; a base membership or a later
+    // activate/base-add is a newer deliberate availability choice, so it
+    // overrides the prune boundary without rewriting the discovery memory.
+    return access.base(name) || access.requested(name);
+  };
+  const removalPending = access.removalPending;
   const admits = (name: string): boolean =>
-    !disabled(name) && declares(name) && scope.allows(name) && enabledHere(name);
+    !blocked(name) &&
+    scope.allows(name) &&
+    declares(name) &&
+    (requested(name) || !removalPending(name));
   const admitsServer = (server: unknown): boolean => {
     if (typeof server !== 'string' || server === '') return false;
-    return tools.some((tool) => mcpSelected(tool.name) && active.has(tool.name) &&
-      !disabled(tool.name) && (!enabled(tool.name) || scope.root) &&
+    return tools.some((tool) => requested(tool.name) && active.has(tool.name) &&
+      !blocked(tool.name) &&
       tool.exposure !== 'hidden' && tool.exposure !== 'model-only' &&
       scope.allows(tool.name) &&
       tool.name.startsWith('mcp__') && tool.namespace?.name.startsWith('mcp__') &&
       tool.namespace.aliases?.includes(server) === true);
   };
-  return { declares, admits, disabled, enabled, admitsServer };
+  return { declares, admits, blacklisted, blocked, requested, admitsServer };
 }

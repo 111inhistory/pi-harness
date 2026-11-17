@@ -143,8 +143,8 @@ async function audit(model: Model, real: Real) {
     // These are policy expectations, independent of the production scope filter:
     // child communication is depth-owned, while a Main-only read grant is not.
     assert.ok(active.includes('msg_write'),
-      `Main enable cannot revoke independent child messaging (node ${slot}, ${actual.view.kind}; active: ${active.join(', ')})`);
-    assert.equal(active.includes('read'), false, 'ordinary Main enables remain root-only');
+      `Main activation cannot revoke independent child messaging (node ${slot}, ${actual.view.kind}; active: ${active.join(', ')})`);
+    assert.equal(active.includes('read'), true, 'Main availability selections do not prohibit ordinary child tools');
     if (expected.parent !== null) {
       for (const name of ['subagent_create', 'subagent_stop', 'capability']) {
         assert.equal(active.includes(name), false, `leaf authority excludes ${name}`);
@@ -261,11 +261,11 @@ async function sample(initial: number[], commands: Iterable<AsyncCommand<Model, 
   try {
     fx = await createSdkFixture({ scenario: 'parent-coordination-model', durable: true,
       config: { subagent: { maxDepth: 2 } } });
-    // Reproduce the root enable before any Fresh or Inherited child is created.
+    // Record root dynamic membership before Fresh or Inherited children exist.
     // Exercise the real branch reader and SDK loadouts, not a modeled scope helper.
-    fx.sessionManager.appendCustomEntry('capability-tool-permission', {
+    fx.sessionManager.appendCustomEntry('capability-tool-dynamic', {
       version: 1,
-      set: [{ target: 'msg_write', state: 'enabled' }, { target: 'read', state: 'enabled' }],
+      activate: ['msg_write', 'read'],
     });
     fx.session.setActiveToolsByName([...new Set([...fx.session.getActiveToolNames(), 'msg_write', 'read'])]);
     const real: Real = { fx, nodes: [freshReal(), freshReal()], notices: [], scheduler };

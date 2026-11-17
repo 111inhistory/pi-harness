@@ -1,11 +1,11 @@
 /**
  * Receipt activation respects a manual reply tool.
  *
- * When `msg_write` is configured as manual, a peer message must not grant it.
- * If the branch already authorizes it, the active set is authoritative and the
- * receipt must not report a false `manual_only` failure; if it is not
- * authorized, the tool stays inactive and the receipt reports the refusal
- * without writing a capability record.
+ * When `msg_write` is configured as blacklisted, a peer message must not grant
+ * it. If the user already activated it (blacklist removed + dynamic membership),
+ * the active set is authoritative and the receipt must not report a false
+ * failure; if it is not activated, the tool stays blacklisted and the receipt
+ * reports the refusal without writing a discovery record.
  */
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -15,20 +15,20 @@ import test, { after } from "node:test";
 
 import {
   createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
-  type AgentSession,
+  type AgentSession, type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 
 import { CAPABILITY_DISCOVERY_RECORD } from "../../src/capability/discovery-record.ts";
-import { CAPABILITY_TOOL_PERMISSION_RECORD } from "../../src/capability/tool-permission.ts";
+import { activateToolTargets, removeBlacklistTargets } from "../../src/capability/tool-access.ts";
 
 const cwd = await mkdtemp(path.join(tmpdir(), "reply-manual-"));
 const agentDir = path.join(cwd, "agent");
 const socketRoot = path.join(cwd, "uds");
 await mkdir(agentDir, { recursive: true });
-await writeFile(path.join(agentDir, "harness.json"), JSON.stringify({ capability: { manualTools: ["msg_write"] } }));
+await writeFile(path.join(agentDir, "harness.json"), JSON.stringify({ capability: { blacklist: ["msg_write"] } }));
 const previousAgentDir = process.env["PI_CODING_AGENT_DIR"];
 const previousSocketDir = process.env["PI_SUBAGENT_SOCKET_DIR"];
 process.env["PI_CODING_AGENT_DIR"] = agentDir;
@@ -57,6 +57,7 @@ function deferred() {
 
 interface Started {
   readonly session: AgentSession;
+  readonly api: ExtensionAPI;
   readonly notices: string[];
   readonly errors: unknown[];
   readonly turnStarted: Promise<void>;
@@ -92,10 +93,11 @@ async function startSession(): Promise<Started> {
   const settingsManager = SettingsManager.inMemory({
     compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: "off",
   });
+  let rootApi: ExtensionAPI | undefined;
   const resourceLoader = new DefaultResourceLoader({
     cwd, agentDir, settingsManager,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-    extensionFactories: [{ name: "reply-manual-fixture", factory: harnessExtension }],
+    extensionFactories: [{ name: "reply-manual-fixture", factory(api) { rootApi = api; harnessExtension(api); } }],
   });
   await resourceLoader.reload();
   assert.deepEqual(resourceLoader.getExtensions().errors, []);
@@ -109,7 +111,8 @@ async function startSession(): Promise<Started> {
     uiContext: { ...session.extensionRunner.createContext().ui, notify: (text: string) => { notices.push(text); } },
     onError: (error) => errors.push(error),
   });
-  return { session, notices, errors, turnStarted: turnStarted.promise, activeAtTurn: () => activeAtTurn };
+  assert.ok(rootApi);
+  return { session, api: rootApi, notices, errors, turnStarted: turnStarted.promise, activeAtTurn: () => activeAtTurn };
 }
 
 async function deliver(session: AgentSession, content: string, turn: Promise<void>): Promise<void> {
@@ -132,14 +135,15 @@ test("an authorized manual reply tool is not reported unavailable", { timeout: 2
   const started = await startSession();
   const { session } = started;
   try {
-    assert.ok(!session.getActiveToolNames().includes("msg_write"), "manual tool starts inactive");
-    // Test fixture, not a production path: seed the active tool and the
-    // canonical enabled entry the user command writes.
-    session.sessionManager.appendCustomEntry(CAPABILITY_TOOL_PERMISSION_RECORD, {
-      version: 1, set: [{ target: "msg_write", state: "enabled" }],
-    });
-    session.setActiveToolsByName([...session.getActiveToolNames(), "msg_write"]);
-    assert.ok(session.getActiveToolNames().includes("msg_write"), "the reply tool is authorized and active");
+    assert.ok(!session.getActiveToolNames().includes("msg_write"), "manual tool starts blacklisted");
+    // The user's own operations: drop the configured prohibition, then activate
+    // the reply tool through ordinary dynamic membership.
+    const branch = session.sessionManager.getBranch();
+    const removed = removeBlacklistTargets(started.api, started.api, branch, ["msg_write"]);
+    assert.deepEqual(removed.stillBlacklisted, []);
+    const activation = activateToolTargets(started.api, started.api, session.sessionManager.getBranch(), ["msg_write"]);
+    assert.deepEqual(activation.activated, ["msg_write"]);
+    assert.ok(session.getActiveToolNames().includes("msg_write"), "the reply tool is activated and active");
     started.notices.length = 0;
 
     await deliver(session, "peer ping", started.turnStarted);
@@ -156,11 +160,11 @@ test("an ungranted manual reply tool is not activated by receipt", { timeout: 20
   const started = await startSession();
   const { session } = started;
   try {
-    assert.ok(!session.getActiveToolNames().includes("msg_write"), "manual tool starts inactive");
+    assert.ok(!session.getActiveToolNames().includes("msg_write"), "manual tool starts blacklisted");
     await deliver(session, "peer ping", started.turnStarted);
     assert.ok(!started.activeAtTurn().includes("msg_write"), "receipt does not activate the manual tool");
     assert.ok(!session.getActiveToolNames().includes("msg_write"));
-    assert.deepEqual(started.notices, ["The cross-session reply tool is unavailable: disabled."]);
+    assert.deepEqual(started.notices, ["The cross-session reply tool is unavailable: blacklisted."]);
     assert.deepEqual(started.errors, []);
     const records = session.sessionManager.getBranch()
       .filter((entry) => entry.type === "custom" && entry.customType === CAPABILITY_DISCOVERY_RECORD);

@@ -6,7 +6,7 @@ Capability 发现采用惰性机制，但选中的能力必须在会话压缩与
 
 ## 持久化分支存储
 
-每次成功或部分成功的发现均会向会话分支写入一条 `capability-discovery` 条目。用户显式启用／禁用使用独立的 `capability-tool-permission` 条目（`set`／`unset`），不写入发现记录；`/capability enable` 先写权限记录，再激活实际可用的成员。runtime 只读 canonical 与 config 默认，不读取旧 `manual`／`capability-blacklist`。显式离线工具 `npm run migrate:tool-permissions` 仅转换已核实的平面 manual-only 记录，保留原生 checkpoint ID；支持范围与拒绝条件见[接口契约](interface-contract.md#工具权限管理)。
+每次成功或部分成功的发现均追加 `capability-discovery`，工具选择进入按需集合，Skill 与指引按分支投影。基线、显式按需激活、黑名单分别保存在 `capability-tool-base`、`capability-tool-dynamic`、`capability-tool-blacklist` 中，不伪装成发现成果，也不额外生成能力指引。运行时不读取旧权限格式；转换仅由显式离线工具执行，见[工具权限管理](interface-contract.md#工具权限管理)。
 
 - 嵌套调用：当外层工具调用 `ctx.executeTool("capability", ...)` 时，内层发现记录直接写入分支。即使调用的外层工具丢弃或汇总了内层 `details`，该记录依然保留。
 - 规范条目是唯一的记忆来源。投影不读取 `toolResult.details`，也不从较早的结果消息中重建记忆。
@@ -18,9 +18,9 @@ Capability 发现采用惰性机制，但选中的能力必须在会话压缩与
 - 工具与 MCP 组：ref、名称、描述、暴露方式、共享指示及选中的组成员。原生声明、Codemode 接口查询或降级结果元数据提供参数 schema；分支记录不重复保存 schema。
 - 共享指示：每个已声明的命名空间均可通过原生指导段落输出其当前指示，包含 MCP 以及由用户直接启用的命名空间。仅当该生产者实际输出了该段落时，Capability 记忆才会省略此文本。否则记忆将保留这些指示，包括直接声明被隐藏的情况。两种情况下，工具结果文本均省略共享文本。
 - Skill：绝对入口路径、名称和描述。宿主不从 Skill 文本中推断约束或关联。Skill 的 ref 即为其入口路径；模型通过原生文件读取理解指导。宿主不安装资源协议路由器，也不覆盖文件工具。
-- 三态权限条目属于分支权限，而非请求状态。系统从不把权限条目投影为 `<capabilities>` 段落：显式启用的工具已由原生工具列表声明，投影会重复声明接口并改变头部系统提示词。权限条目与发现条目共享同一个 ref 命名空间和相同的权限检查，但只有发现条目会提供段落文本。参见[缓存边界](reviews/capability-enable-cache.md)。
-- 默认禁用种子：`capability.manualTools` 归一为同 target/state 结构的默认 `disabled` 条目（精确或 prefix），不是独立名单。发现与准入按 disabled 排除；子节点通过 denial 阻止继承。目录浏览可显示其状态，但浏览不授予显式启用；`reset` 可解除为 `not managed`。
-- 显式状态：`capability-tool-permission` 记录是权限来源，而非当前激活集合。`before_agent_start` 会移除在显式禁用、或属于默认禁用种子却未被显式启用时处于激活状态的工具（如 `defaultActive`、恢复的 transcript、其他扩展引入），`tool_call` 拒绝调用，Codemode 准入应用相同的断言。接收跨会话消息会按相同规则激活 `msg_write` 但不写显式启用记录，因此接收消息绝不会凭空产生用户授权。
+- 工具管理记录描述基线、按需选择和禁止，不重复投影为 `<capabilities>` 文本。工具接口由当前声明或 Codemode 查询提供，只有发现业务记录提供相应资源记忆。
+- 启动默认黑名单：`capability.blacklist` 支持精确名、组及前缀目标；当前会话的基线白名单可覆盖禁止，但不删除记录。分支可移除同目标配置项，不能删除当前 Preset 或祖先的禁止贡献。
+- 当前请求集合为「基线 ∪（按需激活 − 本会话黑名单）」，独立于 SDK active 与声明历史。祖先禁止、角色／深度和 SDK 限制仍在外层约束执行。执行钩子检查当前成员与作用域；为保持协议而暂留的声明不代表可调用。收信激活回复工具也不能绕过有效禁止。
 - 共享指导：在多次发现之间保留，即使某次选择未增加新工具。
 - 远程覆盖范围：发现仅搜索本地资源。覆盖范围显式将远程搜索标记为 `not_searched`。远程候选资源绝不进入分支记录、系统段落或总结。
 
@@ -82,5 +82,5 @@ Capability 在激活工具之前先写入规范的分支记录。宿主按实际
 - `test/typed/capability-main-default-activation.test.ts`：验证 Main 在没有 `msg_write` 的情况下启动，且 Capability 激活 Subagent 命名空间。
 - `test/typed/capability-enable.test.ts`：验证命令解析、活跃注册表目标解析、先写记录再应用效果顺序、按目标拒绝、幂等性、写入失败不激活并报告、选择器及其取消操作和完成态。
 - `test/typed/capability-provider-prefix.test.ts`：在 Provider 边界验证启用操作是追加而非改写，验证投影无多余内容，并测量 Pi 自身的提示词段落补丁。
-- `test/typed/capability-mcp-reconnect.test.ts`：验证原生 `/mcp reconnect` 注册的工具可浏览且可启用、被撤销的注册被拒绝，以及 `manualTools` 依然约束新注册。
+- `test/typed/capability-mcp-reconnect.test.ts`：验证原生 `/mcp reconnect` 注册的工具可浏览且可启用、被撤销的注册被拒绝，以及 `blacklist` 依然约束新注册。
 - `test/typed/cross-session-reply-activation.test.ts`：验证接收消息仅激活 `msg_write`、回复能够送达、不写入显式启用记录，且重复接收保持幂等。

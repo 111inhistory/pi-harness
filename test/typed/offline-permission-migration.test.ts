@@ -11,11 +11,10 @@ import test from 'node:test';
 
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { migrateSessionFile } from '../../scripts/lib/permission-migration.ts';
-import {
-  CAPABILITY_TOOL_PERMISSION_RECORD,
-  CAPABILITY_TOOL_PERMISSION_VERSION,
-  type ToolPermissionTool,
-} from '../../src/capability/tool-permission.ts';
+import { TOOL_BASE_RECORD, TOOL_BASE_VERSION } from '../../src/capability/tool-access.ts';
+import type { ToolAccessHost } from '../../src/capability/tool-access-view.ts';
+import { listBaseTools } from '../../src/capability/tool-access-view.ts';
+import type { ToolTargetRecord } from '../../src/capability/targets.ts';
 import { createToolAdmission } from '../../src/capability/admission.ts';
 import { ActorSessionStore } from '../../src/subagent/actor-sessions.ts';
 import { createSubagentStore } from '../../src/subagent/storage.ts';
@@ -71,17 +70,21 @@ test('offline migration converts manual-only capability-discovery records in-pla
     assert.ok(convertedEntry, 'converted entry exists at original id d_manual_1');
     assert.equal(convertedEntry.parentId, 'm_root', 'parentId preserved');
     assert.equal(convertedEntry.timestamp, '2026-11-10T12:00:00.000Z', 'timestamp preserved');
-    assert.equal(convertedEntry.customType, CAPABILITY_TOOL_PERMISSION_RECORD, 'customType converted to canonical');
+    assert.equal(convertedEntry.customType, TOOL_BASE_RECORD, 'customType converted to the base record');
     assert.deepEqual(convertedEntry.data, {
-      version: CAPABILITY_TOOL_PERMISSION_VERSION,
-      set: [{ target: 'custom_edit', state: 'enabled' }],
-    }, 'data converted to canonical enabled set');
+      version: TOOL_BASE_VERSION,
+      add: ['custom_edit'],
+    }, 'data converted to a base add');
 
-    // Tool admission on active branch evaluates custom_edit as enabled
-    const tool: ToolPermissionTool = { name: 'custom_edit', exposure: 'direct' };
-    const host = { getAllTools: () => [tool], getActiveTools: () => ['custom_edit'] };
+    // The converted branch records custom_edit as an explicit base membership
+    const tool: ToolTargetRecord = { name: 'custom_edit', exposure: 'direct' };
+    const host: ToolAccessHost & { getActiveTools(): readonly string[] } = {
+      getAllTools: () => [tool], getActiveTools: () => ['custom_edit'],
+    };
+    const base = listBaseTools(host, sm.getBranch());
+    assert.ok(base.some((entry) => entry.target.target === 'custom_edit'), 'custom_edit is a recorded base member');
     const adm = createToolAdmission(host as any, sm.getBranch());
-    assert.equal(adm.enabled('custom_edit'), true, 'custom_edit is enabled by canonical permission');
+    assert.equal(adm.requested('custom_edit'), true, 'custom_edit is requested');
     assert.equal(adm.admits('custom_edit'), true, 'custom_edit is admitted');
 
     // Second run is strictly an idempotent no-op: returns false and leaves bytes untouched
@@ -90,8 +93,8 @@ test('offline migration converts manual-only capability-discovery records in-pla
     assert.equal(rerun, false, 'rerun returns false when no legacy records remain');
     assert.equal(statSync(sessionFile).size, bytesBefore, 'zero bytes written on rerun');
 
-    const canonical = { ...discEntry, customType: CAPABILITY_TOOL_PERMISSION_RECORD,
-      data: { version: 1, set: [{ target: 'custom_edit', state: 'enabled' }] } };
+    const canonical = { ...discEntry, customType: TOOL_BASE_RECORD,
+      data: { version: TOOL_BASE_VERSION, add: ['custom_edit'] } };
     for (const [separator, ending] of [['\r\n', '\r\n'], ['\n', '']] as const) {
       const prefix = rawHeader + separator + separator + rawRootMsg + separator;
       const suffix = separator + rawTailMsg + ending;
@@ -187,13 +190,16 @@ test('offline migration enables pre-tail checkpoint restoration via ActorSession
     // The anchor branch directly contains the converted canonical entry
     const canonicalEntry = anchorBranch.find((e: any) => e.id === 'd_manual_pre');
     assert.ok(canonicalEntry, 'canonical entry found on anchor branch at id d_manual_pre');
-    assert.equal((canonicalEntry as any).customType, CAPABILITY_TOOL_PERMISSION_RECORD, 'converted to canonical customType');
+    assert.equal((canonicalEntry as any).customType, TOOL_BASE_RECORD, 'converted to the base record');
 
-    // Admission at anchor correctly evaluates tool_checkpoint as enabled
-    const tool: ToolPermissionTool = { name: 'tool_checkpoint', exposure: 'direct' };
-    const host = { getAllTools: () => [tool], getActiveTools: () => ['tool_checkpoint'] };
+    // The anchor branch records tool_checkpoint as an explicit base member
+    const tool: ToolTargetRecord = { name: 'tool_checkpoint', exposure: 'direct' };
+    const host: ToolAccessHost & { getActiveTools(): readonly string[] } = {
+      getAllTools: () => [tool], getActiveTools: () => ['tool_checkpoint'],
+    };
+    assert.ok(listBaseTools(host, anchorBranch).some((entry) => entry.target.target === 'tool_checkpoint'));
     const admission = createToolAdmission(host as any, anchorBranch);
-    assert.equal(admission.enabled('tool_checkpoint'), true, 'tool is enabled on restored anchor branch');
+    assert.equal(admission.requested('tool_checkpoint'), true, 'tool is requested on restored anchor branch');
     assert.equal(admission.admits('tool_checkpoint'), true, 'tool is admitted on restored anchor branch');
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -236,20 +242,22 @@ test('offline migration preserves sibling branches and reopen selected leaf', ()
     assert.equal(reopened.getLeafId(), leafA, 'reopened selected leaf remains Branch A');
 
     const activeBranch = reopened.getBranch();
-    const toolA: ToolPermissionTool = { name: 'tool_a', exposure: 'direct' };
-    const toolB: ToolPermissionTool = { name: 'tool_b', exposure: 'direct' };
-    const host = { getAllTools: () => [toolA, toolB], getActiveTools: () => ['tool_a', 'tool_b'] };
+    const toolA: ToolTargetRecord = { name: 'tool_a', exposure: 'direct' };
+    const toolB: ToolTargetRecord = { name: 'tool_b', exposure: 'direct' };
+    const host: ToolAccessHost & { getActiveTools(): readonly string[] } = {
+      getAllTools: () => [toolA, toolB], getActiveTools: () => ['tool_a', 'tool_b'],
+    };
 
-    // Active branch has tool_a enabled, not tool_b
-    const admA = createToolAdmission(host as any, activeBranch);
-    assert.equal(admA.enabled('tool_a'), true);
-    assert.equal(admA.enabled('tool_b'), false);
+    // Active branch records tool_a as base, not tool_b
+    const baseA = listBaseTools(host, activeBranch).map((entry) => entry.target.target);
+    assert.ok(baseA.includes('tool_a'));
+    assert.ok(!baseA.includes('tool_b'));
 
-    // Sibling Branch B has tool_b enabled, not tool_a
+    // Sibling Branch B records tool_b as base, not tool_a
     const branchB = reopened.getBranch(leafB);
-    const admB = createToolAdmission(host as any, branchB);
-    assert.equal(admB.enabled('tool_b'), true);
-    assert.equal(admB.enabled('tool_a'), false);
+    const baseB = listBaseTools(host, branchB).map((entry) => entry.target.target);
+    assert.ok(baseB.includes('tool_b'));
+    assert.ok(!baseB.includes('tool_a'));
 
     // Rerun is strictly no-op
     assert.equal(migrateSessionFile(sessionFile), false);
@@ -317,27 +325,61 @@ test('offline migration refuses unsupported shapes before any write and leaves f
     assert.throws(() => migrateSessionFile(bl.filePath), /capability-blacklist record/);
     assert.equal(readFileSync(bl.filePath, 'utf8'), bl.raw, 'blacklist file left untouched');
 
-    // 5. Refuse canonical coexistence
-    const canonCoexist = makeFile('coexist.jsonl', {
+    // 5. Refuse a reset tombstone: one current record cannot express both a
+    // base and a blacklist removal, so fail closed instead of guessing.
+    const reset = makeFile('reset.jsonl', {
       type: 'custom',
       customType: 'capability-tool-permission',
       id: 'c1',
       parentId: 'm1',
-      data: { version: 1, set: [{ target: 'tool_c', state: 'enabled' }] },
+      data: { version: 1, unset: ['tool_reset'] },
+    });
+    assert.throws(() => migrateSessionFile(reset.filePath), /reset tombstone/);
+    assert.equal(readFileSync(reset.filePath, 'utf8'), reset.raw, 'reset file left untouched');
+
+    // 6. Refuse a mixed enabled/disabled entry.
+    const mixedEntry = makeFile('mixed-entry.jsonl', {
+      type: 'custom',
+      customType: 'capability-tool-permission',
+      id: 'c2',
+      parentId: 'm1',
+      data: { version: 1, set: [{ target: 'tool_a', state: 'enabled' }, { target: 'tool_b', state: 'disabled' }] },
+    });
+    assert.throws(() => migrateSessionFile(mixedEntry.filePath), /mixed enabled\/disabled/);
+    assert.equal(readFileSync(mixedEntry.filePath, 'utf8'), mixedEntry.raw, 'mixed entry file left untouched');
+
+    // Offline conversion cannot reconstruct the membership snapshot of an old
+    // enabled group from the session record alone.
+    for (const [index, target] of ['namespace://docker', 'mcp://git', 'docker_*'].entries()) {
+      const group = makeFile(`enabled-group-${index}.jsonl`, {
+        type: 'custom', customType: 'capability-tool-permission', id: 'c_group', parentId: 'm1',
+        data: { version: 1, set: [{ target, state: 'enabled' }] },
+      });
+      assert.throws(() => migrateSessionFile(group.filePath), /requires a live member catalog/);
+      assert.equal(readFileSync(group.filePath, 'utf8'), group.raw, 'unresolvable group leaves bytes untouched');
+    }
+
+    // 7. Refuse coexistence of retired records with an already-converted record.
+    const coexist = makeFile('coexist.jsonl', {
+      type: 'custom',
+      customType: TOOL_BASE_RECORD,
+      id: 'c3',
+      parentId: 'm1',
+      data: { version: TOOL_BASE_VERSION, add: ['tool_c'] },
     });
     const coexistLines = [
-      canonCoexist.raw.trim(),
+      coexist.raw.trim(),
       JSON.stringify({
         type: 'custom',
         customType: 'capability-discovery',
         id: 'd4',
-        parentId: 'c1',
+        parentId: 'c3',
         data: { version: 1, result: { status: 'ok', tools: [], mcp: [], skills: [], manual: [{ name: 'tool_m' }] } },
       }),
     ].join('\n') + '\n';
-    writeFileSync(canonCoexist.filePath, coexistLines);
-    assert.throws(() => migrateSessionFile(canonCoexist.filePath), /pre-existing canonical capability-tool-permission records/);
-    assert.equal(readFileSync(canonCoexist.filePath, 'utf8'), coexistLines, 'coexistence file left untouched');
+    writeFileSync(coexist.filePath, coexistLines);
+    assert.throws(() => migrateSessionFile(coexist.filePath), /current capability records coexist with retired permission records/);
+    assert.equal(readFileSync(coexist.filePath, 'utf8'), coexistLines, 'coexistence file left untouched');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

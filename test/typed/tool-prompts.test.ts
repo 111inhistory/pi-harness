@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import capabilityExtension from '../../src/capability/extension.ts';
+import { DEFAULT_HARNESS_CONFIG } from '../../src/harness-config.ts';
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
@@ -22,7 +23,7 @@ function fixture() {
     on(event: string, handler: Handler) { handlers.set(event, handler); return () => {}; },
     events: { emit() {}, on() { return () => {}; } },
   } as unknown as ExtensionAPI;
-  capabilityExtension(api);
+  capabilityExtension(api, { config: DEFAULT_HARNESS_CONFIG });
   return { handlers, tools, active };
 }
 

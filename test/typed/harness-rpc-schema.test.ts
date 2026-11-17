@@ -85,8 +85,9 @@ function unused(): never {
 }
 
 const toolStub = {
-  catalog: unused, detail: unused, enable: unused, permissionQuery: unused,
-  permissionEnable: unused, permissionDisable: unused, permissionReset: unused,
+  catalog: unused, detail: unused, baseAdd: unused, baseRemove: unused, baseList: unused,
+  activate: unused, deactivate: unused, blacklistAdd: unused, blacklistRemove: unused,
+  blacklistList: unused,
 } as unknown as ToolPort;
 
 const subagentStub = {
@@ -98,7 +99,7 @@ const historyStub = { read: unused } as unknown as RouterDeps['history'];
 const streamStub = { subscribe: unused } as unknown as RouterDeps['stream'];
 
 // ---------------------------------------------------------------------------
-// Tool / permission fixtures
+// Tool collection fixtures
 // ---------------------------------------------------------------------------
 
 interface FakeTool {
@@ -136,7 +137,7 @@ const TOOLS: FakeTool[] = [
   { name: 'mcp__srv__query', description: 'Query', exposure: 'direct', namespace: { name: 'mcp__srv', aliases: ['srv'] } },
 ];
 
-test('tool and permission method results match the schema', async () => {
+test('tool collection method results match the schema', async () => {
   const branch: unknown[] = [];
   const router = createRouter({
     sessionId: 'session-xyz',
@@ -149,11 +150,14 @@ test('tool and permission method results match the schema', async () => {
   const calls: Array<[RpcMethod, unknown]> = [
     [RPC_METHODS.toolsCatalog, {}],
     [RPC_METHODS.toolsDetail, { name: 'read' }],
-    [RPC_METHODS.toolsEnable, { targets: ['read'] }],
-    [RPC_METHODS.permissionQuery, { expr: 'enabled+active' }],
-    [RPC_METHODS.permissionEnable, { targets: ['write'] }],
-    [RPC_METHODS.permissionDisable, { targets: ['write'] }],
-    [RPC_METHODS.permissionReset, { targets: ['write'] }],
+    [RPC_METHODS.toolsBaseAdd, { targets: ['read'] }],
+    [RPC_METHODS.toolsBaseRemove, { targets: ['read'] }],
+    [RPC_METHODS.toolsBaseList, {}],
+    [RPC_METHODS.toolsActivate, { targets: ['write'] }],
+    [RPC_METHODS.toolsDeactivate, { targets: ['write'] }],
+    [RPC_METHODS.toolsBlacklistAdd, { targets: ['write'] }],
+    [RPC_METHODS.toolsBlacklistRemove, { targets: ['write'] }],
+    [RPC_METHODS.toolsBlacklistList, {}],
   ];
   for (const [method, params] of calls) {
     assertResult(method, await call(router, method, params));
@@ -423,11 +427,14 @@ test('envelopes and all method requests validate', () => {
     [RPC_METHODS.info]: { id: 'r', method: RPC_METHODS.info },
     [RPC_METHODS.toolsCatalog]: { id: 'r', method: RPC_METHODS.toolsCatalog, params: {} },
     [RPC_METHODS.toolsDetail]: { id: 'r', method: RPC_METHODS.toolsDetail, params: { name: 'read' } },
-    [RPC_METHODS.toolsEnable]: { id: 'r', method: RPC_METHODS.toolsEnable, params: { targets: ['read'] } },
-    [RPC_METHODS.permissionQuery]: { id: 'r', method: RPC_METHODS.permissionQuery, params: { expr: 'enabled' } },
-    [RPC_METHODS.permissionEnable]: { id: 'r', method: RPC_METHODS.permissionEnable, params: { targets: ['read'] } },
-    [RPC_METHODS.permissionDisable]: { id: 'r', method: RPC_METHODS.permissionDisable, params: { targets: ['read'] } },
-    [RPC_METHODS.permissionReset]: { id: 'r', method: RPC_METHODS.permissionReset, params: { targets: ['read'] } },
+    [RPC_METHODS.toolsBaseAdd]: { id: 'r', method: RPC_METHODS.toolsBaseAdd, params: { targets: ['read'] } },
+    [RPC_METHODS.toolsBaseRemove]: { id: 'r', method: RPC_METHODS.toolsBaseRemove, params: { targets: ['read'] } },
+    [RPC_METHODS.toolsBaseList]: { id: 'r', method: RPC_METHODS.toolsBaseList },
+    [RPC_METHODS.toolsActivate]: { id: 'r', method: RPC_METHODS.toolsActivate, params: { targets: ['read'] } },
+    [RPC_METHODS.toolsDeactivate]: { id: 'r', method: RPC_METHODS.toolsDeactivate, params: { targets: ['read'] } },
+    [RPC_METHODS.toolsBlacklistAdd]: { id: 'r', method: RPC_METHODS.toolsBlacklistAdd, params: { targets: ['read'] } },
+    [RPC_METHODS.toolsBlacklistRemove]: { id: 'r', method: RPC_METHODS.toolsBlacklistRemove, params: { targets: ['read'] } },
+    [RPC_METHODS.toolsBlacklistList]: { id: 'r', method: RPC_METHODS.toolsBlacklistList },
     [RPC_METHODS.agentsTree]: { id: 'r', method: RPC_METHODS.agentsTree },
     [RPC_METHODS.jobsList]: { id: 'r', method: RPC_METHODS.jobsList, params: {} },
     [RPC_METHODS.jobsGet]: { id: 'r', method: RPC_METHODS.jobsGet, params: { jobId: 'j' } },
@@ -493,7 +500,8 @@ test('router rejects malformed optional and required parameters and normalizes a
   for (const method of [
     RPC_METHODS.info,
     RPC_METHODS.toolsCatalog,
-    RPC_METHODS.permissionQuery,
+    RPC_METHODS.toolsBaseList,
+    RPC_METHODS.toolsBlacklistList,
     RPC_METHODS.agentsTree,
     RPC_METHODS.jobsList,
   ]) {
@@ -505,7 +513,8 @@ test('router rejects malformed optional and required parameters and normalizes a
   const invalidRequests: Array<{ method: string; params?: unknown; code: string }> = [
     { method: RPC_METHODS.toolsCatalog, params: { filter: 123 }, code: RPC_ERROR.invalidRequest },
     { method: RPC_METHODS.toolsCatalog, params: { category: 'bogus' }, code: RPC_ERROR.invalidRequest },
-    { method: RPC_METHODS.permissionQuery, params: { expr: 42 }, code: RPC_ERROR.invalidRequest },
+    { method: RPC_METHODS.toolsCatalog, params: { includeActivatable: 'yes' }, code: RPC_ERROR.invalidRequest },
+    { method: RPC_METHODS.toolsBaseAdd, params: {}, code: RPC_ERROR.invalidRequest },
     { method: RPC_METHODS.jobsList, params: { jobIds: 'sub_01' }, code: RPC_ERROR.invalidRequest },
     { method: RPC_METHODS.jobsList, params: { jobIds: [123] }, code: RPC_ERROR.invalidRequest },
     { method: RPC_METHODS.subagentCreate, params: { context: 123, tasks: [{ task: 'ok' }] }, code: RPC_ERROR.invalidRequest },
@@ -565,7 +574,8 @@ test('typed client works end-to-end over socket with events, errors and optional
   assert.equal(info.sessionId, 'session-client');
 
   const catalog = await client.call(RPC_METHODS.toolsCatalog);
-  assert.equal(catalog.total, TOOLS.length);
+  assert.equal(catalog.total, 2, 'default catalog lists the implicit requested membership before any base record');
+  assert.deepEqual(catalog.entries.map((entry) => entry.name), ['read', 'write']);
   const filtered = await client.call(RPC_METHODS.toolsCatalog, { filter: 'read', category: 'tool' });
   assert.deepEqual(filtered.entries.map((entry) => entry.name), ['read']);
 
@@ -619,10 +629,14 @@ function _compileTimeContractAssertions(base: TypedMethodHandlers): void {
       promptGuidelines: null,
       registered: true,
       eligible: true,
+      base: false,
+      dynamic: true,
       // @ts-expect-error wrong result shape for tools.detail (active must be boolean)
       active: 'yes',
-      permission: 'active',
-      managed: false,
+      blacklisted: false,
+      blacklistSources: [],
+      activatable: false,
+      usable: true,
     }),
   });
   createTypedRouter({
@@ -749,7 +763,10 @@ test('preset, approval and session peer contracts match exact domain types and v
     applied: true,
     snapshot: presetSnapshot,
     issues: [{ severity: 'warning', kind: 'unknown_tool', detail: 'unknown tool "foo" not added' }],
-    problems: [{ severity: 'warning', kind: 'codemode_not_applied', codemode: { mode: 'on' }, detail: 'recorded only' }],
+    problems: [
+      { severity: 'warning', kind: 'codemode_not_applied', codemode: { mode: 'on' }, detail: 'recorded only' },
+      { severity: 'warning', kind: 'tool_sync_failed', detail: 'tool loadout sync failed' },
+    ],
     codemodeNotApplied: true,
   };
   const applyFail: DomainPresetApplyOutcome = {
@@ -759,7 +776,7 @@ test('preset, approval and session peer contracts match exact domain types and v
     problems: [{ severity: 'error', kind: 'model_unauthenticated', model: { provider: 'p', id: 'm' }, detail: 'unauth' }],
     codemodeNotApplied: false,
   };
-  const clearOutcome: DomainPresetClearOutcome = { cleared: true, snapshot: null, codemodeCleared: true };
+  const clearOutcome: DomainPresetClearOutcome = { cleared: true, snapshot: null, codemodeCleared: true, toolSyncError: null };
 
   const pendingItem: DomainShellApprovalPending = {
     id: 'apr-1',

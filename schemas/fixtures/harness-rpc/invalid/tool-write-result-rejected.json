@@ -1,0 +1,43 @@
+{
+  "action": "activate",
+  "changed": [],
+  "alreadySet": [],
+  "unresolved": [],
+  "skipped": [],
+  "affectedTools": [],
+  "selected": [],
+  "noSchema": [],
+  "schema": [],
+  "schemaWithheld": [],
+  "containers": [
+    {
+      "target": "namespace://subagent",
+      "kind": "namespace",
+      "name": "subagent",
+      "id": "namespace:subagent",
+      "explicit": true,
+      "members": []
+    }
+  ],
+  "excluded": [],
+  "rejected": {
+    "code": "not_a_rejection_code",
+    "targets": [
+      "namespace://subagent[ns]"
+    ],
+    "members": [
+      "subagent_create"
+    ]
+  },
+  "activated": [],
+  "alreadyActive": [],
+  "removedActive": [],
+  "pendingCompaction": [],
+  "noticed": [],
+  "notRequested": [],
+  "stillBlacklisted": [],
+  "banOverridden": [],
+  "remainingSources": [],
+  "recordError": null,
+  "effectError": null
+}

@@ -7,14 +7,14 @@
  * request, declaration, command, execution and projection paths are the SDK's.
  *
  * Covered here, because the assembly tests only call extension handlers:
- * - a `defaultActive` manual tool is pruned from the declaration and refused by
- *   direct execution and by Codemode until the branch carries the user's manual
- *   record;
- * - with that record and the tool in the active set, the tool and its MCP server
- *   are declared, directly callable, scriptable and usable for
- *   `read_mcp_resource`;
- * - a second real session wired as a child scope drops the same tools even with
- *   the root's manual record on its branch.
+ * - a configured blacklist removes a `defaultActive` tool from the declaration
+ *   and refuses direct execution and Codemode until the user removes that
+ *   blacklist and adds the tools to the session base;
+ * - with the base membership the tool and its MCP server are declared, directly
+ *   callable, scriptable and usable for `read_mcp_resource`;
+ * - a second real session wired as a child scope configures the same blacklist
+ *   and stays prohibited, because inherited context never carries the root's
+ *   capability records.
  */
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -38,7 +38,13 @@ import subagentEntry from '../../extensions/harness.ts';
 import capabilityEntry from '../../extensions/capability.ts';
 import resultRenderingEntry from '../../extensions/result-rendering.ts';
 import btwEntry from '../../extensions/btw.ts';
-import { explicitlyEnabled, resetToolPermission, setToolPermission } from '../../src/capability/tool-permission.ts';
+import {
+  activateToolTargets,
+  addBaseTools,
+  deactivateToolTargets,
+  removeBlacklistTargets,
+} from '../../src/capability/tool-access.ts';
+import { createToolAccessView } from '../../src/capability/tool-access-view.ts';
 import { installCapabilityMcp } from '../../src/capability/native-discovery.ts';
 import { setCapabilityParent } from '../../src/capability/scope.ts';
 import { harnessConfigFor } from '../../src/harness-config.ts';
@@ -84,7 +90,7 @@ function systemText(messages: readonly AgentMessage[]): string {
   return JSON.stringify(messages.filter((entry) => entry.role === 'system'));
 }
 
-test('full SDK: manual tools stay unreachable until the user records them, then work in Main only', { timeout: 90_000 }, async () => {
+test('full SDK: blacklisted tools stay unreachable until the user overrides the blacklist and adds base membership', { timeout: 90_000 }, async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), 'pi-capability-manual-sdk-'));
   const agentDir = path.join(cwd, 'agent');
   await mkdir(agentDir);
@@ -96,7 +102,7 @@ test('full SDK: manual tools stay unreachable until the user records them, then 
   const errors: unknown[] = [];
   try {
     await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
-      capability: { manualTools: [...MANUAL_TOOLS] },
+      capability: { blacklist: [...MANUAL_TOOLS] },
     }));
     const pidFile = path.join(cwd, 'mcp.pid');
     await writeFile(path.join(agentDir, 'mcp.json'), JSON.stringify({
@@ -248,23 +254,18 @@ test('full SDK: manual tools stay unreachable until the user records them, then 
     assert.equal(beforeScript.isError, false, textOf(beforeScript));
     assert.match(textOf(beforeScript), /NO_MANUAL_ACCESS/);
 
-    // The real user entry: the command activates the tools and writes the
-    // append-only authorization record the declaration and execution paths read.
-    const enableCommand = session.extensionRunner.getRegisteredCommands()
-      .find((entry) => entry.name === 'capability');
-    assert.ok(enableCommand, 'the harness registers /capability on the real SDK session');
-    const enableNotices: { text: string; type: string }[] = [];
-    const enableContext = session.extensionRunner.createCommandContext();
-    Object.defineProperty(enableContext, 'ui', {
-      value: { notify: (text: string, type: string = 'info') => { enableNotices.push({ text, type }); } },
-    });
-    const mcpNamespace = session.getAllTools().find(tool => tool.name === MCP_TOOL)?.namespace?.name;
-    assert.ok(mcpNamespace, 'the real SDK registers an MCP namespace');
-    await enableCommand.handler(`enable manual_fixture namespace://${mcpNamespace} read_mcp_resource`, enableContext);
-    assert.match(enableNotices.at(-1)?.text ?? '', /Capability · enable|Changed/);
+    // The real user entry: removing the configured blacklist and adding the
+    // targets to the session base makes them requested while keeping every
+    // record append-only.
+    const removed = removeBlacklistTargets(capabilityApi!, capabilityApi!, session.sessionManager.getBranch(), [...MANUAL_TOOLS]);
+    assert.equal(removed.recordError, null, 'the blacklist removal record is durable');
+    const added = addBaseTools(capabilityApi!, capabilityApi!, session.sessionManager.getBranch(), [...MANUAL_TOOLS]);
+    assert.equal(added.recordError, null, 'the base record is durable');
+    assert.deepEqual([...added.unresolved], []);
     for (const name of MANUAL_TOOLS) {
       assert.ok(session.getActiveToolNames().includes(name), `${name} is active`);
-      assert.ok(explicitlyEnabled(capabilityApi!, session.sessionManager.getBranch(), name), `${name} is enabled`);
+      assert.equal(createToolAccessView(capabilityApi!, session.sessionManager.getBranch()).requested(name), true,
+        `${name} is requested`);
     }
 
     // Phase 2: authorized by the user's record.
@@ -297,35 +298,17 @@ test('full SDK: manual tools stay unreachable until the user records them, then 
     assert.ok(command, 'the harness registers /capability on the real SDK session');
     const listNotices: { text: string; type: string }[] = [];
     const listContext = session.extensionRunner.createCommandContext();
-    Object.defineProperty(listContext, 'ui', {
-      value: { notify: (text: string, type: string = 'info') => { listNotices.push({ text, type }); } },
-    });
-    await command.handler('list', listContext);
-    const defaultList = listNotices.at(-1)?.text ?? '';
-    assert.match(defaultList, /manual_fixture/);
-    assert.match(defaultList, /\[enabled\]/);
-    await command.handler('list namespace', listContext);
-    const namespaceList = listNotices.at(-1)?.text ?? '';
-    assert.ok(namespaceList.includes(`${MCP_TOOL}  [`), 'the enabled MCP member is listed under its namespace');
-    assert.ok(!namespaceList.includes('manual_fixture  ['), 'a plain tool is not a namespace entry');
-    await command.handler('list tool', listContext);
-    const toolList = listNotices.at(-1)?.text ?? '';
-    assert.match(toolList, /manual_fixture/);
-    assert.ok(!toolList.includes(`${MCP_TOOL}  [`), 'a namespace member is not a plain tool entry');
-    await command.handler('list disabled', listContext);
-    assert.match(listNotices.at(-1)?.text ?? '', /No tools match/);
-
     // Phase 3: the same branch memory, the same registered tools, a real child scope.
     const rootBranch = session.sessionManager.getEntries();
-    assert.ok(rootBranch.some((entry) => entry.type === 'custom' && entry.customType === 'capability-tool-permission'),
-      "the user's permission record is on the branch");
+    assert.ok(rootBranch.some((entry) => entry.type === 'custom' && entry.customType === 'capability-tool-base'),
+      'the base membership record is on the branch');
     // The child gets its own agent directory only so its MCP child process records
     // a separate pid; the manual policy is identical.
     const childAgentDir = path.join(cwd, 'agent-child');
     const childPidFile = path.join(cwd, 'mcp-child.pid');
     await mkdir(childAgentDir);
     await writeFile(path.join(childAgentDir, 'harness.json'), JSON.stringify({
-      capability: { manualTools: [...MANUAL_TOOLS] },
+      capability: { blacklist: [...MANUAL_TOOLS] },
     }));
     await writeFile(path.join(childAgentDir, 'mcp.json'), JSON.stringify({
       mcpServers: {
@@ -355,7 +338,10 @@ test('full SDK: manual tools stay unreachable until the user records them, then 
     assert.deepEqual(childLoader.getExtensions().errors, []);
     const child = (await createAgentSession({
       cwd, agentDir: childAgentDir, modelRuntime: runtime, model, settingsManager, resourceLoader: childLoader,
-      sessionManager: SessionManager.inMemory(cwd, {}, rootBranch),
+      // A fresh child does not inherit the root branch, so the root's explicit
+      // blacklist override does not reach it and its own configured blacklist
+      // still applies.
+      sessionManager: SessionManager.inMemory(cwd, {}),
     })).session;
     sessions.push(child);
     await child.bindExtensions({ onError: (error) => errors.push(error) });
@@ -367,11 +353,8 @@ test('full SDK: manual tools stay unreachable until the user records them, then 
     const childTools = child.getAllTools().map((tool) => tool.name);
     assert.ok(childTools.includes('manual_fixture'), 'the child registers the same manual fixture');
     assert.ok(childTools.includes(MCP_TOOL), 'the child registers the same MCP tool');
-    assert.ok(child.sessionManager.getBranch().some((entry) => {
-      const data = (entry as { data?: { set?: { target?: string; state?: string }[] } }).data;
-      return entry.type === 'custom' && entry.customType === 'capability-tool-permission'
-        && Array.isArray(data?.set) && data.set.some((item) => item.state === 'enabled');
-    }), 'the child branch carries the root permission record');
+    assert.equal(createToolAccessView(capabilityApi!, child.sessionManager.getBranch()).requested('manual_fixture'), false,
+      'the child keeps the configured blacklist');
     phase = 'child';
     step = 0;
     const childBaseline = child.messages.length;
@@ -413,6 +396,8 @@ test('full SDK: a retired manual-only discovery record grants no MCP execution a
   const cwd = await mkdtemp(path.join(tmpdir(), 'pi-capability-retired-manual-'));
   const agentDir = path.join(cwd, 'agent');
   await mkdir(agentDir);
+  const previousAgentDir = process.env['PI_CODING_AGENT_DIR'];
+  process.env['PI_CODING_AGENT_DIR'] = agentDir;
   const sessions: AgentSession[] = [];
   const errors: unknown[] = [];
   const toolName = 'mcp__retired_fixture__deploy';
@@ -539,19 +524,20 @@ test('full SDK: a retired manual-only discovery record grants no MCP execution a
     assert.equal(executions, 0, 'retired manual record must not execute the MCP tool');
     assert.match(lastCodemodeText(), /RETIRED_MANUAL_DENIED/);
 
-    // 2. Canonical enable is the only current authority.
-    setToolPermission(capabilityApi, capabilityApi, session.sessionManager.getBranch(), [toolName], 'enabled');
-    assert.ok(session.getActiveToolNames().includes(toolName), 'canonical enable activates the tool');
+    // 2. An explicit dynamic activation is the current authority.
+    activateToolTargets(capabilityApi, capabilityApi, session.sessionManager.getBranch(), [toolName]);
+    assert.ok(session.getActiveToolNames().includes(toolName), 'activation makes the tool active');
     phase = 'enabled';
     await session.prompt('Use the canonically enabled MCP tool.');
     assert.equal(executions, 1, 'canonical enable allows the actual MCP execution');
     assert.match(lastCodemodeText(), /RETIRED_MANUAL_ALLOWED/);
 
-    // 3. Reset removes canonical authority; the retired record still grants nothing.
-    resetToolPermission(capabilityApi, capabilityApi, session.sessionManager.getBranch(), [toolName]);
+    // 3. Deactivation removes the requested membership; the retired record still
+    // grants nothing and the retained declaration is not usable.
+    deactivateToolTargets(capabilityApi, capabilityApi, session.sessionManager.getBranch(), [toolName]);
     phase = 'reset';
     await session.prompt('Try the MCP tool after reset.');
-    assert.equal(executions, 1, 'reset must deny the MCP tool without legitimate discovery');
+    assert.equal(executions, 1, 'deactivation must deny the MCP tool without legitimate discovery');
     assert.match(lastCodemodeText(), /RETIRED_MANUAL_DENIED/);
     assert.deepEqual(errors, []);
   } finally {
@@ -559,6 +545,8 @@ test('full SDK: a retired manual-only discovery record grants no MCP execution a
       try { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); } catch { /* already stale */ }
       session.dispose();
     }
+    if (previousAgentDir === undefined) delete process.env['PI_CODING_AGENT_DIR'];
+    else process.env['PI_CODING_AGENT_DIR'] = previousAgentDir;
     await rm(cwd, { recursive: true, force: true });
   }
 });

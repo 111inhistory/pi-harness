@@ -34,6 +34,13 @@ export interface PruneCalculationOptions {
    * their prohibition; pruning them would re-advertise them as rediscoverable.
    */
   readonly excludedTools?: readonly string[] | ReadonlySet<string>;
+  /**
+   * Names currently in the session's requested availability. Discovery history
+   * is cumulative, so a name that was deactivated earlier is still discoverable
+   * but is no longer an active capability; pruning it would report a removal
+   * that already happened at deactivation. Absent means no filter (unit callers).
+   */
+  readonly availableTools?: readonly string[] | ReadonlySet<string>;
 }
 
 export interface PruneCalculationResult {
@@ -198,9 +205,11 @@ export function computePrunableCapabilities(options: PruneCalculationOptions): P
     }
   }
 
+  const availableSet = options.availableTools === undefined ? null : new Set<string>(options.availableTools);
   const removedTools: string[] = [];
   for (const name of allDiscoveredTools) {
     if (protectedSet.has(name)) continue;
+    if (availableSet !== null && !availableSet.has(name)) continue;
     if (!usedTools.has(name)) {
       removedTools.push(name);
     }

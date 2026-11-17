@@ -23,16 +23,19 @@
 | `session/application.ts`、`session/host.ts`、`session/service-lifecycle.ts` | SDK 根生命周期、领域组合、RPC 连接与代次、退役期限及资源隔离；显式绑定借用的 SDK runtime | 领域状态、伪造物理退出、重跑已结束任务 |
 | `surface.ts`、`message-write.ts`、`managed-send.ts` | 工具声明、调用方绑定、输入捕获；模型工具与 RPC 共用受管消息发送 | 全局注册表、第二套广播或交接状态 |
 | `command.ts`、`status-view.ts` | `/subagent` 命令注册、参数解析、错误呈现与列表文本渲染 | Job 状态、准入或消息投递 |
-| `capability/command.ts`、`capability/catalog.ts`、`capability/enable.ts`、`capability/activation.ts` | `/capability` 目录浏览与用户启用、按实时注册表解析启用目标、激活与可达性判定（发现、命令与跨会话回复工具加载共用） | 检索会话、路由、Subagent 状态 |
-| `capability/admission.ts` | 单次操作的工具准入视图：一次解析作用域链与分支记录，提供 `declares`（声明）、`admits`（执行）、`disabled`（显式禁用）、`enabled`（显式启用）与 `admitsServer`；复用已解析的工具目录，不重复读取 catalog | 跨请求缓存、第二套权限服务、改写激活集 |
-| `capability/tool-permission.ts` | 三态工具权限的 canonical 分支重放、config 默认条目、精确／组／prefix 匹配、派生四态查询与 enable／disable／reset；历史格式迁移由离线脚本 `scripts/migrate-tool-permissions.mjs` 独立承担，runtime 不调用 | 工具准入与执行本身、SDK 限制合成、跨作用域传播的存储 |
+| `capability/command.ts`、`capability/catalog.ts`、`capability/activation.ts` | 五组用户命令、实时目录与 SDK 激活／调用路径判定 | 检索会话、路由、Subagent 状态 |
+| `capability/admission.ts` | 单次操作的工具准入视图，分别判断声明、执行和 MCP 资源读取；组合当前工具管理事实与作用域 | 跨请求缓存、第二套集合状态 |
+| `capability/tool-access-replay.ts` | 基线、按需激活、黑名单记录解析与顺序重放 | 注册表读取、SDK 效果或第二份持久状态 |
+| `capability/tool-access-view.ts`、`capability/targets.ts` | 单次操作的集合视图、目录查询与目标匹配 | 跨请求缓存、写入或 SDK 激活 |
+| `capability/tool-access.ts` | 基线捕获、集合操作持久化与效果应用、SDK 实际状态同步和收尾 | SDK 隐藏限制的推测、模型指令授予权限；历史转换由 scripts 独立执行 |
 | `harness-rpc/*` | 协议契约、校验、传输、发现与领域适配；Root 与宿主订阅寿命 | Main 执行状态、审批决定、第二套 Job 或权限状态机 |
 | `capability/lazy-schemas.ts`、`capability/codemode-mode.ts` | lazySchemas ref 解析与组归属、生效 Codemode 模式（预设记录在分支上的覆盖，回退到 Pi 设置） | 改变启用集合、授权或工具 exposure；写入 Pi 原生设置 |
 | `src/preset/*`、`extensions/preset.ts` | 模型 Preset 配置加载与合并、解析、模型／thinking／工具应用、分支快照与 instructions 段落、`/preset` 与 `--preset` | Capability 检索、Subagent 路由、Pi 原生设置写入 |
 | `listeners.ts`、`ipc/` | 端点目录、监听、NDJSON 分帧、平台资源归属校验，以及“端点属于哪个 session 命名空间”的地址分类（Unix 为目录包含，Windows 为管道名前缀） | 用显示窗口决定可达性、另写广播状态机、用文件系统路径推断管道归属 |
 | `session-peers.ts`、`session-directory.ts` | 根持有的跨 session 操作对象、连接与目录名称同步；目录发布、存活校验与归属删除，受管 `Main` 寻址、复合发送者身份与单帧写入 | 根代次、压缩闸门、Runtime、认证协议或跨主机调度 |
 | `native-delivery.ts`、`delivery.ts` | 独立通知封装、检查原生交接结果、明确拒收后的保留会话追加 | 模型已读回执、自动重发或消息合并 |
-| `btw/command.ts`、`btw/session.ts`、`tui/btw-panel.ts`、`tui/btw-transcript.ts` | `/btw` 命令、内存继承会话、工具阻断和临时问答面板；关闭与根生命周期清理 | Actor／Job、持久化问答或主会话消息写入 |
+| `btw/command.ts`、`btw/session.ts` | `/btw` 命令、内存继承会话、工具阻断；关闭与根生命周期清理 | UI 布局、Actor／Job、持久化问答或主会话消息写入 |
+| `tui/btw-panel.ts`、`tui/btw-transcript.ts`、`tui/capability-picker.ts`、`tui/terminal-layout.ts` | 问答面板、树形多选器、终端尺寸和可用高度预算；显示数据与输入状态 | 会话运行、工具准入与持久化；不构造通用 UI 框架 |
 | `inherited-context.ts` | 共享分支捕获，在清理未决工具前锁定物理模型，并捕获独立的出站缓存标识 | 伪造身份或跨分支泄漏 |
 | `provider-session.ts`、`session-transcript.ts` | 按明确模型能力判断原生追加路径并投影工具声明；请求编码交给 Pi | 路由、执行授权、手写协议请求 |
 | `session-cache.ts`、`session-cache-runtime.ts` | Main 最终 payload 缓存标识观察、Responses 继承适配、原生分支记录与生命周期围栏 | 改写本地 Session ID、账号路由或保证缓存命中 |
@@ -169,13 +172,15 @@ Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返�
 
 宿主不从 Skill 文本猜测禁止事项、前置条件、静默失败、绑定关系或执行优先级，也不按未命中词项推断能力缺口。Skill 返回元数据和绝对入口路径，由 Agent 使用原生 `read` 阅读并理解正文。`src/capability/result.ts` 移除模型可见结果中的排序诊断；`src/capability/prompt.ts` 投影分支发现记忆。
 
-`src/capability/command.ts` 解析 `/capability` 的 `list`／`enable`／`disable`／`reset` 参数；`src/capability/enable.ts` 把启用目标在**执行时**对照当前注册表解析（精确工具名、`mcp://<server>`、`namespace://<name>`），由 `tool-permission.ts` 先写权限记录、再激活实际可用的成员。权限记录是唯一持久化点；写入失败时不激活、不宣称成功，命令报告 `recordError`。实时解析让 Pi 原生 `/mcp` 重连后注册的工具无需重启或模型发现即可启用。
+`tool-access-replay.ts` 只解析并重放分支事实，`tool-access-view.ts` 结合实时注册表构造一次操作的只读视图，`targets.ts` 拥有精确名、组及前缀目标匹配。`tool-access.ts` 的命令操作先持久化再应用 SDK 效果，命令与 RPC 共享该入口。当前请求集合为「基线 ∪（按需激活 − 本会话黑名单）」；白名单覆盖保留的本地禁止记录，但不覆盖祖先作用域、角色／深度或 SDK 限制。SDK active 是独立观察值，保留的声明不授予执行资格。效果失败与记录失败分别报告，不回滚已落盘意图；同步结果读取 SDK 实际接受的集合。
 
-`capability.manualTools` 归一为 `tool-permission.ts` 里同 target/state 结构的默认 `disabled` 条目（精确名或 prefix）；`scope.ts` 只保存原始 patterns 并跨 extension bus 共享，不再有独立 `rootOnly` matcher。子会话通过 `root-service.ts` 的 `#childDeniedNames`（`explicitlyDisabled ∪ explicitlyEnabled`）以 denial 阻止继承；发现与准入按 `disabled` 条目排除。
+Namespace 与 MCP 服务器在管理层使用统一的容器身份和目录视图；MCP 连接、认证与资源读取仍由其原生适配负责。容器元数据加载与具体工具成员分别重放：默认组选择只展开当前成员快照，`[ns]` 选择仅加载容器并要求同批显式成员。容器引用不是持续激活所有成员的规则；Namespace 黑名单才是持续覆盖成员的禁止规则。单个成员的取消或独立禁止不删除容器信息，也不影响其他成员。
 
-权限判定集中在 `admission.ts` 的单次操作视图：它一次解析作用域链、分支记录（一次扫描同时得到「已选择」与三态权限）与当前激活集，再提供逐名字谓词。`declares` 用于声明准入（禁用原生工具、MCP 选择，不含作用域），`admits` 在声明规则上叠加作用域与显式禁用，供 Codemode 准入使用，`admitsServer` 判定资源读取。显式禁用优先于声明与授权；显式启用只在根作用域成立，子会话不能凭祖先记录获得授权。
+容器共同指引与工具专属指引分别投影，不把整组说明复制到每个成员。`msg_write` 保留 Subagent 域归属，但通信指引不依赖创建或编排指引。无 schema 模式只改变模型可见的声明投影，不改变底层注册 schema、成员选择或执行准入；参数接口由 Codemode 按需读取。
 
-声明裁剪只有一处：`native-discovery.ts` 的 `before_agent_start` 用 `declares` 过滤激活集与 `selectedTools`，同时覆盖 `defaultActive`、历史恢复和其他扩展的激活；`src/capability/extension.ts` 的同一钩子只处理 Skill 段。执行仍分别检查：原生 MCP 的 `tool_call` 用 `declares` 加激活状态，能力侧 `tool_call` 用目录/激活状态加 `admitsManual`。作用域拒绝只关闭执行，不改写分支选择或历史声明。请求投影用 `includeManual` 的目录解析执行视图，Main 可见、子会话仍被作用域排除。
+Preset 快照建立当前基线并提供有期限的显式减项黑名单；切换替换该贡献，clear 保留已应用基线但结束 Preset 禁用。配置 `capability.blacklist` 提供启动默认项，分支黑名单操作管理当前用户选择；基线白名单覆盖本会话禁止但不删除它，普通激活不能自行覆盖。子会话受祖先有效禁止及既有角色／深度约束，不把基线或按需激活视为 root-only 授权。
+
+`admission.ts` 解析一次工具管理视图与作用域，供原生声明过滤、直接执行与 Codemode 共用。禁用与失去集合成员资格立即拒绝执行；独立声明按原有协议延迟到成功压缩时移除。SDK allowlist 和 `--exclude-tools` 仍独立限制注册及激活，原生 `--tools -name` 的原始减项没有公开读取接口，不从当前 active 集反推黑名单。
 
 工具资格按设计只增不减，角色排除仍优先。每次同步目录投影只解析一次资格视图；不把快照跨请求或工具调用缓存。资格、注册和激活是三件不同的事。
 
@@ -206,5 +211,3 @@ Codemode 的 `ALL_TOOLS` 只包含名称和短描述。`describeTool` 按需返�
 提示词正文存放在 `prompts/`；代码保留参数结构、动态装配、权限和生命周期判断。运行时只读取原命名的 `subagent-tools.json` 与 `subagent-turns.json`。共同 namespace 指引随工具提供，`create.guideline` 仅挂到 create；所有子会话注入 turns 的 `context`，Fresh 添加路由角色，Fresh 和 Inherited 均添加非空的 common，Inherited 另添加解析后的非空 inherited；后两段可在 `harness.json` 中逐层替换或追加。`native-runner.ts` 按已保留的路由身份识别模式，续跑不因当前 Job 是 continuation 而丢失 Inherited 定位。`prompt.ts` 负责原样拼装，参数说明按工具及数组项嵌套读取。字段与状态见[提示词装配](interface-contract.md#subagent-提示词装配)。正文在模块初始化时读取，修改后应重启 Pi，`/reload` 不保证刷新全部 ESM 依赖。
 
 未交付的功能与待验收边界见[已知问题](known-issues.md)。
-
-BTW 的纯显示组件位于 `src/tui/`，`tui/terminal-layout.ts` 负责终端行数与可用高度预算；会话运行和工具约束仍由 `src/btw/` 持有。

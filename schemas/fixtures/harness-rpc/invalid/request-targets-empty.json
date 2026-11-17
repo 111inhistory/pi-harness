@@ -1,6 +1,6 @@
 {
   "id": 1,
-  "method": "tools.permission.enable",
+  "method": "tools.activate",
   "params": {
     "targets": []
   }

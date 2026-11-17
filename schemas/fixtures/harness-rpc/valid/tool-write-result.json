@@ -1,0 +1,46 @@
+{
+  "action": "blacklist-add",
+  "changed": [
+    {
+      "target": "write",
+      "kind": "tool",
+      "name": "write",
+      "id": "tool:write",
+      "affectedTools": [
+        "write"
+      ]
+    }
+  ],
+  "alreadySet": [],
+  "unresolved": [],
+  "skipped": [],
+  "affectedTools": [
+    "write"
+  ],
+  "selected": [],
+  "noSchema": [],
+  "schema": [],
+  "schemaWithheld": [],
+  "containers": [],
+  "excluded": [],
+  "rejected": null,
+  "activated": [],
+  "alreadyActive": [],
+  "removedActive": [],
+  "pendingCompaction": [
+    "write"
+  ],
+  "noticed": [
+    "write"
+  ],
+  "notRequested": [],
+  "stillBlacklisted": [
+    "write"
+  ],
+  "banOverridden": [],
+  "remainingSources": [
+    "branch"
+  ],
+  "recordError": null,
+  "effectError": null
+}

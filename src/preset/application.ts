@@ -1,10 +1,15 @@
 /**
  * Shared Preset session application.
  *
- * Main and child creation use the same public session mutations, stable
- * pre-Preset tool baseline, retention rules and branch records. The resolver
- * still owns sparse-Preset semantics: absent fields stay untouched, and only a
- * declared `tools` selection replaces the active loadout.
+ * Main and child creation use the same public session mutations, shared tool
+ * baseline and branch records. The resolver still owns sparse-Preset semantics:
+ * absent fields stay untouched, and only a declared `tools` selection replaces
+ * the preset's base contribution.
+ *
+ * Tool membership is never computed here. A Preset contributes a base selection
+ * and a current-preset blacklist to the branch snapshot; the tool-access domain
+ * owns baseline/dynamic/blacklist collections and recomputes the live loadout
+ * after the snapshot write, so a blacklist from any other source still wins.
  *
  * This module never writes a system prompt, a forced prompt option or a private
  * AgentSession field. The next ordinary run owns native prompt/tool refresh.
@@ -25,17 +30,13 @@ import {
 } from './apply.ts';
 import { resolvePreset } from './resolve.ts';
 import {
-  appendPresetBase,
-  readPresetBase,
   restorePresetSnapshot,
   PRESET_STATE_RECORD,
   PRESET_STATE_VERSION,
   type PresetSnapshot,
 } from './state.ts';
 import { appendCodemodeMode } from '../capability/codemode-mode.ts';
-import { branchToolSelection } from '../capability/admission.ts';
-import { createToolPermissionResolver } from '../capability/tool-permission.ts';
-import { applyToolModifiers, parseToolModifiers } from './modifiers.ts';
+import { ensureToolBase, syncActiveToolsToCollections } from '../capability/tool-access.ts';
 import type { PresetConfig } from './config.ts';
 
 /** Catalog loading stays in `config.ts`; this module is the shared session-facing entry. */
@@ -58,28 +59,21 @@ export function currentPreset(
 }
 
 /**
- * Read or capture the exact pre-Preset baseline. A recorded base is historical
- * and is never reconstructed from current settings or the live active set.
+ * Read or capture the session tool baseline the Preset computes from.
+ *
+ * The baseline belongs to the tool-access domain and is captured once at
+ * `session_start`, before any `--preset` applies, so a resume or reload that
+ * already reflects a prior preset cannot become the new baseline. Delegating
+ * keeps one base notion for `/capability base` and Preset modifiers.
  */
-export function ensurePresetBase(
+export function ensureSessionToolBase(
   host: Pick<PresetSessionHost, 'pi' | 'getBranch'>,
 ): readonly string[] {
-  const recorded = readPresetBase(host.getBranch());
-  if (recorded !== undefined) return recorded;
-  const captured = host.pi.getActiveTools();
-  appendPresetBase(host.pi, captured);
-  return captured;
+  return ensureToolBase(host.pi, host.pi, host.getBranch());
 }
 
-/**
- * Shared apply host. `modifiers` are the current preset's raw tool tokens; they
- * preserve dynamic Capability/permission tools only under the same modifier
- * semantics as Main, and an explicit final minus still removes them.
- */
-export function createPresetApplyHost(
-  host: PresetSessionHost,
-  modifiers: readonly string[] = [],
-): PresetApplyHost {
+/** Shared apply host backed by the real session mutations. */
+export function createPresetApplyHost(host: PresetSessionHost): PresetApplyHost {
   return {
     setModel: async (provider, id) => {
       const model = host.modelRegistry.find(provider, id);
@@ -91,17 +85,17 @@ export function createPresetApplyHost(
     setThinkingLevel: (level) => {
       host.pi.setThinkingLevel(level as unknown as Parameters<typeof host.pi.setThinkingLevel>[0]);
     },
-    setActiveTools: (tools) => {
-      const branch = host.getBranch();
-      const { selected } = branchToolSelection(branch);
-      const permission = createToolPermissionResolver(host.pi, host.pi.getAllTools(), branch);
-      const active = host.pi.getActiveTools()
-        .filter((name) => selected.has(name) || (permission.enabled(name) && !permission.decide(name)?.defaulted));
-      // The same native modifiers honor explicit removals and bare-name
-      // replacements; intersecting with active never resurrects an old grant.
-      const retained = applyToolModifiers(active, parseToolModifiers(modifiers).tokens)
-        .filter((name) => active.includes(name));
-      host.pi.setActiveTools([...new Set([...tools, ...retained])]);
+    syncTools: () => {
+      // The records are already durable, so this reads the same branch state a
+      // later request would see: base selection plus dynamic membership minus
+      // every blacklist source. A throw is turned into an honest result: the
+      // caller reports it instead of un-writing the records or retrying.
+      try {
+        syncActiveToolsToCollections(host.pi, host.getBranch());
+        return null;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
     },
     appendState: (record) => {
       host.pi.appendEntry(PRESET_STATE_RECORD, {
@@ -114,7 +108,11 @@ export function createPresetApplyHost(
   };
 }
 
-/** Clear through the shared session host without rolling model/thinking/tools back. */
+/**
+ * Clear through the shared session host without rolling model, thinking or base
+ * membership back; the preset blacklist lifetime ends and the loadout is
+ * recomputed from the preserved memberships.
+ */
 export function clearPresetFromSession(host: PresetSessionHost): PresetClearOutcome {
   return clearActivePreset(createPresetApplyHost(host));
 }
@@ -128,11 +126,14 @@ export async function applyPresetToSession(
   name: string,
   config: PresetConfig,
 ): Promise<PresetApplyOutcome> {
-  const base = ensurePresetBase(host);
+  // The session baseline is only needed to compute a tool selection. A preset
+  // that declares no tools must still apply on a session whose baseline record
+  // could not be captured, so resolve it lazily and read it at most once.
+  let base: readonly string[] | undefined;
   const resolution = resolvePreset(name, config, {
     hasModel: (provider, id) => host.modelRegistry.find(provider, id) !== undefined,
     allToolNames: () => host.pi.getAllTools().map((tool) => tool.name),
-    baseToolSet: () => base,
+    baseToolSet: () => (base ??= ensureSessionToolBase(host)),
   });
   if (resolution.plan === null) {
     return {
@@ -146,6 +147,6 @@ export async function applyPresetToSession(
   return applyPresetPlan(
     resolution.plan,
     resolution.issues,
-    createPresetApplyHost(host, config.tools ?? []),
+    createPresetApplyHost(host),
   );
 }

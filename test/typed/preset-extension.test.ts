@@ -26,6 +26,8 @@ interface Harness {
   ctx: Record<string, unknown>;
   fire: (event: string, payload: unknown) => Promise<unknown>;
   setActive: (names: string[]) => void;
+  /** Toggle a loadout-effect failure for the next apply/clear. */
+  setSyncFails: (value: boolean) => void;
 }
 
 interface SetupOptions {
@@ -34,7 +36,10 @@ interface SetupOptions {
   flags?: Record<string, string>;
   modelIds?: string[];
   modelSelectFails?: boolean;
-  defaultTools?: string[];
+  /** The capability-tool-base record cannot be written (read-only branch). */
+  appendBaseFails?: boolean;
+  /** setActiveTools throws on the next sync. */
+  syncFails?: boolean;
 }
 
 function setup(options: SetupOptions = {}): Harness {
@@ -50,6 +55,7 @@ function setup(options: SetupOptions = {}): Harness {
   const modelIds = new Set(options.modelIds ?? []);
 
   const calls: Harness['calls'] = { setActiveTools: [], setModel: [], setThinking: [], appended: [], notices: [], status: [] };
+  let syncFails = options.syncFails ?? false;
 
   const pi = {
     registerFlag: () => {},
@@ -60,20 +66,21 @@ function setup(options: SetupOptions = {}): Harness {
       (caps.handlers[event] ??= []).push(handler);
     },
     getActiveTools: () => [...activeTools],
-    setActiveTools: (names: string[]) => { calls.setActiveTools.push(names); activeTools = [...names]; },
+    setActiveTools: (names: string[]) => {
+      if (syncFails) throw new Error('sdk setActiveTools failed');
+      calls.setActiveTools.push(names);
+      activeTools = [...names];
+    },
     getAllTools: () => allToolNames.map((name) => ({ name, parameters: {} })),
     setModel: (model: { provider: string; id: string }) => { calls.setModel.push(`${model.provider}/${model.id}`); return Promise.resolve(!options.modelSelectFails); },
     setThinkingLevel: (level: string) => { calls.setThinking.push(level); },
     getFlag: (name: string) => options.flags?.[name],
     appendEntry: (customType: string, data: unknown) => {
+      if (options.appendBaseFails === true && customType === 'capability-tool-base') throw new Error('read-only branch');
       calls.appended.push({ customType, data });
       branch.push({ type: 'custom', customType, data, id: `e${branch.length}` });
     },
   } as unknown as ExtensionAPI;
-  if (options.defaultTools !== undefined) {
-    (pi as unknown as { getSettings: () => unknown }).getSettings = () => ({ defaultTools: options.defaultTools });
-  }
-
   const ctx = {
     cwd,
     ui: {
@@ -94,7 +101,11 @@ function setup(options: SetupOptions = {}): Harness {
     for (const handler of caps.handlers[event] ?? []) result = await handler(payload, ctx);
     return result;
   };
-  return { caps, calls, ctx, fire, setActive: (names: string[]) => { activeTools = [...names]; } };
+  return {
+    caps, calls, ctx, fire,
+    setActive: (names: string[]) => { activeTools = [...names]; },
+    setSyncFails: (value: boolean) => { syncFails = value; },
+  };
 }
 
 /** First start, then apply the named preset through the public command. */
@@ -137,21 +148,21 @@ test('an unauthenticated preset model applies nothing and reports an error', asy
   assert.equal(h.calls.appended.filter((entry) => entry.customType === 'preset-state').length, 0);
 });
 
-test('a preset tool set is recomputed from a stable settings base across resume/reload', async () => {
-  // base = settings defaultTools (read/bash/edit), not the live active set.
+test('a preset tool set is recomputed from the stable session baseline across resume/reload', async () => {
+  // The session baseline is the true initial active set, not the live set a
+  // previous preset left behind.
   const h = setup({
     presets: { a: { tools: ['-bash'] }, b: { tools: ['+write'] } },
     activeTools: ['read', 'bash', 'edit'],
-    defaultTools: ['read', 'bash', 'edit'],
   });
   await applyOnStart(h, 'a');
-  assert.deepEqual(h.calls.setActiveTools.at(-1), ['read', 'edit'], 'A removes bash from the stable base');
+  assert.deepEqual(h.calls.setActiveTools.at(-1), ['read', 'edit'], 'A bans bash from the stable baseline');
 
   // Simulate resume/reload: Pi restores A's active set before session_start runs.
   h.setActive(['read', 'edit']);
   await applyOnStart(h, 'b');
   const last = h.calls.setActiveTools.at(-1)!;
-  assert.ok(last.includes('bash'), 'B must compute from the stable base, so bash returns');
+  assert.ok(last.includes('bash'), 'B computes from the stable baseline, so bash returns');
   assert.deepEqual([...last].sort(), ['bash', 'edit', 'read', 'write']);
 });
 
@@ -230,4 +241,66 @@ test('/preset clear succeeds despite unreadable catalog source after apply persi
     async () => h.caps.commands['preset']!('other', h.ctx),
     { code: 'EISDIR' },
   );
+});
+
+test('a preset without a tool selection applies when the baseline cannot be recorded', async () => {
+  const h = setup({
+    presets: { solo: { model: { provider: 'p', id: 'm' }, instructions: 'S' } },
+    modelIds: ['p/m'],
+    appendBaseFails: true,
+  });
+  await h.fire('session_start', {});
+  assert.ok(h.calls.notices.some((notice) =>
+    notice.level === 'error' && notice.message.includes('tool baseline could not be recorded')));
+
+  await h.caps.commands['preset']!('solo', h.ctx);
+  assert.deepEqual(h.calls.setModel, ['p/m'], 'no tool selection does not require a recorded baseline');
+  assert.ok(h.calls.appended.some((entry) => entry.customType === 'preset-state'));
+  assert.equal(h.calls.status.at(-1), 'preset:solo');
+  assert.ok(!h.calls.notices.some((notice) =>
+    notice.level === 'error' && notice.message.includes('could not be applied')));
+});
+
+test('a tool preset fails closed when the baseline cannot be recorded', async () => {
+  const h = setup({
+    presets: { needs: { tools: ['+write'] } },
+    appendBaseFails: true,
+  });
+  await h.fire('session_start', {});
+  await h.caps.commands['preset']!('needs', h.ctx);
+  assert.ok(h.calls.notices.some((notice) =>
+    notice.level === 'error'
+    && notice.message.includes('could not be applied')
+    && notice.message.includes('read-only branch')));
+  assert.ok(!h.calls.appended.some((entry) => entry.customType === 'preset-state'));
+  assert.equal(h.calls.setActiveTools.length, 0, 'nothing was activated without the records');
+});
+
+test('a loadout sync failure after apply is reported without claiming success', async () => {
+  const h = setup({ presets: { only: { tools: ['+write'] } } });
+  await h.fire('session_start', {});
+  h.setSyncFails(true);
+
+  await h.caps.commands['preset']!('only', h.ctx);
+  assert.ok(h.calls.appended.some((entry) => entry.customType === 'preset-state'),
+    'the snapshot stays durable even when the effect fails');
+  assert.ok(h.calls.notices.some((notice) =>
+    notice.level === 'warning' && notice.message.includes('could not be synchronized')));
+  assert.ok(!h.calls.notices.some((notice) => notice.message === 'Preset "only" applied.'));
+  assert.equal(h.calls.status.at(-1), 'preset:only', 'the durable snapshot still owns the status');
+});
+
+test('clear reports a loadout sync failure instead of claiming the loadout was updated', async () => {
+  const h = setup({ presets: { only: { tools: ['+write'] } } });
+  await applyOnStart(h, 'only');
+  h.setSyncFails(true);
+
+  await h.caps.commands['preset']!('clear', h.ctx);
+  assert.ok(h.calls.notices.some((notice) =>
+    notice.level === 'warning' && notice.message.includes('could not be synchronized')));
+  assert.ok(!h.calls.notices.some((notice) =>
+    notice.message === 'Preset cleared; its tool blacklist was withdrawn. Model, thinking and the tool baseline are unchanged.'));
+  assert.equal(h.calls.status.at(-1), undefined, 'the cleared snapshot still releases the status');
+  const lastState = h.calls.appended.filter((entry) => entry.customType === 'preset-state').at(-1);
+  assert.deepEqual((lastState?.data as { snapshot: unknown }).snapshot, null);
 });

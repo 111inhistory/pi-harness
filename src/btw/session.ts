@@ -8,7 +8,10 @@ import {
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { createToolPermissionResolver } from '../capability/tool-permission.ts';
+import { createToolAccessView, listLoadedContainers } from '../capability/tool-access-view.ts';
+import { createEligibleToolCatalog } from '../capability/tool-catalog.ts';
+import { planNoSchema } from '../capability/lazy-schemas.ts';
+import { harnessConfigFor } from '../harness-config.ts';
 import { createToolAdmission } from '../capability/admission.ts';
 import { projectDiscoveryDeclarations } from '../capability/declarations.ts';
 import { inheritedInstructionSections, type InheritedSnapshot } from '../inherited-context.ts';
@@ -46,9 +49,10 @@ export async function openBtwConversation(
     ...pi.getSettings(), packages: [], extensions: [], skills: [], prompts: [], themes: [], cacheWarming: 'off',
   }, { projectTrusted: ctx.isProjectTrusted() });
   const branch = ctx.sessionManager.getBranch();
-  const permission = createToolPermissionResolver(pi, pi.getAllTools(), branch);
-  const keepInherited = (name: string): boolean =>
-    !permission.disabled(name) && !permission.enabled(name);
+  const access = createToolAccessView(pi, branch);
+  // A blacklist prohibits everywhere; base/dynamic availability is session-local
+  // and is not an authorization grant to inherit or to strip.
+  const keepInherited = (name: string): boolean => !access.blocked(name);
   const entries = snapshot.entries.map(entry => {
     if (entry.type !== 'message' || entry.message.role !== 'system') return entry;
     const message = entry.message;
@@ -80,8 +84,24 @@ export async function openBtwConversation(
         api.on('before_agent_start', (event, childCtx) => {
           const admission = createToolAdmission(pi, snapshot.entries);
           const branch = childCtx.sessionManager.getBranch();
+          const parentBranch = snapshot.entries;
+          const parentAccess = createToolAccessView(pi, parentBranch);
+          const catalog = createEligibleToolCatalog(pi, { blocked: (tool) => parentAccess.blocked(tool.name) });
+          const activeNow = pi.getActiveTools();
+          // One projection plan over the parent branch: the child inherits the
+          // same withheld declarations, not a second mode decision.
+          const plan = planNoSchema({
+            host: pi,
+            branch: parentBranch,
+            refs: harnessConfigFor(pi)(childCtx).capability.lazySchemas,
+            selection: { mode: (name) => parentAccess.schemaMode(name) },
+            tools: catalog.tools,
+            codemodeUsable: activeNow.includes('codemode') && catalog.names.has('codemode'),
+          });
           const visible = new Set(snapshot.tools.filter(name => keepInherited(name) && admission.declares(name)));
-          const sections = inheritedInstructionSections(branch, pi.getAllTools(), visible);
+          const declared = new Set([...visible].filter((name) => !plan.withheld.has(name)));
+          const sections = inheritedInstructionSections(branch, pi.getAllTools(), visible, declared,
+            listLoadedContainers(pi, parentBranch), plan.withheld);
           applySystemPromptSections(event.systemPromptOptions.sections ??= {}, sections, ownedSectionKeys);
           ownedSectionKeys.clear();
           for (const [key, value] of Object.entries(sections)) {

@@ -1,20 +1,99 @@
-/** Offline conversion of flat manual-only records, preserving native checkpoints. */
+/**
+ * Offline conversion of retired capability permission records into the current
+ * BASE/DYNAMIC/BLACKLIST branch records.
+ *
+ * The runtime never reads a retired record: this module is the only code that
+ * understands the old shapes, and it runs as an explicit offline tool over a
+ * closed session file. It converts in place, keeping every native entry ID,
+ * parent link, timestamp, blank line and message byte so actor anchors and seed
+ * checkpoints keep pointing at the same history.
+ *
+ * Supported inputs:
+ * - `capability-discovery` records carrying the retired flat `manual` grants:
+ *   each becomes one `capability-tool-base` add record (enabled -> base).
+ * - `capability-tool-permission` canonical entries whose assignments are all
+ *   `enabled` (-> base add) or all `disabled` (-> blacklist add). A reset
+ *   tombstone or a mixed entry cannot be expressed in one current record and is
+ *   refused instead of silently weakening a prohibition.
+ *
+ * Anything else that mixes retired and current records in one file is refused
+ * before a byte is written. The caller owns the backup and concurrent-writer
+ * exclusion.
+ */
+
 import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { CAPABILITY_TOOL_PERMISSION_RECORD } from '../../src/capability/tool-permission.ts';
-import { parseToolPermissionTarget } from '../../src/capability/manual-tools.ts';
+import {
+  TOOL_BASE_RECORD,
+  TOOL_BASE_VERSION,
+  TOOL_BLACKLIST_RECORD,
+  TOOL_BLACKLIST_VERSION,
+  TOOL_DYNAMIC_RECORD,
+  TOOL_BLACKLIST_NOTICE_RECORD,
+} from '../../src/capability/tool-access.ts';
+import { parseToolTarget } from '../../src/capability/targets.ts';
+
+/** Retired canonical record this tool converts. */
+const LEGACY_PERMISSION_RECORD = 'capability-tool-permission';
+/** Retired canonical record version. */
+const LEGACY_PERMISSION_VERSION = 1;
+/** Retired pre-canonical blacklist record; never convertible. */
+const RETIRED_BLACKLIST_RECORD = 'capability-blacklist';
+
+const CURRENT_RECORDS: ReadonlySet<string> = new Set([
+  TOOL_BASE_RECORD,
+  TOOL_DYNAMIC_RECORD,
+  TOOL_BLACKLIST_RECORD,
+  TOOL_BLACKLIST_NOTICE_RECORD,
+]);
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+interface LegacyAssignment {
+  readonly target: string;
+  readonly state: 'enabled' | 'disabled';
+}
+
+interface LegacyMutation {
+  readonly set: readonly LegacyAssignment[];
+  readonly unset: readonly string[];
+}
+
+function legacyMutation(value: unknown): LegacyMutation | null {
+  if (!record(value) || value['version'] !== LEGACY_PERMISSION_VERSION) return null;
+  const set: LegacyAssignment[] = [];
+  if (Array.isArray(value['set'])) {
+    for (const raw of value['set']) {
+      if (!record(raw)) continue;
+      const target = typeof raw['target'] === 'string' ? raw['target'].trim() : '';
+      const state = raw['state'];
+      if (target === '' || (state !== 'enabled' && state !== 'disabled')) continue;
+      set.push({ target, state });
+    }
+  }
+  const unset = Array.isArray(value['unset'])
+    ? value['unset'].filter((target): target is string => typeof target === 'string' && target.trim() !== '')
+    : [];
+  return { set, unset };
+}
+
+function currentPayload(customType: string, targets: readonly string[]): Record<string, unknown> {
+  return customType === TOOL_BLACKLIST_RECORD
+    ? { version: TOOL_BLACKLIST_VERSION, add: [...targets] }
+    : { version: TOOL_BASE_VERSION, add: [...targets] };
+}
+
+function withEnding(raw: string, entry: unknown): string {
+  const ending = raw.endsWith('\r\n') ? '\r\n' : raw.endsWith('\n') ? '\n' : '';
+  return JSON.stringify(entry) + ending;
+}
+
 /**
- * Convert closed v3 session files containing only flat legacy manual grants.
- * Keep entry IDs, parents, timestamps and every unrelated byte unchanged, so
- * actor anchors and seed checkpoints see the converted rules without rebasing.
- * Refuse unsupported mixtures before writing; this is not a general legacy
- * rule translator. The caller owns backup and exclusion of concurrent writers.
+ * Convert one closed session file. Returns false when there is nothing to
+ * convert; throws before writing when any record is unsupported.
  */
 export function migrateSessionFile(file: string): boolean {
   const sourceStat = lstatSync(file);
@@ -22,7 +101,7 @@ export function migrateSessionFile(file: string): boolean {
   const source = readFileSync(file, 'utf8');
   const lines = source.match(/[^\n]*\n|[^\n]+$/g) ?? [];
   let headerSeen = false;
-  let hasCanonical = false;
+  let hasCurrent = false;
   let converted = 0;
   const output = lines.map((raw, index) => {
     if (raw.trim() === '') return raw;
@@ -39,12 +118,37 @@ export function migrateSessionFile(file: string): boolean {
       return raw;
     }
     if (entry['type'] !== 'custom') return raw;
-    if (entry['customType'] === 'capability-blacklist') return fail('unsupported capability-blacklist record');
-    if (entry['customType'] === CAPABILITY_TOOL_PERMISSION_RECORD) {
-      hasCanonical = true;
+    const customType = entry['customType'];
+    if (typeof customType === 'string' && CURRENT_RECORDS.has(customType)) {
+      hasCurrent = true;
       return raw;
     }
-    if (entry['customType'] !== 'capability-discovery') return raw;
+    if (customType === RETIRED_BLACKLIST_RECORD) return fail('unsupported capability-blacklist record');
+    if (customType === LEGACY_PERMISSION_RECORD) {
+      const mutation = legacyMutation(entry['data']);
+      if (mutation === null) return raw;
+      if (mutation.unset.length > 0) {
+        return fail('unsupported reset tombstone in a retired permission record; convert it manually');
+      }
+      if (mutation.set.length === 0) return raw;
+      const states = new Set(mutation.set.map((item) => item.state));
+      if (states.size > 1) return fail('unsupported mixed enabled/disabled retired permission record');
+      for (const item of mutation.set) {
+        const parsed = parseToolTarget(item.target);
+        if (parsed === null) return fail('unsupported permission target');
+        if (item.state === 'enabled' && parsed.kind !== 'tool') {
+          return fail('enabled group or prefix requires a live member catalog; convert it manually');
+        }
+      }
+      const target = states.has('enabled') ? TOOL_BASE_RECORD : TOOL_BLACKLIST_RECORD;
+      converted += 1;
+      return withEnding(raw, {
+        ...entry,
+        customType: target,
+        data: currentPayload(target, mutation.set.map((item) => item.target)),
+      });
+    }
+    if (customType !== 'capability-discovery') return raw;
     const data = entry['data'];
     const result = record(data) ? data['result'] : undefined;
     if (!record(result) || !Object.hasOwn(result, 'manual')) return raw;
@@ -59,18 +163,21 @@ export function migrateSessionFile(file: string): boolean {
       if (!record(hit) || hit['tools'] !== undefined) return fail('unsupported group manual hit');
       const name = hit['name'];
       if (typeof name !== 'string' || name.trim() !== name) return fail('unsupported manual target');
-      const target = parseToolPermissionTarget(name);
-      if (target?.kind !== 'tool') return fail('unsupported manual target');
+      if (parseToolTarget(name)?.kind !== 'tool') return fail('unsupported manual target');
       if (hit['status'] !== undefined && hit['status'] !== 'available') return fail('unsupported manual hit status');
       targets.add(name);
     }
     converted += 1;
-    const ending = raw.endsWith('\r\n') ? '\r\n' : raw.endsWith('\n') ? '\n' : '';
-    return JSON.stringify({ ...entry, customType: CAPABILITY_TOOL_PERMISSION_RECORD,
-      data: { version: 1, set: [...targets].map(target => ({ target, state: 'enabled' })) } }) + ending;
+    return withEnding(raw, {
+      ...entry,
+      customType: TOOL_BASE_RECORD,
+      data: currentPayload(TOOL_BASE_RECORD, [...targets]),
+    });
   });
   if (converted === 0) return false;
-  if (hasCanonical) throw new Error('Unsupported pre-existing canonical capability-tool-permission records alongside legacy manual grants; file left unchanged.');
+  if (hasCurrent) {
+    throw new Error(`Session ${file}: current capability records coexist with retired permission records; file left unchanged.`);
+  }
 
   const temporary = join(dirname(file), `.${basename(file)}.migrating-${randomUUID()}`);
   const descriptor = openSync(temporary, 'wx', sourceStat.mode & 0o777);

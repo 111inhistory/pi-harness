@@ -18,9 +18,41 @@ import { toolGuidanceSection } from '../src/tool-guidance.ts';
 import { appendPresetState } from '../src/preset/state.ts';
 import { serializedRequest, declaredTools } from './capability-model-wire.ts';
 
+/**
+ * Generated capability histories, checked against independent contract facts.
+ *
+ * The model never mirrors the production resolver. It keeps three separately
+ * tracked facts per tool: `base` and `dynamic` membership written by the real
+ * `/capability` command, and the local `blacklisted` prohibition. Base wins over
+ * the local ban: requested membership is `base || (dynamic && !blacklisted)`.
+ * The ban stays recorded while base wins and reasserts when base is removed.
+ * External fences (ancestor/role/depth/SDK) are admission-level and are not
+ * overridable by base; the model does not synthesize them as local facts.
+ * Execution, discovery candidates, memory and declarations are all derived from
+ * the membership facts rather than from the SDK's lingering active set.
+ *
+ * A declaration may outlive requested membership: removing a member (`base
+ * remove`, `deactivate`) or blacklisting a dynamic-only member stops usage
+ * immediately, but the native declaration is only dropped at the next successful
+ * compaction so the request prefix stays cache-safe. A base member with a local
+ * ban stays requested and declared. `declared` therefore models the SDK's
+ * declaration state separately from `requested`, and execution is asserted
+ * against membership, never against the retained declaration.
+ */
+
 const names = ['history_alpha', 'history_beta'] as const;
 type Spec = { description: string; schema: number };
-type ToolState = Spec & { permission: 'enabled' | 'disabled' | 'unmanaged'; active: boolean; discovered: boolean; discoveredDescription: string | null; used: boolean };
+type ToolState = Spec & {
+  /** Captured startup loadout member: ordinary pruning always protects it. */
+  startupBaseline: boolean;
+  base: boolean;
+  dynamic: boolean;
+  blacklisted: boolean;
+  declared: boolean;
+  discovered: boolean;
+  discoveredDescription: string | null;
+  used: boolean;
+};
 type View = 'native' | 'append' | 'filter' | 'duplicate' | 'opaque' | 'forced' | 'reorder' | 'retained';
 interface State { tools: ToolState[]; turn: number; preset: string | null; pruned: string[] }
 interface Frame { head: AgentMessage | undefined; hasHeadSystem: boolean; conversation: AgentMessage[] }
@@ -70,6 +102,20 @@ function hasAnyHarnessSection(messages: readonly Message[]): boolean {
     && Object.keys(message.sections).some(isHarnessSectionKey));
 }
 
+/** Requested membership: base wins over the local ban; dynamic does not. */
+function requested(tool: ToolState): boolean {
+  return tool.base || (tool.dynamic && !tool.blacklisted);
+}
+
+/**
+ * Discovery memory is current knowledge, not usability: a removed member stays
+ * discoverable, a dynamic-only blacklisted name is excluded, and a base member
+ * with a local ban stays in memory because it remains usable.
+ */
+function remembered(tool: ToolState): boolean {
+  return tool.discovered && (!tool.blacklisted || tool.base);
+}
+
 interface World {
   root: string;
   session: AgentSession;
@@ -85,12 +131,18 @@ interface World {
   frame: Frame;
   projected: readonly AgentMessage[];
   retained: AgentMessage | undefined;
+  /** Effects of the namespaced fixture tools used by the namespace lifecycle replay. */
+  namespaceEffects: string[];
   open(manager: SessionManager): Promise<void>;
   register(slot: number): void;
+  registerNamespaceMember(name: string): void;
   close(): Promise<void>;
 }
 
-async function fixture(withStaticGuidance = false): Promise<World> {
+const NAMESPACE = 'history_ns';
+const NAMESPACE_ALIAS = 'hns';
+
+async function fixture(withStaticGuidance = false, withNamespaces = false): Promise<World> {
   const root = await mkdtemp(path.join(tmpdir(), 'pi-capability-history-'));
   const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
   const faux = fauxProvider({ models: [{ id: 'history-model' }] });
@@ -107,8 +159,17 @@ async function fixture(withStaticGuidance = false): Promise<World> {
     root, model, metadata: names.map(name => ({ description: `Description for ${name}`, schema: 0 })),
     effects: [], requests: [], errors: [], response: null, selection: 0,
     view: 'native', frame: { head: undefined, hasHeadSystem: false, conversation: [] }, projected: [],
-    retained: undefined,
+    retained: undefined, namespaceEffects: [],
     get session() { return session; }, get api() { return api; },
+    registerNamespaceMember(name) {
+      world.api.registerTool({ name, label: name, description: `Description for ${name}`,
+        defaultActive: false, namespace: { name: NAMESPACE, aliases: [NAMESPACE_ALIAS] },
+        parameters: { type: 'object', properties: {} },
+        execute: async () => {
+          world.namespaceEffects.push(name);
+          return { content: [{ type: 'text', text: `Executed ${name}` }], details: { name } };
+        } });
+    },
     register(slot) {
       const spec = world.metadata[slot]!;
       world.api.registerTool({ name: names[slot]!, label: names[slot]!, description: spec.description,
@@ -160,6 +221,9 @@ async function fixture(withStaticGuidance = false): Promise<World> {
           capabilityExtension(api, { config: DEFAULT_HARNESS_CONFIG });
           installPresetInstruction(api);
           for (const slot of [0, 1]) world.register(slot);
+          if (withNamespaces) {
+            for (const name of ['history_ns_a', 'history_ns_b']) world.registerNamespaceMember(name);
+          }
           if (withStaticGuidance) {
             // Real registration activates native SDK ToolDefinition.promptGuidelines.
             api.registerTool({ name: 'subagent_create', label: 'Static guidance fixture',
@@ -232,8 +296,48 @@ async function fixture(withStaticGuidance = false): Promise<World> {
   return world;
 }
 
-type Action = 'describe' | 'schema' | 'enable' | 'disable' | 'reset' | 'discover' | 'execute' | 'compact' | 'reopen' | 'request' |
+type Action = 'describe' | 'schema' | 'base-add' | 'base-remove' | 'activate' | 'deactivate' |
+  'blacklist-add' | 'blacklist-remove' | 'discover' | 'execute' | 'compact' | 'reopen' | 'request' |
   'native' | 'append' | 'filter' | 'duplicate' | 'opaque' | 'forced' | 'preset' | 'clear-preset';
+
+/** The real `/capability` command line for one membership write. */
+function commandLine(action: Action, name: string): string {
+  if (action === 'base-add') return `base add ${name}`;
+  if (action === 'base-remove') return `base remove ${name}`;
+  if (action === 'blacklist-add') return `blacklist add ${name}`;
+  if (action === 'blacklist-remove') return `blacklist remove ${name}`;
+  return `${action} ${name}`;
+}
+
+/**
+ * Apply the membership transition the real command just recorded.
+ *
+ * Positive membership declares the tool now: base wins even over a recorded
+ * local ban, while dynamic membership still loses to that ban. Removals and
+ * blacklists only change requested membership. Their declaration removal is
+ * deferred so the model can prove that retained declarations never grant
+ * usage, then prove the compaction drops them.
+ */
+function applyMembership(action: Action, tool: ToolState): void {
+  if (action === 'base-add') {
+    tool.base = true;
+    // Base wins over the local ban, so it declares even when the ban remains.
+    tool.declared = true;
+    return;
+  }
+  if (action === 'activate') {
+    tool.dynamic = true;
+    if (requested(tool)) tool.declared = true;
+    return;
+  }
+  if (action === 'base-remove') { tool.base = false; return; }
+  if (action === 'deactivate') { tool.dynamic = false; return; }
+  if (action === 'blacklist-add') { tool.blacklisted = true; return; }
+  if (action === 'blacklist-remove') {
+    tool.blacklisted = false;
+    if (tool.base || tool.dynamic) tool.declared = true;
+  }
+}
 
 function assertBodyPreserved(request: Request) {
   let cursor = 0;
@@ -263,14 +367,14 @@ class Command implements AsyncCommand<State, World> {
   check() { return true; }
   async run(state: State, world: World) {
     const tool = state.tools[this.slot]!;
-    const discoveredSnapshotBefore = state.tools
+    const rememberedSnapshotBefore = state.tools
       .map((entry, slot) => ({ entry, name: names[slot]! }))
-      .filter(({ entry }) => entry.discovered && entry.permission !== 'disabled')
+      .filter(({ entry }) => remembered(entry))
       .map(({ entry, name }) => ({ name, description: entry.discoveredDescription }));
-    const discoveredBeforeTurn = discoveredSnapshotBefore.map(({ name }) => name);
-    const activeBeforeTurn = state.tools
+    const rememberedBeforeTurn = rememberedSnapshotBefore.map(({ name }) => name);
+    const declaredBeforeTurn = state.tools
       .map((entry, slot) => ({ entry, name: names[slot]! }))
-      .filter(({ entry }) => entry.active)
+      .filter(({ entry }) => entry.declared)
       .map(({ name }) => name);
     if (['native', 'append', 'filter', 'duplicate', 'opaque', 'forced'].includes(this.action)) {
       world.view = this.action === 'filter' && this.slot === 1 ? 'reorder'
@@ -286,17 +390,38 @@ class Command implements AsyncCommand<State, World> {
       else tool.schema = this.schema;
       world.metadata[this.slot] = { description: tool.description, schema: tool.schema };
       world.register(this.slot);
-    } else if (['enable', 'disable', 'reset'].includes(this.action)) {
-      await world.session.prompt(`/capability ${this.action} ${names[this.slot]}`);
-      tool.permission = this.action === 'reset' ? 'unmanaged' : this.action === 'enable' ? 'enabled' : 'disabled';
-      if (this.action === 'enable') tool.active = true;
+    } else if (this.action === 'base-add' || this.action === 'base-remove' || this.action === 'activate'
+      || this.action === 'deactivate' || this.action === 'blacklist-add' || this.action === 'blacklist-remove') {
+      const wasBlacklisted = tool.blacklisted;
+      await world.session.prompt(`/capability ${commandLine(this.action, names[this.slot]!)}`);
+      applyMembership(this.action, tool);
+      if (this.action === 'base-add' && wasBlacklisted) {
+        const blacklistRecords = world.session.sessionManager.getBranch()
+          .filter(entry => entry.type === 'custom' && entry.customType === 'capability-tool-blacklist');
+        assert.match(JSON.stringify(blacklistRecords), new RegExp(names[this.slot]!),
+          'base wins without erasing the recorded local ban');
+      }
     } else if (this.action === 'compact') {
       await world.session.compact();
       state.pruned = [];
       for (const [slot, current] of state.tools.entries()) {
-        const pruned = slot !== 0 && current.permission === 'unmanaged' && current.discovered && !current.used;
-        if (current.permission === 'disabled' || pruned) current.active = false;
-        if (pruned) { current.discovered = false; current.discoveredDescription = null; state.pruned.push(names[slot]!); }
+        // Ordinary eviction is discovery-window based: only an unused member
+        // carried by discovery memory is pruned. An explicit `/capability
+        // activate` without discovery is not pruned, the captured startup
+        // baseline and current base membership are protected, and a blacklisted
+        // member keeps its prohibition instead of becoming rediscoverable.
+        const pruned = current.discovered && current.dynamic
+          && !current.startupBaseline && !current.base && !current.blacklisted && !current.used;
+        if (pruned) {
+          current.dynamic = false;
+          current.discovered = false;
+          current.discoveredDescription = null;
+          state.pruned.push(names[slot]!);
+        }
+        // A successful compaction performs the deferred active-set updates:
+        // removed or blacklisted members lose their declaration, requested
+        // members stay declared.
+        current.declared = requested(current);
         current.used = false;
       }
     } else if (this.action === 'reopen') {
@@ -310,10 +435,13 @@ class Command implements AsyncCommand<State, World> {
     } else if (this.action === 'discover') {
       world.selection = this.slot;
       world.response = { name: 'capability', slot: this.slot, schema: 0 };
-      if (tool.permission !== 'disabled') {
-        tool.active = true;
+      // A dynamic-only blacklisted name is not a discovery candidate; a base
+      // member stays usable (and discoverable) while its local ban is recorded.
+      if (!tool.blacklisted || tool.base) {
+        tool.dynamic = true;
         tool.discovered = true;
         tool.discoveredDescription = tool.description;
+        tool.declared = true;
       }
     }
 
@@ -323,9 +451,8 @@ class Command implements AsyncCommand<State, World> {
       entry => entry.type === 'custom_message' && entry.customType === HARNESS_CONTEXT_SYNC_CUSTOM_TYPE,
     ).length;
     await world.session.prompt(`Generated history turn ${++state.turn}`);
-    assert.equal(world.effects.length - before,
-      this.action === 'execute' && tool.active && tool.permission !== 'disabled' ? 1 : 0,
-      'permission and active state decide whether the real SDK executes the backend');
+    assert.equal(world.effects.length - before, this.action === 'execute' && requested(tool) ? 1 : 0,
+      `requested membership decides whether the real SDK executes the backend (after ${this.action} slot ${this.slot}, tool=${JSON.stringify(tool)}, active=${JSON.stringify(world.session.getActiveToolNames())})`);
     if (world.effects.length > before) {
       tool.used = true;
       assert.deepEqual(world.effects.at(-1), { slot: this.slot, schema: tool.schema,
@@ -378,18 +505,18 @@ class Command implements AsyncCommand<State, World> {
     const syncCountAfter = world.session.sessionManager.getBranch().filter(
       entry => entry.type === 'custom_message' && entry.customType === HARNESS_CONTEXT_SYNC_CUSTOM_TYPE,
     ).length;
-    const discoveredSnapshotAfter = state.tools
+    const rememberedSnapshotAfter = state.tools
       .map((entry, slot) => ({ entry, name: names[slot]! }))
-      .filter(({ entry }) => entry.discovered && entry.permission !== 'disabled')
+      .filter(({ entry }) => remembered(entry))
       .map(({ entry, name }) => ({ name, description: entry.discoveredDescription }));
-    const expectedAtTurnEnd = discoveredSnapshotAfter.map(({ name }) => name);
-    const activeAfterTurn = state.tools
+    const expectedAtTurnEnd = rememberedSnapshotAfter.map(({ name }) => name);
+    const declaredAfterTurn = state.tools
       .map((entry, slot) => ({ entry, name: names[slot]! }))
-      .filter(({ entry }) => entry.active)
+      .filter(({ entry }) => entry.declared)
       .map(({ name }) => name);
     const expectedSyncRequired = this.action === 'discover' && (
-      !isDeepStrictEqual(discoveredSnapshotAfter, discoveredSnapshotBefore)
-      || !isDeepStrictEqual(activeAfterTurn, activeBeforeTurn)
+      !isDeepStrictEqual(rememberedSnapshotAfter, rememberedSnapshotBefore)
+      || !isDeepStrictEqual(declaredAfterTurn, declaredBeforeTurn)
     );
     assert.equal(
       syncCountAfter - syncCountBefore,
@@ -399,7 +526,7 @@ class Command implements AsyncCommand<State, World> {
         : `action ${this.action} with no modeled mid-run change must not emit a harness-context-sync entry`,
     );
 
-    if (this.action === 'execute' && tool.active && tool.permission !== 'disabled') {
+    if (this.action === 'execute' && requested(tool)) {
       assert.ok(turnRequests.length >= 2, 'active permitted execution sends tool result back to the model');
       if (world.view === 'native' || world.view === 'filter' || world.view === 'reorder') {
         const followupWireTail = turnRequests[1]!.wire.at(-1) as { type?: unknown } | undefined;
@@ -411,7 +538,7 @@ class Command implements AsyncCommand<State, World> {
     const latest = world.requests.at(-1)!;
     if (world.view !== 'forced') {
       const firstOfTurn = turnRequests[0]!;
-      const expectedAtTurnStart = this.action === 'discover' ? discoveredBeforeTurn : expectedAtTurnEnd;
+      const expectedAtTurnStart = this.action === 'discover' ? rememberedBeforeTurn : expectedAtTurnEnd;
       const startMemory = effectiveSystemSections(firstOfTurn.messages)['capabilities'];
       if (expectedAtTurnStart.length === 0) {
         assert.equal(startMemory, undefined,
@@ -481,11 +608,23 @@ class Command implements AsyncCommand<State, World> {
     for (const slot of [0, 1]) {
       const expected = state.tools[slot]!;
       const name = names[slot]!;
-      assert.equal(world.session.getActiveToolNames().includes(name), expected.active,
-        `active state of ${name} after ${this.action}`);
+      assert.equal(world.session.getActiveToolNames().includes(name), expected.declared,
+        `declaration state of ${name} after ${this.action}`);
       const visible = currentDeclarations.find(entry => entry.name === name);
-      assert.equal(visible !== undefined, expected.active, 'only active tools have a current declaration');
-      if (!expected.active || expected.permission === 'disabled') continue;
+      assert.equal(visible !== undefined, expected.declared, 'only declared tools have a current declaration');
+      if (requested(expected)) {
+        assert.equal(expected.declared, true,
+          'requested membership is always declared: base add and activate declare immediately');
+      }
+      if (!expected.declared) continue;
+      if (!requested(expected)) {
+        // Cache-safe removal: membership and execution stop now, but the native
+        // declaration the model already saw stays in the request until the next
+        // successful compaction. Retaining it must never be read as usable.
+        assert.ok(declaredTools(latest.wire).some(entry => entry.name === name),
+          'a declaration retained for cache safety stays visible until compaction');
+        continue;
+      }
       const declared = declaredTools(latest.wire).filter(entry => entry.name === name).at(-1);
       assert.ok(declared);
       assert.deepEqual(declared.parameters, { type: 'object', properties: { [`revision_${expected.schema}`]: { type: 'string' } } });
@@ -506,15 +645,134 @@ class Command implements AsyncCommand<State, World> {
   }
 }
 
+/** Issue one tool call through the offline model and report real execution. */
+async function callNamespaceTool(world: World, name: string): Promise<boolean> {
+  const before = world.namespaceEffects.length;
+  world.response = { name, slot: -1, schema: 0 };
+  await world.session.prompt(`Namespace turn for ${name}`);
+  return world.namespaceEffects.length > before;
+}
+
+function activeNamespaceMembers(world: World): string[] {
+  return world.session.getActiveToolNames().filter(name => name.startsWith('history_ns_')).sort();
+}
+
+/**
+ * Namespace/MCP container lifecycle over real commands and the real SDK.
+ *
+ * Expected membership comes only from the fixture's registrations and the
+ * contract: a plain container write snapshots the current members once, a
+ * later registration is not membership, a new explicit write requests the then
+ * current members, the blacklist stays a group rule that covers later
+ * registrations, and a `[ns]` selection needs an explicit positive member.
+ */
+async function runNamespaceLifecycle() {
+  // Snapshot expansion and re-request after deactivation.
+  {
+    const world = await fixture(false, true);
+    try {
+      await world.session.prompt('/capability activate namespace://history_ns');
+      assert.deepEqual(activeNamespaceMembers(world), ['history_ns_a', 'history_ns_b'],
+        'a plain container write activates the current members');
+      assert.equal(await callNamespaceTool(world, 'history_ns_a'), true);
+
+      world.registerNamespaceMember('history_ns_c');
+      assert.equal(await callNamespaceTool(world, 'history_ns_c'), false,
+        'a member registered after the snapshot is not requested by it');
+      await world.session.prompt('/capability activate namespace://history_ns');
+      assert.equal(await callNamespaceTool(world, 'history_ns_c'), true,
+        'a new explicit container write requests all current members');
+
+      await world.session.prompt('/capability deactivate history_ns_b');
+      assert.equal(await callNamespaceTool(world, 'history_ns_b'), false,
+        'deactivation stops usage before the declaration is dropped');
+      await world.session.prompt('/capability activate namespace://history_ns');
+      assert.equal(await callNamespaceTool(world, 'history_ns_b'), true,
+        'a new explicit activation requests a previously deactivated member again');
+    } finally { await world.close(); }
+  }
+
+  // A container blacklist is a group rule: it covers members registered after
+  // the rule, but an exact base membership is the local exception. The group
+  // ban stays recorded and reasserts as soon as that base membership is gone.
+  {
+    const world = await fixture(false, true);
+    try {
+      await world.session.prompt('/capability activate namespace://history_ns');
+      await world.session.prompt('/capability blacklist add namespace://history_ns');
+      assert.equal(await callNamespaceTool(world, 'history_ns_a'), false,
+        'a container blacklist denies every current dynamic member immediately');
+
+      world.registerNamespaceMember('history_ns_c');
+      await world.session.prompt('/capability base add history_ns_c');
+      assert.equal(await callNamespaceTool(world, 'history_ns_c'), true,
+        'an exact base member overrides the covering container ban');
+      assert.equal(await callNamespaceTool(world, 'history_ns_a'), false,
+        'the container ban still denies dynamic members without base');
+      const containerBans = world.session.sessionManager.getBranch()
+        .filter(entry => entry.type === 'custom' && entry.customType === 'capability-tool-blacklist');
+      assert.match(JSON.stringify(containerBans), /namespace:\/\/history_ns/,
+        'the container ban stays recorded while the exact base exception applies');
+
+      await world.session.prompt('/capability base remove history_ns_c');
+      assert.equal(await callNamespaceTool(world, 'history_ns_c'), false,
+        'removing base reasserts the still-recorded container ban immediately');
+      await world.session.prompt('/capability activate history_ns_c');
+      assert.equal(await callNamespaceTool(world, 'history_ns_c'), false,
+        'dynamic membership cannot bypass the covering container ban');
+      await world.session.prompt('/capability base add history_ns_c');
+      assert.equal(await callNamespaceTool(world, 'history_ns_c'), true,
+        'the exact base exception applies again while the container ban remains');
+      await world.session.prompt('/capability base remove history_ns_c');
+      assert.equal(await callNamespaceTool(world, 'history_ns_c'), false,
+        'the reasserted ban still blocks the preserved dynamic membership');
+
+      await world.session.prompt('/capability blacklist remove namespace://history_ns');
+      assert.equal(await callNamespaceTool(world, 'history_ns_a'), true,
+        'removing the container ban frees the preserved dynamic members');
+      assert.equal(await callNamespaceTool(world, 'history_ns_c'), true,
+        'and the preserved dynamic member becomes usable again');
+    } finally { await world.close(); }
+  }
+
+  // Explicit `[ns]` selection: positive members only, batch exclusions never
+  // mutate earlier membership, and a container without a positive member is
+  // rejected before any write.
+  {
+    const world = await fixture(false, true);
+    try {
+      await world.session.prompt('/capability activate namespace://history_ns[ns] -history_ns_a');
+      assert.deepEqual(activeNamespaceMembers(world), [],
+        'a container selection with no explicit positive member rejects the whole batch');
+
+      await world.session.prompt('/capability activate namespace://history_ns[ns] history_ns_a history_ns_b -history_ns_b');
+      assert.deepEqual(activeNamespaceMembers(world), ['history_ns_a'],
+        'only the explicit positive member is selected');
+      assert.equal(await callNamespaceTool(world, 'history_ns_a'), true);
+      assert.equal(await callNamespaceTool(world, 'history_ns_b'), false);
+
+      await world.session.prompt('/capability activate history_ns_b');
+      assert.equal(await callNamespaceTool(world, 'history_ns_b'), true);
+      await world.session.prompt('/capability activate namespace://history_ns[ns] history_ns_a -history_ns_b');
+      assert.equal(await callNamespaceTool(world, 'history_ns_a'), true);
+      assert.equal(await callNamespaceTool(world, 'history_ns_b'), true,
+        'a batch exclusion never removes an earlier membership');
+    } finally { await world.close(); }
+  }
+}
+
 export async function runCapabilityHistoryModel() {
+  const MEMBERSHIP_ACTIONS = ['base-add', 'base-remove', 'activate', 'deactivate', 'blacklist-add', 'blacklist-remove'] as const;
   const nativeCommands = fc.commands([
-    fc.tuple(fc.constantFrom<Action>('describe', 'schema', 'enable', 'disable', 'reset', 'discover', 'execute', 'compact', 'reopen', 'request'),
+    fc.tuple(fc.constantFrom<Action>('describe', 'schema', ...MEMBERSHIP_ACTIONS, 'discover', 'execute', 'compact', 'reopen', 'request'),
       fc.integer({ min: 0, max: 1 }), fc.string({ minLength: 1, maxLength: 40 }), fc.integer({ min: 0, max: 3 }))
       .map(args => new Command(...args, false)),
   ], commandOptions(24));
   const runHistory = async (history: Iterable<AsyncCommand<State, World>>, restoreNative = false) => {
     const world = await fixture(restoreNative);
-    const state: State = { tools: world.metadata.map((spec, slot) => ({ ...spec, permission: 'unmanaged', active: slot === 0, discovered: false, discoveredDescription: null, used: false })), turn: 0, preset: null, pruned: [] };
+    const state: State = { tools: world.metadata.map((spec, slot) => ({ ...spec, startupBaseline: slot === 0,
+      base: slot === 0, dynamic: false, blacklisted: false, declared: slot === 0, discovered: false,
+      discoveredDescription: null, used: false })), turn: 0, preset: null, pruned: [] };
     try {
       await new Command('request', 0, '', 0, restoreNative).run(state, world);
       await fc.asyncModelRun(() => ({ model: state, real: world }), history);
@@ -533,6 +791,53 @@ export async function runCapabilityHistoryModel() {
     new Command('compact', 0, '', 0, false),
     new Command('discover', 0, '', 0, false),
   ]);
+  // Base and dynamic membership are independent: removing one keeps the other.
+  await runHistory([
+    new Command('base-add', 1, '', 0, false),
+    new Command('activate', 1, '', 0, false),
+    new Command('deactivate', 1, '', 0, false),
+    new Command('execute', 1, '', 0, false),
+    new Command('base-remove', 1, '', 0, false),
+    new Command('execute', 1, '', 0, false),
+    new Command('compact', 0, '', 0, false),
+  ]);
+  // Explicit activation after a historical discovery prune restores dynamic
+  // requested membership: the older prune record cannot override a later write,
+  // and an activate-only dynamic member is not pruned by the next compaction.
+  await runHistory([
+    new Command('discover', 1, '', 0, false),
+    new Command('compact', 0, '', 0, false),
+    new Command('activate', 1, '', 0, false),
+    new Command('execute', 1, '', 0, false),
+    new Command('compact', 0, '', 0, false),
+  ]);
+  // Base wins over the local ban: the tool stays usable and the ban stays
+  // recorded. Removing base reasserts the ban immediately (no execution through
+  // the retained declaration); compaction then drops the declaration. Removing
+  // the ban alone cannot restore usage without membership, so activation is
+  // required before the final execution.
+  await runHistory([
+    new Command('base-add', 1, '', 0, false),
+    new Command('blacklist-add', 1, '', 0, false),
+    new Command('execute', 1, '', 0, false),
+    new Command('compact', 0, '', 0, false),
+    new Command('base-remove', 1, '', 0, false),
+    new Command('execute', 1, '', 0, false),
+    new Command('compact', 0, '', 0, false),
+    new Command('blacklist-remove', 1, '', 0, false),
+    new Command('execute', 1, '', 0, false),
+    new Command('activate', 1, '', 0, false),
+    new Command('execute', 1, '', 0, false),
+  ]);
+  // Deactivation already removed the dynamic membership. The next compaction
+  // must not report the still-discovered name as removed at this boundary;
+  // otherwise the availability notice claims an eviction that never happened.
+  await runHistory([
+    new Command('discover', 1, '', 0, false),
+    new Command('deactivate', 1, '', 0, false),
+    new Command('compact', 0, '', 0, false),
+  ]);
+  await runNamespaceLifecycle();
   const profile = process.env.PI_CAPABILITY_HISTORY_PROFILE ?? (process.env.PI_PBT_PATH === undefined ? 'all' : 'native');
   if (profile !== 'views') {
     console.log('Capability history profile=native');
@@ -540,7 +845,7 @@ export async function runCapabilityHistoryModel() {
   }
   if (profile !== 'native') {
     const views = fc.commands([
-      fc.tuple(fc.constantFrom<Action>('describe', 'schema', 'enable', 'disable', 'reset', 'discover', 'execute', 'compact', 'reopen', 'request',
+      fc.tuple(fc.constantFrom<Action>('describe', 'schema', ...MEMBERSHIP_ACTIONS, 'discover', 'execute', 'compact', 'reopen', 'request',
         'native', 'append', 'filter', 'duplicate', 'opaque', 'forced', 'preset', 'clear-preset'),
         fc.integer({ min: 0, max: 1 }), fc.string({ minLength: 1, maxLength: 40 }), fc.integer({ min: 0, max: 3 }))
         .map(args => new Command(...args, true)),

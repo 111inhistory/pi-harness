@@ -8,10 +8,10 @@ import { installModelCallBudget } from '../subagent/pi-job-budget.ts';
 import { installSessionCacheIdentity } from '../session-cache-runtime.ts';
 import { capabilityBudgetWarning, type CapabilityOpenSessionRequest, type CapabilityRunSession } from './agent.ts';
 import { providerSessionPolicy } from '../provider-session.ts';
-import { createToolPermissionResolver } from './tool-permission.ts';
+import { createToolAccessView } from './tool-access-view.ts';
 import { createEligibleToolCatalog } from './tool-catalog.ts';
 import { createToolAdmission } from './admission.ts';
-import { registeredToolGuidance, projectedNamespaceRefs, toolNamespaceInstructions } from './tool-instructions.ts';
+import { registeredToolGuidance, projectedNamespaceRefs, toolNamespaceInstructions, withheldToolGuidance } from './tool-instructions.ts';
 import { renderCurrentToolGuidance } from '../tool-guidance.ts';
 import { CAPABILITY_SECTION, capabilityPromptSections, type ProjectionMessage } from './prompt.ts';
 import { presetInstructionSections } from '../preset/instruction.ts';
@@ -72,12 +72,12 @@ export async function openInternalSession(
   const retrievalNames = new Set(request.customTools.map(tool => tool.name));
   const model = snapshot.model;
   const branch = ctx.sessionManager.getBranch();
-  const permission = createToolPermissionResolver(pi, pi.getAllTools(), branch);
-  // Managed tools and lazily-projected members must not travel to the retrieval
-  // model: a disabled tool cannot be inherited, an explicitly enabled tool is
-  // root-only, and a lazily projected member would re-send the large schema.
+  const access = createToolAccessView(pi, branch);
+  // A blacklisted tool and a lazily-projected member must not travel to the
+  // retrieval model: inheritance never lifts a prohibition, and a lazily
+  // projected member would re-send the large schema.
   const keepInherited = (name: string): boolean => !lazyNames.has(name)
-    && !permission.disabled(name) && !permission.enabled(name);
+    && !access.blocked(name);
   const inheritedEntries = snapshot.entries.map(entry => {
     if (entry.type !== "message" || entry.message.role !== "system") return entry;
     const message = entry.message;
@@ -112,14 +112,24 @@ export async function openInternalSession(
           : { block: true, reason: `Tool ${event.toolName} is unavailable in capability discovery. Only retrieval tools may execute.` });
         api.on("before_agent_start", (event, extensionCtx) => {
           const currentBranch = extensionCtx.sessionManager.getBranch();
-          const currentPermission = createToolPermissionResolver(pi, pi.getAllTools(), currentBranch);
+          const currentAccess = createToolAccessView(pi, currentBranch);
           const catalog = createEligibleToolCatalog(pi, {
-            disabled: (name) => currentPermission.disabled(name),
+            blocked: (tool) => currentAccess.blocked(tool.name),
           });
           const admission = createToolAdmission(pi, currentBranch, catalog);
-          const callable = new Set(pi.getActiveTools().filter((name) => admission.admits(name) && !lazyNames.has(name)));
-          const declared = new Set([...callable].filter((name) => !lazyNames.has(name)));
-          const guidance = registeredToolGuidance(catalog.tools, [], callable, declared);
+          const perToolWithheld = new Set(catalog.tools
+            .filter((tool) => currentAccess.facts(tool.name).schemaWithheld)
+            .map((tool) => tool.name));
+          const withheld = new Set([
+            ...[...lazyNames].filter((name) => currentAccess.schemaMode(name) !== 'schema'),
+            ...perToolWithheld,
+          ]);
+          const callable = new Set(pi.getActiveTools().filter((name) => admission.admits(name) && !withheld.has(name)));
+          const declared = new Set([...callable].filter((name) => !withheld.has(name)));
+          const guidance = [
+            ...registeredToolGuidance(catalog.tools, [], callable, declared, currentAccess.loadedContainers, withheld),
+            ...withheldToolGuidance(catalog.tools, withheld),
+          ];
           const guidanceSections = renderCurrentToolGuidance(guidance);
           const memory = capabilityPromptSections(currentBranch, {
             allowsTool: (name) => catalog.names.has(name),
@@ -159,9 +169,9 @@ export async function openInternalSession(
     input: readonly AgentMessage[],
     branch: readonly SessionEntry[],
   ): AgentMessage[] {
-    const permission = createToolPermissionResolver(pi, pi.getAllTools(), branch);
+    const access = createToolAccessView(pi, branch);
     const catalog = createEligibleToolCatalog(pi, {
-      disabled: (name) => permission.disabled(name),
+      blocked: (tool) => access.blocked(tool.name),
     });
     const admission = createToolAdmission(pi, branch, catalog);
     const declarations = projectDiscoveryDeclarations(input,

@@ -53,13 +53,35 @@ function toolCall(model: Model<Api>, id: string): AssistantMessage {
   return assistant(model, [{ type: 'toolCall', id, name: 'capability', arguments: {} }], 'toolUse');
 }
 
+/**
+ * Point Pi's agent dir at an empty temporary directory for one test.
+ *
+ * The Capability extension reads `harness.json` through `getAgentDir()`, which
+ * ignores the loader's `agentDir`. Without this isolation the test would read
+ * the developer's live agent config and its result would depend on that file.
+ */
+async function isolateAgentDir(): Promise<{ restore: () => Promise<void> }> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'pi-capability-snapshot-agent-'));
+  const previous = process.env['PI_CODING_AGENT_DIR'];
+  process.env['PI_CODING_AGENT_DIR'] = dir;
+  return {
+    async restore() {
+      if (previous === undefined) delete process.env['PI_CODING_AGENT_DIR'];
+      else process.env['PI_CODING_AGENT_DIR'] = previous;
+      await rm(dir, { recursive: true, force: true });
+    },
+  };
+}
+
 function currentUserSync(messages: readonly ProjectionMessage[]): string | undefined {
   const last = messages.at(-1);
   if (last?.role !== 'user') return undefined;
   return JSON.stringify(last.content);
 }
 
-test('same-run tool results refresh one current snapshot as a persisted user boundary (no developer_tail)', { timeout: 30_000 }, async () => {
+test('same-run tool results refresh one current snapshot as a persisted user boundary (no developer_tail)', { timeout: 30_000 }, async (t) => {
+  const agentIsolation = await isolateAgentDir();
+  t.after(() => agentIsolation.restore());
   const runtime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,
   });
@@ -182,7 +204,9 @@ function responsesWire(model: Model<Api>, messages: readonly ProjectionMessage[]
   ) as Array<{ role?: string; type?: string }>;
 }
 
-test('unchanged tool loop ends on function_call_output; mid-run static tool activation seals updateMessage with user sync', { timeout: 30_000 }, async () => {
+test('unchanged tool loop ends on function_call_output; mid-run static tool activation seals updateMessage with user sync', { timeout: 30_000 }, async (t) => {
+  const agentIsolation = await isolateAgentDir();
+  t.after(() => agentIsolation.restore());
   const runtime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,
   });
@@ -305,7 +329,9 @@ test('unchanged tool loop ends on function_call_output; mid-run static tool acti
   }
 });
 
-test('nested swallowed capability calls coalesce into one persisted user sync message', { timeout: 30_000 }, async () => {
+test('nested swallowed capability calls coalesce into one persisted user sync message', { timeout: 30_000 }, async (t) => {
+  const agentIsolation = await isolateAgentDir();
+  t.after(() => agentIsolation.restore());
   const runtime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,
   });
@@ -654,7 +680,9 @@ test('mid-run auto-compaction excluding earlier sync with pruneOnCompaction=fals
   }
 });
 
-test('late tool_result during abort cannot start a new run or leave queued sync messages after settled', { timeout: 30_000 }, async () => {
+test('late tool_result during abort cannot start a new run or leave queued sync messages after settled', { timeout: 30_000 }, async (t) => {
+  const agentIsolation = await isolateAgentDir();
+  t.after(() => agentIsolation.restore());
   const runtime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,
   });

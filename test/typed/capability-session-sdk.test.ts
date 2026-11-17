@@ -7,7 +7,7 @@
  * compat; no provider is contacted and no wire format is reimplemented here.
  */
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -27,9 +27,7 @@ import {
 
 import capabilityExtension from '../../src/capability/extension.ts';
 import { CAPABILITY_STEP_TOOL_NAME } from '../../src/capability/contracts.ts';
-import {
-  CAPABILITY_TOOL_PERMISSION_RECORD, CAPABILITY_TOOL_PERMISSION_VERSION,
-} from '../../src/capability/tool-permission.ts';
+import { activateToolTargets } from '../../src/capability/tool-access.ts';
 import { providerSessionPolicy } from '../../src/provider-session.ts';
 import { appendPresetState, PRESET_STATE_VERSION } from '../../src/preset/state.ts';
 import { CAPABILITY_DISCOVERY_RECORD } from '../../src/capability/discovery-record.ts';
@@ -110,10 +108,6 @@ async function runScenario(api: 'openai-responses' | 'anthropic-messages'): Prom
   process.env['PI_SUBAGENT_SOCKET_DIR'] = path.join(cwd, 'uds');
   let session: AgentSession | undefined;
   try {
-    await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
-      capability: { manualTools: ['manual_parent'] },
-    }));
-
     const faux = fauxProvider({ models: [{ id: 'capability-session-fixture', reasoning: true }] });
     const runtime = await ModelRuntime.create({
       credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,
@@ -132,6 +126,7 @@ async function runScenario(api: 'openai-responses' | 'anthropic-messages'): Prom
     const parentRequests: ObservedRequest[] = [];
     const retrievalRequests: ObservedRequest[] = [];
     const retrievalHooks: RetrievalCacheHook[] = [];
+    let extensionApi: ExtensionAPI | undefined;
     let parentExecutions = 0;
     let manualExecutions = 0;
 
@@ -154,8 +149,10 @@ async function runScenario(api: 'openai-responses' | 'anthropic-messages'): Prom
         if (step === 1) {
           reply = call(model, 'retrieval-parent-attempt', 'parent_probe', {});
         } else if (step === 2) {
-          reply = call(model, 'retrieval-search', CAPABILITY_STEP_TOOL_NAME, { queries: ['fixture_slides'] });
+          reply = call(model, 'retrieval-manual-attempt', 'manual_parent', {});
         } else if (step === 3) {
+          reply = call(model, 'retrieval-search', CAPABILITY_STEP_TOOL_NAME, { queries: ['fixture_slides'] });
+        } else if (step === 4) {
           reply = call(model, 'retrieval-finish', CAPABILITY_STEP_TOOL_NAME, {
             refs: ['tool://fixture_slides'], finish: true,
           });
@@ -182,6 +179,7 @@ async function runScenario(api: 'openai-responses' | 'anthropic-messages'): Prom
       extensionFactories: [{
         name: 'capability-session-fixture',
         factory(pi: ExtensionAPI) {
+          extensionApi = pi;
           capabilityExtension(pi);
           pi.registerTool({
             name: 'parent_probe',
@@ -199,7 +197,7 @@ async function runScenario(api: 'openai-responses' | 'anthropic-messages'): Prom
             label: 'Manual parent',
             description: 'A user-authorized manual tool whose interface must not move into retrieval.',
             parameters: { type: 'object', properties: {} },
-            defaultActive: true,
+            defaultActive: false,
             async execute() {
               manualExecutions += 1;
               return { content: [{ type: 'text' as const, text: 'MANUAL_EXECUTED' }], details: {} };
@@ -222,10 +220,6 @@ async function runScenario(api: 'openai-responses' | 'anthropic-messages'): Prom
     assert.deepEqual(resourceLoader.getExtensions().errors, []);
 
     const sessionManager = SessionManager.inMemory(cwd);
-    sessionManager.appendCustomEntry(CAPABILITY_TOOL_PERMISSION_RECORD, {
-      version: CAPABILITY_TOOL_PERMISSION_VERSION,
-      set: [{ target: 'manual_parent', state: 'enabled' }],
-    });
     appendPresetState({
       appendEntry: (customType, data) => sessionManager.appendCustomEntry(customType, data),
     }, {
@@ -238,6 +232,11 @@ async function runScenario(api: 'openai-responses' | 'anthropic-messages'): Prom
     })).session;
     const errors: unknown[] = [];
     await session.bindExtensions({ onError: (error) => errors.push(error) });
+    // The user activates the manual tool: discovery/membership is a dynamic
+    // collection entry, not a permission grant.
+    assert.ok(extensionApi);
+    const activation = activateToolTargets(extensionApi, extensionApi, session.sessionManager.getBranch(), ['manual_parent']);
+    assert.deepEqual(activation.activated, ['manual_parent']);
     await session.prompt('Find reusable capabilities for this task.');
 
     return {
@@ -268,11 +267,11 @@ for (const api of ['openai-responses', 'anthropic-messages'] as const) {
     const scenario = await runScenario(api);
     assert.deepEqual(scenario.errors, []);
     assert.ok(scenario.parentRequests.length >= 2);
-    assert.ok(scenario.retrievalRequests.length >= 3);
+    assert.ok(scenario.retrievalRequests.length >= 4);
 
     const parentTools = toolNames(scenario.parentRequests[0]!.messages);
     assert.ok(parentTools.includes('parent_probe'), 'the parent declaration is present before retrieval');
-    assert.ok(parentTools.includes('manual_parent'), 'the authorized manual tool is present in the parent request');
+    assert.ok(parentTools.includes('manual_parent'), 'the dynamically activated manual tool is present in the parent request');
 
     const retrievalTools = toolNames(scenario.retrievalRequests[0]!.messages);
     const retrievalPresets = scenario.retrievalRequests[0]!.messages.flatMap((message) =>
@@ -295,6 +294,9 @@ for (const api of ['openai-responses', 'anthropic-messages'] as const) {
     const parentAttempt = latestResult(scenario.retrievalRequests[1]!.messages, 'parent_probe');
     assert.equal(parentAttempt.isError, true);
     assert.match(textOf(parentAttempt), /unavailable in capability discovery|Only retrieval tools may execute/);
+    const manualAttempt = latestResult(scenario.retrievalRequests[2]!.messages, 'manual_parent');
+    assert.equal(manualAttempt.isError, true, 'an inherited dynamic declaration is not callable in retrieval');
+    assert.match(textOf(manualAttempt), /unavailable in capability discovery|Only retrieval tools may execute/);
     assert.equal(scenario.parentExecutions, 0, 'the parent execute handle was never invoked');
     assert.equal(scenario.manualExecutions, 0, 'the manual execute handle was never invoked');
 
@@ -335,9 +337,11 @@ for (const api of ['openai-responses', 'anthropic-messages'] as const) {
       assert.deepEqual(adapted, payload, 'Anthropic payloads are never given OpenAI cache fields');
     }
 
+    // The inherited declaration is kept (only lazy and blacklisted names are
+    // filtered), while execution stays isolated by the retrieval admission hook.
     assert.ok(
-      !retrievalTools.includes('manual_parent'),
-      `manual tool interface is not transferred into retrieval: ${JSON.stringify({ parentTools, retrievalTools })}`,
+      retrievalTools.includes('manual_parent'),
+      `a dynamically activated declaration is inherited into retrieval: ${JSON.stringify({ parentTools, retrievalTools })}`,
     );
   });
 }

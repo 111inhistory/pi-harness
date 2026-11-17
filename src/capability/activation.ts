@@ -32,7 +32,7 @@ export interface ActivationHost {
 export type ActivationSkipReason =
   | 'not_registered'
   | 'hidden'
-  | 'disabled'
+  | 'blacklisted'
   | 'not_permitted'
   | 'not_activated'
   /** The session has no execution entry the model could use to call this tool. */
@@ -82,8 +82,8 @@ export interface ActivationOutcome {
 
 /** Activation options. */
 export interface ActivationOptions {
-  /** Names prohibited by an effective permission; never activated. */
-  readonly disabled?: (name: string) => boolean;
+  /** Names currently prohibited (blacklist); never activated. */
+  readonly blocked?: (name: string) => boolean;
   /** Reachability inputs to reuse; resolved from the host when omitted. */
   readonly reachability?: ReachabilityContext;
 }
@@ -91,7 +91,7 @@ export interface ActivationOptions {
 /**
  * Activate the named tools in one synchronous step.
  *
- * Duplicate names are ignored. A name that is unregistered, hidden, disabled
+ * Duplicate names are ignored. A name that is unregistered, hidden, blacklisted
  * or outside the current qualification is skipped with its reason; the
  * remaining names are activated in a single call that keeps the current set.
  */
@@ -100,7 +100,10 @@ export function activateToolNames(
   names: readonly string[],
   options: ActivationOptions = {},
 ): ActivationOutcome {
-  const eligible = createEligibleToolCatalog(host, options).byName;
+  const blocked = options.blocked;
+  const eligible = createEligibleToolCatalog(host, blocked === undefined
+    ? {}
+    : { blocked: (tool) => blocked(tool.name) }).byName;
   const reachability = options.reachability ?? { codemodeAvailable: codemodeAvailable(host) };
   const registered = new Map(host.getAllTools().map((tool) => [tool.name, tool]));
   const active = new Set(host.getActiveTools());
@@ -120,8 +123,8 @@ export function activateToolNames(
       skipped.push({ name, reason: 'hidden' });
       continue;
     }
-    if (options.disabled?.(name) === true) {
-      skipped.push({ name, reason: 'disabled' });
+    if (options.blocked?.(name) === true) {
+      skipped.push({ name, reason: 'blacklisted' });
       continue;
     }
     if (!eligible.has(name)) {

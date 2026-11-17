@@ -3,12 +3,18 @@
  *
  * A preset application is written to the current branch as one append-only
  * `preset-state` entry carrying a *resolved snapshot*: the exact provider/id,
- * thinking level, stable tool selection, codemode mode and instruction text
- * resolved at apply time. The tool selection is the compaction baseline, not
- * the dynamic Capability tools retained during application. Branch readers use
- * the snapshot for instructions, status and that baseline; model/thinking/tools
- * recovery belongs to Pi rather than replaying this snapshot. Re-running
- * `/preset NAME` re-resolves against the current definition.
+ * thinking level, tool selection, blacklist contribution, codemode mode and
+ * instruction text resolved at apply time.
+ *
+ * `tools` is the preset's BASE selection: the stable baseline it computes from
+ * the session tool baseline, and the compaction baseline. It never contains the
+ * dynamically activated Capability tools, which the tool-access domain owns.
+ * `disabledTools` is the current preset's BLACKLIST contribution: the explicit
+ * final minus tokens. Both contributions live only as long as this snapshot is
+ * the latest one, so a switch replaces them and a clear withdraws the blacklist
+ * (the base selection then stays as session membership, without rollback).
+ * Model/thinking/tool recovery itself belongs to Pi rather than replaying this
+ * snapshot. Re-running `/preset NAME` re-resolves against the current definition.
  *
  * Recording the snapshot rather than the preset name is deliberate: the same
  * reproducibility rule the subagent store uses for its sessions. A name alone
@@ -16,8 +22,9 @@
  * the branch recorded.
  *
  * `snapshot === null` records a clear: the session stopped being managed by a
- * preset. Clearing never claims to roll authorization back; it only stops the
- * preset from owning model/thinking/tools/instructions going forward.
+ * preset. Clearing never rolls the model, thinking level or base membership
+ * back; it only ends the preset contributions, so its blacklist lifetime ends
+ * while the base selection it established stays as ordinary session membership.
  *
  * Entries are append-only and never rewritten, matching every other branch
  * memory in this harness. Restoration reads the last entry on the branch.
@@ -29,26 +36,14 @@ import type { CodemodeMode, PresetModel, ThinkingLevelName } from './config.ts';
 export const PRESET_STATE_RECORD = 'preset-state';
 export const PRESET_STATE_VERSION = 1;
 
-/**
- * `customType` of the captured base tool set.
- *
- * The base is the true initial active set of the session — native defaults, CLI
- * `--tools` modifier results and default-active extension tools such as
- * `capability` — captured once at first `session_start` and recorded on the
- * branch. Preset tool modifiers always compute from this base, so a resume or
- * reload that already reflects a prior preset cannot become the new base, while
- * the base still contains the extension tools a settings-only view would miss.
- */
-export const PRESET_BASE_RECORD = 'preset-base';
-export const PRESET_BASE_VERSION = 1;
-
 /** The fully resolved state a preset apply froze onto the branch. */
 export interface PresetSnapshot {
   readonly name: string;
   readonly model?: PresetModel;
   readonly thinkingLevel?: ThinkingLevelName;
-  /** Stable preset selection; excludes dynamically retained Capability tools. */
+  /** Preset base selection; excludes dynamically activated Capability tools. */
   readonly tools?: readonly string[];
+  /** Current-preset blacklist contribution (explicit final minus tokens). */
   readonly disabledTools?: readonly string[];
   readonly codemode?: { readonly mode: CodemodeMode };
   /** Resolved instruction text; null means the preset carried no instructions. */
@@ -160,9 +155,20 @@ export function restorePresetSnapshot(branch: readonly unknown[] | null | undefi
   return readPresetState(branch)?.snapshot ?? null;
 }
 
-/** Whether a preset reduced its baseline since the preceding compaction. */
-export function hasPresetBaseToolRemoval(branch: readonly unknown[], checkpointId: string): boolean {
-  let previousTools = readPresetBase(branch);
+/**
+ * Whether a preset reduced the session baseline since the preceding compaction.
+ *
+ * `baseline` is the session tool baseline owned by the tool-access domain; the
+ * caller already holds it, so this module does not read or duplicate it. A
+ * compaction resets the pending request but keeps the last preset selection as
+ * the comparison point, matching the "since the preceding compaction" window.
+ */
+export function hasPresetBaseToolRemoval(
+  branch: readonly unknown[],
+  checkpointId: string,
+  baseline: readonly string[],
+): boolean {
+  let previousTools: readonly string[] = baseline;
   let removed = false;
   for (const entry of branch) {
     if (!isRecord(entry)) continue;
@@ -173,7 +179,7 @@ export function hasPresetBaseToolRemoval(branch: readonly unknown[], checkpointI
     const tools = parseRecord(entry['data']).snapshot?.tools;
     // Clear and instruction/model-only presets do not replace the live tools.
     if (tools === undefined) continue;
-    if (previousTools?.some(name => !tools.includes(name))) removed = true;
+    if (previousTools.some(name => !tools.includes(name))) removed = true;
     previousTools = tools;
   }
   return removed;
@@ -182,22 +188,4 @@ export function hasPresetBaseToolRemoval(branch: readonly unknown[], checkpointI
 /** Append one preset-state entry to the branch. */
 export function appendPresetState(writer: PresetStateWriter, record: PresetStateRecord): void {
   writer.appendEntry(PRESET_STATE_RECORD, record);
-}
-
-/** The captured base tool set on the branch, or undefined when not yet captured. */
-export function readPresetBase(branch: readonly unknown[] | null | undefined): readonly string[] | undefined {
-  let latest: readonly string[] | undefined;
-  for (const entry of branch ?? []) {
-    if (!isRecord(entry)) continue;
-    if (entry['type'] !== 'custom' || entry['customType'] !== PRESET_BASE_RECORD) continue;
-    const data = entry['data'];
-    if (!isRecord(data) || data['version'] !== PRESET_BASE_VERSION) continue;
-    if (isStringArray(data['tools'])) latest = [...data['tools']];
-  }
-  return latest;
-}
-
-/** Record the captured base tool set once per session branch. */
-export function appendPresetBase(writer: PresetStateWriter, tools: readonly string[]): void {
-  writer.appendEntry(PRESET_BASE_RECORD, { version: PRESET_BASE_VERSION, tools: [...tools] });
 }

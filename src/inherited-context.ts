@@ -9,7 +9,7 @@ import { resolveSessionCacheKey } from './session-cache-runtime.ts';
 import { renderCurrentToolGuidance } from './tool-guidance.ts';
 import { capabilityPromptSections } from './capability/prompt.ts';
 import { capabilityPruneSections } from './capability/compaction-context.ts';
-import { registeredToolGuidance, toolNamespaceInstructions, projectedNamespaceRefs } from './capability/tool-instructions.ts';
+import { registeredToolGuidance, toolNamespaceInstructions, projectedNamespaceRefs, withheldToolGuidance } from './capability/tool-instructions.ts';
 import { presetInstructionSections } from './preset/instruction.ts';
 
 export interface InheritedSnapshot {
@@ -73,8 +73,13 @@ export function inheritedInstructionSections(
   tools: readonly ToolInfo[],
   visible: ReadonlySet<string>,
   declared: ReadonlySet<string> = visible,
+  containers: readonly { id: string; kind: 'namespace' | 'mcp'; name: string; members: readonly string[]; blocked: boolean }[] = [],
+  withheld: ReadonlySet<string> = new Set(),
 ): Readonly<Record<string, string | null>> {
-  const guidance = registeredToolGuidance(tools, [], visible, declared);
+  const guidance = [
+    ...registeredToolGuidance(tools, [], visible, declared, containers, withheld),
+    ...withheldToolGuidance(tools, withheld),
+  ];
   const rendered = renderCurrentToolGuidance(guidance);
   return {
     ...rendered,

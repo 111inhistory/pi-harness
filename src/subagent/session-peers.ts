@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 
-import { enableCapabilityTargets } from '../capability/enable.ts';
+import { addBaseTools } from '../capability/tool-access.ts';
 import { ipc } from '../ipc/platform.ts';
 import { deriveSessionUid, endpointKey, getAgentSocketPath } from '../ipc/socket.ts';
 import type { SessionEndpoint } from './managed-send.ts';
@@ -23,7 +23,7 @@ export interface SessionConnect {
   readonly session: LiveSession;
   /** The peer's managed `Main` address, as written into the contact message. */
   readonly address: string;
-  /** Tools this connect made usable through the shared enable path. */
+  /** Tools this connect made usable by adding them to the session base. */
   readonly enabled: readonly string[];
   readonly alreadyEnabled: readonly string[];
 }
@@ -140,18 +140,19 @@ export class SessionPeers {
     this.#options.assertOperational();
     // Everything below is synchronous: no await may separate the ownership
     // check from the branch record and the context append it fences.
-    const activation = enableCapabilityTargets(this.#options.api, ['msg_write'], {
-      branch: this.#options.context.sessionManager.getBranch(),
-    });
-    const usable = [...activation.enabled, ...activation.alreadyEnabled];
+    const activation = addBaseTools(this.#options.api, this.#options.api, this.#options.context.sessionManager.getBranch(), ['msg_write']);
+    // The reported enablement is the base membership this connect recorded;
+    // activation only decides whether the model can call it right now.
+    const enabled = [...new Set(activation.changed.flatMap((change) => change.affectedTools))];
+    const usable = [...activation.activated, ...activation.alreadyActive];
     if (!usable.includes('msg_write')) {
-      // A record write failure is fail-closed: nothing was activated, so the
+      // A record write failure is fail-closed: no active slot changed, so the
       // contact must not carry an address the model cannot use.
       const reason = activation.recordError !== null
-        ? `the permission record could not be written: ${activation.recordError}`
-        : activation.skipped.find((skip) => skip.name === 'msg_write')?.reason
+        ? `the base record could not be written: ${activation.recordError}`
+        : activation.skipped.find((skip) => skip.target === 'msg_write')?.reason
           ?? (activation.unresolved.includes('msg_write') ? 'not_registered' : 'not_activated');
-      throw new SubagentError('msg_write_unavailable', `msg_write cannot be enabled for this session: ${reason}.`);
+      throw new SubagentError('msg_write_unavailable', `msg_write cannot be made available for this session: ${reason}.`);
     }
     const address = sessionMainAddress(session);
     this.#options.api.sendMessage({
@@ -162,8 +163,8 @@ export class SessionPeers {
     return {
       session,
       address,
-      enabled: activation.enabled,
-      alreadyEnabled: activation.alreadyEnabled,
+      enabled,
+      alreadyEnabled: activation.alreadySet,
     };
   }
 

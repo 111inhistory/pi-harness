@@ -64,7 +64,7 @@ MCP 配置中的 `codemode`／`deferred` exposure 不表示工具在 Capability 
 
 `ALL_TOOLS` 只返回工具名和短描述，不展开 TypeScript 接口。完整参数与工具指导由 `describeTool` 按需提供；`describeNamespace` 保留 namespace 指引和成员名称。目录查询不等待所有 MCP 服务器，宿主不添加主动 MCP 重连。实际嵌套工具调用继续经过 Pi 原生管线。
 
-启用 `capability.lazySchemas`（默认空）后，仅在 Codemode 已启用且生效模式为 `only` 时，命中组的参数与返回值 schema 不进入原生工具声明，也不内联进 Codemode 目录；发现结果与 `describeNamespace` 保留成员名称，`describeTool` 返回完整接口后经 Codemode 执行。生效模式可由模型 Preset 记录在分支上覆盖 Pi 设置。命中组的内部继承检索同样不再向检索模型重发这些 schema；命中组中的 model-only 成员不能被延迟隐藏，应显式报告。
+启用 `capability.lazySchemas`（默认空）后，仅在 Codemode 已启用且生效模式为 `only` 时，命中组或 `tool://<exact-name>` 单工具的参数与返回值 schema 不进入原生工具声明，也不内联进 Codemode 目录；发现结果与 `describeNamespace` 保留成员名称，`describeTool` 返回完整接口后经 Codemode 执行。生效模式可由模型 Preset 记录在分支上覆盖 Pi 设置。内部继承检索同样不再向检索模型重发被延迟的 schema；model-only 成员不能被延迟隐藏，应显式报告。
 
 先调用 Capability 选好工具，再运行 Codemode 脚本。如果脚本运行期间才激活新工具，当前脚本不能立即调用；新工具从下一次 Codemode 调用起可用。
 
@@ -95,9 +95,9 @@ MCP 配置中的 `codemode`／`deferred` exposure 不表示工具在 Capability 
 
 记录只追加不等于绕过权限：已注册、可声明和可执行仍受宿主及角色边界约束。不同分支不因能力累积而相互泄漏。
 
-用户授权保存在三态权限记录（`capability-tool-permission`）中。它与检索结果共用同一 ref 命名空间，但它是分支权限，不是请求状态：权限记录不进入 `<capabilities>` 投影。被显式启用的工具由原生工具声明提供接口，再投影一次只会改写头部系统提示词，而不增加模型可用的信息。
+工具管理分别保存基线、按需激活和黑名单，不把用户管理操作当作检索成果。管理记录不进入 `<capabilities>` 资源指引；声明与执行依据当前集合、作用域及 SDK 状态，见[工具权限管理](#工具权限管理)。
 
-`capability.manualTools` 归一为同 target/state 结构的默认 `disabled` 条目：模型侧发现与准入按 `disabled` 排除，不进入检索候选；子会话通过 denial 阻止继承；显式启用是 root-only，可覆盖默认条目。config 默认、显式启用／禁用写入同一份三态管理数据。
+`capability.blacklist` 提供启动默认禁止，当前 Preset 显式减项与分支手动黑名单共同生效。本会话基线白名单优先于这些禁止，普通发现和按需激活其次；覆盖不删除黑名单记录。祖先黑名单继续约束子会话，不因子会话白名单失效。
 
 严格工具 allowlist 可能拒绝不匹配的 MCP 成员。当前先写记录、再激活的顺序会让未激活成员残留在规范记忆中，后续投影可能再次展示它们。这是与成功获得能力才应累积的要求不一致的已知缺陷，详见[已知问题](known-issues.md#严格工具-allowlist-下的激活记忆不一致)。
 
@@ -105,30 +105,39 @@ API 协调应同时保证资源指引、工具状态与供应商接口声明一�
 
 ### `/capability` 命令
 
-扩展命令 `/capability` 提供目录浏览与用户启用入口，不经过模型轮次，也不消耗 Capability Budget。
+用户命令直接调用工具管理领域操作，不经过发现模型，也不消耗检索 Budget。
 
 | 子命令 | 行为 |
 | --- | --- |
-| `/capability`、`/capability list [expr]` | 按四态派生视图列出工具；`expr` 为无空格的状态／类别过滤表达式，默认 `enabled+active`；不调用模型、不启动检索 |
-| `/capability enable` | 打开包含命名空间、MCP 分组及单个工具的终端选择列表，选中项即显式启用；Esc 取消无副作用 |
-| `/capability enable <target...>` | 按目标显式启用，激活当前可用的具体成员并写入当前分支的权限记录 |
-| `/capability disable <target...>` | 按目标显式禁用；立即拒绝后续调用，没有独立声明的成员立即移出 active，独立声明保留到成功 compaction |
-| `/capability reset <target...>` | 解除显式规则回到 `not managed`；不激活、不授予其他限制 |
+| `/capability`、`/capability list` | 查看当前会话已有的基线与按需工具 |
+| `/capability list --activatable` | 扩展显示当前可按需加载的工具 |
+| `/capability list --usable` | 筛选当前可使用的工具，包含符合条件的基线成员；与 `--activatable` 同用时取两者并集 |
+| `/capability list --filter=<text>` | 按文本筛选目录 |
+| `/capability base list` | 查看当前工具基线 |
+| `/capability base add <target...>`、`base remove <target...>` | 修改基线成员，不改变按需集合或解除黑名单 |
+| `/capability activate [target...]`、`deactivate [target...]` | 修改按需激活集合；省略目标时使用交互选择 |
+| `/capability blacklist list` | 查看禁用规则及其生效来源 |
+| `/capability blacklist add <target...>`、`blacklist remove <target...>` | 管理分支黑名单；不解除当前 Preset 或 SDK 的独立限制 |
 
-- `expr` 由 `+`／`-` 连接的 term 组成，term ∈ `enabled`、`disabled`、`active`、`inactive`、`tool`、`namespace`；不得含空格，首 term 隐含并集，`+` 取并集、`-` 排除，重复 term 拒绝。至多一个类别 term；只写类别时取该类别默认集 `enabled+active`，空表达式等价于 `enabled+active`。`tool` 指无命名空间的成员，`namespace` 指有命名空间的成员（含 MCP）。
-- 四态互斥穷尽：已管理只有 `enabled`／`disabled`，未管理的运行时成员为 `active`／`inactive`。四态是派生展示与过滤层，不写入管理记录；`active` 集只表示运行时选择，不冒充显式启用。
-- 类别归属：MCP 工具归 `namespace`（含 MCP 服务器），有非 MCP 命名空间的成员归 `namespace`，其余归 `tool`。按显示名称自然排序。列表只显示真实注册的工具；被 SDK 排除、未注册或当前作用域不可见的工具不出现。
-- 过滤为空时列出完整默认集；没有匹配时给出可恢复提示。浏览不激活工具、不写入记录、不授予权限。
-- 目标语法：精确工具名、`mcp://<server>`、`namespace://<name>`，以及 config 默认的 `foo*` 前缀（`enable`／`disable`／`reset` 同语法）；裸 token 按精确工具名处理，不做隐式组展开；组规则按命名空间名、别名或成员匹配当前及后续注册的成员。目标在**执行时**对照实时注册表解析：`/mcp` 重连后新注册或重新注册的工具无需重启即可浏览和启用；撤回并注册为 `hidden` 的成员被拒绝，陈旧选择不会激活已消失的注册。
-- 顺序为「先写记录、再应用效果」：权限记录是唯一持久化点；写入失败时不激活、不移除、不宣称成功，命令报告 `recordError`。未注册、隐藏、未获资格或受 SDK 限制的目标逐项报告，不使整条命令失败；重复设置幂等，不写第二条记录。
-- `enable` 只激活当前可用的具体成员；未注册、隐藏、未获资格或受 SDK 限制的成员只报告，不激活。显式启用是 root-only：子会话不能继承，也不会绕过祖先作用域、SDK 限制或资格要求。
-- `disable` 立即由执行钩子拒绝直接与 Codemode 嵌套调用；已开始的执行不自动取消。Codemode-only 成员立即移出 active；有独立声明的成员保留声明到下一次成功 compaction 再定向移除。只有禁用前已启用且实际使用过的工具才追加禁止提示。
-- `reset` 只解除显式规则，不激活工具、不授予授权；migrated 记录或 `capability.manualTools` 种子仍生效时报告 `stillManaged`。
-- `capability.manualTools` 是默认 `disabled` 种子，不是独立名单：名单内工具除非显式启用，否则默认禁用。跨 session 收信时接收根会话按当前资格激活 `msg_write`；`msg_write` 被种子默认禁用时，connect 的显式启用就是用户授权。
-- 已显式启用的 MCP 工具与发现选中的 MCP 工具同等对待：通过原生 MCP 准入、出现在 Codemode 可用目录中，并可作为 `read_mcp_resource` 的服务器选择依据；`read_mcp_resource` 自身仍需被选中或显式启用。
-- 授权与提示：显式启用不产生 `<capabilities>` 段落。启用追加工具声明；Subagent 共同及专属指引按当前调用方工具范围在请求尾部作为当前系统段落投影，不写进 description，也不用工具元数据改写头部 rules。第三方工具的 `promptSnippet`／`promptGuidelines` 仍遵循 Pi 原生段落更新；未支持中途 system 消息时可能折叠进头部。Chat Completions 的工具新增需要同时明确开启 `supportsMidConvoSystemMessages` 与 `supportsMidConvoToolAdditions`；仅有一个标志时不启用。标准路径仍使用顶层工具列表，同名 schema 更新可能重建前缀。共同指引与工具描述更新使用增量段落，详见[传输行为](provider-transports.md)。
-- 补全覆盖 `list` 的动词与 term，以及 `enable`／`disable`／`reset` 的目标（含 `mcp://<server>` 与 `namespace://<name>` 组引用，可连续追加）。分组优先展示，避免工具较多时被候选数量上限截断；可通过命名空间别名查找分组。
-- 命令只读写当前根会话：不发送消息、不唤醒 Subagent、不改变路由或 Budget。
+目标支持精确工具名、`mcp://<server>`、`namespace://<name>` 与前缀模式。具体成员在操作时对照实时注册表解析，未知或受限制成员逐项报告。浏览不激活、不写记录；取消选择无副作用。补全覆盖五组命令及实时目标。
+
+`/capability help` 是只读命令帮助入口，列出目标语法、修饰符、批量操作与交互选择方式，不发现或激活工具、不写分支记录。activate／deactivate 无目标时打开树形多选器，根层列出独立工具和 Namespace／MCP 容器，成员以 `├─`／`└─` 展示，确认后才统一提交。每个容器的可见成员窗口约七行，剩余成员以数量提示；窗口随光标移动展开，整个组件含标题、提示不超过终端一页。尺寸和可用高度预算与 `/btw` 复用内部 TUI 模块，业务会话与持久化不进入该模块。
+
+选择器的 ↑／↓ 仅移动同级项，← 返回父层，→ 进入容器；PageUp／PageDn 按可见容量翻页，Home／End 到当前同级首尾。Space 勾选工具，Tab 在当前项的可操作字段间移动，Space 修改聚焦的字段；容器提供成员加载方式和 schema 策略。进入折叠成员范围会自动调整可见窗口，返回容器后保留成员光标。激活确认使用 `[ns]` 加具体选中成员，避免确认时重新展开容器而影响未展示的新成员；deactivate 确认只提交具体成员名，不携带加载修饰符。取消不写状态，不要求搜索功能。
+
+基线添加与按需激活分别保存容器加载和具体成员选择。普通 Namespace／MCP 目标展开当前可激活成员；`namespace://<name>[ns]` 或 `mcp://<server>[ns]` 只加载容器元数据，成员须在同条命令中显式给出。多个容器和独立工具可以混用，显式成员按注册表归属匹配，不按参数位置划组。每个 `[ns]` 容器至少需要一个有效正向成员；成员全部被禁止、不可达或排除，以及默认展开后为空，均警告并拒绝整条选择，不写记录、不应用效果。
+
+`-<tool>` 是本次选择的排除项，不写黑名单，不取消已有基线或按需成员。普通容器目标产生一次成员快照，不形成持续的全员激活规则；之后注册的新成员不自动加入，deactivate 单个成员也不会被容器重新激活。再次显式激活普通容器则重新选择当前成员，包括此前主动取消的成员。基线移除或 deactivate 容器按当前成员操作，保留容器加载记录。黑名单不接受 `[ns]` 或本次选择排除语法；Namespace 与工具的禁止分别保留，任一命中形成原始黑名单事实，再由本会话基线白名单决定是否覆盖；祖先禁止不能被子会话覆盖。
+
+activate 与 base add 的目标可附加 `[lazy]` 或 `[no-lazy]`，容器可组合为 `[ns,lazy]` 或 `[ns,no-lazy]`。不带 schema 修饰符时遵守配置和既有显式覆盖；显式成员策略优先于同批容器策略。同条命令可混合不同工具的 schema 策略；冲突或非法修饰符在写入前拒绝。显式 lazy 选择必须具有可用 Codemode `only` 调用路径，否则整条选择拒绝，不自动切换模式。base remove、deactivate 与黑名单命令不接受这些加载修饰符。
+
+基线、按需激活、原始黑名单命中、实际阻断、SDK active 与当前可用性分别展示，不再合成为 enabled／disabled／active／inactive 四态。原始黑名单命中不等于实际阻断：本会话基线可覆盖它，列表仍保留禁止事实；未被覆盖的有效禁止不能通过保留声明或普通发现绕过。
+
+操作先写分支记录，再应用 SDK 效果。写入失败不改变工具集合，不宣称成功。已接受的管理意图与 SDK 实际激活结果分别报告；SDK 拒绝不能被当作已可用。命令只操作当前会话，不唤醒其他 Agent，不改变路由或 Budget。
+
+记录写入失败由 `recordError` 表达；记录成功但 SDK 效果应用失败由 `effectError` 表达，不回滚已经落盘的意图，也不自动重放。`changed` 表达本次记录了哪些目标操作，不保证每个目标都发生了实际激活或移除，实际效果使用独立结果字段。
+
+原生工具声明、Codemode 接口和动态指引继续遵循 Provider 协议及缓存边界，见[工具指引与缓存前缀](#工具指引与缓存前缀)。
 
 ### Capability 调用形态
 
@@ -145,7 +154,7 @@ API 协调应同时保证资源指引、工具状态与供应商接口声明一�
 
 ### 压缩时收缩发现能力
 
-Main 与普通 Subagent 在成功 compaction 后，若 `capability.pruneOnCompaction` 开启，或上次压缩以来应用 Preset 移除过基线工具，则移除窗口内未使用的 Capability 工具成员；使用证据包括直接执行结果和 Codemode 的持久化嵌套调用记录。显式禁用工具与发现恢复入口保留（不进入普通淘汰）。基础工具采用当前 Preset 快照中的工具选择；没有 Preset 工具选择时使用 Pi 设置的默认工具集。切换时保留的动态工具不纳入该基线，仍按窗口使用情况淘汰。MCP／namespace 按成员收缩，空组移除共同指引与记忆；Skill 不参与淘汰，不断开 MCP 连接。
+Main 与普通 Subagent 在成功 compaction 后，若 `capability.pruneOnCompaction` 开启，或上次压缩以来应用 Preset 移除过基线工具，则移除窗口内未使用的 Capability 工具成员；使用证据包括直接执行结果和 Codemode 的持久化嵌套调用记录。显式禁用工具与发现恢复入口保留（不进入普通淘汰）。基础工具采用当前 Preset 快照中的工具选择；没有 Preset 工具选择时使用 Pi 设置的默认工具集。切换时保留的动态工具不纳入该基线，仍按窗口使用情况淘汰。MCP／Namespace 的发现记忆按成员收缩，空组从发现记忆移除；独立加载的容器说明不因最后一个成员取消而丢失。Skill 不参与淘汰，不断开 MCP 连接。
 
 淘汰先写分支记录，再更新激活集。新 checkpoint 不再声明已撤下的成员；其首条 system message 包含固定的能力变更段，提示摘要中的相关描述属于历史信息，需要重新发现。该段不触发额外轮次，也不因后续重新启用而改写。重新发现通过尾部新声明恢复工具；恢复与分支切换遵守各自记录。压缩失败不淘汰；内部检索和 `/btw` 不独立运行这套机制。
 
@@ -191,60 +200,58 @@ Capability 调用仍等待检索完成，再返回筛选后的资源。复用执
 
 ## 工具权限管理
 
-工具权限管理是用户控制的三态状态：`not managed`、显式启用、显式禁用。它与工具选择、激活集和 Capability 自动发现是不同概念：显式启用表示用户要求该工具可用，显式禁用表示用户禁止该工具，二者都不表示工具是否已注册或当前是否激活。manual 与 blacklist 已收敛为同一份管理数据、同一套查询与修改接口，不保留第二份名单或额外协调状态。
+工具管理分别拥有基线白名单、按需激活集合和黑名单，不维护混合权限四态。当前会话优先级为「白名单 > 黑名单 > 普通发现／按需激活」；请求使用集合为「基线 ∪（按需激活集合 − 本会话黑名单）」。实际声明和调用还受注册状态、SDK 限制、父作用域、角色与深度约束，子会话白名单不能覆盖祖先禁止。
 
 ### 状态、记录与迁移
 
-- 管理记录保存在当前分支的 `capability-tool-permission` 自定义条目中，只追加、不重写；每条记录包含 `set`（目标与 `enabled`／`disabled`）与 `unset`（解除目标）。`unset` 是统一解除标记：覆盖显式、显式迁移与 config 默认条目。`resume`、`tree`、`fork`、`reload` 按分支重放。无记录或被 `unset` 覆盖即 `not managed`。
-- 目标为精确工具名（注册或未注册均可）、`mcp://<server>` 或 `namespace://<name>`；组规则按命名空间名、别名或成员匹配当前及后续注册的成员。裸 token 一律按精确工具名处理，不做隐式组展开。
-- 运行时仅读取规范权限与配置默认条目；启动、恢复与轮次生命周期绝不扫描已退役记录。对于已关闭的 v3 会话，请先备份文件并显式运行 `npm run migrate:tool-permissions -- <session.jsonl...>`。该离线工具在原条目 ID 处转换扁平的纯 manual 发现记录，并保留父链接、时间戳、消息、所有分支以及已记录的 Actor/Seed 检查点。写入前若检测到黑名单记录、混合发现类别、组级 manual 命中，或同时包含规范授权与已退役授权的文件，工具将拒绝写入；不受支持的文件需单独离线分析。写入并 `fsync` 后，工具通过同级临时文件原子替换原文件，不追加迁移标记；对已转换文件重复运行不会写入任何内容。配置中的 `capability.manualTools` 提供普通的默认 `disabled` 条目。规范规则覆盖配置默认条目（包括组级启用覆盖更窄的默认条目）；规范匹配之间的优先级由类型特异度与变更顺序决定。
-- SDK 命令行限制（`--exclude-tools`、严格 allowlist）不属于管理状态，也不合成为记录；解除管理不会解除 SDK 限制，查询与诊断不虚构 SDK 未提供的来源。
-- 只读查询不暴露来源、命中规则或诊断信息；需要时只返回状态与必要结果。
-
-- 激活、立即移除、压缩延后移除以及禁用提示均遵循成功变更后的最终生效权限。当所属组被禁用时，精确启用的成员仍保持激活；当所属组被启用时，精确禁用的成员不会被激活。调用方既可传入实时分支数组，也可传入分离的分支快照；两者使用相同的规范重放与优先级规则。
+- `capability-tool-base` v1 保存初始基线及后续 add／remove；当前 Preset 工具快照可建立新的基线。
+- `capability-tool-dynamic` v1 保存 activate／deactivate；发现选择也进入按需集合，`capability-prune` 移除被淘汰成员。
+- 基线与按需记录中的成员为具体工具名，容器引用独立保存在同条记录的加载信息中；一条命令不需要另建跨记录事务。容器拥有自己的描述与共同指引，成员拥有工具专属指引；两者不通过复制整组指引绑定。
+- `capability-tool-blacklist` v1 保存 add／remove。配置 `capability.blacklist` 提供启动默认黑名单，当前 Preset 的显式最终减项提供该 Preset 生命周期内的黑名单。各来源不因加入基线或激活而失效。
+- 三类分支事实仅追加，导航与恢复按当前分支重放；运行时不读取旧权限记录。历史转换仅由显式离线脚本执行，不在启动或请求中迁移。
+- 离线 `npm run migrate:tool-permissions -- <session.jsonl...>` 将支持的旧 enabled 记录转为基线添加，disabled 记录转为黑名单添加；保留原生条目 ID 与检查点。含 reset tombstone、同条记录混合 enabled／disabled、新旧记录混杂，或需要实时目录才能展开的 enabled 组／前缀等不能安全转换的文件会被拒绝，原文件保持不变，需单独离线处理。
+- SDK 的 `--exclude-tools` 和 allowlist 独立生效。扩展拿不到原生 `--tools -name` 的原始减项，因此该参数仍只遵循 Pi 原生初始选择语义，不冒充 Harness 黑名单。
 
 ### 派生视图与查询
-- 面向用户与程序的派生视图为互斥四态：已管理的 `enabled`／`disabled`，未管理的运行时成员 `active`／`inactive`。四态是展示与过滤层，不是第二份持久化状态；已管理工具不因处于 active 集而被报告为显式启用。
-- `/capability list [expr]` 与 RPC `tools.permission.query` 共用同一套表达式：term ∈ `enabled`、`disabled`、`active`、`inactive`、`tool`、`namespace`，`+`／`-` 连接，默认 `enabled+active`；只写类别时取该类别默认集。
-- 查询结果只包含名称、类别、`state`、是否已管理、是否注册与是否 active；不返回来源或命中规则。
+
+列表分别报告基线成员、按需成员、黑名单命中、SDK active、可激活与当前可用等事实，不用一个 state 字段覆盖不同维度。当前目录只观察实际注册状态；未注册不等于已禁用。黑名单查询可以保留未注册目标，以解释未来注册时的禁止规则。
 
 ### 生效优先级与入口
 
-- 显式禁用优先于显式启用、授权与激活选择：直接调用与 Codemode 嵌套调用都由执行钩子拒绝。显式启用是 root-only，子会话不能继承，也不会绕过祖先作用域、SDK 限制或资格要求。
-- 显式禁用后立即阻止后续调用；已开始的执行不自动取消，Agent 也不自动停止。Capability 发现候选、`/capability list` 与 Codemode 的 `ALL_TOOLS`、`describeTool`、`describeNamespace` 在全部模式下都不返回被禁工具及其接口信息；已记录的 `<capabilities>` 记忆段与工具指引投影同样排除。
-- 已启用且当前具有独立声明的工具被禁用后，钩子立即阻止调用，声明保留到下一次成功 compaction 再定向移除；没有独立声明的成员（按真实 loadout 的 `hiddenDeclarations` 与 `lazySchemas` mask 判定，包括 Codemode-only、生效模式 `only` 下被隐藏的 direct，以及被 lazy 组遮蔽的成员）立即从有效工具集移除，原始注册保留。
-- 解除（`reset`）写入 `unset` 标记，统一覆盖显式、显式迁移与 config 默认条目，回到 `not managed`；不自动激活工具、不授予授权。被更宽组规则覆盖的精确目标解除后仍由组规则管理，结果报告 `stillManaged`。
-- 管理状态不改变 SDK 的选择语义：`--tools -name` 不激活工具但仍注册；`--exclude-tools` 从注册表排除；Preset 工具选择同时提供当前快照范围的 enabled 授权，覆盖 manualTools 默认禁用，显式减项禁用优先，其余不覆盖独立用户权限；Capability 自动发现不产生显式管理记录。
-- 工具权限管理工具使用资格，不自动禁用同名扩展命令或领域控制操作。
+- 基线移除只改变基线；deactivate 只改变按需成员。工具仍属于另一集合时保持相应请求资格。
+- 基线白名单覆盖本会话黑名单，黑名单覆盖普通按需激活／发现；精确工具白名单也可覆盖本会话整个组的禁止。两份记录均保留，移除基线后原禁止重新生效；不自动移除黑名单。
+- 启动时尚未捕获基线的隐式默认可用性不作为白名单覆盖依据；捕获会排除当时被禁止的默认工具，避免仅因 SDK 初始 active 就取消配置禁止。之后显式 base add 或 Preset 正项可以建立覆盖。
+- 移除手动规则不移除当前 Preset 的独立禁用，也不能解除 SDK 限制。配置默认目标可由分支上的显式移除覆盖；尚有其他禁用来源时如实报告。
+- Preset 切换替换其基线及禁用贡献，不把减项累积为永久手动黑名单；clear 结束 Preset 禁用贡献，不回滚已应用模型、thinking 或基线。
+- 黑名单管理工具使用资格，不自动禁用同名扩展命令或领域控制操作。已开始的工具调用不自动取消。
 
 ### 模型提示与 compaction
 
-- 只有设置显式禁用前已经启用且在本会话当前上下文（上次 compaction 之后）实际使用过的工具才向模型追加禁止提示；使用证据沿用直接调用与 Codemode 嵌套调用记录，注册、发现和 `describeTool` 不算使用。未启用或未使用的工具不增加提示，规则与执行钩子仍然生效。
-- 禁止提示使用尾部追加的独立记录（`capability-tool-permission-notice`），不新增头部 system section，不复用普通淘汰的「重新发现」文案；同一工具不重复提示。
-- 成功 compaction 按当前管理状态定向移除仍被显式禁用的独立声明成员；`capability.pruneOnCompaction` 关闭时该定向移除仍然生效。普通淘汰继续按自身规则工作，同一工具同时涉及两者时使用禁止语义，不进入普通淘汰的「重新发现」提示。显式启用的工具受保护，不进入普通淘汰；旧 `capability-prune` 记录不再压过显式启用。压缩失败不提前移除，调用继续由钩子阻止。
+集合移除或禁用立即影响执行资格。没有独立声明的成员立即移出 SDK active；有独立声明的成员可按现有协议保留到下一次成功 compaction，不能用声明仍存在推断当前可执行。
+
+`capability-tool-blacklist-notice` 保存必要的模型禁用提示，不新增头部指令区块。压缩成功后移除失去资格的独立声明；压缩失败不提前删声明。普通未使用淘汰保护当前基线，按需工具按使用窗口收缩；黑名单的禁止不依赖普通淘汰开关。
 
 ### 子会话
 
-- 子会话不得自行解除祖先限制。Fresh 应用命名或临时 Preset 的工具选择时仍需通过祖先资格检查；例如 Preset 保留 `write`，祖先禁用仍会将它排除。Preset 的显式最终减项也作为该 Actor 的执行排除传播给后代。根会话将当前显式禁用，以及没有子会话独立 Harness 授权的 root-only 显式启用，作为 **live denial** 沿作用域父链传播。显式启用不自动授予子会话权限，也不撤销深度工具策略独立提供的 Harness 能力；复制到 Inherited 分支的启用记录同样不能遮蔽这些独立能力。祖先禁用、固定深度限制与角色最终排除仍然优先。denial 在每次资格解析时生效，已开始的执行不自动取消。
-- 已学到的名字不会从子会话记忆中物理删除；denial 在每次解析时覆盖它，所以不能把“已学到”当作仍可使用。
+基线和按需选择描述当前会话的可用工具，不是 root-only 授权。祖先黑名单通过实时父作用域传播，角色排除与固定深度约束继续优先；子会话不能靠自己的 Preset、base add 或 activate 解除祖先禁止。根配置的启动禁止在子会话中仍是外部围栏；父会话对该禁止的本地 base 覆盖只对父会话生效，不构成对子会话的继承授权。已记录历史不被改写，每次执行重新检查当前资格。
 
 ### 程序接口
 
-Harness RPC 独立接口提供权限查询与用户管理适配，与用户命令共用同一份领域操作和记录，不解析命令、通知或状态栏文本。状态、记录与传播语义由本节定义，程序接口只做结构化传输与结果适配，见 [Harness RPC 独立接口](#harness-rpc-独立接口)。
+RPC、用户命令、Preset 和发现发布复用工具管理领域操作。RPC 只处理校验、调用方绑定与结构化传输，不复制集合或规则状态，见[Harness RPC 独立接口](#harness-rpc-独立接口)。
 
 ## 模型 Preset
 
 `extensions/preset.ts`（随包默认加载）提供模型切换、思考级别、模型专属指引和工具选择。
 
-**配置。** 读取全局 agent 目录的 `presets.json` 与受信项目的 `.pi/presets.json`，项目同名项整体覆盖全局。每项可含 `model`（`provider`＋`id`）、`thinkingLevel`、`tools`、`codemode`（`mode`）与 `instructions`。`tools` 支持 `+name` 启用、`-name` 禁用；纯裸名列表替换 base tool 集合，禁止与任何带 `+`／`-` 前缀的项混用，混用拒绝整个 Preset 应用。工具选择始终基于会话首次启动捕获的初始工具集（原生默认工具、CLI 修饰与默认启用扩展工具，如 `capability`）计算，并记录为 Preset 工具基线；先应用 A 再应用 B 与直接应用 B 得到同一基线，跨 reload 不被前一个 Preset 污染。只有增减修饰符时，另保留当前已激活且有 Capability 发现或显式启用记录的工具；显式减项仍移除对应工具，裸名列表仍完整替换工具选择。保留的动态工具不写入 Preset 基线，继续由压缩淘汰策略管理。前后 Preset 基线比较时，若旧集合有工具不在新集合中，则下一次成功压缩执行淘汰，即使 `capability.pruneOnCompaction` 为 `false`；首次应用与初始基线比较，仅增加工具不触发，不改变全局配置。
+**配置。** 读取全局 agent 目录的 `presets.json` 与受信项目的 `.pi/presets.json`，项目同名项整体覆盖全局。每项可含 `model`（`provider`＋`id`）、`thinkingLevel`、`tools`、`codemode`（`mode`）与 `instructions`。`tools` 支持 `+name` 启用、`-name` 禁用；纯裸名列表替换 base tool 集合，禁止与任何带 `+`／`-` 前缀的项混用，混用拒绝整个 Preset 应用。工具选择始终基于会话首次启动捕获的初始工具集（原生默认工具、CLI 修饰与默认启用扩展工具，如 `capability`）计算，并记录为 Preset 工具基线；先应用 A 再应用 B 与直接应用 B 得到同一基线，跨 reload 不被前一个 Preset 污染。Preset 始终只替换基线；独立按需集合继续保留，显式减项通过黑名单阻止使用。启动基线只捕获一次，之后注册的 default-active 工具不会被自动纳入；若要在集合同步后保留，应显式加入基线或按需激活。保留的动态工具不写入 Preset 基线，继续由压缩淘汰策略管理。前后 Preset 基线比较时，若旧集合有工具不在新集合中，则下一次成功压缩执行淘汰，即使 `capability.pruneOnCompaction` 为 `false`；首次应用与初始基线比较，仅增加工具不触发，不改变全局配置。
 
-Preset 选中的 manual tool 具有 enable 语义，可声明与执行；普通基线工具保持原有继承资格。显式最终减项具有 disable 语义，覆盖用户 enable，并从发现与执行中排除。授权从当前 `preset-state` 快照派生，切换或 clear 撤销旧快照授权，不追加永久用户 enable 记录；除显式减项外，独立 `/capability` 权限记录优先；祖先与深度限制仍生效。未选中的 manual tool 继续默认禁用，不参与发现。
+Preset 正项建立当前基线，可覆盖本会话黑名单而不删除它；最终显式减项移除解析后的基线成员，并提供当前 Preset 生命周期内的禁止，切换或 clear 撤销该来源。后续显式 base add 可再次覆盖该禁止。祖先、角色、深度与 SDK 限制继续生效。
 
 **入口。** `/preset` 打开选择器，`/preset NAME` 应用指定项，`/preset clear`（`none`／`off`）停止管理，`--preset NAME` 在启动时应用；状态栏显示当前 Preset。这些交互入口只作用于当前 Main。Fresh routing 显式选择命名或临时 Preset，复用配置解析、应用与指引投影；Inherited 保持捕获的模型与分支状态。
 
 **应用与失败。** 先校验模型存在于目录，再 `setModel`；模型不可用则整体不应用并报错，绝不报成功；thinking 与 tools 随后应用。`instructions` is rendered from the current resolved branch snapshot as a request-local system section on every model call. Resume, tree, fork and reload restore current business state, without historical placement replay. A complete forced prompt retains SDK precedence.
 
-**分支与清除。** `preset-state` 记录保存应用时解析快照（model／thinking／tools／codemode／instructions），快照用于恢复指令、状态标识及压缩保护基线，不在恢复时强制重放 model／thinking／tools；这些运行状态由 Pi 原生恢复。工具 loadout 随实际请求记录，应用 Preset 后尚未发起请求就退出，恢复时可能仍使用上一份工具集。首次启动的初始工具集另存为 `preset-base` 供修饰符计算；`/preset clear`（及 `none`／`off`）显式清除直接分发而不加载预设配置，配置文件损坏或目录阻塞等不可读故障不阻碍退出已应用的快照、指引与 codemode 覆盖；清除写入 null 快照并停止管理，不回滚已有 model／thinking／tools。
+**分支与清除。** `preset-state` 记录保存应用时解析快照（model／thinking／tools／codemode／instructions），快照用于恢复指令、状态标识及压缩保护基线，不在恢复时强制重放 model／thinking／tools；这些运行状态由 Pi 原生恢复。工具 loadout 随实际请求记录，应用 Preset 后尚未发起请求就退出，恢复时可能仍使用上一份工具集。首次启动的初始工具集由共享 `capability-tool-base` 记录捕获，供修饰符计算；`/preset clear`（及 `none`／`off`）显式清除直接分发而不加载预设配置，配置文件损坏或目录阻塞等不可读故障不阻碍退出已应用的快照、指引与 codemode 覆盖；清除写入 null 快照并停止管理，结束 Preset 黑名单贡献，不回滚已有 model／thinking／基线。
 
 **Codemode 模式。** 扩展无公开 `codemode.mode` 写入通道。Preset 以 `codemode-mode` 分支记录覆盖本会话的生效模式，原生 Codemode 工具与 `capability.lazySchemas` 均读取该生效模式，从下一次请求生效；它只改变声明投影，不改变启用集合、显式启用记录或工具 exposure。若宿主无法应用该覆盖，只记录并给出 warning，不把未生效报成成功。
 
@@ -336,7 +343,7 @@ Subagent 共享工作目录。深度上限（`subagent.maxDepth`，默认 2）�
 - **地址**：目标 session 的受管 `Main` Socket 路径，与本地 `msg_write` 使用同一地址空间，没有第二套 scheme。`/subagent sessions` 直接显示该路径；外部编排者读取目录记录的 `socketDir` 推导同一路径。指向其他 session 非 `Main` 端点的路径以 `invalid_target` 拒绝，因此拿到任意子 Actor Socket 也不能越界。
 - **发现**：`/subagent sessions` 是用户侧发现入口；模型侧不注册 session 工具，外部编排者直接读取同一份共享目录：`socketRoot/sessions/<uid>.json` 由各 session 在 `initialize` 后发布，`retire` 时按记录归属删除；读取时按 `pid` 存活与记录自洽过滤，畸形或残留记录被忽略且不由他人删除。共享目录缺失（`ENOENT`）视为空目录；其他目录读取错误向调用方如实抛出并在命令入口报错，不伪装为「无存活 session」。记录只含稳定 uid（8 位十六进制）、session id、原生 session name、工作目录、`pid` 与起始时间，不含拓扑或对话内容。`pid` 只在本机解释，因此 `socketRoot` 必须保持本机私有；跨机共享 durable session 历史不受此限制。`subagent_list` 仍只描述当前根。
 - **补全**：`/subagent sessions con` 补全为 `sessions connect `；随后按实时存活目录补全目标 uid，候选显示会话名称、工作目录与完整 session id。可按 uid／完整 session id 的前缀或名称筛选；排除当前会话，不产生授权、激活或消息写入。选中后执行 connect 时仍重新校验目标是否存活。
-- **连接**：`/subagent sessions connect <uid|sessionId>` 由用户指定一个存活 session，参数是列表中显示的完整 uid 或完整原生 session id，不接受序号或别名。命令把该 session 的 uid、原生 session id、原生名称、工作目录与 Main 地址作为一条原生自定义上下文消息追加到当前会话：不触发新一轮，忙碌时按 SDK 队列语义在当前轮结束时落盘、下一轮可见；不改写提示词头部、不复制对方 transcript、不注入整份目录、不建立持久连接状态。同一次 connect 经用户启用路径（与 `/capability enable` 相同）启用 `msg_write`；`msg_write` 被列入 `manualTools` 时，本次 connect 就是显式授权，不需要额外命令、确认或握手。目标未知或已退出以 `session_not_found` 报告，指向自身以 `invalid_target` 拒绝；重复 connect 允许再次追加当前信息，显式启用记录保持幂等。connect 只写本会话，不发送消息、不唤醒对方。
+- **连接**：`/subagent sessions connect <uid|sessionId>` 由用户指定一个存活 session，参数是列表中显示的完整 uid 或完整原生 session id，不接受序号或别名。命令把该 session 的 uid、原生 session id、原生名称、工作目录与 Main 地址作为一条原生自定义上下文消息追加到当前会话：不触发新一轮，忙碌时按 SDK 队列语义在当前轮结束时落盘、下一轮可见；不改写提示词头部、不复制对方 transcript、不注入整份目录、不建立持久连接状态。同一次 connect 通过按需激活操作使 `msg_write` 可用；黑名单或 SDK 限制阻止该工具时明确报告失败，不以连接动作解除禁止。目标未知或已退出以 `session_not_found` 报告，指向自身以 `invalid_target` 拒绝；重复 connect 允许再次追加当前信息，按需激活记录保持幂等。connect 只写本会话，不发送消息、不唤醒对方。
 - **发送**：`msg_write` 接受上述路径，且只有 `Main` 可发送。宿主先按本 root 的受管端点解析：属于本 session 的路径走原有本地写入（`Main` 写给自己的 `Main` 由 Runtime 的 self-send 规则拒绝）；不属于本 root 时，只有目标为已发布 session 的 `Main` 才按跨 session 写入。线上帧只有 `from` 与 `content`，`from` 由发送宿主绑定为 `<session-uid>:Main`，模型不提供发送者或独立 session 字段。
 - **接收**：目标根只在其 `Main` 端点接受复合身份的帧。IPC 边界解析 `from` 的 `<uid>:Main`，要求该 uid 是当前存活的已发布 session；发送者自身的 uid 映射为本地 `Main`，交由 Runtime 的 self-send 规则拒绝。通过后把复合身份映射为 Runtime 的外部发送者描述（session id、完整 `from`、回复地址），不把复合身份当作本地 Actor ID。
 - **呈现**：接收方消息沿用统一的 `Message from` 标签，跨 session 的 `from` 显示完整身份 `<uid>:Main`；回复提示使用发送方真实的受管 `Main` Socket 地址，不再出现 `session:` 协议。普通消息不显示发送方的执行状态，只有终态通知带状态与轮次。
@@ -475,10 +482,9 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 | `approvals.list/get/respond/subscribe` | 真实审批队列和首次有效决定，保持超时、取消、无消费者时拒绝及退役释放 |
 | `sessions.list/connect` | 共享会话目录与联系操作，联系和发送相互独立 |
 | `tools.catalog`、`tools.detail` | 当前作用域目录与详情，报告 registered、eligible、active、managed 和 permission；禁用项保留，供用户管理 |
-| `tools.enable` | 用户显式启用工具或分组，与 `/capability enable` 共用同一份领域操作；不作为模型可调用的通用授权工具 |
-| `tools.permission.query` | 查询派生权限视图；`{expr?}` 返回 `scope`、`expression`、`entries` 与 `managed`；不返回来源或命中规则 |
-| `tools.permission.enable`、`tools.permission.disable` | 显式启用或禁用目标；返回逐项结果、受影响工具，以及 `disable` 立即移出 active 的无独立声明成员与延迟到 compaction 的声明成员 |
-| `tools.permission.reset` | 解除显式规则；返回 `reset`、`notManaged` 与仍然生效的 `stillManaged` |
+| `tools.activate`、`tools.deactivate` | 修改当前会话按需激活集合，与用户命令共用领域操作 |
+| `tools.base.list/add/remove` | 查询与修改工具基线，不修改按需集合与黑名单 |
+| `tools.blacklist.list/add/remove` | 查询与管理禁用目标，结果说明仍生效的来源与声明延期移除 |
 | `agents.tree` | 当前根 Agent 树 |
 | `jobs.list`、`jobs.get`、`jobs.result` | Job 列表、详情与单次结果；未就绪、不存在与读取失败分别表达 |
 | `subagent.create` | 创建子任务；宿主绑定父身份、根会话、工作目录、继承快照与容量限制，返回已登记项与失败项 |

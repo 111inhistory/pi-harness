@@ -35,11 +35,14 @@ export interface HarnessConfig {
     readonly noSelectionLimit: number;
     readonly pruneOnCompaction: boolean;
     /**
-     * Tool name patterns (exact, or a trailing `*` prefix) that only the user
-     * may enable. They are invisible to model discovery and never inherited by
-     * a subagent session; explicit user authorization is required.
+     * Blacklist patterns (exact names, a trailing `*` prefix, or
+     * `mcp://server` / `namespace://name`) applied as the `startup` source.
+     * A blacklisted tool never enters model discovery or execution and is
+     * inherited as a denial; adding it to base or activating it never overrides
+     * the prohibition. An explicit branch `blacklist remove` can override the
+     * matching target for the session.
      */
-    readonly manualTools: readonly string[];
+    readonly blacklist: readonly string[];
     /**
      * Explicit `mcp://<server>` or `namespace://<name>` refs whose tool schemas
      * are projected lazily only while Codemode is active in `only` mode. Member
@@ -97,7 +100,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
   capability: {
     noSelectionLimit: 3,
     pruneOnCompaction: true,
-    manualTools: [],
+    blacklist: [],
     lazySchemas: [],
     budget: { modelCalls: { soft: 16, hard: 20 }, activeTimeMs: { soft: 180_000, hard: 360_000 }, lifetimeMs: 600_000 },
     search: {
@@ -208,7 +211,7 @@ function mergeNode(base: object, value: unknown, source: string, field: string, 
     } else if (child === 'shell.approval.reviewer.provider' || child === 'shell.approval.reviewer.model') {
       if (typeof item !== 'string' || item.trim() === '') throw new HarnessConfigError(source, child, 'must be a non-empty string.');
       merged[key] = item;
-    } else if (child === 'capability.manualTools') {
+    } else if (child === 'capability.blacklist') {
       if (!Array.isArray(item) || item.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
         throw new HarnessConfigError(source, child, 'must be an array of non-empty tool name patterns.');
       }

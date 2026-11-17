@@ -5,7 +5,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import { buildToolPort } from "../../src/harness-rpc/ports/tool-info.ts";
 import { RpcRequestError } from "../../src/harness-rpc/error.ts";
-import { noticedToolPermissionNames } from "../../src/capability/tool-permission.ts";
 import { setIndependentDeclarations } from "../../src/capability/declaration-visibility.ts";
 
 interface FakeTool {
@@ -59,6 +58,10 @@ function makeApi(tools: FakeTool[], active: string[], branch: unknown[] = [], ev
   } as unknown as ExtensionAPI;
 }
 
+function seedBaseline(branch: unknown[], baseline: readonly string[] = []): void {
+  branch.push({ type: "custom", customType: "capability-tool-base", data: { version: 1, baseline: [...baseline] } });
+}
+
 function makeContext(branch: unknown[] = []): ExtensionContext {
   return {
     cwd: "/tmp/project",
@@ -77,44 +80,82 @@ const TOOLS: FakeTool[] = [
   { name: "script_only", description: "Script only", exposure: "codemode", sourceInfo: { source: "harness" } },
 ];
 
-test("catalog reports runtime facts and the four-state permission", () => {
-  const port = buildToolPort(makeApi(TOOLS, ["codemode"]), makeContext());
-  const result = port.catalog({});
-  assert.equal(result.total, 5);
+function byName<T extends { name: string }>(entries: readonly T[], name: string): T | undefined {
+  return entries.find((entry) => entry.name === name);
+}
 
-  const read = result.entries.find((entry) => entry.name === "read");
+test("catalog default lists current base+dynamic members with independent facts", () => {
+  const branch: unknown[] = [];
+  seedBaseline(branch);
+  const api = makeApi(TOOLS, ["codemode"], branch);
+  const port = buildToolPort(api, makeContext(branch));
+
+  port.baseAdd({ targets: ["read", "write"] });
+  port.activate({ targets: ["mcp__srv__query"] });
+
+  const result = port.catalog({});
+  assert.deepEqual(result.entries.map((entry) => entry.name).sort(), ["mcp__srv__query", "read", "write"]);
+
+  const read = byName(result.entries, "read");
   assert.ok(read);
   assert.equal(read.registered, true);
   assert.equal(read.eligible, true);
-  assert.equal(read.active, false);
-  assert.equal(read.permission, "inactive");
-  assert.equal(read.managed, false);
+  assert.equal(read.base, true);
+  assert.equal(read.dynamic, false);
+  assert.equal(read.blacklisted, false);
+  assert.equal(read.activatable, false);
+  assert.equal(read.usable, true);
+  assert.equal(read.active, true);
+  assert.deepEqual(read.blacklistSources, []);
+  assert.equal(read.category, "tool");
   assert.equal(read.exposure, "direct");
 
-  const codemode = result.entries.find((entry) => entry.name === "codemode");
-  // Runtime active and the derived permission state are both reported.
-  assert.equal(codemode?.active, true);
-  assert.equal(codemode?.permission, "active");
-
-  const mcp = result.entries.find((entry) => entry.name === "mcp__srv__query");
+  const mcp = byName(result.entries, "mcp__srv__query");
+  assert.equal(mcp?.base, false);
+  assert.equal(mcp?.dynamic, true);
   assert.equal(mcp?.category, "mcp");
   assert.equal(mcp?.namespace, "mcp__srv");
 });
 
-test("catalog filter narrows entries", () => {
-  const port = buildToolPort(makeApi(TOOLS, []), makeContext());
-  const result = port.catalog({ filter: "read" });
-  assert.deepEqual(result.entries.map((entry) => entry.name), ["read"]);
+test("includeActivatable expands self-loadable tools and includeUsable filters callable tools", () => {
+  const branch: unknown[] = [];
+  seedBaseline(branch, ["codemode"]);
+  const port = buildToolPort(makeApi(TOOLS, ["codemode"], branch), makeContext(branch));
+  port.baseAdd({ targets: ["read"] });
+
+  const defaultNames = port.catalog({}).entries.map((entry) => entry.name);
+  assert.deepEqual(defaultNames, ["codemode", "read"]);
+
+  const activatable = port.catalog({ includeActivatable: true });
+  const scriptOnly = byName(activatable.entries, "script_only");
+  assert.equal(scriptOnly?.activatable, true);
+  assert.equal(scriptOnly?.usable, false);
+  const write = byName(activatable.entries, "write");
+  assert.equal(write?.activatable, true);
+
+  const usable = port.catalog({ includeUsable: true });
+  assert.equal(byName(usable.entries, "codemode")?.usable, true);
+  assert.equal(byName(usable.entries, "write"), undefined,
+    "--usable filters out requested but inactive base members");
+  assert.equal(byName(usable.entries, "read")?.usable, true);
 });
 
-test("detail returns the schema and status, and rejects an unknown tool", () => {
-  const port = buildToolPort(makeApi(TOOLS, []), makeContext());
+test("detail reports the same facts and rejects an unknown tool", () => {
+  const branch: unknown[] = [];
+  seedBaseline(branch);
+  const api = makeApi(TOOLS, [], branch);
+  const port = buildToolPort(api, makeContext(branch));
+  port.baseAdd({ targets: ["write"] });
+
   const detail = port.detail({ name: "write" });
   assert.equal(detail.name, "write");
   assert.deepEqual(detail.parameters, { type: "object" });
   assert.equal(detail.registered, true);
-  assert.equal(detail.active, false);
-  assert.equal(detail.permission, "inactive");
+  assert.equal(detail.base, true);
+  assert.equal(detail.dynamic, false);
+  assert.equal(detail.blacklisted, false);
+  assert.equal(detail.activatable, false);
+  assert.equal(detail.usable, true);
 
   assert.throws(
     () => port.detail({ name: "nope" }),
@@ -122,111 +163,226 @@ test("detail returns the schema and status, and rejects an unknown tool", () => 
   );
 });
 
-test("capability user-enable still activates a registered tool", () => {
-  const api = makeApi(TOOLS, []);
-  const port = buildToolPort(api, makeContext());
-  const result = port.enable({ targets: ["write"] });
-  assert.ok(result.enabled.includes("write"));
+test("base list reports sources and base remove preserves dynamic membership", () => {
+  const branch: unknown[] = [];
+  seedBaseline(branch);
+  const api = makeApi(TOOLS, [], branch);
+  const port = buildToolPort(api, makeContext(branch));
+
+  port.baseAdd({ targets: ["write"] });
+  port.activate({ targets: ["write"] });
+  const listed = port.baseList();
+  assert.deepEqual(listed.targets.map((entry) => entry.target.target), ["write"]);
+  assert.deepEqual(listed.targets[0]?.sources, ["branch"]);
+  assert.deepEqual(listed.targets[0]?.affectedTools, ["write"]);
+
+  const removed = port.baseRemove({ targets: ["write"] });
+  assert.equal(removed.action, "base-remove");
+  assert.ok(api.getActiveTools().includes("write"), "dynamic membership still preserves the active tool");
+  assert.deepEqual(port.catalog({}).entries.map((entry) => entry.name), ["write"]);
+});
+
+test("blacklist add removes codemode-only members, holds declared ones and notices used tools", () => {
+  const branch: unknown[] = [
+    { type: "message", message: { role: "toolResult", toolName: "write", isError: false } },
+  ];
+  seedBaseline(branch);
+  const api = makeApi(TOOLS, ["write", "script_only"], branch);
+  const port = buildToolPort(api, makeContext(branch));
+
+  const added = port.blacklistAdd({ targets: ["write", "script_only"] });
+  assert.equal(added.action, "blacklist-add");
+  assert.ok(added.affectedTools.includes("write"));
+  assert.ok(added.affectedTools.includes("script_only"));
+  assert.deepEqual(added.removedActive, ["script_only"]);
+  assert.equal(api.getActiveTools().includes("script_only"), false);
+  assert.deepEqual(added.pendingCompaction, ["write"]);
+  assert.equal(api.getActiveTools().includes("write"), true);
+  assert.deepEqual(added.noticed, ["write"]);
+  assert.deepEqual([...added.stillBlacklisted].sort(), ["script_only", "write"]);
+  assert.deepEqual([...added.remainingSources], ["branch"]);
+
+  const write = port.detail({ name: "write" });
+  assert.equal(write.blacklisted, true);
+  assert.equal(write.usable, false);
+  assert.deepEqual(write.blacklistSources, ["branch"]);
+
+  const listed = port.blacklistList();
+  assert.deepEqual(listed.entries.map((entry) => entry.target.target).sort(), ["script_only", "write"]);
+  assert.deepEqual(listed.entries[0]?.sources, ["branch"]);
+});
+
+test("base overrides a local blacklist while the raw ban is retained", () => {
+  const branch: unknown[] = [];
+  seedBaseline(branch);
+  const api = makeApi(TOOLS, [], branch);
+  const port = buildToolPort(api, makeContext(branch));
+  port.baseAdd({ targets: ["write"] });
+  port.blacklistAdd({ targets: ["write"] });
+
+  const list = port.catalog({ includeActivatable: true, includeUsable: true });
+  const write = byName(list.entries, "write");
+  assert.ok(write);
+  assert.equal(write.base, true);
+  assert.equal(write.blacklisted, true);
+  assert.equal(write.blocked, false);
+  assert.equal(write.banOverridden, true);
+  assert.equal(write.usable, true);
+  assert.equal(port.baseList().targets.length, 1, "base membership and raw blacklist survive together");
+  assert.deepEqual(port.blacklistList().entries.map((entry) => entry.target.target), ["write"]);
+});
+
+test("a namespace ban is overridden only by exact base membership", () => {
+  const branch: unknown[] = [];
+  seedBaseline(branch);
+  const api = makeApi(TOOLS, [], branch);
+  const port = buildToolPort(api, makeContext(branch));
+  port.blacklistAdd({ targets: ["mcp://srv"] });
+
+  port.activate({ targets: ["mcp__srv__query"] });
+  const dynamic = port.detail({ name: "mcp__srv__query" });
+  assert.equal(dynamic.blacklisted, true);
+  assert.equal(dynamic.blocked, true);
+  assert.equal(dynamic.banOverridden, false);
+
+  port.baseAdd({ targets: ["mcp__srv__query"] });
+  const base = port.detail({ name: "mcp__srv__query" });
+  assert.equal(base.blacklisted, true, "namespace raw ban remains");
+  assert.equal(base.blocked, false);
+  assert.equal(base.banOverridden, true);
+  assert.equal(base.usable, true);
+});
+
+test("blacklist remove restores preserved membership and reports preset contributions that remain", () => {
+  const branch: unknown[] = [
+    {
+      type: "custom",
+      customType: "preset-state",
+      data: { version: 1, snapshot: { name: "strict", tools: ["write"], disabledTools: ["write"], instructions: null } },
+    },
+  ];
+  seedBaseline(branch);
+  const api = makeApi(TOOLS, [], branch);
+  const port = buildToolPort(api, makeContext(branch));
+  port.baseAdd({ targets: ["write"] });
+
+  const removed = port.blacklistRemove({ targets: ["write"] });
+  assert.equal(removed.action, "blacklist-remove");
+  assert.deepEqual([...removed.stillBlacklisted], ["write"]);
+  assert.deepEqual([...removed.remainingSources], ["preset"]);
+  assert.equal(api.getActiveTools().includes("write"), true, "base overrides the retained preset ban");
+  assert.deepEqual(port.blacklistList().entries.map((entry) => entry.target.target), ["write"]);
+});
+
+test("blacklist remove activates preserved base or dynamic membership and marks unrequested names", () => {
+  const branch: unknown[] = [];
+  seedBaseline(branch);
+  const api = makeApi(TOOLS, [], branch);
+  const port = buildToolPort(api, makeContext(branch));
+  port.baseAdd({ targets: ["read"] });
+  port.activate({ targets: ["write"] });
+  port.blacklistAdd({ targets: ["read", "write"] });
+
+  const removed = port.blacklistRemove({ targets: ["read", "write"] });
+  assert.deepEqual([...removed.activated, ...removed.alreadyActive].sort(), ["read", "write"]);
+  assert.deepEqual(removed.notRequested, []);
+  assert.deepEqual(removed.stillBlacklisted, []);
+  assert.deepEqual(removed.remainingSources, []);
+  assert.ok(api.getActiveTools().includes("read"));
   assert.ok(api.getActiveTools().includes("write"));
 });
 
-test("permission disable reads the declaration mask across extension API objects via the shared bus", () => {
+test("blacklist writes read the declaration mask across extension API objects via the shared bus", () => {
   const bus = makeBus();
   const branch: unknown[] = [
     { type: "message", message: { role: "toolResult", toolName: "write", isError: false } },
   ];
+  seedBaseline(branch);
   const capabilityApi = { events: bus } as unknown as ExtensionAPI;
   const rpcApi = makeApi(TOOLS, ["write"], branch, bus);
   assert.notEqual(rpcApi, capabilityApi, "the two extensions have distinct API objects");
 
-  // `write` is NOT independently declared by the native loadout; `read` is.
   setIndependentDeclarations(capabilityApi, () => new Set(["read"]));
 
   const port = buildToolPort(rpcApi, makeContext(branch));
-  const result = port.permissionDisable({ targets: ["write"] });
-
-  // The RPC port's own API object found the reader through the bus, so the
-  // decided effect is "no independent declaration" -> removed now.
-  assert.ok(result.removedActive.includes("write"));
-  assert.deepEqual(result.pendingCompaction, []);
+  const added = port.blacklistAdd({ targets: ["write"] });
+  assert.ok(added.removedActive.includes("write"));
+  assert.deepEqual(added.pendingCompaction, []);
   assert.equal(rpcApi.getActiveTools().includes("write"), false);
 });
 
-test("permission query uses the shared domain and rejects an invalid expression", () => {
+test("an SDK effect failure after a durable record is reported separately", () => {
   const branch: unknown[] = [];
-  const port = buildToolPort(makeApi(TOOLS, ["codemode"], branch), makeContext(branch));
-
-  const byDefault = port.permissionQuery({});
-  assert.equal(byDefault.scope, "branch");
-  assert.equal(typeof byDefault.expression, "string");
-  assert.ok(byDefault.entries.some((entry) => entry.name === "codemode" && entry.state === "active"));
-
-  const inactive = port.permissionQuery({ expr: "inactive" });
-  assert.ok(inactive.entries.some((entry) => entry.name === "read" && entry.state === "inactive"));
-  assert.equal(inactive.entries.some((entry) => entry.name === "codemode"), false);
-
-  assert.throws(
-    () => port.permissionQuery({ expr: "enabled nope" }),
-    (error: unknown) => error instanceof RpcRequestError && error.code === "invalid_request",
-  );
-});
-
-test("permission disable drops active codemode-only tools, holds declared ones and notices used tools", () => {
-  // No `events` bus: this covers the pure-domain / no-reader host, where the
-  // disabled branch falls back to each tool's exposure.
-  const branch: unknown[] = [
-    // Evidence that `write` was actually used: a completed direct tool result.
-    { type: "message", message: { role: "toolResult", toolName: "write", isError: false } },
-  ];
-  const api = makeApi(TOOLS, ["write", "script_only"], branch);
+  seedBaseline(branch);
+  const api = makeApi(TOOLS, [], branch);
   const port = buildToolPort(api, makeContext(branch));
+  api.setActiveTools = () => { throw new Error("sdk effect boom"); };
 
-  const disabled = port.permissionDisable({ targets: ["write", "script_only"] });
-  assert.equal(disabled.state, "disabled");
-  assert.ok(disabled.affectedTools.includes("write"));
-  assert.ok(disabled.affectedTools.includes("script_only"));
-  // A Codemode-only active tool is removed from the active set immediately.
-  assert.deepEqual(disabled.removedActive, ["script_only"]);
-  assert.equal(api.getActiveTools().includes("script_only"), false);
-  // An independently declared active tool keeps its declaration until compaction.
-  assert.deepEqual(disabled.pendingCompaction, ["write"]);
-  assert.equal(api.getActiveTools().includes("write"), true);
-  // An enabled-and-used tool gets a model-facing notice.
-  assert.deepEqual(disabled.noticed, ["write"]);
-  assert.equal(noticedToolPermissionNames(branch).has("write"), true);
-
-  // User-facing catalogues retain disabled tools so their permission can be managed.
-  const entries = port.catalog({}).entries;
-  for (const name of ["write", "script_only"]) {
-    const entry = entries.find(item => item.name === name);
-    assert.ok(entry);
-    assert.equal(entry.permission, "disabled");
-    assert.equal(entry.eligible, false);
-  }
-  assert.equal(port.detail({ name: "write" }).permission, "disabled");
-
-  const query = port.permissionQuery({ expr: "disabled" });
-  assert.deepEqual(query.entries.map((entry) => entry.name).sort(), ["script_only", "write"]);
+  const result = port.baseAdd({ targets: ["read"] });
+  assert.equal(result.recordError, null);
+  assert.match(result.effectError ?? "", /sdk effect boom/);
+  assert.deepEqual(result.changed.map((change) => change.target), ["read"]);
+  assert.ok(branch.some((entry) => (entry as { customType?: string }).customType === "capability-tool-base"));
 });
 
-test("permission enable re-admits a disabled tool and permission reset clears management", () => {
+test("unresolved targets are reported without changing membership", () => {
   const branch: unknown[] = [];
+  seedBaseline(branch);
   const api = makeApi(TOOLS, [], branch);
   const port = buildToolPort(api, makeContext(branch));
 
-  port.permissionDisable({ targets: ["write"] });
-  assert.equal(port.catalog({}).entries.find((entry) => entry.name === "write")?.permission, "disabled");
+  const result = port.baseAdd({ targets: ["missing"] });
+  assert.deepEqual(result.unresolved, ["missing"]);
+  assert.deepEqual(result.changed, []);
+  assert.deepEqual(port.baseList().targets, []);
+});
 
-  const enabled = port.permissionEnable({ targets: ["write"] });
-  assert.equal(enabled.state, "enabled");
-  assert.ok(enabled.activated.includes("write"));
-  assert.equal(port.catalog({}).entries.some((entry) => entry.name === "write"), true);
-  assert.equal(port.detail({ name: "write" }).permission, "enabled");
 
-  const reset = port.permissionReset({ targets: ["write", "never_managed"] });
-  assert.deepEqual(reset.reset.map((change) => change.target), ["write"]);
-  assert.deepEqual(reset.notManaged, ["never_managed"]);
-  // After reset the tool falls back to its runtime state (still active).
-  assert.equal(port.detail({ name: "write" }).managed, false);
-  assert.equal(port.detail({ name: "write" }).permission, "active");
+test("container and member schema modifiers stay one raw-target batch with separate result facts", () => {
+  const branch: unknown[] = [];
+  seedBaseline(branch, ["codemode"]);
+  branch.push({ type: "custom", customType: "codemode-mode", data: { version: 1, mode: "only" } });
+  const tools: FakeTool[] = [
+    { name: "read", description: "Read files", exposure: "direct" },
+    { name: "codemode", description: "Run scripts", exposure: "direct" },
+    { name: "msg_write", description: "Send a message", exposure: "deferred", namespace: { name: "subagent" } },
+    { name: "subagent_list", description: "List children", exposure: "deferred", namespace: { name: "subagent" } },
+    { name: "subagent_create", description: "Create a child", exposure: "deferred", namespace: { name: "subagent" } },
+  ];
+  const port = buildToolPort(makeApi(tools, ["codemode"], branch), makeContext(branch));
+
+  const result = port.activate({
+    targets: ["namespace://subagent[ns,lazy]", "msg_write", "subagent_list[no-lazy]", "-subagent_create"],
+  });
+  assert.equal(result.rejected, null);
+  assert.deepEqual(result.selected, ["msg_write", "subagent_list"]);
+  assert.deepEqual(result.noSchema, ["msg_write"]);
+  assert.deepEqual(result.schema, ["subagent_list"]);
+  assert.deepEqual(result.excluded, ["subagent_create"]);
+  assert.equal(result.containers.length, 1);
+  assert.equal(result.containers[0]?.target, "namespace://subagent");
+  assert.equal(result.containers[0]?.explicit, true);
+  assert.deepEqual(result.containers[0]?.members, ["msg_write", "subagent_list"]);
+  const record = branch.at(-1) as { customType?: string; data?: unknown } | undefined;
+  assert.equal(record?.customType, "capability-tool-dynamic");
+  assert.deepEqual(record?.data, {
+    version: 1,
+    load: ["namespace://subagent"],
+    activate: ["msg_write", "subagent_list"],
+    noSchema: ["msg_write"],
+    schema: ["subagent_list"],
+  });
+
+  const before = branch.length;
+  const empty = port.activate({ targets: ["namespace://subagent[ns]"] });
+  assert.equal(empty.rejected?.code, "container_without_members");
+  assert.equal(branch.length, before, "rejection writes nothing");
+
+  const malformed = port.activate({ targets: ["namespace://subagent[ns,lazy,no-lazy]"] });
+  assert.equal(malformed.rejected?.code, "invalid_selection");
+  assert.equal(branch.length, before, "malformed modifiers write nothing");
+
+  const blacklist = port.blacklistAdd({ targets: ["namespace://subagent[lazy]"] });
+  assert.equal(blacklist.rejected?.code, "selection_not_supported");
+  assert.equal(branch.length, before, "blacklist rejects selection modifiers");
 });

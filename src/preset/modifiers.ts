@@ -5,11 +5,12 @@
  * a tool selection the same way the rest of the CLI does: a plain name replaces
  * the inherited selection, `+name` adds a tool, and `-name` removes one.
  *
- * A preset's modifiers are always applied to the same *base* selection, never to
- * the selection a previous preset left behind. That is what makes "switch A then
- * B" and "apply B directly" land on the same final tool set: both compute from
- * the shared base instead of chaining. The base is a caller-supplied value, not
- * the current active set, precisely so this property holds.
+ * A preset's modifiers are always applied to the same session tool *baseline*,
+ * never to the selection a previous preset left behind. That is what makes
+ * "switch A then B" and "apply B directly" land on the same base selection:
+ * both compute from the shared baseline instead of chaining. The baseline is a
+ * caller-supplied value, not the current active set, precisely so this property
+ * holds.
  */
 
 /** One token: `+` add, `-` remove, `=` plain (establishes the replacement base). */
@@ -70,7 +71,13 @@ export function applyToolModifiers(base: readonly string[], tokens: readonly Too
   return [...selection];
 }
 
-/** Explicit final removals also fence a Fresh child's execution loadout. */
+/**
+ * Explicit final minus tokens, i.e. the preset's blacklist contribution.
+ *
+ * `+x -x` bans x; `-x +x` leaves it selected. The result is only a contribution:
+ * the tool-access domain applies it together with every other blacklist source,
+ * and it reaches a Fresh child as the Actor execution exclusion.
+ */
 export function excludedPresetTools(modifiers: readonly string[] = []): string[] {
   const excluded = new Set<string>();
   for (const token of parseToolModifiers(modifiers).tokens) {

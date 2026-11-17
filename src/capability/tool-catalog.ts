@@ -34,17 +34,13 @@ export interface EligibleToolCatalog<T extends CapabilityScopedTool> {
   readonly byName: ReadonlyMap<string, T>;
 }
 
-/** Discovery excludes manual tools; the user command and execution opt in. */
+/** One operation's exclusion rule; a blocked tool is not eligible. */
 export interface EligibleCatalogOptions<T> {
   /**
-   * Names prohibited by an effective permission for this operation. A disabled
-   * tool never enters an eligible catalog, so it is not a discovery candidate,
-   * an activation target or a listed capability.
-   */
-  readonly disabled?: (name: string) => boolean;
-  /**
-   * The same prohibition decided from the already-read record, so a catalog
-   * filter adds no second `getAllTools()` call.
+   * Whether the operation prohibits this registered record. A blacklisted tool
+   * never enters an eligible catalog, so it is neither a discovery candidate,
+   * an activation target nor a listed capability. The predicate receives the
+   * record, so a filter adds no second `getAllTools()` call.
    */
   readonly blocked?: (tool: T) => boolean;
 }
@@ -60,10 +56,8 @@ export function createEligibleToolCatalog<T extends CapabilityScopedTool>(
   options: EligibleCatalogOptions<T> = {},
 ): EligibleToolCatalog<T> {
   const view = createCapabilityScopeView(catalog);
-  const disabled = options.disabled;
   const blocked = options.blocked;
   const tools = catalog.getAllTools().filter((tool) => tool.exposure !== "hidden" && view.allows(tool.name)
-    && !(disabled?.(tool.name) ?? false)
     && !(blocked?.(tool) ?? false));
   const names = new Set<string>();
   const byName = new Map<string, T>();
