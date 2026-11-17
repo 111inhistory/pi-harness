@@ -1,6 +1,6 @@
 {
   "namespace": "Orchestrate independent background subagents for concurrent execution.",
-  "instructions": "Use subagent_list to inspect status and historyDir paths. Use msg_write to agent addresses, or your children.sock to broadcast to direct active agents without opening custom socket connections. Messaging a stopped agent revives it for a new round. A message from another session carries its full session identity in `from` and one managed reply address.",
+  "instructions": "Background subagents are independent sessions; coordinate them through these tools.",
   "create": {
     "description": "Create background subagents for concurrent execution, non-blocking. Returns agent IDs and socket addresses.",
     "snippet": "Delegate parallel workloads to direct subagents",
@@ -24,7 +24,8 @@
     "parameters": {
       "all": "Show every agent without group limits or folding. Default false.",
       "id": "Filter to a specific agent's visible subtree. Returns null if absent."
-    }
+    },
+    "guideline": "Use subagent_list to inspect status and historyDir paths."
   },
   "stop": {
     "description": "Request cancellation of an agent by id, non-blocking. May return stopping or finalizing while execution or history writes finish.",
@@ -37,6 +38,9 @@
     "description": "Send a plain-text message to a managed Agent IPC endpoint: Unix Socket or Windows Named Pipe. The host binds the sender and transport framing. Omit from/to, JSON or NDJSON envelopes, and trailing newlines. A path that is another live session's Main endpoint reaches that session's Main; that session sees your session identity and a reply address.",
     "snippet": "Send plain-text messages to agents through their Socket paths",
     "guidelines": [
+      "Use msg_write to agent addresses, or your children.sock to broadcast to direct active agents without opening custom socket connections.",
+      "Messaging a stopped agent revives it for a new round.",
+      "A message from another session carries its full session identity in `from` and one managed reply address.",
       "Provide the message body as plain text content; do not add from/to, JSON/NDJSON framing, a trailing newline, or a custom Socket client."
     ],
     "parameters": {

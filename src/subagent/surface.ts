@@ -208,7 +208,7 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
     defaultActive: false,
     label: "List Subagents",
     description: TOOL_TEXT.list.description,
-    promptGuidelines: [SUBAGENT_NAMESPACE_INSTRUCTIONS],
+    promptGuidelines: [SUBAGENT_NAMESPACE_INSTRUCTIONS, TOOL_TEXT.list.guideline],
     parameters: listParameters,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const host = await resolveHost(ctx);
@@ -316,6 +316,7 @@ const TOOL_TEXT: SurfaceToolText = {
   },
   list: {
     description: text('list', 'description'),
+    guideline: text('list', 'guideline'),
     parameters: { all: text('list', 'parameters', 'all'), id: text('list', 'parameters', 'id') },
   },
   stop: {
@@ -369,7 +370,11 @@ interface SurfaceToolText {
       };
     };
   };
-  readonly list: { readonly description: string; readonly parameters: { readonly all: string; readonly id: string } };
+  readonly list: {
+    readonly description: string;
+    readonly guideline: string;
+    readonly parameters: { readonly all: string; readonly id: string };
+  };
   readonly stop: { readonly description: string; readonly parameters: { readonly id: string } };
   readonly msgWriteGuidelines: readonly string[];
 }

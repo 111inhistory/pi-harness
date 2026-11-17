@@ -515,8 +515,10 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 
 | 模块 | 资产字段 | 装配位置 |
 | --- | --- | --- |
-| A：共同范围与通信 | tools 的 `namespace`、`instructions` | 初始共同指引随首次成员声明投影；正文变化在尾部增量更新，Capability 记忆不重复该 namespace 的 instructions |
-| B：派生与协调 | tools 的 `create.guideline` | 随 `subagent_create` 首次声明投影独立系统段落，不追加到 list／stop 的共同指引 |
+| A：共同范围 | tools 的 `namespace`、`instructions` | 仅保留适用于所有成员的共同说明；原生声明已提供时不重复，容器独立加载或 schema 延迟隐藏时通过当前指引投影 |
+| B：派生与协调 | tools 的 `create.guideline` | 只随 `subagent_create` 提供；延迟 schema 时保留工具专属指引，不追加到 list／stop／msg_write |
+| 列表查询 | tools 的 `list.guideline` | 只随 `subagent_list` 提供 |
+| 消息通信 | tools 的 `msg_write.guidelines` | 只随 `msg_write` 提供目标寻址、广播、唤醒、身份与报文格式规则，不包含创建或编排指引；延迟 schema 时保留工具专属指引 |
 | C：子会话身份与交付 | turns 的 `context` | 所有子会话的 `appendSystemPrompt`；替换实际 Agent ID、Parent ID 与父端点 |
 | D1：Fresh 职责 | `subagent-routing.json` 的角色说明 | Fresh 路由后注入，续跑保留已记录角色 |
 | 共同工作指引 | `subagent.prompts.common`，内置为空 | Fresh 与 Inherited 的当前会话装配均追加一次非空正文 |

@@ -274,12 +274,40 @@ test("the root surface registers controls and messaging without overriding write
     assert.ok(tool.description.length > 0, "usage guidance travels in the tool declaration");
   }
   assert.deepEqual(registered[0]!.promptGuidelines, [asset.instructions, asset.create.guideline]);
-  assert.deepEqual(registered[1]!.promptGuidelines, [asset.instructions]);
+  assert.deepEqual(registered[1]!.promptGuidelines, [asset.instructions, asset.list.guideline]);
   assert.deepEqual(registered[2]!.promptGuidelines, [asset.instructions]);
   assert.deepEqual(registered[3]!.promptGuidelines, [asset.instructions, ...asset.msg_write.guidelines]);
+
+  // The shared namespace text is only what applies to every member tool.
+  for (const specific of ['children.sock', 'messaging', 'msg_write', 'subagent_list', 'subagent_create', 'inheritContext']) {
+    assert.ok(!asset.instructions.toLowerCase().includes(specific.toLowerCase()),
+      `shared namespace instructions must not carry tool-specific text: ${specific}`);
+  }
+  // Create orchestration belongs only to subagent_create.
+  const createGuidelines = registered[0]!.promptGuidelines ?? [];
+  assert.ok(createGuidelines.includes(asset.create.guideline));
+  for (const other of [1, 2, 3]) {
+    assert.ok(!registered[other]!.promptGuidelines?.includes(asset.create.guideline),
+      'create orchestration must not leak into another Subagent tool');
+  }
+  // Messaging rules belong only to msg_write; list guidance belongs only to subagent_list.
+  const msgWriteGuidelines = registered[3]!.promptGuidelines ?? [];
+  assert.ok(msgWriteGuidelines.includes(asset.list.guideline) === false,
+    'the list usage rule is not messaging guidance');
+  for (const rule of asset.msg_write.guidelines) {
+    assert.ok(msgWriteGuidelines.includes(rule));
+    for (const other of [0, 1, 2]) {
+      assert.ok(!registered[other]!.promptGuidelines?.includes(rule),
+        'messaging rules must not attach to a non-messaging Subagent tool');
+    }
+  }
+  assert.ok(asset.msg_write.guidelines.some((rule: string) => rule.includes('children.sock')),
+    'broadcast messaging guidance lives on msg_write');
+  assert.ok(asset.msg_write.guidelines.some((rule: string) => rule.includes('revives')),
+    'revive semantics live on msg_write');
   assert.ok(!registered.some(tool => tool.name === "write"));
-  for (const text of [asset.instructions, asset.create.snippet, asset.create.guideline, asset.list.snippet,
-    asset.stop.snippet, asset.msg_write.snippet, ...asset.msg_write.guidelines]) {
+  for (const text of [asset.instructions, asset.create.snippet, asset.create.guideline, asset.list.guideline,
+    asset.list.snippet, asset.stop.snippet, asset.msg_write.snippet, ...asset.msg_write.guidelines]) {
     assert.ok(!registered.some((tool) => tool.description.includes(text)),
       "guidance is projected natively via promptGuidelines, not folded into a tool description");
   }

@@ -17,7 +17,7 @@ JSON 仅为存储格式，不改变面向模型的排版、空白或装配方式
 | `btw.json` | `system`、`toolsBlocked` | 独立问答的附加指令与模型收到的工具阻断说明 |
 | `async-shell.json` | `guideline` | Shell 工具的 pi-job Skill 入口提示，使用环境变量与相对路径 |
 | `capability-discovery.json` | `system`<br>`user` | 内部检索 Agent 的系统补充与启动检索的用户提示词 |
-| `subagent-tools.json` | `instructions`<br>工具描述及参数说明 | Subagent 命名空间的使用规则、创建／列表／停止／消息工具说明与参数文本 |
+| `subagent-tools.json` | `instructions`<br>`create.guideline`、`list.guideline`、`msg_write.guidelines`<br>工具描述及参数说明 | Namespace 共同规则与工具专属规则分开；创建编排、列表查询、消息通信分别由对应工具承载，域归属不要求附带所有成员的操作说明 |
 | `subagent-turns.json` | `context`、`inheritedContext`<br>turn 标题、跨 session 消息标题与续跑控制 | 子 Agent 的身份、直接父节点和消息地址说明；任务标题、消息归属、跨 session 发送者与回复地址标题、续跑控制与 Inherited 默认上下文指引 |
 | `execution-budget.json` | `warning` | 共享 Budget 的软阈值收尾提示 |
 | `capability-tools.json` | 工具说明与参数定义 | Capability 公开工具与内部 `capability_step` 的说明及参数文本 |
