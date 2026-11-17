@@ -15,7 +15,7 @@ import {
   type TuiMouseEventResult,
 } from '@earendil-works/pi-tui';
 
-import { availableInlineRows, terminalRows } from './terminal-layout.ts';
+import { INLINE_HOST_RESERVE_ROWS, inlinePanelBudget, type InlinePanelBudget } from './terminal-layout.ts';
 import { BtwTranscript, type BtwTurnState } from './btw-transcript.ts';
 
 export interface BtwPanelOptions {
@@ -27,12 +27,9 @@ export interface BtwPanelOptions {
   onClose(): void;
 }
 
-/** The dock targets half of the terminal. */
-const PANEL_HEIGHT_RATIO = 0.5;
-
-/** Best-effort terminal check: the preferred panel floor plus one Main row. */
+/** Best-effort terminal check: the component floor plus the estimated host reserve. */
 export function btwRequiredTerminalRows(minRows: number): number {
-  return Math.max(1, Math.floor(minRows)) + 1;
+  return Math.max(1, Math.floor(minRows)) + INLINE_HOST_RESERVE_ROWS;
 }
 
 /** The composer keeps at least one row and never grows past this share of the panel. */
@@ -157,7 +154,7 @@ export class BtwPanel implements Component, Focusable {
     if (!this.terminalFits()) {
       this.geometry = null;
       this.viewportHeight = 0;
-      return [truncateToWidth(this.tooSmallLine(), columns, '')];
+      return [truncateToWidth(this.tooSmallLine(columns), columns, '')];
     }
     const editorLines = this.editor.render(columns);
     const layout = this.panelLayout(editorLines.length);
@@ -329,36 +326,28 @@ export class BtwPanel implements Component, Focusable {
     };
   }
 
-  /** Rows left for the dock once the main conversation keeps one row above it. */
-  private availableRows(): number {
-    return availableInlineRows(this.tui);
-  }
-
-  /** Best-effort floor: the preferred minimum rows plus one for the main conversation. */
-  private requiredRows(): number {
-    return btwRequiredTerminalRows(this.options.minRows);
+  /** One shared policy: half-terminal target, component floor, estimated host reserve. */
+  private budget(): InlinePanelBudget {
+    return inlinePanelBudget(this.tui, this.options.minRows);
   }
 
   private terminalFits(): boolean {
-    return terminalRows(this.tui) >= this.requiredRows();
+    return this.budget().fits;
   }
 
-  private tooSmallLine(): string {
-    return this.theme.fg(
-      'error',
-      `terminal too small for /btw · needs ${String(this.requiredRows())} rows · esc closes`,
-    );
+  private tooSmallLine(columns: number): string {
+    const budget = this.budget();
+    const compact = `terminal too small · /btw needs ${String(budget.requiredTerminalRows)} rows (${String(budget.minRows)}+${String(INLINE_HOST_RESERVE_ROWS)})`;
+    const full = `terminal too small · /btw needs ${String(budget.requiredTerminalRows)} rows (${String(budget.minRows)} panel + ${String(INLINE_HOST_RESERVE_ROWS)} reserved) · esc closes`;
+    return this.theme.fg('error', columns >= full.length ? full : compact);
   }
 
   /**
-   * The dock targets half of the terminal, the height the user asked for; only
-   * the row the main conversation keeps above it caps that target.
+   * The dock targets half of the terminal; the component floor and the
+   * estimated host reserve bound that target.
    */
   private panelLayout(editorHeight: number): PanelLayout {
-    const rows = terminalRows(this.tui);
-    const floor = Math.max(1, Math.floor(this.options.minRows));
-    const desired = Math.max(floor, Math.round(rows * PANEL_HEIGHT_RATIO));
-    const total = Math.max(1, Math.min(desired, this.availableRows()));
+    const total = this.budget().height;
 
     // The title always survives; the help row and separator give way first, then
     // the composer shrinks to a single row so the answer keeps one visible line.

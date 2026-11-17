@@ -169,7 +169,7 @@ test('/btw refuses a terminal that cannot hold the dock minimum', async (t) => {
   assert.equal(f.mounts, 1, 'the command asks the SDK for the editor slot once');
   assert.equal(f.mounted, 0, 'the dock is never mounted below its minimum rows');
   assert.equal(f.panel, undefined);
-  assert.match(f.notices[0] ?? '', /prefers at least 9 terminal rows for its 8-row dock; this terminal has 6/);
+  assert.match(f.notices[0] ?? '', /needs at least 12 terminal rows for its 8-row panel \(4 rows reserved for the host\); this terminal has 6/);
   assert.deepEqual(f.manager.getBranch(), f.before, 'a refused open leaves Main untouched');
 });
 
@@ -191,23 +191,23 @@ test('/btw refuses a configured floor taller than the terminal', async (t) => {
   await f.invoke('floor too tall');
 
   assert.equal(f.mounted, 0);
-  assert.match(f.notices[0] ?? '', /prefers at least 31 terminal rows for its 30-row dock; this terminal has 24/);
+  assert.match(f.notices[0] ?? '', /needs at least 34 terminal rows for its 30-row panel \(4 rows reserved for the host\); this terminal has 24/);
 });
 
 test('/btw opens exactly at the required height and refuses one row short', async (t) => {
   await agentRoot(t);
 
-  const exact = fixture('tui', 9);
+  const exact = fixture('tui', 12);
   const pending = exact.invoke();
-  assert.ok(exact.panel, 'nine rows are the preferred minimum plus one row for Main');
+  assert.ok(exact.panel, 'twelve rows are the component minimum plus the host reserve');
   assert.equal(exact.panel.render(60).length, 8, 'the dock keeps its configured minimum');
   exact.panel.handleInput('\x1b');
   await pending;
 
-  const short = fixture('tui', 8);
+  const short = fixture('tui', 11);
   await short.invoke();
-  assert.equal(short.mounted, 0, 'eight rows cannot hold the preferred minimum and a Main row');
-  assert.match(short.notices[0] ?? '', /prefers at least 9 terminal rows/);
+  assert.equal(short.mounted, 0, 'eleven rows cannot hold the component minimum and the reserve');
+  assert.match(short.notices[0] ?? '', /needs at least 12 terminal rows/);
 });
 
 

@@ -112,14 +112,14 @@ function typeText(panel: BtwPanel, text: string): void {
   for (const character of text) panel.handleInput(character);
 }
 
-/** The dock's row budget: half the terminal, floored, capped by the rows it can claim. */
+/** The dock's row budget: half the terminal, floored, capped by the estimated host reserve. */
 function panelRows(rows: number, minRows = 8): number {
-  return Math.max(1, Math.min(Math.max(minRows, Math.round(rows / 2)), rows - 1));
+  return Math.max(1, Math.min(Math.max(minRows, Math.round(rows / 2)), rows - 4));
 }
 
-/** Best-effort floor: the preferred minimum plus one row for the main conversation. */
+/** Best-effort floor: the component minimum plus the estimated host reserve. */
 function requiredRows(minRows = 8): number {
-  return minRows + 1;
+  return minRows + 4;
 }
 
 function longAnswer(count: number): string {
@@ -380,7 +380,7 @@ test('the dock keeps a terminal-sized height that long answers cannot grow', asy
     h.tui.terminal.rows = rows;
     const lines = h.panel.render(50);
     assert.equal(lines.length, 1, `rows=${rows} collapses to the error row`);
-    assert.match(plain(lines), /terminal too small for \/btw/);
+    assert.match(plain(lines), /terminal too small/);
   }
 });
 
@@ -683,10 +683,10 @@ test('shrinking the terminal below the dock minimum reports an error instead of 
   h.panel.render(50);
   assert.ok(h.panel.render(50).length > 1, 'the dock is open');
 
-  h.tui.terminal.rows = 8; // one row short of the preferred minimum plus a transcript row
+  h.tui.terminal.rows = requiredRows() - 1; // one row short of the component floor plus reserve
   const small = h.panel.render(50);
   assert.equal(small.length, 1, 'a squeezed dock is replaced by a single error row');
-  assert.match(plain(small), /terminal too small for \/btw · needs 9 rows/);
+  assert.match(plain(small), /terminal too small · \/btw needs 12 rows \(8\+4\)/);
 
   typeText(h.panel, 'invisible');
   h.panel.handleInput('\r');

@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import { harnessConfigFor } from '../harness-config.ts';
 import { captureInheritedContext } from '../inherited-context.ts';
 import { BtwPanel, btwRequiredTerminalRows } from '../tui/btw-panel.ts';
+import { INLINE_HOST_RESERVE_ROWS } from '../tui/terminal-layout.ts';
 import { openBtwConversation, type BtwConversation } from './session.ts';
 
 interface OpenPanel {
@@ -61,14 +62,14 @@ class TerminalNotFullscreen extends Error {
 }
 
 /**
- * Best-effort check: the terminal cannot even hold the preferred minimum plus one
- * row for the main conversation. It says nothing about the height the SDK layout
+ * Best-effort check: the terminal cannot hold the component floor plus the
+ * estimated host reserve. It says nothing about the height the SDK layout
  * finally grants the dock.
  */
 class TerminalTooSmall extends Error {
   constructor(minRows: number, rows: number) {
     super(
-      `/btw prefers at least ${String(btwRequiredTerminalRows(minRows))} terminal rows for its ${String(minRows)}-row dock; this terminal has ${String(rows)}.`,
+      `/btw needs at least ${String(btwRequiredTerminalRows(minRows))} terminal rows for its ${String(minRows)}-row panel (${String(INLINE_HOST_RESERVE_ROWS)} rows reserved for the host); this terminal has ${String(rows)}.`,
     );
     this.name = 'TerminalTooSmall';
   }
@@ -129,8 +130,9 @@ export function installBtwCommand(pi: ExtensionAPI): void {
           if (tui.mode !== 'fullscreen') throw new TerminalNotFullscreen();
           const rows = tui.terminal.rows;
           // A dock that cannot keep its configured minimum rows is refused rather
-          // than squeezed, so the answer never becomes unreadable. The transcript
-          // keeps one row above the dock, and the SDK's dock frame keeps its own.
+          // than squeezed, so the answer never becomes unreadable. The reserve is
+          // an estimate for host chrome because the SDK exposes no allocated-height
+          // hook; it is not a second configurable terminal threshold.
           if (!Number.isFinite(rows) || rows < btwRequiredTerminalRows(minRows)) {
             throw new TerminalTooSmall(minRows, Number.isFinite(rows) ? rows : 0);
           }

@@ -104,14 +104,14 @@ function activeTheme(): Theme {
   return value as Theme;
 }
 
-/** The dock's row budget: half the terminal, floored, capped by the rows it can claim. */
+/** The dock's row budget: half the terminal, floored, capped by the estimated host reserve. */
 function panelRows(rows: number, minRows = 8): number {
-  return Math.max(1, Math.min(Math.max(minRows, Math.round(rows / 2)), rows - 1));
+  return Math.max(1, Math.min(Math.max(minRows, Math.round(rows / 2)), rows - 4));
 }
 
-/** Best-effort floor: the preferred minimum plus one row for the main conversation. */
+/** Best-effort floor: the component minimum plus the estimated host reserve. */
 function requiredRows(minRows = 8): number {
-  return minRows + 1;
+  return minRows + 4;
 }
 
 /**
@@ -500,13 +500,13 @@ test('a real resize below the dock minimum surfaces an error and recovers', asyn
   h.tui.renderNow(true);
   assert.match(h.screen().join('\n'), /btw · side question/);
 
-  h.terminal.resize(8);
+  h.terminal.resize(requiredRows() - 1);
   h.tui.renderNow(true);
   const shrunk = h.screen();
-  assert.equal(shrunk.length, 8, 'the frame follows the new terminal height');
-  assert.match(shrunk.join('\n'), new RegExp(`terminal too small for /btw · needs ${String(requiredRows())} rows`));
+  assert.equal(shrunk.length, requiredRows() - 1, 'the frame follows the new terminal height');
+  assert.match(shrunk.join('\n'), new RegExp(`terminal too small · /btw needs ${String(requiredRows())} rows \\(8 panel \\+ 4 reserved\\)`));
   assert.doesNotMatch(shrunk.join('\n'), /btw · side question/, 'no squeezed dock is left behind');
-  assert.ok(shrunk.slice(8 - 2).join('\n').includes('FOOTER_MODEL'), 'the footer still gets its rows');
+  assert.ok(shrunk.slice(shrunk.length - 2).join('\n').includes('FOOTER_MODEL'), 'the footer still gets its rows');
 
   h.terminal.resize(30);
   h.tui.renderNow(true);
