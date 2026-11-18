@@ -1,6 +1,6 @@
 /** Namespace prose and native guidance identities from the current tool catalog. */
 import type { ToolInfo } from '@earendil-works/pi-coding-agent';
-import { renderCurrentToolGuidance, toolGuidanceSection, type ToolGuidance } from '../tool-guidance.ts';
+import type { ToolGuidance } from '../tool-guidance.ts';
 import { capabilityRef, mcpRef } from './refs.ts';
 import { mcpIdentity } from './broker.ts';
 
@@ -46,8 +46,10 @@ export function nativelyGuidedNamespaces(
   tools: readonly NamespaceTool[],
   callable?: ReadonlySet<string>,
   declared?: ReadonlySet<string>,
+  nativeRulesRendered = true,
 ): ReadonlySet<string> {
   const covered = new Set<string>();
+  if (!nativeRulesRendered) return covered;
   const activeSet = declared ?? callable;
   for (const tool of tools) {
     const namespace = tool.namespace;
@@ -56,7 +58,7 @@ export function nativelyGuidedNamespaces(
     if (activeSet && !activeSet.has(tool.name)) continue;
     if (declared && !declared.has(tool.name)) continue;
     if (callable && !callable.has(tool.name)) continue;
-    if (tool.promptGuidelines?.some((line) => line === namespace.instructions || line.includes(instructions))) {
+    if (tool.promptGuidelines?.some((line) => line.trim() === instructions)) {
       covered.add(namespace.name);
     }
   }
@@ -101,9 +103,10 @@ export function registeredToolGuidance(
    * not sent; their own text comes from {@link withheldToolGuidance}.
    */
   schemaWithheld: ReadonlySet<string> = NO_WITHHELD,
+  nativeRulesRendered = true,
 ): readonly ToolGuidance[] {
   const covered = new Set(assets.flatMap(entry => entry.namespace ? [entry.namespace] : []));
-  for (const name of nativelyGuidedNamespaces(tools, callable, declared)) {
+  for (const name of nativelyGuidedNamespaces(tools, callable, declared, nativeRulesRendered)) {
     covered.add(name);
   }
   // A live, unblocked loaded container (or a withheld declaration) keeps
@@ -150,13 +153,13 @@ export function registeredToolGuidance(
 export function projectedNamespaceRefs(
   guidance: readonly ToolGuidance[],
   tools: readonly NamespaceTool[],
-  rendered: Readonly<Record<string, string>> = renderCurrentToolGuidance(guidance),
   declared?: ReadonlySet<string>,
   callable?: ReadonlySet<string>,
+  nativeRulesRendered = true,
 ): ReadonlySet<string> {
-  const emitted = new Set<string>(nativelyGuidedNamespaces(tools, callable, declared));
+  const emitted = new Set<string>(nativelyGuidedNamespaces(tools, callable, declared, nativeRulesRendered));
   for (const entry of guidance) {
-    if (!entry.namespace || rendered[toolGuidanceSection(entry.id)] === undefined) continue;
+    if (!entry.namespace || entry.eligible === false || entry.tools.length === 0 || entry.text.trim().length === 0) continue;
     emitted.add(entry.namespace);
   }
   return new Set(tools.flatMap(tool => tool.namespace && emitted.has(tool.namespace.name) ? namespaceRefs(tool) : []));
@@ -164,17 +167,6 @@ export function projectedNamespaceRefs(
 
 /** No tool has an explicit schema-mode override in the common case. */
 const NO_WITHHELD: ReadonlySet<string> = new Set();
-
-/** Remove the namespace's shared instruction text from one per-tool guideline. */
-function withoutNamespaceText(line: string, namespaceInstructions: string): string {
-  const normalized = line.trim();
-  if (namespaceInstructions === '') return normalized;
-  return normalized
-    .split(namespaceInstructions)
-    .map(part => part.trim())
-    .filter(part => part !== '')
-    .join(' ');
-}
 
 /**
  * Current per-tool instructions for tools whose native declaration is withheld
@@ -185,8 +177,10 @@ function withoutNamespaceText(line: string, namespaceInstructions: string): stri
  * through the existing dynamic guidance section path and keeps the namespace
  * guide in its canonical loaded-container section:
  *
- * - the shared namespace instruction text is stripped, so the namespace guide is
- *   not repeated once per tool;
+ * - entries that match the shared namespace instruction text verbatim are
+ *   omitted, so the namespace guide is not repeated once per tool;
+ * - mixed third-party guidelines are kept intact as opaque text without
+ *   substring splitting;
  * - identical remaining lines are emitted once, even across several withheld
  *   tools;
  * - a tool with nothing but the shared text emits no entry.
@@ -203,8 +197,8 @@ export function withheldToolGuidance(
     const namespaceInstructions = tool.namespace?.instructions?.trim() ?? '';
     const lines: string[] = [];
     for (const guideline of tool.promptGuidelines ?? []) {
-      const line = withoutNamespaceText(guideline, namespaceInstructions);
-      if (line === '' || emitted.has(line)) continue;
+      const line = guideline.trim();
+      if (line === '' || line === namespaceInstructions || emitted.has(line)) continue;
       emitted.add(line);
       lines.push(line);
     }

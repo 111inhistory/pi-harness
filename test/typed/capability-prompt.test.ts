@@ -27,7 +27,7 @@ import {
   type CapabilityHit,
   type CapabilitySearchCoverage,
 } from "../../src/capability/discovery-record.ts";
-import { renderCurrentToolGuidance, toolGuidanceSection } from "../../src/tool-guidance.ts";
+import { renderGuidanceText } from "../../src/tool-guidance.ts";
 import {
   nativelyGuidedNamespaces,
   projectedNamespaceRefs,
@@ -245,12 +245,12 @@ test("current guidance renderer supplies shared prose once while namespace memor
   assert.deepEqual([...nativelyGuidedNamespaces(subagentTools, declared, declared)], ["subagent"]);
   const guidance = registeredToolGuidance(subagentTools, [], declared, declared);
   assert.deepEqual(guidance, [], "namespaces covered by ToolDefinition.promptGuidelines do not emit duplicate custom sections");
-  const rendered = renderCurrentToolGuidance([
+  const rendered = renderGuidanceText([
     ...guidance,
     { id: "namespace:third-party", namespace: "third-party", tools: ["tp_tool"], text: "Third-party body", eligible: true },
-  ]);
+  ]) ?? "";
   const projected = projectCapabilitySnapshot(messages, entries(...messages), {
-    nativeGuidanceRefs: projectedNamespaceRefs(guidance, subagentTools, rendered, declared, declared),
+    nativeGuidanceRefs: projectedNamespaceRefs(guidance, subagentTools, declared, declared),
   });
   const remembered = records(projected);
   assert.equal(remembered.find((hit) => hit.ref === subagent.ref)?.instructions, undefined,
@@ -260,9 +260,8 @@ test("current guidance renderer supplies shared prose once while namespace memor
   assert.equal(remembered.find((hit) => hit.ref === guidanceHit.ref)?.instructions, guidanceHit.instructions,
     "third-party guidance text is untouched");
   assert.match(section(projected) ?? "", /\/skills\/slides\/SKILL\.md/);
-  assert.equal(occurrences(Object.values(rendered).join("\n"), "Third-party body"), 1,
+  assert.equal(occurrences(rendered, "Third-party body"), 1,
     "non-SDK namespace guidance renders once");
-  assert.match(toolGuidanceSection("namespace:third-party"), /^[a-z][a-z0-9_-]*$/);
 });
 
 test("repeated discoveries produce no redundant patches, later guidance preserves members", () => {
@@ -493,41 +492,16 @@ test("real SDK extension exposes discovery on the next turn and after manual com
   }
 });
 
-test("toolGuidanceSection is strictly injective across valid and invalid ids while preserving valid SDK keys", () => {
-  const sdkKeyPattern = /^[a-z][a-z0-9_-]*$/;
-  const validSimple = toolGuidanceSection("tool-disabled");
-  assert.equal(validSimple, "harness-guidance-tool-disabled");
-  assert.match(validSimple, sdkKeyPattern);
-
-  const validUnderscore = toolGuidanceSection("alpha_1");
-  assert.equal(validUnderscore, "harness-guidance-alpha_1");
-  assert.match(validUnderscore, sdkKeyPattern);
-
-  const colonKey = toolGuidanceSection("namespace:browser");
-  assert.match(colonKey, sdkKeyPattern);
-  const transformedSuffix = colonKey.slice("harness-guidance-".length);
-  assert.match(transformedSuffix, /^[a-z0-9_-]+$/);
-  const collidingValidInput = toolGuidanceSection(transformedSuffix);
-  assert.match(collidingValidInput, sdkKeyPattern);
-  assert.notEqual(collidingValidInput, colonKey,
-    "passing the transformed suffix of an encoded id as a second valid id must not collide");
-
-  const samples = [
-    "",
-    "entry",
-    "namespace:browser",
-    "namespace-browser",
-    "Namespace:Browser",
-    "a:b",
-    "a-b",
-    "x_already",
-    "tool:disabled",
-    "tool-disabled",
-    transformedSuffix,
-  ];
-  const keys = samples.map((id) => toolGuidanceSection(id));
-  for (const key of keys) assert.match(key, sdkKeyPattern);
-  assert.equal(new Set(keys).size, samples.length, "every distinct id maps to a distinct SDK section key");
+test("renderGuidanceText combines applicable guidance entries and omits empty or ineligible ones", () => {
+  const rendered = renderGuidanceText([
+    { id: "tool-disabled", tools: ["a"], text: "Alpha", eligible: true },
+    { id: "namespace:browser", namespace: "browser", tools: ["b"], text: "Beta", eligible: true },
+    { id: "skipped-ineligible", tools: ["c"], text: "Gamma", eligible: false },
+    { id: "skipped-empty", tools: ["d"], text: "   ", eligible: true },
+    { id: "skipped-notools", tools: [], text: "Delta", eligible: true },
+  ]);
+  assert.equal(rendered, "Alpha\n\nBeta");
+  assert.equal(renderGuidanceText([{ id: "empty", tools: [], text: "None", eligible: true }]), null);
 });
 
 test("real loaded-container replay keeps one namespace guide and its alias refs in every state", () => {
@@ -572,9 +546,9 @@ test("real loaded-container replay keeps one namespace guide and its alias refs 
   assert.notEqual(guidance[0]?.eligible, false,
     "a loaded container stays guidance-eligible while every member is inactive");
   assert.deepEqual(guidance[0]?.tools, ["mcp__git__status", "mcp__git__log"]);
-  const rendered = renderCurrentToolGuidance(guidance);
-  assert.equal(Object.keys(rendered).length, 1, "the shared server text is rendered once");
-  const refs = projectedNamespaceRefs(guidance, tools, rendered, inactive, inactive);
+  const rendered = renderGuidanceText(guidance);
+  assert.equal(rendered, shared, "the shared server text is rendered once");
+  const refs = projectedNamespaceRefs(guidance, tools, inactive, inactive);
   assert.ok(refs.has("mcp://git"));
   assert.ok(refs.has("namespace://mcp__git"),
     "both alias refs are suppressed in request memory once guidance renders them");
@@ -642,24 +616,21 @@ test("withheld declarations keep tool-specific guidance without repeating the na
     ...registeredToolGuidance(tools, [], new Set(), declared, [{ members: tools.map(tool => tool.name), blocked: false }], withheld),
     ...withheldToolGuidance(tools, withheld),
   ];
-  const rendered = renderCurrentToolGuidance(guidance);
+  const text = renderGuidanceText(guidance) ?? "";
 
-  const namespaceBody = rendered[toolGuidanceSection("namespace:browser")];
-  assert.equal(namespaceBody, shared, "the namespace guide renders through the loaded container");
-  const text = Object.values(rendered).join("\n");
-  assert.equal(text.split(shared).length - 1, 1,
-    "the full namespace instructions appear exactly once across namespace and per-tool guidance");
+  assert.equal(text.split(shared).length - 1, 2,
+    "the namespace guide appears once and an opaque mixed third-party line is kept intact without substring surgery");
   assert.match(text, /Click one element by ref\./);
   assert.equal(text.split("Click one element by ref.").length - 1, 1,
     "identical per-tool lines are emitted once even across withheld tools");
   assert.match(text, /Read a page before acting\./,
-    "text that only partially matched the shared instructions keeps its specific remainder");
+    "opaque mixed third-party guidelines are preserved");
 
   const clickEntry = guidance.find(entry => entry.id === "tool:browser_click");
   assert.deepEqual(clickEntry, { id: "tool:browser_click", tools: ["browser_click"], text: "Click one element by ref." });
   const readEntry = guidance.find(entry => entry.id === "tool:browser_read");
-  assert.equal(readEntry?.text, "Read a page before acting.",
-    "a line that embeds the namespace text keeps only the tool-specific part");
+  assert.equal(readEntry?.text, `${shared} Read a page before acting.`,
+    "a mixed third-party line is preserved as opaque text instead of substring-split");
 
   const sharedOnly = [{ name: "plain", namespace: { name: "group", instructions: shared }, promptGuidelines: [shared] }];
   assert.deepEqual(withheldToolGuidance(sharedOnly, new Set(["plain"])), [],
@@ -737,13 +708,11 @@ test("a withheld declaration keeps its per-tool guidance and one namespace guide
 
     const sections = requests.flatMap((messages) => messages.flatMap((message) =>
       message.role === "system" && message.sections ? [message.sections] : []));
-    const toolSection = sections.map(section => section[toolGuidanceSection("tool:fixture_guided")])
+    const capabilitiesSection = sections.map(section => section[CAPABILITY_SECTION])
       .find((value) => value !== undefined);
-    assert.match(toolSection ?? "", /SPECIFIC_FIXTURE_RULE/,
+    assert.match(capabilitiesSection ?? "", /SPECIFIC_FIXTURE_RULE/,
       "the withheld declaration's tool-specific guideline is projected dynamically");
-    const namespaceSection = sections.map(section => section[toolGuidanceSection("namespace:fixtures")])
-      .find((value) => value !== undefined);
-    assert.match(namespaceSection ?? "", /SHARED_FIXTURE_RULE/,
+    assert.match(capabilitiesSection ?? "", /SHARED_FIXTURE_RULE/,
       "the canonical namespace guide renders once through its loaded container");
     const rules = sections.map(section => section["rules"] ?? "").join("\n");
     assert.doesNotMatch(rules, /SPECIFIC_FIXTURE_RULE|SHARED_FIXTURE_RULE/,

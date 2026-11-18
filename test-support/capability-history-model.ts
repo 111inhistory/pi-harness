@@ -14,7 +14,6 @@ import capabilityExtension from '../src/capability/extension.ts';
 import { DEFAULT_HARNESS_CONFIG } from '../src/harness-config.ts';
 import { installPresetInstruction } from '../src/preset/instruction.ts';
 import { HARNESS_CONTEXT_SYNC_CUSTOM_TYPE } from '../src/request-instructions.ts';
-import { toolGuidanceSection } from '../src/tool-guidance.ts';
 import { appendPresetState } from '../src/preset/state.ts';
 import { serializedRequest, declaredTools } from './capability-model-wire.ts';
 
@@ -70,10 +69,7 @@ function placementJournal(world: World) {
 }
 
 function isHarnessSectionKey(key: string): boolean {
-  return key === 'preset-instructions'
-    || key === 'capabilities'
-    || key === 'capability-availability'
-    || key.startsWith('harness-guidance-');
+  return key === 'preset-instructions' || key === 'capabilities';
 }
 
 function effectiveSystemSections(messages: readonly Message[]): Record<string, string> {
@@ -482,14 +478,15 @@ class Command implements AsyncCommand<State, World> {
             'the SDK-produced base head sections stay intact');
         }
         const effective = effectiveSystemSections(req.messages);
-        const expectedPreset = state.preset === null ? undefined : `<preset-instructions>\n${state.preset}\n</preset-instructions>`;
-        assert.equal(effective['preset-instructions'], expectedPreset,
-          'unforced requests keep current Preset instructions via SDK systemPromptOptions.sections');
-        const notice = effective['capability-availability'];
+        const expectedAddendum = state.preset === null ? undefined : `<addendum>\n${state.preset}\n</addendum>`;
+        assert.equal(effective['addendum'], expectedAddendum,
+          'unforced requests keep current Preset instructions via SDK systemPromptOptions.appendSystemPrompt');
+        const notice = effective['capabilities'];
         if (state.pruned.length === 0) {
-          assert.equal(notice, undefined, 'no pruning notice when no capability was pruned at the current compaction');
+          assert.equal((notice ?? '').includes('were removed from the active tool set'), false,
+            'no pruning notice when no capability was pruned at the current compaction');
         } else {
-          assert.ok(typeof notice === 'string', 'a pruning notice is present in effective system sections');
+          assert.ok(typeof notice === 'string', 'a pruning notice is present in effective capabilities section');
           for (const name of state.pruned) {
             assert.ok(notice.includes(name), 'the model is told which unused capability was pruned');
           }
@@ -541,8 +538,13 @@ class Command implements AsyncCommand<State, World> {
       const expectedAtTurnStart = this.action === 'discover' ? rememberedBeforeTurn : expectedAtTurnEnd;
       const startMemory = effectiveSystemSections(firstOfTurn.messages)['capabilities'];
       if (expectedAtTurnStart.length === 0) {
-        assert.equal(startMemory, undefined,
-          'turn start: no Capability memory when no discovered tool was allowed at turn start');
+        if (state.pruned.length === 0) {
+          assert.equal(startMemory, undefined,
+            'turn start: no Capability memory when no discovered tool was allowed at turn start');
+        } else {
+          assert.ok(typeof startMemory === 'string' && startMemory.includes('were removed from the active tool set'),
+            'turn start: capabilities carries only the compaction prune notice when no discovered tool is allowed');
+        }
       } else {
         assert.ok(typeof startMemory === 'string' && startMemory.includes('<capabilities>'),
           'turn start: current Capability memory is present in system sections');
@@ -550,7 +552,7 @@ class Command implements AsyncCommand<State, World> {
           assert.ok(startMemory.includes(name), `turn start: Capability memory includes ${name}`);
         }
         for (const name of names) {
-          if (!expectedAtTurnStart.includes(name)) {
+          if (!expectedAtTurnStart.includes(name) && !state.pruned.includes(name)) {
             assert.equal(startMemory.includes(name), false, `turn start: Capability memory omits ${name}`);
           }
         }
@@ -572,7 +574,7 @@ class Command implements AsyncCommand<State, World> {
           assert.ok(latestSyncText.includes(name), `mid-run sync: Capability memory includes ${name}`);
         }
         for (const name of names) {
-          if (!expectedAtTurnEnd.includes(name)) {
+          if (!expectedAtTurnEnd.includes(name) && !state.pruned.includes(name)) {
             assert.equal(latestSyncText.includes(name), false, `mid-run sync: Capability memory omits ${name}`);
           }
         }
@@ -582,19 +584,18 @@ class Command implements AsyncCommand<State, World> {
             'modeled mid-run discovery change ends the wire request on a persisted user sync message');
           const serializedTail = JSON.stringify(latestWireTail?.content ?? '');
           const wireCapabilities = /<capabilities>[\s\S]*?<\/capabilities>/.exec(serializedTail)?.[0] ?? '';
-          assert.equal(wireCapabilities.length > 0, expectedAtTurnEnd.length > 0,
-            'wire user sync has a capabilities section exactly when current members exist');
+          assert.equal(wireCapabilities.length > 0, expectedAtTurnEnd.length > 0 || state.pruned.length > 0,
+            'wire user sync has a capabilities section when current members or prune notice exist');
           for (const name of expectedAtTurnEnd) {
             assert.ok(wireCapabilities.includes(name), `wire current Capability memory includes ${name}`);
           }
           for (const name of names) {
-            if (!expectedAtTurnEnd.includes(name)) {
+            if (!expectedAtTurnEnd.includes(name) && !state.pruned.includes(name)) {
               assert.equal(wireCapabilities.includes(name), false, `wire current Capability memory omits ${name}`);
             }
           }
-          const wireAvailability = /<capability-availability>[\s\S]*?<\/capability-availability>/.exec(serializedTail)?.[0] ?? '';
           for (const name of state.pruned) {
-            assert.ok(wireAvailability.includes(name), `wire availability notice retains removed capability ${name}`);
+            assert.ok(wireCapabilities.includes(name), `wire capabilities notice retains removed capability ${name}`);
           }
         }
       } else if (world.view === 'native' || world.view === 'filter' || world.view === 'reorder') {
@@ -630,8 +631,6 @@ class Command implements AsyncCommand<State, World> {
       assert.deepEqual(declared.parameters, { type: 'object', properties: { [`revision_${expected.schema}`]: { type: 'string' } } });
       assert.equal(declared.description, expected.description,
         'the latest native declaration description matches the externally registered metadata');
-      assert.deepEqual(allSectionValues(latest.messages, toolGuidanceSection(`tool-description:${name}`)), [],
-        'no obsolete tool-description correction section is emitted');
     }
     assert.deepEqual(world.errors, []);
   }

@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { fauxProvider, InMemoryCredentialStore, type AssistantMessage, type Api, type Model } from '@earendil-works/pi-ai';
+import { fauxProvider, getCurrentTools, InMemoryCredentialStore, type AssistantMessage, type Api, type Model } from '@earendil-works/pi-ai';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 import {
   createAgentSession,
@@ -25,7 +25,9 @@ import {
 } from '@earendil-works/pi-coding-agent';
 
 import capabilityExtension from '../../src/capability/extension.ts';
-import { DEFAULT_HARNESS_CONFIG } from '../../src/harness-config.ts';
+import { DEFAULT_HARNESS_CONFIG, resolveHarnessConfig } from '../../src/harness-config.ts';
+import { installCapabilityCodemode } from '../../src/capability/codemode.ts';
+import { installSessionSurface } from '../../src/subagent/surface.ts';
 import { installPresetInstruction } from '../../src/preset/instruction.ts';
 import { appendPresetState } from '../../src/preset/state.ts';
 import {
@@ -305,7 +307,7 @@ test('unchanged tool loop ends on function_call_output; mid-run static tool acti
     await session.prompt('Run loop');
 
     assert.equal(requests.length, 4);
-    assert.match(JSON.stringify(requests[0]![0]?.sections?.['preset-instructions'] ?? ''), /INITIAL_PRESET_BODY/);
+    assert.match(JSON.stringify(requests[0]![0]?.sections?.['addendum'] ?? ''), /INITIAL_PRESET_BODY/);
     const wire0 = responsesWire(model, requests[0]!);
     const wire1 = responsesWire(model, requests[1]!);
     const wire2 = responsesWire(model, requests[2]!);
@@ -521,7 +523,8 @@ test('mid-run auto-compaction persists user boundary carrying capability-availab
     assert.equal(wire2.at(-1)?.role, 'user',
       'mid-run auto-compaction emits a persisted user sync message after toolsRemoved updateMessage');
     const syncText = JSON.stringify(requests[1]!.at(-1));
-    assert.match(syncText, /capability-availability/);
+    assert.match(syncText, /<capabilities>/);
+    assert.match(syncText, /removed from the active tool set/);
     assert.match(syncText, /prunable_tool/);
     assert.match(syncText, /\/skills\/kept\/SKILL\.md/);
 
@@ -782,5 +785,258 @@ test('late tool_result during abort cannot start a new run or leave queued sync 
   } finally {
     await session?.extensionRunner?.emit({ type: 'session_shutdown', reason: 'quit' });
     session?.dispose();
+  }
+});
+
+test('subagent_create capacity reaches physical request under customPrompt and codemode-only without an independent section', { timeout: 30_000 }, async (t) => {
+  const agentIsolation = await isolateAgentDir();
+  t.after(() => agentIsolation.restore());
+  for (const mode of ['customPrompt', 'codemodeOnly'] as const) {
+    const runtime = await ModelRuntime.create({
+      credentials: new InMemoryCredentialStore(),
+      modelsPath: null,
+      refreshOnCreate: false,
+    });
+    const faux = fauxProvider({ models: [{ id: `capacity-${mode}` }] });
+    runtime.registerNativeProvider(faux.provider);
+    const model: Model<Api> = {
+      ...faux.models[0]!,
+      api: 'openai-responses',
+      compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+    };
+    const requests: ProjectionMessage[][] = [];
+    faux.provider.streamSimple = (_m, context) => {
+      requests.push(structuredClone(context.messages) as unknown as ProjectionMessage[]);
+      const stream = new AssistantMessageEventStream();
+      const reply = assistant(model, [{ type: 'text', text: 'done' }], 'stop');
+      stream.push({ type: 'done', reason: 'stop', message: reply });
+      stream.end();
+      return stream;
+    };
+
+    const settings = SettingsManager.inMemory({
+      compaction: { enabled: false },
+      retry: { enabled: false },
+      cacheWarming: 'off',
+      ...(mode === 'codemodeOnly' ? { codemode: { mode: 'only' as const } } : {}),
+    });
+    let session: AgentSession | undefined;
+    let extApi!: ExtensionAPI;
+    const loader = new DefaultResourceLoader({
+      cwd: process.cwd(),
+      agentDir: process.cwd(),
+      settingsManager: settings,
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      ...(mode === 'customPrompt' ? { systemPrompt: 'Synthetic SYSTEM.md' } : {}),
+      extensionFactories: [{
+        name: `capacity-${mode}`,
+        factory(pi) {
+          extApi = pi;
+          installPresetInstruction(pi);
+          const testConfig = resolveHarnessConfig([{
+            source: 'test',
+            value: {
+              capability: {
+                lazySchemas: mode === 'codemodeOnly' ? ['tool://subagent_create'] : [],
+              },
+            },
+          }]);
+          capabilityExtension(pi, { config: testConfig });
+          if (mode === 'codemodeOnly') {
+            installCapabilityCodemode(pi, () => () => true, () => () => true, () => testConfig);
+          }
+          installSessionSurface(pi, async () => { throw new Error('unused'); }, {
+            callerId: 'Main',
+            depth: 0,
+            maxDepth: 2,
+            allowInherited: true,
+            capacityFor: () => ({ maxActiveBatches: 4, maxActiveSubagents: 7, maxActiveInheritedSubagents: 3 }),
+          });
+        },
+      }],
+    });
+    await loader.reload();
+    assert.deepEqual(loader.getExtensions().errors, []);
+    try {
+      session = (await createAgentSession({
+        cwd: process.cwd(), agentDir: process.cwd(), modelRuntime: runtime, model,
+        settingsManager: settings, resourceLoader: loader, sessionManager: SessionManager.inMemory(process.cwd()),
+      })).session;
+      await session.bindExtensions({});
+      appendPresetState(extApi, { version: 1, snapshot: { name: 'fast', instructions: 'CUSTOM_PRESET_BODY' } });
+      extApi.setActiveTools(mode === 'codemodeOnly' ? ['read', 'codemode', 'subagent_create'] : ['read', 'subagent_create']);
+      await session.prompt('Check capacity');
+
+      assert.equal(requests.length, 1);
+      const sections = requests[0]![0]?.sections ?? {};
+      assert.equal(sections['subagent_capacity'], undefined, 'no independent subagent_capacity section');
+      const systemText = JSON.stringify(sections);
+      assert.equal(systemText.match(/at most 4 active batches, 7 active subagents and 3 active inherited subagents/g)?.length ?? 0, 1,
+        `${mode}: physical request carries capacity exact once`);
+      assert.equal(systemText.match(/CUSTOM_PRESET_BODY/g)?.length ?? 0, 1,
+        `${mode}: preset addendum is preserved exact once`);
+      if (mode === 'customPrompt') {
+        assert.match(sections['addendum'] ?? '', /at most 4 active batches/);
+      } else {
+        const declared = getCurrentTools(requests[0]! as unknown as readonly { role: string }[]).map((tool) => tool.name);
+        assert.ok(declared.includes('codemode'), 'codemode is declared natively');
+        assert.ok(!declared.includes('subagent_create'), 'subagent_create is withheld from native declarations');
+        assert.match(sections['rules'] ?? '', /at most 4 active batches/);
+      }
+    } finally {
+      await session?.extensionRunner?.emit({ type: 'session_shutdown', reason: 'quit' });
+      session?.dispose();
+    }
+  }
+});
+
+test('capabilities clears cleanly across next-run and same-run non-empty->empty transitions, and renders under customPrompt', { timeout: 30_000 }, async (t) => {
+  const agentIsolation = await isolateAgentDir();
+  t.after(() => agentIsolation.restore());
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const path = await import('node:path');
+  const dir = await mkdtemp(path.join(tmpdir(), 'cap-clear-sync-'));
+  let session: AgentSession | undefined;
+  let extApi!: ExtensionAPI;
+  const requests: ProjectionMessage[][] = [];
+  let step = 0;
+
+  const runtime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(),
+    modelsPath: null,
+    refreshOnCreate: false,
+  });
+  const faux = fauxProvider({ models: [{ id: 'clear-sync' }] });
+  runtime.registerNativeProvider(faux.provider);
+  const model: Model<Api> = {
+    ...faux.models[0]!,
+    api: 'openai-responses',
+    compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+  };
+  faux.provider.streamSimple = (_m, context) => {
+    requests.push(structuredClone(context.messages) as unknown as ProjectionMessage[]);
+    step += 1;
+    const stream = new AssistantMessageEventStream();
+    const reply = step === 3
+      ? assistant(model, [{ type: 'toolCall', id: 'call-clear', name: 'clear_guidance', arguments: {} }], 'toolUse')
+      : step === 5
+        ? assistant(model, [{ type: 'toolCall', id: 'call-clear-both', name: 'clear_guidance', arguments: { deactivate: true } }], 'toolUse')
+        : assistant(model, [{ type: 'text', text: 'done' }], 'stop');
+    stream.push({ type: 'done', reason: 'stop', message: reply });
+    stream.end();
+    return stream;
+  };
+
+  const settings = SettingsManager.inMemory({
+    compaction: { enabled: false },
+    retry: { enabled: false },
+    cacheWarming: 'off',
+  });
+  const loader = new DefaultResourceLoader({
+    cwd: dir,
+    agentDir: dir,
+    settingsManager: settings,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    systemPrompt: 'Synthetic customPrompt',
+    extensionFactories: [{
+      name: 'clear-sync-fixture',
+      factory(pi) {
+        extApi = pi;
+        capabilityExtension(pi, { discovery: false });
+        pi.registerTool({
+          name: 'guided_ns_tool',
+          label: 'Guided NS Tool',
+          description: 'Guided NS Tool',
+          parameters: { type: 'object', properties: {} },
+          namespace: { name: 'guided_ns', instructions: 'GUIDED_NS_PROSE' },
+          promptGuidelines: ['GUIDED_NS_PROSE'],
+          async execute() { return { content: [{ type: 'text', text: 'ok' }], details: {} }; },
+        });
+        pi.registerTool({
+          name: 'clear_guidance',
+          label: 'Clear guidance',
+          description: 'Clear guidance',
+          parameters: { type: 'object', properties: { deactivate: { type: 'boolean' } } },
+          async execute(_id, params) {
+            pi.appendEntry('capability-tool-base', { version: 1, remove: ['guided_ns_tool'] });
+            if ((params as { deactivate?: boolean }).deactivate) {
+              pi.setActiveTools(['clear_guidance']);
+            }
+            return { content: [{ type: 'text', text: 'cleared' }], details: {} };
+          },
+        });
+      },
+    }],
+  });
+  await loader.reload();
+  assert.deepEqual(loader.getExtensions().errors, []);
+
+  try {
+    session = (await createAgentSession({
+      cwd: dir, agentDir: dir, modelRuntime: runtime, model,
+      settingsManager: settings, resourceLoader: loader, sessionManager: SessionManager.inMemory(dir),
+    })).session;
+    // 1) Turn 1: under customPrompt, SDK does not build <rules>, so capabilities carries GUIDED_NS_PROSE.
+    extApi.appendEntry('capability-tool-base', { version: 1, baseline: ['clear_guidance'] });
+    await session.bindExtensions({});
+    extApi.setActiveTools(['clear_guidance', 'guided_ns_tool']);
+    await session.prompt('Turn 1');
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]![0]?.sections?.['rules'], undefined, 'customPrompt does not build SDK <rules>');
+    assert.match(requests[0]![0]?.sections?.[CAPABILITY_SECTION] ?? '', /GUIDED_NS_PROSE/,
+      'capabilities supplies namespace guidance when customPrompt suppresses <rules>');
+
+    // 2) Next-run non-empty -> empty: blacklist guided_ns_tool (not in baseline) before Turn 2.
+    extApi.appendEntry('capability-tool-blacklist', { version: 1, add: ['guided_ns_tool'] });
+    await session.prompt('Turn 2');
+    assert.equal(requests.length, 2);
+    const turn2 = requests[1]!;
+    const effectiveAfterTurn2 = turn2.reduce<Record<string, string>>((acc, message) => {
+      if (message.role === 'system' && message.sections) {
+        for (const [k, v] of Object.entries(message.sections)) {
+          if (v === null) delete acc[k];
+          else acc[k] = v;
+        }
+      }
+      return acc;
+    }, {});
+    assert.equal(effectiveAfterTurn2[CAPABILITY_SECTION], undefined,
+      'next-run non-empty->empty removes capabilities via SDK section diff');
+
+    // 3) Same-run non-empty -> empty (sectionsKey only): unblacklist/base-add for Turn 3, then clear_guidance removes it mid-run.
+    extApi.appendEntry('capability-tool-base', { version: 1, add: ['guided_ns_tool'] });
+    extApi.setActiveTools(['clear_guidance', 'guided_ns_tool']);
+    await session.prompt('Turn 3');
+    assert.equal(requests.length, 4);
+    assert.match(JSON.stringify(requests[2]), /GUIDED_NS_PROSE/, 'Turn 3 starts with GUIDED_NS_PROSE');
+    const turn3FollowUp = requests[3]!;
+    const syncText = JSON.stringify(turn3FollowUp.at(-1));
+    assert.match(syncText, /Dynamic capability context cleared for the current session state\./,
+      'same-run non-empty->empty emits persisted harness-context-sync clearing notice');
+
+    // 4) Same-run simultaneous toolsKey change + non-empty -> empty: both facts must reach the next request.
+    extApi.appendEntry('capability-tool-base', { version: 1, add: ['guided_ns_tool'] });
+    extApi.setActiveTools(['clear_guidance', 'guided_ns_tool']);
+    await session.prompt('Turn 4');
+    assert.equal(requests.length, 6);
+    const turn4FollowUp = requests[5]!;
+    const bothSyncText = JSON.stringify(turn4FollowUp.at(-1));
+    assert.match(bothSyncText, /Active tool declarations updated for the current session state\./,
+      'simultaneous toolsKey + clear emits tool declaration update');
+    assert.match(bothSyncText, /Dynamic capability context cleared for the current session state\./,
+      'simultaneous toolsKey + clear also emits capability context clearing notice');
+  } finally {
+    await session?.extensionRunner?.emit({ type: 'session_shutdown', reason: 'quit' });
+    session?.dispose();
+    await rm(dir, { recursive: true, force: true });
   }
 });

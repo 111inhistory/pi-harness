@@ -26,6 +26,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 
 import { openBtwConversation, type BtwConversation } from '../../src/btw/session.ts';
+import { installPresetInstruction } from '../../src/preset/instruction.ts';
 import { captureInheritedContext, type InheritedSnapshot } from '../../src/inherited-context.ts';
 import { promptString } from '../../src/prompt-text.ts';
 import { limitSessionCacheKey } from '../../src/session-cache.ts';
@@ -248,6 +249,7 @@ async function openHarness(options: HarnessOptions): Promise<Harness> {
         factory(pi: ExtensionAPI) {
           factoryLoads.count++;
           parentApi = pi;
+          installPresetInstruction(pi);
           pi.on('session_start', (_event, ctx) => { parentCtx = ctx; });
           pi.registerTool({
             name: 'parent_probe',
@@ -276,6 +278,9 @@ async function openHarness(options: HarnessOptions): Promise<Harness> {
     await session.bindExtensions({ onError: (error) => errors.push(error) });
     assert.ok(parentApi, 'the parent extension factory ran');
     assert.ok(parentCtx, 'session_start captured the real ExtensionContext');
+    session.sessionManager.appendCustomEntry('preset-state', {
+      version: 1, snapshot: { name: 'fixture', instructions: 'CURRENT_PRESET_GUIDANCE' },
+    });
     await session.prompt('Parent task: keep this context.');
     session.sessionManager.appendCustomEntry('harness-tool-guidance', {
       version: 1, checkpointId: null, id: 'browser-fixture',
@@ -284,9 +289,6 @@ async function openHarness(options: HarnessOptions): Promise<Harness> {
     session.sessionManager.appendCustomEntry('harness-capability-memory', {
       version: 1, checkpointId: null, id: 'capabilities',
       text: 'RECORDED_MCP_GUIDANCE', position: 'head',
-    });
-    session.sessionManager.appendCustomEntry('preset-state', {
-      version: 1, snapshot: { name: 'fixture', instructions: 'CURRENT_PRESET_GUIDANCE' },
     });
     const snapshot = captureInheritedContext(parentApi, parentCtx);
     phase = 'btw';

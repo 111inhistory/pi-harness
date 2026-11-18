@@ -133,3 +133,11 @@ export function capabilityPromptSections(
   }
   return { [CAPABILITY_SECTION]: render(state) };
 }
+
+/** Combine dynamic capability blocks into at most one request-local snapshot section. */
+export function composeCapabilitiesSnapshot(
+  parts: readonly (string | null | undefined)[],
+): Readonly<Record<string, string | null>> {
+  const nonEmpty = parts.filter((part): part is string => typeof part === 'string' && part.trim().length > 0);
+  return { [CAPABILITY_SECTION]: nonEmpty.length > 0 ? nonEmpty.join('\n\n') : null };
+}

@@ -16,6 +16,7 @@ import { createToolAdmission } from '../capability/admission.ts';
 import { projectDiscoveryDeclarations } from '../capability/declarations.ts';
 import { inheritedInstructionSections, type InheritedSnapshot } from '../inherited-context.ts';
 import { applySystemPromptSections } from '../request-instructions.ts';
+import { CAPABILITY_SECTION } from '../capability/prompt.ts';
 import { promptString } from '../prompt-text.ts';
 import { providerSessionPolicy } from '../provider-session.ts';
 import { installSessionCacheIdentity } from '../session-cache-runtime.ts';
@@ -80,7 +81,6 @@ export async function openBtwConversation(
     extensionFactories: [{
       name: 'btw-tool-boundary',
       factory(api) {
-        const ownedSectionKeys = new Set<string>();
         api.on('before_agent_start', (event, childCtx) => {
           const admission = createToolAdmission(pi, snapshot.entries);
           const branch = childCtx.sessionManager.getBranch();
@@ -101,12 +101,8 @@ export async function openBtwConversation(
           const visible = new Set(snapshot.tools.filter(name => keepInherited(name) && admission.declares(name)));
           const declared = new Set([...visible].filter((name) => !plan.withheld.has(name)));
           const sections = inheritedInstructionSections(branch, pi.getAllTools(), visible, declared,
-            listLoadedContainers(pi, parentBranch), plan.withheld);
-          applySystemPromptSections(event.systemPromptOptions.sections ??= {}, sections, ownedSectionKeys);
-          ownedSectionKeys.clear();
-          for (const [key, value] of Object.entries(sections)) {
-            if (typeof value === 'string' && value.trim().length > 0) ownedSectionKeys.add(key);
-          }
+            listLoadedContainers(pi, parentBranch), plan.withheld, !event.systemPromptOptions.customPrompt);
+          applySystemPromptSections(event.systemPromptOptions.sections ??= {}, sections, [CAPABILITY_SECTION]);
         });
         api.on('context_with_system', (event) => {
           const admission = createToolAdmission(pi, snapshot.entries);

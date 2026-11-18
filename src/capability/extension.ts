@@ -66,9 +66,13 @@ import { promptString, promptStrings } from "../prompt-text.ts";
 import { captureInheritedContext } from "../inherited-context.ts";
 import { discoverSessionSkills } from "./skills.ts";
 import { capabilityPublicResult } from "./result.ts";
-import { capabilityPromptSections } from "./prompt.ts";
+import {
+  CAPABILITY_SECTION,
+  capabilityPromptSections,
+  composeCapabilitiesSnapshot,
+} from "./prompt.ts";
 import { projectedNamespaceRefs, registeredToolGuidance, toolNamespaceInstructions, withheldToolGuidance } from "./tool-instructions.ts";
-import { capabilityPruneSections } from './compaction-context.ts';
+import { capabilityPruneNoticeText } from './compaction-context.ts';
 import { recordCompactionPruning } from './pruning.ts';
 import { appendDiscoveryRecord } from "./discovery-record.ts";
 import { installNativeDiscoveryBoundary } from "./native-discovery.ts";
@@ -87,7 +91,7 @@ import { installCapabilityCommand } from "./command.ts";
 import { hasPresetBaseToolRemoval } from "../preset/state.ts";
 import { createToolAdmission, isMcpExecutionTool } from "./admission.ts";
 import { setCapabilityStartupBlacklist } from "./scope.ts";
-import { renderCurrentToolGuidance } from "../tool-guidance.ts";
+import { renderGuidanceText } from "../tool-guidance.ts";
 import {
   applySystemPromptSections,
   HARNESS_CONTEXT_SYNC_CUSTOM_TYPE,
@@ -192,14 +196,14 @@ export default function capabilityExtension(
   let generation = 0;
   let lastSyncedSectionsKey = "";
   let lastSyncedToolsKey = "";
-  const ownedSectionKeys = new Set<string>();
-
+  let lastCustomPrompt = false;
   const resetRunTracking = (): void => {
     inLoop = false;
     afterAgentEnd = false;
     generation += 1;
     lastSyncedSectionsKey = "";
     lastSyncedToolsKey = "";
+    lastCustomPrompt = false;
   };
 
   const computeCurrentState = (
@@ -229,26 +233,27 @@ export default function capabilityExtension(
     // Withheld declarations are not native declarations: dropping them here is
     // what lets the canonical namespace guide render exactly once.
     const declared = new Set([...declaredTools()].filter((name) => !plan.withheld.has(name)));
+    const nativeRulesRendered = !lastCustomPrompt;
     const guidance: ToolGuidance[] = [
-      ...registeredToolGuidance(catalog.tools, [], callable, declared, access.loadedContainers, plan.withheld),
+      ...registeredToolGuidance(catalog.tools, [], callable, declared, access.loadedContainers, plan.withheld, nativeRulesRendered),
       ...withheldToolGuidance(catalog.tools, plan.withheld),
     ];
     const blacklistGuidance = blacklistedGuidance(pi, branch);
     if (blacklistGuidance !== null) guidance.push(blacklistGuidance);
-    const guidanceSections = renderCurrentToolGuidance(guidance);
+    const guidanceText = renderGuidanceText(guidance);
     const memory = capabilityPromptSections(branch, {
       allowsTool: (name) => available.has(name),
       instructions: toolNamespaceInstructions(catalog.tools),
-      nativeGuidanceRefs: projectedNamespaceRefs(guidance, catalog.tools, guidanceSections, declared, callable),
+      nativeGuidanceRefs: projectedNamespaceRefs(guidance, catalog.tools, declared, callable, nativeRulesRendered),
     });
-    const prune = capabilityPruneSections(branch);
+    const pruneText = capabilityPruneNoticeText(branch);
+    const snapshot = composeCapabilitiesSnapshot([guidanceText, memory[CAPABILITY_SECTION], pruneText]);
     const sections: Record<string, string> = {};
-    for (const [key, value] of Object.entries({ ...guidanceSections, ...memory, ...prune })) {
-      if (typeof value === "string" && value.trim().length > 0) sections[key] = value;
+    const snapshotText = snapshot[CAPABILITY_SECTION];
+    if (typeof snapshotText === "string" && snapshotText.trim().length > 0) {
+      sections[CAPABILITY_SECTION] = snapshotText;
     }
-    const sectionsKey = JSON.stringify(
-      Object.entries(sections).sort(([left], [right]) => left.localeCompare(right)),
-    );
+    const sectionsKey = sections[CAPABILITY_SECTION] ?? "";
     const toolsKey = JSON.stringify({
       active: [...active],
       declared: [...declared].sort(),
@@ -277,10 +282,9 @@ export default function capabilityExtension(
 
   pi.on("before_agent_start", (event, ctx) => {
     event.systemPromptOptions.skills = [];
+    lastCustomPrompt = Boolean(event.systemPromptOptions.customPrompt);
     const { sections, sectionsKey, toolsKey } = computeCurrentState(ctx.sessionManager.getBranch(), ctx);
-    applySystemPromptSections(event.systemPromptOptions.sections ??= {}, sections, ownedSectionKeys);
-    ownedSectionKeys.clear();
-    for (const key of Object.keys(sections)) ownedSectionKeys.add(key);
+    applySystemPromptSections(event.systemPromptOptions.sections ??= {}, sections, [CAPABILITY_SECTION]);
     lastSyncedSectionsKey = sectionsKey;
     lastSyncedToolsKey = toolsKey;
   });
@@ -291,10 +295,13 @@ export default function capabilityExtension(
     const { sections, sectionsKey, toolsKey } = computeCurrentState(ctx.sessionManager.getBranch(), ctx);
     const stateChanged = sectionsKey !== lastSyncedSectionsKey || toolsKey !== lastSyncedToolsKey;
     if (!options?.force && !stateChanged) return;
-    if (options?.force && Object.keys(sections).length === 0 && toolsKey === lastSyncedToolsKey) return;
-    const summary = toolsKey !== lastSyncedToolsKey
-      ? "Active tool declarations updated for the current session state."
-      : undefined;
+    if (options?.force && !stateChanged && Object.keys(sections).length === 0) return;
+    const toolsChanged = toolsKey !== lastSyncedToolsKey;
+    const cleared = lastSyncedSectionsKey !== "" && sectionsKey === "";
+    const summaryParts: string[] = [];
+    if (toolsChanged) summaryParts.push("Active tool declarations updated for the current session state.");
+    if (cleared) summaryParts.push("Dynamic capability context cleared for the current session state.");
+    const summary = summaryParts.length > 0 ? summaryParts.join(" ") : undefined;
     const content = renderCustomContextSync(sections, summary);
     if (content === null) return;
     if (generation !== expectedGeneration || ctx.signal?.aborted) return;

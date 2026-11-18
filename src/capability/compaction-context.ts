@@ -14,10 +14,7 @@ function capabilityPruneNotice(branch: readonly SessionEntry[]): { readonly text
   };
 }
 
-/** The current prune notice as a request-local section. */
-export function capabilityPruneSections(
-  branch: readonly SessionEntry[],
-): Readonly<Record<string, string | null>> {
-  const notice = capabilityPruneNotice(branch);
-  return notice === null ? {} : { 'capability-availability': notice.text };
+/** The current compaction prune notice text, or null when no notice applies. */
+export function capabilityPruneNoticeText(branch: readonly SessionEntry[]): string | null {
+  return capabilityPruneNotice(branch)?.text ?? null;
 }

@@ -12,10 +12,9 @@ import { createToolAccessView } from './tool-access-view.ts';
 import { createEligibleToolCatalog } from './tool-catalog.ts';
 import { createToolAdmission } from './admission.ts';
 import { registeredToolGuidance, projectedNamespaceRefs, toolNamespaceInstructions, withheldToolGuidance } from './tool-instructions.ts';
-import { renderCurrentToolGuidance } from '../tool-guidance.ts';
-import { CAPABILITY_SECTION, capabilityPromptSections, type ProjectionMessage } from './prompt.ts';
-import { presetInstructionSections } from '../preset/instruction.ts';
-import { capabilityPruneSections } from './compaction-context.ts';
+import { renderGuidanceText } from '../tool-guidance.ts';
+import { CAPABILITY_SECTION, capabilityPromptSections, composeCapabilitiesSnapshot, type ProjectionMessage } from './prompt.ts';
+import { capabilityPruneNoticeText } from './compaction-context.ts';
 import { applySystemPromptSections } from '../request-instructions.ts';
 import { projectDiscoveryDeclarations } from './declarations.ts';
 import { additiveToolTranscript } from '../session-transcript.ts';
@@ -98,7 +97,7 @@ export async function openInternalSession(
     ? retrievalToolLoadout(inheritedMessages, request.customTools)
     : request.customTools) as unknown as ToolDefinition[];
 
-  let internalOwnedKeys = new Set<string>();
+  const RETRIEVAL_POLICY_SECTION = "capability-retrieval-policy";
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir: service.agentDir,
@@ -126,28 +125,29 @@ export async function openInternalSession(
           ]);
           const callable = new Set(pi.getActiveTools().filter((name) => admission.admits(name) && !withheld.has(name)));
           const declared = new Set([...callable].filter((name) => !withheld.has(name)));
+          const nativeRulesRendered = !event.systemPromptOptions.customPrompt;
           const guidance = [
-            ...registeredToolGuidance(catalog.tools, [], callable, declared, currentAccess.loadedContainers, withheld),
+            ...registeredToolGuidance(catalog.tools, [], callable, declared, currentAccess.loadedContainers, withheld, nativeRulesRendered),
             ...withheldToolGuidance(catalog.tools, withheld),
           ];
-          const guidanceSections = renderCurrentToolGuidance(guidance);
+          const guidanceText = renderGuidanceText(guidance);
           const memory = capabilityPromptSections(currentBranch, {
             allowsTool: (name) => catalog.names.has(name),
             instructions: toolNamespaceInstructions(catalog.tools),
-            nativeGuidanceRefs: projectedNamespaceRefs(guidance, catalog.tools, guidanceSections, declared, callable),
+            nativeGuidanceRefs: projectedNamespaceRefs(guidance, catalog.tools, declared, callable, nativeRulesRendered),
           });
           const sections: Record<string, string | null> = {
-            ...guidanceSections,
-            ...(memory[CAPABILITY_SECTION] === null ? {} : memory),
-            ...presetInstructionSections(currentBranch),
-            ...capabilityPruneSections(currentBranch),
-            ...(additive ? { "capability-retrieval-policy": policyPrompt.additiveExecutionBlocked } : {}),
+            ...composeCapabilitiesSnapshot([
+              guidanceText,
+              memory[CAPABILITY_SECTION],
+              capabilityPruneNoticeText(currentBranch),
+            ]),
+            ...(additive ? { [RETRIEVAL_POLICY_SECTION]: policyPrompt.additiveExecutionBlocked } : {}),
           };
-          applySystemPromptSections(event.systemPromptOptions.sections ??= {}, sections, internalOwnedKeys);
-          internalOwnedKeys = new Set(
-            Object.entries(sections)
-              .filter(([, value]) => typeof value === "string" && value.trim().length > 0)
-              .map(([key]) => key),
+          applySystemPromptSections(
+            event.systemPromptOptions.sections ??= {},
+            sections,
+            [CAPABILITY_SECTION, RETRIEVAL_POLICY_SECTION],
           );
         });
         api.on("context_with_system", (event, extensionCtx) => ({

@@ -6,11 +6,10 @@ import type { ExtensionContext, FileEntry, SessionEntry, ToolInfo } from '@earen
 import { isHarnessEntry, withoutEntries } from './subagent/storage.ts';
 import { physicalModelForCall } from './session/model-runtime.ts';
 import { resolveSessionCacheKey } from './session-cache-runtime.ts';
-import { renderCurrentToolGuidance } from './tool-guidance.ts';
-import { capabilityPromptSections } from './capability/prompt.ts';
-import { capabilityPruneSections } from './capability/compaction-context.ts';
+import { renderGuidanceText } from './tool-guidance.ts';
+import { CAPABILITY_SECTION, capabilityPromptSections, composeCapabilitiesSnapshot } from './capability/prompt.ts';
+import { capabilityPruneNoticeText } from './capability/compaction-context.ts';
 import { registeredToolGuidance, toolNamespaceInstructions, projectedNamespaceRefs, withheldToolGuidance } from './capability/tool-instructions.ts';
-import { presetInstructionSections } from './preset/instruction.ts';
 
 export interface InheritedSnapshot {
   readonly capturedAt: number;
@@ -75,20 +74,21 @@ export function inheritedInstructionSections(
   declared: ReadonlySet<string> = visible,
   containers: readonly { id: string; kind: 'namespace' | 'mcp'; name: string; members: readonly string[]; blocked: boolean }[] = [],
   withheld: ReadonlySet<string> = new Set(),
+  nativeRulesRendered = true,
 ): Readonly<Record<string, string | null>> {
   const guidance = [
-    ...registeredToolGuidance(tools, [], visible, declared, containers, withheld),
+    ...registeredToolGuidance(tools, [], visible, declared, containers, withheld, nativeRulesRendered),
     ...withheldToolGuidance(tools, withheld),
   ];
-  const rendered = renderCurrentToolGuidance(guidance);
-  return {
-    ...rendered,
-    ...capabilityPromptSections(branch, {
-      allowsTool: name => visible.has(name),
-      instructions: toolNamespaceInstructions(tools),
-      nativeGuidanceRefs: projectedNamespaceRefs(guidance, tools, rendered, declared, visible),
-    }),
-    ...presetInstructionSections(branch),
-    ...capabilityPruneSections(branch),
-  };
+  const guidanceText = renderGuidanceText(guidance);
+  const memory = capabilityPromptSections(branch, {
+    allowsTool: name => visible.has(name),
+    instructions: toolNamespaceInstructions(tools),
+    nativeGuidanceRefs: projectedNamespaceRefs(guidance, tools, declared, visible, nativeRulesRendered),
+  });
+  return composeCapabilitiesSnapshot([
+    guidanceText,
+    memory[CAPABILITY_SECTION],
+    capabilityPruneNoticeText(branch),
+  ]);
 }

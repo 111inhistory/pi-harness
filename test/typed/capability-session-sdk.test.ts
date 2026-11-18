@@ -26,6 +26,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 
 import capabilityExtension from '../../src/capability/extension.ts';
+import { installPresetInstruction } from '../../src/preset/instruction.ts';
 import { CAPABILITY_STEP_TOOL_NAME } from '../../src/capability/contracts.ts';
 import { activateToolTargets } from '../../src/capability/tool-access.ts';
 import { providerSessionPolicy } from '../../src/provider-session.ts';
@@ -180,6 +181,7 @@ async function runScenario(api: 'openai-responses' | 'anthropic-messages'): Prom
         name: 'capability-session-fixture',
         factory(pi: ExtensionAPI) {
           extensionApi = pi;
+          installPresetInstruction(pi);
           capabilityExtension(pi);
           pi.registerTool({
             name: 'parent_probe',
@@ -274,11 +276,14 @@ for (const api of ['openai-responses', 'anthropic-messages'] as const) {
     assert.ok(parentTools.includes('manual_parent'), 'the dynamically activated manual tool is present in the parent request');
 
     const retrievalTools = toolNames(scenario.retrievalRequests[0]!.messages);
-    const retrievalPresets = scenario.retrievalRequests[0]!.messages.flatMap((message) =>
-      message.role === 'system' && message.sections?.['preset-instructions'] !== undefined
-        ? [message.sections['preset-instructions']] : []);
-    assert.deepEqual(retrievalPresets, ['<preset-instructions>\nCURRENT_PARENT_PRESET\n</preset-instructions>'],
-      'real internal retrieval carries the current parent preset instruction snapshot');
+    const retrievalSystemMessages = scenario.retrievalRequests[0]!.messages
+      .filter((message) => message.role === 'system');
+    const retrievalPreamble = String(retrievalSystemMessages.at(-1)?.sections?.['preamble'] ?? '');
+    const retrievalAddendum = String(retrievalSystemMessages.at(-1)?.sections?.['addendum'] ?? '');
+    assert.match(retrievalPreamble, /CURRENT_PARENT_PRESET/,
+      'real internal retrieval inherits the current parent preset in its system prompt');
+    assert.doesNotMatch(retrievalAddendum, /CURRENT_PARENT_PRESET/,
+      'retrieval addendum does not duplicate the inherited parent preset');
     const parentNonManual = parentTools.filter((name) => name !== 'manual_parent');
     assert.deepEqual(
       retrievalTools.slice(0, parentNonManual.length),
