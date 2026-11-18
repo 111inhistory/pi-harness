@@ -538,12 +538,18 @@ class Command implements AsyncCommand<State, World> {
       const expectedAtTurnStart = this.action === 'discover' ? rememberedBeforeTurn : expectedAtTurnEnd;
       const startMemory = effectiveSystemSections(firstOfTurn.messages)['capabilities'];
       if (expectedAtTurnStart.length === 0) {
-        if (state.pruned.length === 0) {
-          assert.equal(startMemory, undefined,
-            'turn start: no Capability memory when no discovered tool was allowed at turn start');
-        } else {
+        if (state.pruned.length > 0) {
           assert.ok(typeof startMemory === 'string' && startMemory.includes('were removed from the active tool set'),
-            'turn start: capabilities carries only the compaction prune notice when no discovered tool is allowed');
+            'turn start: capabilities carries the compaction prune notice when tools were pruned');
+        }
+        if (startMemory !== undefined) {
+          assert.equal(startMemory.includes('tool://'), false,
+            'turn start: no Capability discovery memory when no discovered tool was allowed at turn start');
+          assert.ok(
+            startMemory.includes('were removed from the active tool set')
+            || startMemory.includes('The user has blacklisted these tools'),
+            'turn start: capabilities carries only prune or blacklist notices when no discovered tool is allowed',
+          );
         }
       } else {
         assert.ok(typeof startMemory === 'string' && startMemory.includes('<capabilities>'),
