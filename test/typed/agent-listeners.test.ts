@@ -174,22 +174,27 @@ test('binding failure releases the partial endpoint and reports the refusal', as
 test('close releases only the endpoint it bound and then the empty owned session directory', async t => {
   const root = await socketRoot(t);
   const server = listener(root);
+  t.after(() => server.close());
   await server.sync();
   const main = formatMainEndpointPath(sessionDirectory(root));
   const directory = sessionDirectory(root);
-  const identity = (await fsp.stat(directory)).ino;
+  if (process.platform === 'win32') {
+    await assert.rejects(fsp.stat(directory), { code: 'ENOENT' });
+  } else {
+    assert.ok((await fsp.stat(directory)).ino > 0);
+  }
 
   await server.close();
   assert.equal(await canConnect(main), false, 'the bound endpoint is released');
   await assert.rejects(fsp.stat(directory), (error: NodeJS.ErrnoException) => error.code === 'ENOENT',
     'the now-empty directory this root created is removed');
-  assert.ok(identity > 0);
   await server.close();
 });
 
-test('a replaced endpoint or a non-empty directory is preserved on close', async t => {
+test('a non-empty Unix socket directory is preserved on close', { skip: process.platform === 'win32' }, async t => {
   const root = await socketRoot(t);
   const server = listener(root);
+  t.after(() => server.close());
   await server.sync();
   const main = formatMainEndpointPath(sessionDirectory(root));
   // An unrelated file in the directory means it is no longer ours to remove.

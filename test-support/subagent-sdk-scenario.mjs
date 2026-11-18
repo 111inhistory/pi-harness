@@ -115,7 +115,9 @@ try {
     await assert.rejects(call("subagent_create", { agents: [{ goal: "valid" }, { goal: "invalid", model: "override" }] }));
     assert.deepEqual(treeNodes((await call("subagent_list", {})).details).map((agent) => agent.id), ["main"]);
     await listener(mainAddress);
-    assert.deepEqual((await fsp.readdir(sessionSocketDir)).filter((file) => file.endsWith(".sock")), [path.basename(mainAddress)], "an invalid batch must not publish a second endpoint");
+    if (process.platform !== "win32") {
+      assert.deepEqual((await fsp.readdir(sessionSocketDir)).filter((file) => file.endsWith(".sock")), [path.basename(mainAddress)], "an invalid batch must not publish a second endpoint");
+    }
     const gate = controlledGate();
     controls.classify = (_, options) => abortable(gate, options.signal);
     let returned = false;
