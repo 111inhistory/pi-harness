@@ -23,6 +23,9 @@ coverage/
 /experiments/jev-routing/results/**/*.gz
 /experiments/jev-routing/results/run_*.json
 /experiments/jev-routing/results/**/results.json*
+/experiments/jev-routing/results/**/requests.json
+/experiments/jev-routing/results/2026-11-18-gemini-decision/
 /experiments/jev-routing/results/**/random-sample.json*
 /experiments/jev-routing/results/**/role-pass.json*
 /experiments/jev-routing/results/**/prompt-features.*
+/experiments/jev-routing/run_decision_routing.mjs
