@@ -542,7 +542,7 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 | D1：Fresh 职责 | `subagent-routing.json` 的角色说明 | Fresh 路由后注入，续跑保留已记录角色 |
 | 共同工作指引 | `subagent.prompts.common`，内置为空 | Fresh 与 Inherited 的当前会话装配均追加一次非空正文 |
 | D2：Inherited 上下文定位 | `subagent.prompts.inherited`，默认来自 turns 的 `inheritedContext` | 仅 Inherited 会话额外注入，续跑及重新打开原生会话时仍按该 Actor 身份装配 |
-| E：活跃名额 | tools 的 `create.capacity` | 作为 system prompt 段落 `subagent_capacity` 注入；`{batches}`、`{subagents}`、`{inherited}` 按当前配置快照替换 |
+| E：活跃名额 | tools 的 `create.capacity` | 当 `subagent_create` 激活时通过 `promptGuidelines` 注入 `<rules>`；`{batches}`、`{subagents}`、`{inherited}` 按当前配置快照替换 |
 | F：批次上下文 | turns 的 `batchContext`、`goal`、`roster`、`collaborate`、`unnamedMember` | 执行侧按 Job 装配一次：共享 `context`，多成员时再附名册与协作提示；与成员目标一起构成初始输入 |
 | G：终态提醒 | turns 的 `msgWriteReminder` | 正常收尾且最近工具轮次没有 `msg_write` 时，作为同一 Job 内的单次自提醒 |
 | H：中断说明 | turns 的 `interruptionNotice` | `interrupt` 后追加的一条带发送者地址的简短说明，不声称仅中断工具调用 |
@@ -554,7 +554,7 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 - 提示词段落装配不改写已捕获的历史，也不把历史重写为新的任务正文。快照捕获仍会移除 Harness 内部条目和末尾尚未完成的工具调用，并为子会话分配独立 session ID。
 - 子会话装配顺序：依次为路由角色指引、宿主身份段（`childContext`）、非空 `common`，以及仅用于 Inherited 模式的非空 `inherited`。`common` 默认为空时，装配顺序保持为角色、宿主身份与继承指引。
 - 批次上下文只在执行侧按 Job 渲染，不写入持久化的格式化副本：单成员批次只包含共享 `context`，不重复自身目标或地址；多成员批次包含固定名册与一条正向协作提示，不描述其他批次的行为。
-- `create.capacity` 通过 `before_agent_start` 写入 `sections.subagent_capacity`，值来自当前配置快照。同一快照下文本逐字节一致；配置变化只产生一条段落补丁，工具描述保持静态。
+- `create.capacity` 仅在 `subagent_create` 激活时通过 `before_agent_start` 写入 `promptGuidelines`（落入 `<rules>`），值来自当前配置快照。同一快照下文本逐字节一致；配置变化只产生 `<rules>` 补丁，工具描述保持静态。
 
 参数说明按所属工具与实际嵌套位置保存：
 
