@@ -1,3 +1,3 @@
 {
-  "guideline": "For long-running or interactive terminal work, pi-job is available through the shell. Before using it, read its Skill at skills/pi-job/SKILL.md relative to the PI_CODING_AGENT_DIR environment variable."
+  "guideline": "Use `pi-job` through the shell for long-running commands (builds, test suites, servers, watchers) and interactive or multiline terminal tasks instead of blocking the shell tool or backgrounding with `&`/`nohup`. Read `skills/pi-job/SKILL.md` relative to `PI_CODING_AGENT_DIR` before invoking `pi-job`; do not guess its subcommands or flags. `pi-job` delivers completion automatically: after starting a task, continue independent work or conclude your turn rather than polling or sleeping in a loop."
 }

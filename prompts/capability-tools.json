@@ -1,11 +1,12 @@
 {
   "capability": {
-    "description": "Find local Skills, Tools, and MCP capabilities for the current conversation and return selected refs; no arguments. Read provided Skill entry paths directly; use capability to discover other Skills. Do not search the filesystem or web for Skills. Use read to inspect the Skill entry paths.",
+    "description": "Find lazy-loaded local Skills, Tools, and MCP capabilities for the current conversation and return selected refs; no arguments. Read provided Skill entry paths directly with read; use capability to discover other Skills. Do not search the filesystem or web for Skills.",
     "snippet": "Find task guidance and capabilities",
     "guidelines": [
-      "Understand the task and project context first, then check whether you lack guidance, background info, or specialized tools (e.g. for tasks like PPT creation or complex workflows). If true, call capability; otherwise proceed directly.",
-      "Skills provide workflows, rules, and conventions. Read provided Skill entry paths directly; discover other Skills through capability (not filesystem or web searches).",
-      "Reuse discovered capabilities throughout the task; use capability whenever current tools do not cover the needs, or if you lose track of a Skill's path. For existing tools and MCP, use describeTool(name) in codemode to inspect parameters, or ALL_TOOLS to list what you have (filtering recommended)."
+      "Many local Tools (such as subagent orchestration), MCP servers, and Skills are lazy-loaded and absent from your active tool list until discovered. Do not assume a capability does not exist or work around it in the shell just because it is missing from your active tools.",
+      "Once you understand the task, call capability before starting implementation whenever it involves specialized workflows or formats, external integrations/MCP/browser/UI, background delegation, unfamiliar domains, or any need your current tools do not cover; otherwise proceed directly.",
+      "Skills provide workflows, rules, and conventions. Read provided Skill entry paths directly with read; discover other Skills through capability (not filesystem or web searches).",
+      "Reuse discovered capabilities throughout the task; call capability again when task requirements shift noticeably and new tools may help, when current tools do not cover the needs, or if you lose track of a Skill's path. For existing tools and MCP, use await describeTool(name) in codemode to inspect parameters, or ALL_TOOLS to list what you have (filtering recommended)."
     ]
   },
   "step": {

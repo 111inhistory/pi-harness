@@ -1,10 +1,10 @@
 {
-  "namespace": "Start and coordinate goal-oriented background collaborators.",
+  "namespace": "Orchestrate independent background subagents for concurrent collaboration.",
   "instructions": "Background collaborators are independent sessions; coordinate them through these tools.",
   "create": {
     "description": "Start one batch of background collaborators, non-blocking. Every member receives the shared context; a batch with more than one member also receives the launch roster of names, goals and logical addresses. Returns the batch address and member IDs, addresses and names.",
     "snippet": "Start background collaborators with a shared context",
-    "guideline": "Write goals in English. subagent_create is non-blocking: after dispatching, continue non-dependent local work or conclude your turn; the creator is woken by internal status, not by polling.\n\nUse a batch when work splits into independent parts that can advance concurrently. Keep tightly coupled sequential steps local, or isolate overlapping file edits in separate git worktrees for you to merge.\n\nFresh vs Inherited\n\ninheritContext: false (default) starts a member with a clean context. Give it a self-contained goal: background, constraints, scope, deliverable and how to verify completion.\n\ninheritContext: true shares this session's context and capabilities. Delegate the part's goal, boundaries and the choices to report back; do not repeat context the member already holds.\n\nHandoff\n\nMembers report to the creator with msg_write. The host does not deliver a member's final assistant message as a result.",
+    "guideline": "Write goals in English. subagent_create is non-blocking: after dispatching, continue non-dependent local work or conclude your turn; the creator is woken by internal status, not by polling.\n\nUse a batch when work splits into independent parts that can advance concurrently. Keep tightly coupled sequential steps local, or isolate overlapping file edits in separate git worktrees for you to merge.\n\nFresh vs Inherited\n\ninheritContext: false (default) starts a member with a clean context. Give it a self-contained goal: background, constraints, scope, deliverable and how to verify completion.\n\ninheritContext: true shares this session's context and capabilities. Use it only when multiple goals (such as separate features) are explicitly required to advance concurrently on top of this session's context. Delegate the part's goal, boundaries and the choices to report back; do not repeat context the member already holds.\n\nHandoff\n\nMembers report to the creator with msg_write. The host does not deliver a member's final assistant message as a result. You remain responsible for the final results: verify, integrate, and deliver the overall outcome rather than treating dispatch as completion.",
     "parameters": {
       "context": "Shared background, constraints and source material every member needs.",
       "agents": {
@@ -43,8 +43,9 @@
       "Address one agent by its logical address <sessionHex>:sub_<batch>[-<member>] or <sessionHex>:main from subagent_create, subagent_list or your context.",
       "Broadcast to one batch with <sessionHex>:batch_<batch>, or to one agent's direct children with <sessionHex>:<agent>/children; broadcasts exclude the sender, and addressing yourself directly is rejected.",
       "Messaging a stopped agent revives it for a new round.",
-      "A message from another session carries its full session identity in `from` and one managed reply address.",
-      "Provide the target address and the message body only; do not add transport envelopes, JSON/NDJSON framing, a trailing newline, or a custom Socket client."
+      "A message from another session carries its full session identity and one managed reply address; report back to that reply address with msg_write instead of only outputting in your own turn.",
+      "Provide the target address and the message body only; do not add transport envelopes, JSON/NDJSON framing, or a trailing newline.",
+      "Keep messages concise; include only key points and necessary context."
     ],
     "parameters": {
       "to": "One logical Agent address: <sessionHex>:main, <sessionHex>:sub_<batch>[-<member>], <sessionHex>:batch_<batch>, or <sessionHex>:<agent>/children. Never a socket path.",
