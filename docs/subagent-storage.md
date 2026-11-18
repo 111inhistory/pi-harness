@@ -145,6 +145,36 @@ Job 终态不再向创建者模型投递自动结果消息；视图与 Job 记�
 - Subagent 服务以可操作的错误失败：提示启动新根会话或在离线环境显式转换；不停止原生 Main 对话加载，不删除或改写旧文件。
 - 不提供运行时回退、自动升级、猜测字段或兼容别名。
 
+### 6.2 离线脚本
+
+`scripts/plan-subagent-storage-v3.mjs` 只读扫描根会话，生成 v2 → v3 的批次与 Actor／Job 映射计划，不提供 apply 模式，不改写根或子会话。
+
+```sh
+node scripts/plan-subagent-storage-v3.mjs --agent-dir /tmp/agent --output /tmp/subagent-v3-plan.json
+# 也可用 --session FILE 限定一个根会话；输出文件必须不存在
+```
+
+输出文件使用 `wx` 禁止覆盖，并设置 `0600` 模式（POSIX）；计划保留源文件哈希与读前／读后身份。批次根据原生父链和注册索引还原；v1、混合版本、坏行及无法证明的拓扑明确排除。`planReady` 只表示所选范围的计划可生成，不证明目标已离线；`requiresOfflineCheck` 与 `runtimeValidated: false` 明确保留后续验收边界。Capability 的工具引用协调尚未纳入转换，生成计划不等于可直接应用。方案见[迁移准备](reviews/subagent-storage-v3-migration.md)。
+
+`scripts/convert-subagent-storage-v2.mjs` 是历史 v1 → v2 的一次性离线工具，只识别 `subagent-state` 旧检查点并生成 v2 事件。它**不能**生成 v3，也不能让 v2 根会话被当前运行时读取；不要把它的成功当作 v3 已支持。
+
+- 脚本只依赖 Node.js 内置模块，直接读写 JSONL，不导入生产模块。
+- 警告：不要在 Pi 仍使用目标根会话或共享子文件时原地转换。内存中的旧状态可能写回文件。先备份，并确认目标未在使用。
+- 历史用法与审计见[归档：Subagent 迁移批次](archive/subagent-migration-batch.md)与[迁移冒烟记录](archive/subagent-migration-smoke.md)。
+- `scripts/migrate-subagent-storage-v3.mjs` 是单根会话的显式 v2 → v3 离线入口。默认只生成新计划；`--apply --offline` 才写入，不能批量隐式改写其他根。生产模块仍不包含旧格式读取或迁移专用导出。
+
+```sh
+node scripts/migrate-subagent-storage-v3.mjs \
+  --session /tmp/agent/sessions/project/session.jsonl --agent-dir /tmp/agent \
+  --socket-root /tmp/pi-session-example --apply --offline
+```
+
+应用前应退出目标 Pi。脚本拒绝当前 Agent 环境指向的活动目标；指定 `--socket-root` 时也检查匹配的受管 session 记录，发现存活 PID 则拒绝，不停止进程或删除端点。`--offline` 是操作者对离线状态的明确确认，不能代替关闭目标会话。
+
+每次应用重新生成计划，拒绝 v1、混合版本、坏行及有歧义的根。脚本先创建独占恢复副本和同文件系统的暂存输出，流式替换计划内的事件数据；非目标字节、换行、条目 ID、父链接及时间戳保持不变。落盘后重新读取并核对恢复副本和暂存文件的哈希，再以原子 rename 替换目标；不写子会话文件，不自动回滚。结果返回恢复副本路径、源／备份／目标哈希及显式恢复命令。恢复也必须在目标离线时执行。
+
+此工具只转换 Subagent 结构化元数据。Capability 引用协调与继承状态仍属单独验收范围；报告保留对应限制，不宣称全部执行状态已迁移。
+
 ## 7. 验证范围
 
 默认回归覆盖事件折叠、分支隔离、批次与 Actor 身份校验、身份补丁、写时复制、Job 视图、停止与恢复。Linux 上以真实 Pi SDK 与本地模拟模型运行；Windows 侧目前以交叉构建与平台适配测试验证，完整离线实机套件尚未作为当前声明。长期压力、多用户切换与管道权限隔离等未验证场景见[已知问题](known-issues.md)。

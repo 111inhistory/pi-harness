@@ -721,6 +721,8 @@
       ],
       "tests": [
         "test/subagent-storage.test.mjs",
+        "test/subagent-storage-v3-plan.test.mjs",
+        "test/subagent-storage-v3-migrate.test.mjs",
         "test/subagent-view.test.mjs",
         "test/typed/review-lifecycle-storage.test.ts",
         "test/typed/session-transcript.test.ts",
