@@ -201,9 +201,10 @@ test('/preset clear succeeds despite unreadable catalog source after apply persi
     .at(-1);
   assert.equal(modeBefore, 'only');
 
-  const beforeSections: Record<string, string> = {};
-  await h.fire('before_agent_start', { systemPromptOptions: { sections: beforeSections } });
-  assert.equal(beforeSections['preset-instructions'], 'Follow concise guidelines.');
+  const beforeOptions = { appendSystemPrompt: 'BASE_APPEND', sections: {} as Record<string, string> };
+  await h.fire('before_agent_start', { systemPromptOptions: beforeOptions });
+  assert.equal(beforeOptions.appendSystemPrompt, 'BASE_APPEND\n\nFollow concise guidelines.');
+  assert.equal(beforeOptions.sections['preset-instructions'], undefined);
 
   // 2. Obstruct the private catalog on disk with an unreadable directory (EISDIR).
   const catalogPath = path.join(process.env['PI_CODING_AGENT_DIR']!, 'presets.json');
@@ -227,9 +228,9 @@ test('/preset clear succeeds despite unreadable catalog source after apply persi
     .at(-1);
   assert.equal(modeAfter, null, 'clear withdraws the codemode mode override');
 
-  const afterSections: Record<string, string> = { 'preset-instructions': 'Follow concise guidelines.' };
-  await h.fire('before_agent_start', { systemPromptOptions: { sections: afterSections } });
-  assert.equal(afterSections['preset-instructions'], undefined, 'cleared current state removes the instruction section');
+  const afterOptions = { appendSystemPrompt: 'BASE_APPEND', sections: {} as Record<string, string> };
+  await h.fire('before_agent_start', { systemPromptOptions: afterOptions });
+  assert.equal(afterOptions.appendSystemPrompt, 'BASE_APPEND', 'cleared current state preserves only the base addendum');
 
   assert.equal(h.calls.status.at(-1), undefined, 'status is cleared');
   assert.deepEqual(h.calls.setModel, ['p/m'], 'model is not rolled back');

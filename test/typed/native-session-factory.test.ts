@@ -958,3 +958,106 @@ test("fixed registration exclusions stay separate from execution denials", async
     await close(h);
   }
 });
+
+test("ordinary inherited child with parent preset keeps preset text exact once across system messages", async () => {
+  const h = await harness();
+  const model = {
+    ...h.model,
+    api: 'openai-responses',
+    baseUrl: 'http://offline.invalid/v1',
+    compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+  } as Model<Api>;
+  const parentManager = SessionManager.inMemory(h.cwd);
+  parentManager.appendCustomEntry('preset-state', {
+    version: 1,
+    snapshot: { name: 'parent-preset', instructions: 'PARENT_PRESET_BODY' },
+  });
+  const seed = [parentManager.getHeader(), ...parentManager.getBranch()].filter(
+    (entry): entry is NonNullable<typeof entry> => entry !== null,
+  );
+  const childManager = SessionManager.inMemory(h.cwd, {}, seed);
+  let captured: Message[] = [];
+  h.runtime.streamSimple = (_m, context) => {
+    captured = structuredClone(context.messages) as Message[];
+    const stream = new AssistantMessageEventStream();
+    stream.push({ type: 'done', reason: 'stop', message: {
+      role: 'assistant', api: model.api, provider: model.provider, model: model.id,
+      content: [{ type: 'text', text: 'ok' }], stopReason: 'stop', timestamp: Date.now(),
+      usage: { input: 1, output: 1, totalTokens: 2, cacheRead: 0, cacheWrite: 0,
+        cost: { input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0 } },
+    } });
+    stream.end();
+    return stream;
+  };
+  const opened = await h.factory.open({
+    ...request(h, {
+      model,
+      systemPrompt: 'PARENT_BASE\n\n<addendum>\nPARENT_PRESET_BODY\n</addendum>',
+      appendSystemPrompt: ['COMMON CHILD INSTRUCTIONS'],
+    }),
+    sessionManager: childManager,
+  });
+  try {
+    await opened.execution.prompt('child turn', { expandPromptTemplates: false });
+    const systemSerialized = captured
+      .filter((message) => message.role === 'system')
+      .map((message) => JSON.stringify(message.sections ?? message.content))
+      .join('\n');
+    assert.equal(systemSerialized.match(/PARENT_PRESET_BODY/g)?.length ?? 0, 1,
+      'ordinary inherited child does not duplicate the parent preset into addendum');
+    assert.match(systemSerialized, /COMMON CHILD INSTRUCTIONS/,
+      'child-specific appendSystemPrompt guidance is preserved');
+  } finally {
+    await opened.execution.dispose();
+    await close(h);
+  }
+});
+
+test("fresh routed-preset continuation restores preset addendum from branch when request.preset is omitted", async () => {
+  const h = await harness();
+  const model = {
+    ...h.model,
+    api: 'openai-responses',
+    baseUrl: 'http://offline.invalid/v1',
+    compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+  } as Model<Api>;
+  const childManager = SessionManager.inMemory(h.cwd);
+  childManager.appendCustomEntry('preset-state', {
+    version: 1,
+    snapshot: { name: 'child-preset', instructions: 'FRESH_RESUME_PRESET_BODY' },
+  });
+  let captured: Message[] = [];
+  h.runtime.streamSimple = (_m, context) => {
+    captured = structuredClone(context.messages) as Message[];
+    const stream = new AssistantMessageEventStream();
+    stream.push({ type: 'done', reason: 'stop', message: {
+      role: 'assistant', api: model.api, provider: model.provider, model: model.id,
+      content: [{ type: 'text', text: 'ok' }], stopReason: 'stop', timestamp: Date.now(),
+      usage: { input: 1, output: 1, totalTokens: 2, cacheRead: 0, cacheWrite: 0,
+        cost: { input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0 } },
+    } });
+    stream.end();
+    return stream;
+  };
+  const opened = await h.factory.open({
+    ...request(h, {
+      model,
+      systemPrompt: null,
+      appendSystemPrompt: ['ROLE INSTRUCTIONS', 'CHILD CONTEXT'],
+    }),
+    sessionManager: childManager,
+  });
+  try {
+    await opened.execution.prompt('resumed fresh turn', { expandPromptTemplates: false });
+    const systemSerialized = captured
+      .filter((message) => message.role === 'system')
+      .map((message) => JSON.stringify(message.sections ?? message.content))
+      .join('\n');
+    assert.equal(systemSerialized.match(/FRESH_RESUME_PRESET_BODY/g)?.length ?? 0, 1,
+      'fresh resumed child restores preset-state from its branch when request.preset is omitted');
+    assert.match(systemSerialized, /ROLE INSTRUCTIONS/);
+  } finally {
+    await opened.execution.dispose();
+    await close(h);
+  }
+});

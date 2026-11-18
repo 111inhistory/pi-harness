@@ -227,7 +227,7 @@ test("the capacity section follows the resolved caps without rewriting tool text
     registerTool: (tool) => { registered.push(tool); },
     on: (event, handler) => { handlers.push({ event, handler }); },
     getAllTools: () => [],
-    getActiveTools: () => [],
+    getActiveTools: () => ["subagent_create"],
   };
   let limits = { maxActiveBatches: 3, maxActiveSubagents: 8, maxActiveInheritedSubagents: 3 };
   installSessionSurface(api as unknown as ExtensionAPI, async () => new RecordingHost(), {
@@ -237,12 +237,12 @@ test("the capacity section follows the resolved caps without rewriting tool text
 
   const handler = handlers.find((entry) => entry.event === "before_agent_start")?.handler;
   assert.ok(handler);
-  const options = { sections: {} as Record<string, string> };
-  const event = { type: "before_agent_start", systemPrompt: "", systemPromptOptions: options };
+  const firstOptions = { selectedTools: ["subagent_create"], promptGuidelines: [] as string[], sections: {} as Record<string, string> };
   const ctx = sdkContext({ cwd: "/tmp/project" });
 
-  await handler(event as never, ctx as never);
-  const first = options.sections["subagent_capacity"];
+  await handler({ type: "before_agent_start", systemPrompt: "", systemPromptOptions: firstOptions } as never, ctx as never);
+  const first = firstOptions.promptGuidelines.at(-1);
+  assert.equal(firstOptions.sections["subagent_capacity"], undefined, "capacity is not emitted as an independent section");
   assert.match(first ?? "", /at most 3 active batches, 8 active subagents and 3 active inherited subagents/);
   assert.equal(
     registered.find((tool) => tool.name === "subagent_create")?.description,
@@ -250,12 +250,14 @@ test("the capacity section follows the resolved caps without rewriting tool text
     "tool text stays static so a cap change does not move the prompt prefix",
   );
 
-  await handler(event as never, ctx as never);
-  assert.equal(options.sections["subagent_capacity"], first, "an unchanged snapshot produces identical text");
+  const secondOptions = { selectedTools: ["subagent_create"], promptGuidelines: [] as string[], sections: {} as Record<string, string> };
+  await handler({ type: "before_agent_start", systemPrompt: "", systemPromptOptions: secondOptions } as never, ctx as never);
+  assert.equal(secondOptions.promptGuidelines.at(-1), first, "an unchanged snapshot produces identical text");
 
   limits = { maxActiveBatches: 1, maxActiveSubagents: 4, maxActiveInheritedSubagents: 2 };
-  await handler(event as never, ctx as never);
-  assert.match(options.sections["subagent_capacity"] ?? "", /at most 1 active batches, 4 active subagents and 2 active inherited subagents/);
+  const thirdOptions = { selectedTools: ["subagent_create"], promptGuidelines: [] as string[], sections: {} as Record<string, string> };
+  await handler({ type: "before_agent_start", systemPrompt: "", systemPromptOptions: thirdOptions } as never, ctx as never);
+  assert.match(thirdOptions.promptGuidelines.at(-1) ?? "", /at most 1 active batches, 4 active subagents and 2 active inherited subagents/);
 });
 
 test("the root surface registers controls and messaging without overriding write", () => {

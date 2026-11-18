@@ -135,7 +135,9 @@ class ConcreteNativeSessionFactory implements NativeSessionFactory {
       name: `subagent:${request.agentId}`,
       factory: (childPi: ExtensionAPI): void => {
         childApis.push(childPi);
-        installPresetInstruction(childPi);
+        if (request.systemPrompt === null || request.preset !== undefined) {
+          installPresetInstruction(childPi);
+        }
         // The parent is resolved lazily for a revived caller. Role denials and
         // The request's execution denials are role/Preset denials; ancestry is
         // resolved through the parent scope and depth limits stay registration-only.

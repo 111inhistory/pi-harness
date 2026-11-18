@@ -296,12 +296,24 @@ export function installSessionSurface(
   if (tools.signal !== null) api.registerTool(tools.signal);
   api.registerTool(tools.msg_write);
   api.on("before_agent_start", (event, ctx) => {
+    if (tools.create === null) return;
+    const active = event.systemPromptOptions.selectedTools?.includes("subagent_create")
+      || api.getActiveTools().includes("subagent_create");
+    if (!active) return;
     const limits = scope.capacityFor(ctx);
-    event.systemPromptOptions.sections.subagent_capacity = fillPrompt(TOOL_TEXT.create.capacity, {
+    const capacity = fillPrompt(TOOL_TEXT.create.capacity, {
       batches: limits.maxActiveBatches,
       subagents: limits.maxActiveSubagents,
       inherited: limits.maxActiveInheritedSubagents,
     });
+    if (event.systemPromptOptions.customPrompt) {
+      const base = event.systemPromptOptions.appendSystemPrompt ?? "";
+      event.systemPromptOptions.appendSystemPrompt = base.trim().length > 0 ? `${base}\n\n${capacity}` : capacity;
+      return;
+    }
+    // Emit via promptGuidelines (rather than toolGuidelines) so the cap rule
+    // still reaches `<rules>` when `subagent_create` is active only via Codemode.
+    (event.systemPromptOptions.promptGuidelines ??= []).push(capacity);
   });
 }
 
