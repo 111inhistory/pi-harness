@@ -3,6 +3,8 @@ import test, { type TestContext } from 'node:test';
 import { createSubagentRuntime, type JobRequest } from '../../src/subagent/runtime.ts';
 import { profileForDepth } from '../../src/subagent/job-budget.ts';
 
+const SESSION = '01a1deac';
+
 function clock(t: TestContext) {
   let now = 0;
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -29,8 +31,8 @@ function adapter() {
 test('Runtime stops a hung adapter at the active hard limit, before its lifetime deadline', async t => {
   const time = clock(t);
   const execution = adapter();
-  const runtime = createSubagentRuntime({ startJob: input => execution.startJob(input) });
-  const item = runtime.create({ tasks: [{ task: 'remain pending without model calls' }] }).items[0]!;
+  const runtime = createSubagentRuntime({ session: SESSION, startJob: input => execution.startJob(input) });
+  const item = runtime.create({ agents: [{ goal: 'remain pending without model calls' }] }).items[0]!;
   const profile = profileForDepth(1);
   assert.ok(profile.activeTimeMs.hard < profile.lifetimeMs);
   time.advance(profile.activeTimeMs.hard - 1);
@@ -50,8 +52,8 @@ test('Runtime stops a hung adapter at the active hard limit, before its lifetime
 test('explicit cancellation removes the runtime deadline watch while the adapter is still stopping', async t => {
   const time = clock(t);
   const execution = adapter();
-  const runtime = createSubagentRuntime({ startJob: input => execution.startJob(input) });
-  const item = runtime.create({ tasks: [{ task: 'cancel before the deadline' }] }).items[0]!;
+  const runtime = createSubagentRuntime({ session: SESSION, startJob: input => execution.startJob(input) });
+  const item = runtime.create({ agents: [{ goal: 'cancel before the deadline' }] }).items[0]!;
   const check = t.mock.method(execution.request.budget, 'check');
   runtime.cancelJob(item.id);
   assert.equal(execution.cancels, 1);
@@ -76,10 +78,11 @@ test('normal finalization clears the runtime watch before a slow finalizer settl
   const finalizing = new Promise<void>(resolve => { entered = resolve; });
   const gate = new Promise<void>(resolve => { release = resolve; });
   const runtime = createSubagentRuntime({
+    session: SESSION,
     startJob: input => execution.startJob(input),
     async finalizeJob() { entered(); await gate; },
   });
-  const item = runtime.create({ tasks: [{ task: 'finish while result publication is delayed' }] }).items[0]!;
+  const item = runtime.create({ agents: [{ goal: 'finish while result publication is delayed' }] }).items[0]!;
   const check = t.mock.method(execution.request.budget, 'check');
   execution.finish();
   await finalizing;

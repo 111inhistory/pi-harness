@@ -587,7 +587,7 @@ test("the actual file entry preserves a Jiti-domain SubagentError across the ESM
   // Jiti graph's SubagentError. Its code and registered/failures detail must
   // survive the RPC adapter instead of degrading to "internal".
   const failure = await fx.client.request("subagent.create", {
-    tasks: [{ task: "native entry error boundary" }],
+    agents: [{ goal: "native entry error boundary" }],
   }).then(
     () => assert.fail("subagent.create unexpectedly succeeded"),
     (error: unknown) => error,

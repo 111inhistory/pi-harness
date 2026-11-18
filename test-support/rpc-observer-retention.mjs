@@ -50,12 +50,13 @@ const done = new Promise((resolve) => {
   finish = resolve;
 });
 const runtime = createSubagentRuntime({
+  session: "01a1deac",
   startJob(request) {
     request.recordStart("e1");
     return { done, cancel() {} };
   },
 });
-const item = runtime.create({ tasks: [{ task: "work" }] }).items[0];
+const item = runtime.create({ agents: [{ goal: "work" }] }).items[0];
 assert.ok(item);
 const root = {
   sessionId: "session-root",

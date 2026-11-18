@@ -1,19 +1,21 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import { setImmediate as turn } from 'node:timers/promises';
 import fc, { type AsyncCommand, type Scheduler } from 'fast-check';
 import { checkProperty, commandOptions } from './pbt.ts';
 import { AgentSession, SessionManager, type CustomEntry, type CustomMessageEntry } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
-import { getBroadcastSocketPath } from '../src/ipc/socket.ts';
+import { deriveSessionUid } from '../src/ipc/socket.ts';
+import { formatAddress } from '../src/subagent/address.ts';
 import { createSdkFixture, type SdkFixture } from './subagent-sdk-fixture.ts';
 import { waitFor } from './async.ts';
 import { createdItemsFromMessage, type FixtureActor, type FixtureChat, type FixtureGate } from '../test/typed/support/subagent-sdk-fixture.ts';
 
-type Action = 'spawn' | 'write' | 'upstream' | 'broadcast' | 'hold' | 'yield' | 'finish' | 'cancel' | 'finish-pair' | 'reload';
+type Action = 'spawn' | 'write' | 'upstream' | 'broadcast' | 'peer-broadcast' | 'hold' | 'yield' | 'finish' | 'cancel' | 'finish-pair' | 'reload';
 type Outcome = 'text' | 'empty' | 'error';
 interface Input { marker: string; from: string; round: number; required: boolean }
-interface NodeModel { parent: number | null; inherited: boolean; alive: boolean; busy: boolean; round: number; inbox: Input[] }
+interface NodeModel { parent: number | null; cohort: number; inherited: boolean; alive: boolean; busy: boolean; round: number; inbox: Input[] }
 interface Model { nodes: NodeModel[]; serial: number }
 interface Spawn { slots: number[]; callId: string }
 interface NodeReal {
@@ -29,9 +31,9 @@ interface NodeReal {
   ending?: AssistantMessage;
 }
 interface JobData { agentId: string; jobId: string; continuedFromJobId: string | null }
-interface Delivery { source: string; sourceId: string; jobId?: string; status?: string }
-interface Notice { sender: number; jobId: string; status: string; text?: string; consumed: boolean; pending: boolean; required: boolean }
-interface Real { fx: SdkFixture; nodes: NodeReal[]; notices: Notice[]; scheduler: Scheduler }
+interface Delivery { source: string; sourceId: string; jobId?: string }
+interface Real { fx: SdkFixture; nodes: NodeReal[]; scheduler: Scheduler }
+const mainAddress = (real: Real) => formatAddress(deriveSessionUid(real.fx.sessionManager.getSessionId()), 'main');
 const task = (slot: number) => `COORD_NODE_${slot}_END`;
 const freshReal = (): NodeReal => ({ initialIds: new Set(), calls: 0, holdNext: false });
 const children = (model: Model, parent: number | null) => model.nodes.flatMap((node, slot) => node.parent === parent ? [slot] : []);
@@ -60,15 +62,16 @@ function input(model: Model, real: Real, slot: number, marker: string, from: str
 }
 function prepareSpawn(model: Model, real: Real, slot: number, count: number, inherited: boolean) {
   const slots: number[] = [];
+  const cohort = model.nodes.length;
   for (let index = 0; index < count; index++) {
     slots.push(model.nodes.length);
-    model.nodes.push({ parent: slot, inherited, alive: true, busy: true, round: 1, inbox: [] });
+    model.nodes.push({ parent: slot, cohort, inherited, alive: true, busy: true, round: 1, inbox: [] });
     real.nodes.push(freshReal());
   }
   const callId = `spawn-${++model.serial}`;
   real.nodes[slot]!.spawn = { slots, callId };
   real.nodes[slot]!.next = real.fx.toolAnswer('subagent_create', {
-    tasks: slots.map(child => ({ task: task(child), inheritContext: inherited })),
+    agents: slots.map(child => ({ goal: task(child), inheritContext: inherited })),
   }, callId);
 }
 async function ready(real: Real, slots: number[]) {
@@ -79,16 +82,13 @@ async function idle(real: Real, slot: number) {
   // Let the runner observe the completed SDK turn before reading published state.
   await turn();
 }
-async function terminal(model: Model, real: Real, slot: number, status: string, text?: string) {
-  const view = await real.fx.stopped(real.nodes[slot]!.actor!.id);
+async function terminal(model: Model, real: Real, slot: number, status: string) {
+  const view = await real.fx.settled(real.nodes[slot]!.actor!.id);
+  assert.equal(view.status, status === 'completed' ? 'idle' : `stopped(${status})`);
   const job = records(real, slot).at(-1)!.data;
-  assert.equal(view.history?.jobId, job.jobId, 'the settled view belongs to the current Job');
   assert.ok(view.history);
+  assert.equal(path.basename(path.dirname(view.history.summary)), job.jobId, 'the settled view belongs to the current Job');
   assert.match(await fs.readFile(view.history.summary, 'utf8'), new RegExp('`' + status + '`'));
-  const parent = model.nodes[slot]!.parent;
-  real.notices.push({ sender: slot, jobId: job.jobId, status,
-    pending: parent !== null && model.nodes[parent]!.busy, required: true,
-    consumed: parent !== null && model.nodes[parent]!.alive, ...(text === undefined ? {} : { text }) });
   model.nodes[slot]!.alive = false;
   model.nodes[slot]!.busy = false;
 }
@@ -99,14 +99,10 @@ async function settleParents(model: Model, real: Real) {
     await idle(real, slot);
     if (children(model, slot).every(child => !model.nodes[child]!.alive)) await terminal(model, real, slot, 'completed');
   }
-  for (const notice of real.notices) {
-    const parent = model.nodes[notice.sender]!.parent;
-    if (parent !== null && !model.nodes[parent]!.busy) notice.pending = false;
-  }
 }
 async function wake(model: Model, real: Real, slot: number, marker: string) {
-  input(model, real, slot, marker, 'Main');
-  await real.fx.call('msg_write', { path: real.nodes[slot]!.actor!.socket, content: marker });
+  input(model, real, slot, marker, mainAddress(real));
+  await real.fx.call('msg_write', { to: real.nodes[slot]!.actor!.address, content: marker });
 }
 async function finish(model: Model, real: Real, slot: number, outcome: Outcome) {
   const node = real.nodes[slot]!;
@@ -118,18 +114,18 @@ async function finish(model: Model, real: Real, slot: number, outcome: Outcome) 
     if (delivery.round === model.nodes[slot]!.round) delivery.required = false;
   }
   pending.gate.resolve();
-  await terminal(model, real, slot, outcome === 'error' ? 'failed' : 'completed', outcome === 'text' ? text : undefined);
+  await terminal(model, real, slot, outcome === 'error' ? 'failed' : 'completed');
   const history = (await real.fx.item(node.actor!.id))!.history!;
   assert.ok(history.result);
   assert.equal(await fs.readFile(history.result, 'utf8'), outcome === 'text' ? text : '');
 }
 async function audit(model: Model, real: Real) {
-  interface Tree { id: string; status?: string; kind?: string; children?: Tree[] }
+  interface Tree { id: string; name: string | null; kind?: string; children?: Tree[] }
   const root = (await real.fx.call('subagent_list', { all: true })).details as unknown as Tree;
   const topology = new Map<string, { parent: string | null; view: Tree }>();
   function visit(view: Tree, parent: string | null) {
-    if (view.id !== 'Main') topology.set(view.id, { parent, view });
-    for (const child of view.children ?? []) visit(child, view.id === 'Main' ? null : view.id);
+    if (view.id !== 'main') topology.set(view.id, { parent, view });
+    for (const child of view.children ?? []) visit(child, view.id === 'main' ? null : view.id);
   }
   visit(root, null);
   assert.equal(topology.size, model.nodes.length);
@@ -137,7 +133,12 @@ async function audit(model: Model, real: Real) {
     const expected = model.nodes[slot]!;
     const actual = topology.get(real.nodes[slot]!.actor!.id)!;
     assert.equal(actual.parent, expected.parent === null ? null : real.nodes[expected.parent]!.actor!.id);
-    assert.equal(actual.view.status, expected.alive ? 'running' : 'stopped', `published state of node ${slot}`);
+    assert.equal(actual.view.name, real.nodes[slot]!.actor!.name ?? null, 'Actor labels survive completion, revival and durable restore');
+    assert.equal('activity' in actual.view, false);
+    const latest = records(real, slot).at(-1)!.data.jobId;
+    const ended = real.fx.sessionManager.getBranch().some(entry => entry.type === 'custom'
+      && entry.customType === 'subagent-job-end' && (entry.data as { jobId?: string }).jobId === latest);
+    assert.equal(ended, !expected.alive, `terminal publication of node ${slot}`);
     assert.equal(actual.view.kind, expected.inherited ? 'inherited' : 'fresh');
     const active = real.nodes[slot]!.session!.getActiveToolNames();
     // These are policy expectations, independent of the production scope filter:
@@ -146,7 +147,7 @@ async function audit(model: Model, real: Real) {
       `Main activation cannot revoke independent child messaging (node ${slot}, ${actual.view.kind}; active: ${active.join(', ')})`);
     assert.equal(active.includes('read'), true, 'Main availability selections do not prohibit ordinary child tools');
     if (expected.parent !== null) {
-      for (const name of ['subagent_create', 'subagent_stop', 'capability']) {
+      for (const name of ['subagent_create', 'subagent_signal', 'capability']) {
         assert.equal(active.includes(name), false, `leaf authority excludes ${name}`);
       }
     }
@@ -178,7 +179,7 @@ class Command implements AsyncCommand<Model, Real> {
     if (this.action === 'hold') return node.parent === null && !node.busy;
     if (this.action === 'yield') return node.parent === null && node.busy;
     if (this.action === 'broadcast') return node.parent === null && !node.busy;
-    if (this.action === 'upstream' || this.action === 'finish') return node.parent !== null && node.alive;
+    if (this.action === 'upstream' || this.action === 'peer-broadcast' || this.action === 'finish') return node.parent !== null && node.alive;
     if (this.action === 'cancel') return node.alive;
     return true;
   }
@@ -203,35 +204,41 @@ class Command implements AsyncCommand<Model, Real> {
     } else if (this.action === 'write') {
       await wake(model, real, this.slot, marker);
       if (node!.parent !== null) await waitFor(() => actual!.pending, { label: 'leaf receives continuation' });
+    } else if (this.action === 'peer-broadcast') {
+      // Expected membership comes from the generated launch cohort, not target expansion code.
+      const recipients = model.nodes.flatMap((peer, index) =>
+        peer.cohort === node!.cohort && index !== this.slot ? [index] : []);
+      for (const recipient of recipients) input(model, real, recipient, marker, actual!.actor!.address);
+      const to = actual!.actor!.address.replace(/:sub_(\d+)(?:-\d+)?$/, ':batch_$1');
+      const before = actual!.pending!;
+      before.reply = real.fx.toolAnswer('msg_write', { to, content: marker }, `peer-broadcast-${model.serial}`);
+      before.gate.resolve();
+      await waitFor(() => actual!.pending && actual!.pending !== before, { label: 'batch sender resumed without self-delivery' });
+      for (const recipient of recipients) await waitFor(() => real.nodes[recipient]!.pending, { label: 'batch peer running' });
     } else if (this.action === 'upstream') {
       const parent = node!.parent!;
-      input(model, real, parent, marker, actual!.actor!.id);
+      input(model, real, parent, marker, actual!.actor!.address);
       const before = actual!.pending!;
-      before.reply = real.fx.toolAnswer('msg_write', { path: real.nodes[parent]!.actor!.socket, content: marker }, `write-${model.serial}`);
+      before.reply = real.fx.toolAnswer('msg_write', { to: real.nodes[parent]!.actor!.address, content: marker }, `write-${model.serial}`);
       before.gate.resolve();
       await waitFor(() => actual!.pending && actual!.pending !== before, { label: 'leaf resumed after native parent write' });
     } else if (this.action === 'broadcast') {
       const parent = this.slot === -1 ? null : this.slot;
       const recipients = children(model, parent);
-      const sender = parent === null ? 'Main' : actual!.actor!.id;
+      const sender = parent === null ? mainAddress(real) : actual!.actor!.address;
       for (const child of recipients) input(model, real, child, marker, sender);
-      const path = getBroadcastSocketPath(sender, real.fx.sessionSocketDir);
-      if (parent === null) await real.fx.call('msg_write', { path, content: marker });
+      const to = `${sender}/children`;
+      if (parent === null) await real.fx.call('msg_write', { to, content: marker });
       else {
         const callId = `broadcast-${model.serial}`;
-        actual!.next = real.fx.toolAnswer('msg_write', { path, content: marker }, callId);
+        actual!.next = real.fx.toolAnswer('msg_write', { to, content: marker }, callId);
         await wake(model, real, parent, `WAKE_${model.serial}_END`);
         await waitFor(() => actual!.request?.context.messages.some(message => message.role === 'toolResult' && message.toolCallId === callId), { label: 'native broadcast executed' });
       }
       for (const child of recipients) if (model.nodes[child]!.parent !== null) await waitFor(() => real.nodes[child]!.pending, { label: 'broadcast child running' });
     } else if (this.action === 'cancel') {
       for (const delivery of node!.inbox) if (delivery.round === node!.round) delivery.required = false;
-      // A held provider has not consumed its queued steer notices. Cancellation
-      // may discard them; already drained notices remain required exactly once.
-      for (const notice of real.notices) if (notice.pending && model.nodes[notice.sender]!.parent === this.slot) {
-        notice.required = false; notice.consumed = false; notice.pending = false;
-      }
-      await real.fx.call('subagent_stop', { id: actual!.actor!.id });
+      await real.fx.call('subagent_signal', { target: actual!.actor!.address, action: 'stop' });
       await terminal(model, real, this.slot, 'cancelled');
     } else if (this.action === 'finish') await finish(model, real, this.slot, this.outcome);
     else if (this.action === 'finish-pair') {
@@ -268,8 +275,8 @@ async function sample(initial: number[], commands: Iterable<AsyncCommand<Model, 
       activate: ['msg_write', 'read'],
     });
     fx.session.setActiveToolsByName([...new Set([...fx.session.getActiveToolNames(), 'msg_write', 'read'])]);
-    const real: Real = { fx, nodes: [freshReal(), freshReal()], notices: [], scheduler };
-    const model: Model = { nodes: [false, true].map(inherited => ({ parent: null, inherited, alive: true, busy: false, round: 1, inbox: [] })), serial: 0 };
+    const real: Real = { fx, nodes: [freshReal(), freshReal()], scheduler };
+    const model: Model = { nodes: [false, true].map((inherited, cohort) => ({ parent: null, cohort, inherited, alive: true, busy: false, round: 1, inbox: [] })), serial: 0 };
     const owners = new Map<string, number>();
     fx.controls.chat = async request => {
       if (request.options.sessionId === fx!.session.sessionId) return fx!.textAnswer('Root acknowledged');
@@ -339,25 +346,12 @@ async function sample(initial: number[], commands: Iterable<AsyncCommand<Model, 
       }
       assert.ok(own.every(entry => model.nodes[slot]!.inbox.some(delivery => entry.content === `[Message from ${delivery.from}]\n${delivery.marker}`)), 'messages never leak beyond their intended direct recipients');
     }
-    const targets = [deliveries(fx.sessionManager), ...native];
-    for (const notice of real.notices) {
-      const parent = model.nodes[notice.sender]!.parent;
-      for (let target = 0; target < targets.length; target++) {
-        const matches = targets[target]!.filter(entry => entry.details.jobId === notice.jobId && entry.details.source === 'host');
-        const intended = target === (parent === null ? 0 : parent + 1);
-        if (intended && !notice.required) assert.ok(matches.length <= 1, 'interrupted notices never duplicate');
-        else assert.equal(matches.length, intended ? 1 : 0, 'one terminal notice reaches exactly the direct parent');
-        if (matches.length) {
-          assert.equal(matches[0]!.details.sourceId, real.nodes[notice.sender]!.actor!.id);
-          assert.equal(matches[0]!.details.status, notice.status);
-          if (notice.text !== undefined) {
-            assert.ok(matches[0]!.content.startsWith(`${notice.text}\n\n`), 'the notice carries the child result');
-            if (notice.consumed) assert.ok(real.nodes[parent!]!.request!.text.includes(notice.text),
-              'a live parent model consumes its child result within the held Job');
-          }
-        }
-      }
+    for (const entries of [deliveries(fx.sessionManager), ...native]) {
+      assert.equal(entries.filter(entry => entry.details.source === 'host').length, 0,
+        'Job completion never synthesizes a collaborator result for any parent');
     }
+    await fx.session.reload();
+    await audit(model, real);
   } catch (error) { failed = error; throw error; }
   finally {
     try {
@@ -370,7 +364,7 @@ async function sample(initial: number[], commands: Iterable<AsyncCommand<Model, 
 }
 
 const commands = fc.commands([fc.tuple(
-  fc.constantFrom<Action>('spawn', 'write', 'upstream', 'broadcast', 'hold', 'yield', 'finish', 'cancel', 'finish-pair', 'reload'),
+  fc.constantFrom<Action>('spawn', 'write', 'upstream', 'broadcast', 'peer-broadcast', 'hold', 'yield', 'finish', 'cancel', 'finish-pair', 'reload'),
   fc.integer({ min: -1, max: 7 }), fc.integer({ min: 1, max: 2 }), fc.boolean(),
   fc.constantFrom<Outcome>('text', 'empty', 'error'),
   fc.array(fc.constantFrom('hello', '中文', '\n', '"', '$()', '🙂'), { maxLength: 5 }).map(parts => parts.join('')),

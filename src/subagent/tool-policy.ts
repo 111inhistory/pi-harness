@@ -29,7 +29,7 @@ export interface ToolPolicyTool {
   readonly sourceInfo?: { readonly source?: string | undefined; readonly path?: string | undefined } | undefined;
 }
 
-/** At the leaf depth a child keeps listing and messaging, without create or stop. */
+/** At the leaf depth a child keeps listing and messaging, without create or signal. */
 const LEAF_HARNESS_TOOLS = ["subagent_list", "msg_write"] as const;
 
 /**

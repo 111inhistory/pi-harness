@@ -1,45 +1,55 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  SubagentError,
-  canonicalActorId,
-  createSubagentRuntime as createRuntime,
-} from "../src/subagent/runtime.ts";
-import { getAgentSocketPath } from "../src/ipc/socket.ts";
-import { foldEvents } from "../src/subagent/storage.ts";
+import { SubagentError, createSubagentRuntime as createRuntime } from "../src/subagent/runtime.ts";
+import { STORAGE_VERSION, foldEvents } from "../src/subagent/storage.ts";
+import { formatAddress, formatChildrenAddress, formatGroupAddress, parseAddress, parseActorKey } from "../src/subagent/address.ts";
+import { DEFAULT_HARNESS_CONFIG } from "../src/harness-config.ts";
+
+const SESSION = "a1b2c3d4";
+const MAIN = formatAddress(SESSION, "main");
+const address = (key) => formatAddress(SESSION, key);
 
 const recordedEvents = new WeakMap();
-function createSubagentRuntime(options) {
+function createSubagentRuntime(options = {}) {
   const events = [];
   const onEvent = options.onEvent;
-  const runtime = createRuntime({ ...options,
-    ...(onEvent === undefined || typeof onEvent === "function" ? {
-      onEvent(event) { events.push(event); onEvent?.(event); },
-    } : {}),
+  const runtime = createRuntime({
+    session: SESSION,
+    ...options,
+    onEvent(event) {
+      events.push(event);
+      onEvent?.(event);
+    },
   });
   recordedEvents.set(runtime, events);
   return runtime;
 }
 function stateOf(runtime) {
   return foldEvents(recordedEvents.get(runtime).map(({ type, ...data }) => ({
-    type: "custom", customType: `subagent-${type}`, data: { v: 2, ...data },
+    type: "custom", customType: `subagent-${type}`, data: { v: STORAGE_VERSION, ...data },
   })));
 }
 
-const AGENT_ID_PATTERN = /^(sub_[0-9a-zA-Z_]+|agent_[0-9a-z]+-[0-9]+)$/;
-// Deterministic stand-in for the Pi adapter: every started job is parked on a
+/** One configured snapshot with the three admission limits overridden. */
+function capacity(overrides) {
+  return { ...DEFAULT_HARNESS_CONFIG, subagent: { ...DEFAULT_HARNESS_CONFIG.subagent, ...overrides } };
+}
+
+// Deterministic stand-in for the Pi adapter: every started Job is parked on a
 // promise the test resolves by hand, so scheduling order is observable.
-// `state.onDeliver` / `state.refuseDelivery` let a test decide how a live
-// hand-over behaves, including one that races the end of the run.
+// `state.onDeliver` / `state.refuseDelivery` decide how a live hand-over
+// behaves, including one that races the end of the run.
 function createFakeAdapter(options = {}) {
   const started = [];
   const deliveries = [];
   const mainMessages = [];
+  const interrupts = [];
   const state = {
     refuseDelivery: options.refuseDelivery === true,
     mainDeliveryFails: options.mainDeliveryFails === true,
     onDeliver: null,
+    interrupt: options.interrupt ?? null,
   };
   const handleFor = (jobId) => {
     const handle = started.find((entry) => entry.job.jobId === jobId);
@@ -74,16 +84,19 @@ function createFakeAdapter(options = {}) {
     mainMessages.push(message);
     if (state.mainDeliveryFails === true) throw new Error("main session unavailable");
   };
-  return { startJob, deliverMessage, deliverToMain, started, deliveries, mainMessages, state, handleFor };
+  const interruptJob = async (input) => {
+    interrupts.push(input);
+    if (state.interrupt === null) return { ok: false, reason: "interrupt_unsupported" };
+    return state.interrupt(input);
+  };
+  return { startJob, deliverMessage, deliverToMain, interruptJob, started, deliveries, mainMessages, interrupts, state, handleFor };
 }
 
 function flush() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-// Deterministic clock for Budget observation: every Budget created while this
-// helper is running reads `clock.now`, so a test can cross a hard time limit
-// without waiting. The real clock is restored however `run` settles.
+// Deterministic clock for Budget observation and ephemeral activity times.
 async function withFakeClock(run) {
   const clock = { now: 0 };
   Object.defineProperty(performance, "now", { configurable: true, writable: true, value: () => clock.now });
@@ -94,52 +107,77 @@ async function withFakeClock(run) {
   }
 }
 
-function spec(name) {
-  return { name, task: `do ${name}` };
+/** One member: a goal and an optional display label. */
+function member(goal, extra = {}) {
+  return { goal: `do ${goal}`, ...(typeof extra === "string" ? { name: extra } : extra) };
 }
 
-test("rejects an invalid batch atomically and leaves no state behind", () => {
+function stop(runtime, target, from = MAIN) {
+  return runtime.signal({ from, to: target, action: "stop" });
+}
+
+test("registers a minimal batch with stable identities and one launch roster", () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({ startJob: adapter.startJob });
 
-  assert.throws(
-    () => runtime.create({ context: "batch", tasks: [spec("first"), { task: "later", inheritContext: "yes" }] }),
-    (error) => error instanceof SubagentError && error.code === "invalid_task" && error.detail.index === 1,
-  );
-  assert.deepEqual(runtime.list(), { agents: [] });
-  assert.deepEqual(runtime.jobs(), { jobs: [] });
-  assert.equal(adapter.started.length, 0);
-
-  const created = runtime.create({ tasks: [spec("first")] });
-  assert.equal(created.items.length, 1);
+  const created = runtime.create({ agents: [member("solo")] });
+  assert.equal(created.batch, 1);
+  assert.equal(created.address, formatGroupAddress(SESSION, 1));
+  assert.deepEqual(created.roster, [{ address: address("sub_1"), name: null, goal: "do solo" }]);
   const [item] = created.items;
-  assert.match(item.id, AGENT_ID_PATTERN);
-  assert.deepEqual(item, { id: item.id, socket: getAgentSocketPath(item.id) });
-  // A new actor's first Job shares its id; later continuations get their own.
-  assert.deepEqual(runtime.jobs().jobs.map((job) => [job.jobId, job.name]), [[item.id, "first"]]);
+  assert.deepEqual(item, { id: "sub_1", address: address("sub_1"), name: null, goal: "do solo" });
+  assert.deepEqual(runtime.list().agents, [{
+    agentId: "sub_1",
+    address: address("sub_1"),
+    name: null,
+    goal: "do solo",
+    batch: 1,
+    parentAgentId: null,
+    status: "running",
+    depth: 1,
+    kind: "fresh",
+  }]);
+  // A first Job shares its Actor's key; the Job owns no task text of its own.
+  const [job] = runtime.jobs().jobs;
+  assert.equal(job.jobId, "sub_1");
+  assert.equal(job.address, address("sub_1"));
+  assert.deepEqual(adapter.started[0].job.roster, created.roster);
+  assert.equal(adapter.started[0].job.goal, "do solo");
+  assert.equal(adapter.started[0].job.context, null);
+  assert.equal(adapter.started[0].job.group, created.address);
+  assert.equal(adapter.started[0].job.parentAddress, null);
+  assert.deepEqual(adapter.started[0].job.spec, { kind: "initial", inheritedContext: null });
+
+  const multi = runtime.create({ context: "shared background", agents: [member("one", "Alpha"), member("two")] });
+  assert.equal(multi.batch, 2);
+  assert.deepEqual(multi.roster.map((entry) => [entry.address, entry.name]), [
+    [address("sub_2-1"), "Alpha"],
+    [address("sub_2-2"), null],
+  ]);
+  assert.equal(adapter.started[2].job.context, "shared background");
+  assert.equal(adapter.started[2].job.parentAddress, null);
+  // Batches are session-wide monotonic identities, not a per-parent chain.
+  assert.equal(runtime.create({ agents: [member("three")] }).batch, 3);
 });
 
-test("rejects malformed batches and every unknown task field", () => {
+test("rejects malformed batches and every unknown member field atomically", () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({ startJob: adapter.startJob });
   const failing = [
     [null, "invalid_batch"],
-    [{ tasks: [] }, "invalid_batch"],
-    [{ tasks: [{ task: "x" }], extra: true }, "invalid_batch"],
-    [{ context: 7, tasks: [{ task: "x" }] }, "invalid_batch"],
-    [{ tasks: ["not-an-object"] }, "invalid_task"],
-    [{ tasks: [{ task: "  " }] }, "invalid_task"],
-    [{ tasks: [{ task: "x", inheritContext: "yes" }] }, "invalid_task"],
-    [{ tasks: [{ name: "  ", task: "x" }] }, "invalid_task"],
-    [{ tasks: [{ task: "x", future: true }] }, "invalid_task"],
-    // The removed task fields are not silently accepted, and not special-cased
-    // either: they are unknown fields of the public task shape.
-    [{ tasks: [{ task: "x", agent: "reviewer" }] }, "invalid_task"],
-    [{ tasks: [{ task: "x", effort: "hi" }] }, "invalid_task"],
-    [{ tasks: [{ task: "x", tools: ["read"] }] }, "invalid_task"],
-    [{ tasks: [{ task: "x", outputSchema: { type: "object" } }] }, "invalid_task"],
-    [{ tasks: [{ task: "x", schemaMode: "strict" }] }, "invalid_task"],
-    [{ tasks: [{ task: "x", inheritContext: true, tools: ["read"] }] }, "invalid_task"],
+    [{ agents: [] }, "invalid_batch"],
+    [{ agents: [member("x")], extra: true }, "invalid_batch"],
+    [{ context: 7, agents: [member("x")] }, "invalid_batch"],
+    // The replaced task-batch framing is not an alias: it is an unknown field.
+    [{ tasks: [{ task: "x" }] }, "invalid_batch"],
+    [{ goal: "batch goal", agents: [member("x")] }, "invalid_batch"],
+    [{ agents: ["not-an-object"] }, "invalid_task"],
+    [{ agents: [{ goal: "  " }] }, "invalid_task"],
+    [{ agents: [{ task: "x" }] }, "invalid_task"],
+    [{ agents: [{ goal: "x", inheritContext: "yes" }] }, "invalid_task"],
+    [{ agents: [{ goal: "x", name: "  " }] }, "invalid_task"],
+    [{ agents: [{ goal: "x", future: true }] }, "invalid_task"],
+    [{ agents: [{ goal: "x", responsibility: "y" }] }, "invalid_task"],
   ];
   for (const [batch, code] of failing) {
     assert.throws(() => runtime.create(batch), (error) => error instanceof SubagentError && error.code === code, JSON.stringify(batch));
@@ -148,35 +186,30 @@ test("rejects malformed batches and every unknown task field", () => {
   assert.equal(adapter.started.length, 0);
 });
 
-test("refuses inherited specs without a snapshot source and inside inherited sessions", () => {
+test("refuses inherited members without a snapshot source and inside inherited sessions", () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({ startJob: adapter.startJob });
 
   assert.throws(
-    () => runtime.create({ tasks: [{ task: "x", inheritContext: true }] }),
+    () => runtime.create({ agents: [{ goal: "x", inheritContext: true }] }),
     (error) => error instanceof SubagentError && error.code === "inherited_snapshot_unavailable",
   );
   assert.throws(
-    () =>
-      runtime.create(
-        { tasks: [{ task: "x", inheritContext: true }] },
-        {
-          captureInheritedContext: () => {
-            throw new Error("session is gone");
-          },
-        },
-      ),
+    () => runtime.create(
+      { agents: [{ goal: "x", inheritContext: true }] },
+      { captureInheritedContext: () => { throw new Error("session is gone"); } },
+    ),
     (error) => error instanceof SubagentError && error.code === "inherited_snapshot_failed",
   );
 
   const inheritedSession = createSubagentRuntime({ startJob: adapter.startJob, allowInherited: false });
   assert.throws(
-    () => inheritedSession.create({ tasks: [{ task: "x", inheritContext: true }] }, { captureInheritedContext: () => snapshot0() }),
+    () => inheritedSession.create({ agents: [{ goal: "x", inheritContext: true }] }, { captureInheritedContext: () => snapshot0() }),
     (error) => error instanceof SubagentError && error.code === "inherited_not_allowed",
   );
   // A Fresh Subagent created from an inherited session still works.
-  const created = inheritedSession.create({ tasks: [spec("fresh")] });
-  assert.equal("status" in created.items[0], false);
+  const created = inheritedSession.create({ agents: [member("fresh")] });
+  assert.equal(created.items.length, 1);
   assert.equal(adapter.started.length, 1);
 });
 
@@ -202,7 +235,6 @@ test("gives each inherited child its own native containers over shared immutable
   const assistantBody = [
     { type: "thinking", thinking: "weigh options", signature: "sig-1" },
     { type: "text", text: "done" },
-    { type: "toolCall", id: "call-1", name: "read", arguments: { path: "a.txt" } },
   ];
   const assistantMessage = { role: "assistant" };
   Object.defineProperty(assistantMessage, "content", {
@@ -216,89 +248,61 @@ test("gives each inherited child its own native containers over shared immutable
     timestamp: "2026-01-01T00:00:02.000Z",
     message: assistantMessage,
   };
-  const capture = {
-    capturedAt: 1,
-    cwd: "/work",
-    systemPrompt: "parent",
-    model: null,
-    thinkingLevel: null,
-    tools: ["read"],
-    entries: [header, userEntry, assistantEntry],
-  };
+  const capture = { capturedAt: 1, cwd: "/work", systemPrompt: "parent", model: null, thinkingLevel: null, tools: ["read"],
+    entries: [header, userEntry, assistantEntry] };
 
-  const items = runtime.create(
-    { tasks: [{ task: "one", inheritContext: true }, { task: "two", inheritContext: true }] },
-    {
-      captureInheritedContext: () => {
-        captures += 1;
-        return capture;
-      },
-    },
-  ).items;
-  assert.equal(items.length, 2);
+  const created = runtime.create(
+    { agents: [{ goal: "one", inheritContext: true }, { goal: "two", inheritContext: true }] },
+    { captureInheritedContext: () => { captures += 1; return capture; } },
+  );
+  assert.equal(created.items.length, 2);
   // One capture instant for the whole batch: siblings are not captured twice.
   assert.equal(captures, 1);
 
   const [snapshotA, snapshotB] = adapter.started.map((handle) => handle.job.spec.inheritedContext);
-  // Creation shares the capture instead of serializing it; the probe reads a
-  // nested message body accessor and must stay at zero.
   assert.equal(bodyReads, 0, "creation must not serialize captured message bodies");
-  // Each child owns its top-level snapshot, its entries array and its session
-  // header. The captured history itself is immutable data and stays shared.
   assert.notEqual(snapshotA.entries, snapshotB.entries);
   assert.notEqual(snapshotA.entries, capture.entries);
   assert.notEqual(snapshotA.entries[0], capture.entries[0]);
-  assert.notEqual(snapshotA, snapshotB);
   assert.equal(snapshotA.entries[1], userEntry);
   assert.equal(snapshotA.entries[2], assistantEntry);
   assert.equal(snapshotB.entries[1], userEntry);
-  assert.equal(snapshotB.entries[2], assistantEntry);
 
-  // Each seeded session has its own identity instead of the caller's.
   const headerIdOf = (snapshot) => snapshot.entries.find((entry) => entry.type === "session").id;
   assert.notEqual(headerIdOf(snapshotA), headerIdOf(snapshotB));
   assert.notEqual(headerIdOf(snapshotA), "session_parent");
-  assert.notEqual(headerIdOf(snapshotB), "session_parent");
 
-  // Appending to one child's native entries — exactly what its SessionManager
-  // does — leaves the sibling and the capture untouched.
-  snapshotA.entries.push({
-    type: "message",
-    id: "e3",
-    parentId: "e2",
-    timestamp: "2026-01-01T00:00:03.000Z",
-    message: { role: "assistant", content: [{ type: "text", text: "child-only" }] },
-  });
+  snapshotA.entries.push({ type: "message", id: "e3", parentId: "e2", timestamp: "2026-01-01T00:00:03.000Z",
+    message: { role: "assistant", content: [{ type: "text", text: "child-only" }] } });
   assert.equal(snapshotB.entries.length, 3);
   assert.equal(capture.entries.length, 3);
-  assert.deepEqual(capture.entries.map((entry) => entry.id), ["session_parent", "e1", "e2"]);
-  assert.deepEqual(capture.entries[0], header);
 
   // Lifecycle events carry seed metadata, never the captured native entries.
   const state = stateOf(runtime);
   assert.equal(state.jobs[0].spec.inheritedContext.entries, undefined);
-  assert.equal(snapshotA.entries.length, 4);
   assert.equal(adapter.started[0].job.spec.inheritedContext, snapshotA);
+  // Pool identity is recorded with the topology, not re-derived per Job.
+  assert.deepEqual(state.actors.map((actor) => [actor.agentId, actor.kind]), [["sub_1-1", "inherited"], ["sub_1-2", "inherited"]]);
 });
 
-test("inherited registration persists a model reference, not headers or live provider callbacks", () => {
+test("an inherited registration persists a model reference, not headers or live provider callbacks", () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({ startJob: adapter.startJob });
   const model = { provider: "test", id: "private-model", api: "test-api", headers: { Authorization: "private-credential" }, callback() {} };
-  runtime.create({ tasks: [{ task: "inherit", inheritContext: true }] }, {
+  runtime.create({ agents: [{ goal: "inherit", inheritContext: true }] }, {
     captureInheritedContext: () => ({ model, entries: [], systemPrompt: "parent", tools: [] }),
   });
   const state = stateOf(runtime);
-  assert.equal(state.jobs.length, 1, "registration must not fail structuredClone on a provider callback");
+  assert.equal(state.jobs.length, 1);
   assert.deepEqual(state.jobs[0].spec.inheritedContext.model, { provider: "test", id: "private-model" });
   assert.equal(JSON.stringify(state).includes("private-credential"), false);
-  assert.equal(adapter.started[0].job.spec.inheritedContext.model, model, "live execution retains the actual captured definition");
+  assert.equal(adapter.started[0].job.spec.inheritedContext.model, model);
 });
 
 test("isolates failures to the failing job", async () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({ startJob: adapter.startJob });
-  const items = runtime.create({ tasks: [spec("bad"), spec("good")] }).items;
+  const items = runtime.create({ agents: [member("bad"), member("good")] }).items;
 
   adapter.handleFor(items[0].id).reject(new Error("model unreachable"));
   const failed = await runtime.jobDone(items[0].id);
@@ -306,17 +310,13 @@ test("isolates failures to the failing job", async () => {
   assert.deepEqual(failed.error, { code: "job_failed", message: "model unreachable" });
   assert.equal(runtime.jobs({ jobIds: [items[1].id] }).jobs[0].status, "running");
 
-  adapter.handleFor(items[1].id).resolve({ result: "survived", messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }] });
+  adapter.handleFor(items[1].id).resolve({ result: "survived" });
   assert.equal((await runtime.jobDone(items[1].id)).status, "completed");
   assert.equal(runtime.jobRecord(items[1].id).result, "survived");
   assert.equal(runtime.jobRecord(items[0].id).result, null);
-  assert.deepEqual(
-    runtime.jobs().jobs.map((job) => [job.status, job.error?.code ?? null]),
-    [["failed", "job_failed"], ["completed", null]],
-  );
 });
 
-test("marks only the job whose start failed", async () => {
+test("marks only the job whose start failed and rejects a non-handle", async () => {
   const adapter = createFakeAdapter();
   let starts = 0;
   const runtime = createSubagentRuntime({
@@ -326,19 +326,15 @@ test("marks only the job whose start failed", async () => {
       return adapter.startJob(job);
     },
   });
-  const created = runtime.create({ tasks: [spec("a"), spec("b")] }).items;
-
+  const created = runtime.create({ agents: [member("a"), member("b")] }).items;
   const failed = await runtime.jobDone(created[0].id);
   assert.equal(failed.status, "failed");
   assert.deepEqual(failed.error, { code: "start_failed", message: "cannot create session" });
-  assert.equal(runtime.jobs({ jobIds: [created[1].id] }).jobs[0].status, "running");
   assert.deepEqual(adapter.started.map((handle) => handle.job.jobId), [created[1].id]);
-});
 
-test("rejects adapters that do not return a job handle", async () => {
-  const runtime = createSubagentRuntime({ startJob: () => undefined });
-  const item = runtime.create({ tasks: [spec("a")] }).items[0];
-  const snapshot = await runtime.jobDone(item.id);
+  const invalid = createSubagentRuntime({ startJob: () => undefined });
+  const item = invalid.create({ agents: [member("a")] }).items[0];
+  const snapshot = await invalid.jobDone(item.id);
   assert.equal(snapshot.status, "failed");
   assert.equal(snapshot.error.code, "invalid_adapter");
 });
@@ -347,69 +343,54 @@ test("cancellation during batch registration prevents the not-yet-started siblin
   const adapter = createFakeAdapter();
   let notStarted;
   const runtime = createSubagentRuntime({ startJob(request) {
-    if (request.spec.name === "a") {
-      const sibling = runtime.jobs().jobs.find((job) => job.name === "b");
+    if (request.index === 0) {
+      const sibling = runtime.jobs().jobs.find((job) => job.agentId === "sub_1-2");
       assert.equal(sibling.status, "running");
       notStarted = runtime.cancelJob(sibling.jobId);
     }
     return adapter.startJob(request);
   } });
-  const items = runtime.create({ tasks: [spec("a"), spec("b")] }).items;
+  const items = runtime.create({ agents: [member("a"), member("b")] }).items;
 
   assert.equal(notStarted.ok, true);
   assert.equal(notStarted.job.status, "cancelled");
   assert.deepEqual(notStarted.job.error, { code: "cancelled", message: "Job cancelled before it started." });
   assert.deepEqual(await runtime.jobDone(items[1].id), notStarted.job);
   assert.equal(adapter.started.length, 1);
-  assert.deepEqual(runtime.cancelJob(items[1].id).reason, "already_finished");
-  assert.throws(() => runtime.cancelJob("job_missing-9"), (error) => error instanceof SubagentError && error.code === "unknown_job");
+  assert.equal(runtime.cancelJob(items[1].id).reason, "already_finished");
+  assert.throws(() => runtime.cancelJob("sub_9"), (error) => error instanceof SubagentError && error.code === "unknown_job");
 });
 
-test("a cancelled run keeps its actor active without blocking its sibling", async () => {
+test("a cancelled run keeps its Actor active without blocking its sibling", async () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({ startJob: adapter.startJob });
-  const items = runtime.create({ tasks: [spec("a"), spec("b")] }).items;
-  const [first, sibling] = items;
+  const [first, sibling] = runtime.create({ agents: [member("a"), member("b")] }).items;
 
   const stopping = runtime.cancelJob(first.id);
   assert.equal(stopping.ok, true);
   assert.equal(stopping.job.status, "stopping");
   assert.equal(stopping.job.stopping, "cancelled");
   assert.equal(adapter.handleFor(first.id).cancelled, true);
-  // Cancellation keeps this actor active, but does not block its sibling.
-  assert.deepEqual(adapter.started.map((handle) => handle.job.jobId), [first.id, sibling.id]);
   assert.equal(runtime.jobs({ jobIds: [sibling.id] }).jobs[0].status, "running");
   assert.equal(runtime.list().agents[0].status, "running");
-  assert.deepEqual(runtime.cancelJob(first.id).reason, "stopping");
+  assert.equal(runtime.cancelJob(first.id).reason, "stopping");
 
-  // Nothing terminal is published while the run unwinds: the result ref keeps
-  // reporting the stopping status and existing waiters stay parked.
-  assert.equal(runtime.jobs({ jobIds: [first.id] }).jobs[0].status, "stopping");
   let settled = false;
-  const pending = runtime.jobDone(first.id).then((view) => {
-    settled = true;
-    return view;
-  });
+  const pending = runtime.jobDone(first.id).then((view) => { settled = true; return view; });
   await flush();
   assert.equal(settled, false);
 
-  // Late output from the aborted run is kept, but published exactly once.
-  adapter.handleFor(first.id).resolve({
-    result: "partial output",
-    messages: [{ role: "assistant", content: [{ type: "text", text: "partial" }] }],
-  });
+  adapter.handleFor(first.id).resolve({ result: "partial output" });
   const published = await pending;
   assert.equal(published.status, "cancelled");
   assert.deepEqual(published.error, { code: "cancelled", message: "Job cancelled while running." });
   assert.equal(published.budget.terminal.status, "cancelled");
-
-  const result = runtime.jobRecord(first.id);
-  assert.equal(result.status, "cancelled");
-  assert.equal(result.result, "partial output");
-  assert.deepEqual(result, runtime.jobRecord(first.id));
-  assert.equal("messages" in result, false, "runtime does not own transcript copies");
-
-  assert.deepEqual(runtime.cancelJob(first.id).reason, "already_finished");
+  const record = runtime.jobRecord(first.id);
+  assert.equal(record.status, "cancelled");
+  assert.equal(record.result, "partial output");
+  assert.equal(record.goal, "do a");
+  assert.equal("messages" in record, false);
+  assert.equal(runtime.cancelJob(first.id).reason, "already_finished");
 });
 
 test("serves isolated Job records and sealed bounds without owning transcripts", async () => {
@@ -419,7 +400,7 @@ test("serves isolated Job records and sealed bounds without owning transcripts",
     startJob: adapter.startJob,
     onEvent: (event) => { if (event.type === "job-end") ends.push(event); },
   });
-  const item = runtime.create({ tasks: [{ name: "reader", task: "read things" }] }).items[0];
+  const item = runtime.create({ agents: [member("read things", "reader")] }).items[0];
   const handle = adapter.handleFor(item.id);
   handle.job.recordStart("e0");
   assert.equal(runtime.jobRecord(item.id), null);
@@ -429,80 +410,152 @@ test("serves isolated Job records and sealed bounds without owning transcripts",
   const first = runtime.jobRecord(item.id);
   assert.equal(first.status, "completed");
   assert.equal(first.name, "reader");
+  assert.equal(first.address, address(item.id));
   assert.deepEqual(first.history, { startEntryId: "e0", endEntryId: "e2" });
   first.result.issues.push("mutated by reader");
   first.history.endEntryId = "mutated";
   assert.deepEqual(runtime.jobRecord(item.id).result, { issues: [] });
   assert.equal(runtime.jobRecord(item.id).history.endEntryId, "e2");
   assert.equal("transcript" in first, false);
-  assert.equal("messages" in first, false);
-  assert.equal(runtime.jobRecord("file:///etc/passwd"), null);
-  assert.throws(() => runtime.jobDone("job_missing-7"), (error) => error.code === "unknown_job");
+  assert.equal(runtime.jobRecord(address(item.id)), null);
+  assert.throws(() => runtime.jobDone("sub_9"), (error) => error.code === "unknown_job");
 
-  // A result the runtime cannot detach follows the normal failed-Job path: the
-  // terminal event is published, the handle and slot are released, and no
-  // shared mutable payload survives.
-  const uncloneable = runtime.create({ tasks: [{ name: "uncloneable", task: "return a live handle" }] }).items[0];
+  // A result the runtime cannot detach follows the normal failed-Job path.
+  const uncloneable = runtime.create({ agents: [member("return a live handle")] }).items[0];
   adapter.handleFor(uncloneable.id).resolve({ result: () => "live" });
   const failed = await runtime.jobDone(uncloneable.id);
   assert.equal(failed.status, "failed");
   assert.equal(failed.error.code, "invalid_result");
-  assert.equal(runtime.jobRecord(uncloneable.id).result, null);
-  const end = ends.find((event) => event.jobId === uncloneable.id);
-  assert.equal(end.status, "failed");
-  assert.equal(end.error.code, "invalid_result");
-  assert.equal(end.result, null);
+  assert.equal(ends.find((event) => event.jobId === uncloneable.id).result, null);
   assert.equal(runtime.list().agents.find((agent) => agent.agentId === uncloneable.id).status, "idle");
 
-  // Unsupported optional error detail is omitted instead of sharing the thrown
-  // object's mutable graph with the served error record.
-  const throwing = runtime.create({ tasks: [spec("throwing")] }).items[0];
+  // Unsupported optional error detail is omitted instead of shared.
+  const throwing = runtime.create({ agents: [member("throwing")] }).items[0];
   adapter.handleFor(throwing.id).reject({ message: "adapter failed", detail: { live: () => "handle" } });
   const failedError = await runtime.jobDone(throwing.id);
-  assert.equal(failedError.status, "failed");
   assert.equal(failedError.error.code, "job_failed");
-  assert.equal(failedError.error.message, "adapter failed");
   assert.equal("detail" in failedError.error, false);
 });
 
-test("enforces four active children per parent and two nesting levels atomically", async () => {
+test("enforces the three per-parent limits independently and atomically", async () => {
   const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({ startJob: adapter.startJob });
+  const runtime = createSubagentRuntime({
+    startJob: adapter.startJob,
+    config: capacity({ maxActiveBatches: 2, maxActiveSubagents: 3, maxActiveInheritedSubagents: 1 }),
+  });
 
-  const roots = runtime.create({ tasks: [spec("a"), spec("b"), spec("c"), spec("d")] }).items;
-  assert.deepEqual(runtime.list().agents.map((agent) => agent.depth), [1, 1, 1, 1]);
+  // Two batches, three Actors: the batch limit is full and the Actor limit is
+  // exactly full.
+  const first = runtime.create({ agents: [member("a"), member("b")] }).items;
+  const second = runtime.create({ agents: [member("c")] }).items;
+  assert.deepEqual(runtime.list().agents.map((agent) => agent.batch), [1, 1, 2]);
+
   assert.throws(
-    () => runtime.create({ tasks: [spec("overflow")] }),
-    (error) => error instanceof SubagentError && error.code === "child_limit_exceeded",
+    () => runtime.create({ agents: [member("third batch")] }),
+    (error) => error instanceof SubagentError && error.code === "batch_limit_exceeded"
+      && error.detail.activeBatches === 2 && error.detail.maxActiveBatches === 2,
+  );
+  // Once batch 2 exits, one batch slot is free; the new Actor also uses the
+  // still-available third Actor slot.
+  adapter.handleFor(second[0].id).resolve({ result: "done" });
+  await runtime.jobDone(second[0].id);
+  const third = runtime.create({ agents: [member("third")] });
+  assert.equal(third.batch, 3);
+  assert.equal(runtime.list().agents.filter((agent) => agent.status === "running").length, 3);
+
+  // The Actor cap is checked independently of the batch cap.
+  const childCapped = createSubagentRuntime({
+    startJob: createFakeAdapter().startJob,
+    config: capacity({ maxActiveBatches: 4, maxActiveSubagents: 3, maxActiveInheritedSubagents: 1 }),
+  });
+  childCapped.create({ agents: [member("one"), member("two"), member("three")] });
+  assert.throws(
+    () => childCapped.create({ agents: [member("fourth")] }),
+    (error) => error instanceof SubagentError && error.code === "subagent_limit_exceeded"
+      && error.detail.activeChildren === 3 && error.detail.maxActiveSubagents === 3,
   );
 
-  const children = runtime.create(
-    { tasks: [spec("a1"), spec("a2"), spec("a3"), spec("a4")] },
-    { parentAgentId: roots[0].id },
-  ).items;
-  assert.deepEqual(
-    runtime.list().agents.slice(4).map((agent) => [agent.parentAgentId, agent.depth]),
-    children.map(() => [roots[0].id, 2]),
-  );
+  // Inherited members have their own subset limit.
+  const inherited = createSubagentRuntime({
+    startJob: adapter.startJob,
+    config: capacity({ maxActiveInheritedSubagents: 1 }),
+  });
+  inherited.create({ agents: [{ goal: "one", inheritContext: true }] }, { captureInheritedContext: () => snapshot0() });
   assert.throws(
-    () => runtime.create({ tasks: [spec("too-deep")] }, { parentAgentId: children[0].id }),
+    () => inherited.create({ agents: [{ goal: "two", inheritContext: true }] }, { captureInheritedContext: () => snapshot0() }),
+    (error) => error instanceof SubagentError && error.code === "inherited_limit_exceeded"
+      && error.detail.activeInherited === 1 && error.detail.maxActiveInheritedSubagents === 1,
+  );
+  // A Fresh child of the same parent is still admitted.
+  inherited.create({ agents: [member("fresh")] });
+
+  // The limits count direct children of one parent, not the whole session.
+  const nested = runtime.create({ agents: [member("nested")] }, { parentAgentId: first[0].id }).items[0];
+  assert.equal(runtime.list().agents.find((agent) => agent.agentId === nested.id).depth, 2);
+  assert.throws(
+    () => runtime.create({ agents: [member("too-deep")] }, { parentAgentId: nested.id }),
     (error) => error instanceof SubagentError && error.code === "max_depth_exceeded",
   );
   assert.throws(
-    () => runtime.create({ tasks: [spec("unknown-parent")] }, { parentAgentId: "agent_missing-1" }),
+    () => runtime.create({ agents: [member("unknown-parent")] }, { parentAgentId: "sub_9" }),
     (error) => error instanceof SubagentError && error.code === "unknown_parent",
   );
+});
 
-  adapter.handleFor(roots[0].id).resolve({ result: "done" });
-  await runtime.jobDone(roots[0].id);
-  const replacement = runtime.create({ tasks: [spec("replacement")] }).items[0];
-  assert.notEqual(replacement.id, roots[0].id);
-  // The freed slot is reused by a new root child: four parent-level agents run
-  // while the four nested children of the first root keep running beneath it.
-  assert.equal(
-    runtime.list({ status: "running" }).agents.filter((agent) => agent.parentAgentId === null).length,
-    4,
+test("a stopped Actor releases its slots only after the native run exits", async () => {
+  const adapter = createFakeAdapter();
+  const runtime = createSubagentRuntime({
+    startJob: adapter.startJob,
+    config: capacity({ maxActiveBatches: 1, maxActiveSubagents: 2, maxActiveInheritedSubagents: 1 }),
+  });
+  const [first] = runtime.create({ agents: [member("a")] }).items;
+
+  const signal = await stop(runtime, address(first.id));
+  assert.equal(signal.ok, true);
+  assert.deepEqual(signal.targets, [{ address: address(first.id), ok: true, status: "stopping" }]);
+  // Stopping still occupies the batch and the Actor slot.
+  assert.throws(
+    () => runtime.create({ agents: [member("c")] }),
+    (error) => error instanceof SubagentError && error.code === "batch_limit_exceeded",
   );
+  adapter.handleFor(first.id).resolve({ result: "partial" });
+  await runtime.jobDone(first.id);
+  // After the real exit the next batch is admitted.
+  const later = runtime.create({ agents: [member("c")] });
+  assert.equal(later.batch, 2);
+});
+
+test("revival re-checks the batch and total limits of its parent", async () => {
+  const adapter = createFakeAdapter();
+  const runtime = createSubagentRuntime({
+    startJob: adapter.startJob,
+    deliverMessage: adapter.deliverMessage,
+    config: capacity({ maxActiveBatches: 1, maxActiveSubagents: 2, maxActiveInheritedSubagents: 1 }),
+  });
+  const [idle] = runtime.create({ agents: [member("first")] }).items;
+  adapter.handleFor(idle.id).resolve({ result: "done" });
+  await runtime.jobDone(idle.id);
+  const live = runtime.create({ agents: [member("second")] }).items[0];
+
+  // The Actor's batch is not live any more, so a revival would open a second
+  // live batch while one is already running: refused before any Job exists.
+  await assert.rejects(
+    runtime.sendMessage({ from: MAIN, to: address(idle.id), content: "wake up" }),
+    (error) => error instanceof SubagentError && error.code === "batch_limit_exceeded",
+  );
+  assert.equal(runtime.jobs().jobs.length, 2);
+
+  // Once the live batch finished, the same explicit write is admitted.
+  adapter.handleFor(live.id).resolve({ result: "done" });
+  await runtime.jobDone(live.id);
+  const admitted = await runtime.sendMessage({ from: MAIN, to: address(idle.id), content: "wake up" });
+  const revived = adapter.handleFor(admitted.jobId);
+  assert.equal(revived.job.continuedFromJobId, idle.id);
+  assert.equal(revived.job.spec.kind, "continuation");
+  assert.equal(revived.job.goal, "do first");
+  assert.deepEqual(revived.job.roster, [{ address: address(idle.id), name: null, goal: "do first" }]);
+  assert.deepEqual(revived.job.pendingMessages, [{ type: "message", from: MAIN, content: "wake up" }]);
+  assert.equal(revived.job.budget.snapshot().modelCalls, 0);
 });
 
 test("surfaces exhausted budgets without exposing profile limits", async () => {
@@ -512,98 +565,53 @@ test("surfaces exhausted budgets without exposing profile limits", async () => {
       return { done: Promise.reject(new Error("provider call should not start")) };
     },
   });
-
-  const item = runtime.create({ tasks: [spec("bounded")] }).items[0];
+  const item = runtime.create({ agents: [member("bounded")] }).items[0];
   const failed = await runtime.jobDone(item.id);
-  assert.equal(failed.status, "failed");
   assert.equal(failed.error.code, "budget_exceeded");
   assert.equal("detail" in failed.error, false);
   assert.equal(failed.budget.modelCalls, 200);
   assert.equal(failed.budget.rejectedProjectedModelCalls, 201);
-  assert.equal(failed.budget.terminal.error.code, "budget_exceeded");
-  assert.equal("detail" in failed.budget.terminal.error, false);
   assert.equal("profile" in failed.budget, false);
 });
 
-test("an observed active-time failure stops only its actor until the handle exits", async () => {
+test("an observed active-time failure stops only its Actor until the handle exits", async () => {
   await withFakeClock(async (clock) => {
     const adapter = createFakeAdapter();
-    const runtime = createSubagentRuntime({
-      startJob: adapter.startJob,
-      deliverToMain: adapter.deliverToMain,
-    });
-    const items = runtime.create({ tasks: [spec("a"), spec("b")] }).items;
-    const [first, sibling] = items;
+    const runtime = createSubagentRuntime({ startJob: adapter.startJob, deliverToMain: adapter.deliverToMain });
+    const [first, sibling] = runtime.create({ agents: [member("a"), member("b")] }).items;
     const handle = adapter.handleFor(first.id);
 
-    // A watch tick that finds a healthy Budget is a plain read: the run keeps
-    // going and nothing is cancelled or transitioned.
     const healthy = handle.job.checkBudget();
     assert.equal(healthy.terminal, null);
-    assert.equal(healthy.running, true);
     assert.equal(handle.cancelCount, 0);
-    assert.equal(runtime.jobs({ jobIds: [first.id] }).jobs[0].status, "running");
 
-    // The adapter's watch observes the Budget: depth 1 reaches the hard
-    // active-time ceiling exactly at 120 minutes.
     clock.now = 120 * 60 * 1000;
     const verdict = handle.job.checkBudget();
-    assert.equal(verdict.phase, "exhausted");
     assert.equal(verdict.terminal.status, "failed");
     assert.equal(verdict.terminal.error.code, "budget_exceeded");
-
-    // The observation routes through the runtime: the native run is aborted
-    // once and the Job keeps its physical and topology slots until it exits.
-    assert.equal(handle.cancelled, true);
     assert.equal(handle.cancelCount, 1);
-    const stopping = runtime.jobs({ jobIds: [first.id] }).jobs[0];
-    assert.equal(stopping.status, "stopping");
-    assert.equal(stopping.stopping, "failed");
+    assert.equal(runtime.jobs({ jobIds: [first.id] }).jobs[0].status, "stopping");
     assert.equal(runtime.list().agents[0].status, "running");
-    assert.equal(runtime.jobs({ jobIds: [sibling.id] }).jobs[0].status, "running");
-    assert.deepEqual(adapter.started.map((entry) => entry.job.jobId), [first.id, sibling.id]);
-    // A stopping agent rejects writes, and nothing terminal is published
-    // while the aborted run is still unwinding.
     await assert.rejects(
-      runtime.sendMessage({ from: "Main", to: first.id, content: "still there?" }),
+      runtime.sendMessage({ from: MAIN, to: address(first.id), content: "still there?" }),
       (error) => error instanceof SubagentError && error.code === "agent_busy",
     );
     assert.deepEqual(adapter.mainMessages, []);
 
-    // Re-observing the same failure is a plain read of the frozen verdict: no
-    // second cancel and no second transition.
     assert.deepEqual(handle.job.checkBudget(), verdict);
     assert.equal(handle.cancelCount, 1);
-    assert.equal(runtime.jobs({ jobIds: [first.id] }).jobs[0].status, "stopping");
-    assert.deepEqual(adapter.mainMessages, []);
 
-    // Late output of the aborted run is kept; the failed payload is published
-    // exactly once, when the native run has exited.
     handle.resolve({ result: "partial output" });
     const failed = await runtime.jobDone(first.id);
     assert.equal(failed.status, "failed");
     assert.deepEqual(failed.error, { code: "budget_exceeded", message: "Job execution budget exhausted." });
-    assert.equal(failed.budget.terminal.status, "failed");
     assert.equal(runtime.jobRecord(first.id).result, "partial output");
-    assert.equal(adapter.mainMessages.length, 1);
-    assert.equal(adapter.mainMessages[0].status, "failed");
-    assert.equal(adapter.mainMessages[0].round, 1);
-    assert.equal(adapter.mainMessages[0].content, "partial output");
-    assert.equal(adapter.mainMessages[0].error, "Job execution budget exhausted.");
-
-    // The sibling was already running; a later observation of the finished
-    // Job changes nothing either.
-    assert.deepEqual(adapter.started.map((entry) => entry.job.jobId), [first.id, sibling.id]);
-    assert.equal(handle.job.checkBudget().terminal.status, "failed");
-    assert.equal(handle.cancelCount, 1);
-    assert.equal(adapter.mainMessages.length, 1);
-    assert.equal(runtime.jobs({ jobIds: [first.id] }).jobs[0].status, "failed");
+    // No model-facing completion is synthesized for a settled Job.
+    assert.deepEqual(adapter.mainMessages, []);
   });
 });
 
 test("a Budget failure observed before the native handle exists is never lost or doubled", async () => {
-  // The adapter checks the Budget synchronously inside startJob, before it
-  // could return a handle: the failure is routed while no handle exists yet.
   await withFakeClock(async (clock) => {
     const adapter = createFakeAdapter();
     const runtime = createSubagentRuntime({
@@ -613,25 +621,16 @@ test("a Budget failure observed before the native handle exists is never lost or
         return adapter.startJob(request);
       },
     });
-    const item = runtime.create({ tasks: [spec("sync")] }).items[0];
+    const item = runtime.create({ agents: [member("sync")] }).items[0];
     const handle = adapter.handleFor(item.id);
-
-    // The cancellation is owed to the handle that arrives right after the
-    // observation, and happens exactly once.
     assert.equal(handle.cancelCount, 1);
-    const stopping = runtime.jobs({ jobIds: [item.id] }).jobs[0];
-    assert.equal(stopping.status, "stopping");
-    assert.equal(stopping.stopping, "failed");
-
+    assert.equal(runtime.jobs({ jobIds: [item.id] }).jobs[0].status, "stopping");
     handle.resolve({ result: "partial output" });
     const failed = await runtime.jobDone(item.id);
     assert.deepEqual(failed.error, { code: "budget_exceeded", message: "Job execution budget exhausted." });
     assert.equal(handle.cancelCount, 1);
-    assert.equal(runtime.jobRecord(item.id).result, "partial output");
   });
 
-  // An adapter that throws after observing the same failure does not replace
-  // it with a start failure, and no native run holds a slot to wait for.
   await withFakeClock(async (clock) => {
     const runtime = createSubagentRuntime({
       startJob(request) {
@@ -640,9 +639,8 @@ test("a Budget failure observed before the native handle exists is never lost or
         throw new Error("startup aborted");
       },
     });
-    const item = runtime.create({ tasks: [spec("sync throw")] }).items[0];
+    const item = runtime.create({ agents: [member("sync throw")] }).items[0];
     const failed = await runtime.jobDone(item.id);
-    assert.equal(failed.status, "failed");
     assert.deepEqual(failed.error, { code: "budget_exceeded", message: "Job execution budget exhausted." });
     assert.equal(runtime.list().agents[0].status, "idle");
   });
@@ -653,113 +651,31 @@ test("buffers a message during batch registration until the recipient starts", a
   let receipt;
   const runtime = createSubagentRuntime({
     startJob(request) {
-      if (request.spec.name === "a") {
-        const sibling = runtime.jobs().jobs.find((job) => job.name === "b");
-        receipt = runtime.sendMessage({ from: "Main", to: sibling.agentId, content: "start with the tests" });
+      if (request.index === 0) {
+        const sibling = runtime.jobs().jobs.find((job) => job.agentId === "sub_1-2");
+        receipt = runtime.sendMessage({ from: MAIN, to: address(sibling.agentId), content: "start with the tests" });
       }
       return adapter.startJob(request);
     },
     deliverMessage: adapter.deliverMessage,
   });
-  const items = runtime.create({ tasks: [spec("a"), spec("b")] }).items;
+  const items = runtime.create({ agents: [member("a"), member("b")] }).items;
   const [first, second] = items;
 
   receipt = await receipt;
-  assert.deepEqual(receipt, { ok: true, to: second.id, jobId: second.id });
+  assert.deepEqual(receipt, { ok: true, to: address(second.id), jobId: second.id });
   assert.deepEqual(adapter.deliveries, []);
-  assert.equal(adapter.started.length, 2);
 
   adapter.handleFor(first.id).resolve({ result: "one" });
   await runtime.jobDone(first.id);
+  assert.deepEqual(adapter.handleFor(second.id).job.pendingMessages,
+    [{ type: "message", from: MAIN, content: "start with the tests" }]);
 
-  const request = adapter.handleFor(second.id).job;
-  assert.equal(request.jobId, second.id);
-  assert.deepEqual(request.pendingMessages, [{ type: "message", from: "Main", content: "start with the tests" }]);
-
-  // Once that Job is running, the next write goes through the live hand-over.
-  const later = await runtime.sendMessage({ from: "Main", to: second.id, content: "and the docs" });
-  assert.deepEqual(later, { ok: true, to: second.id, jobId: second.id });
+  const later = await runtime.sendMessage({ from: MAIN, to: address(second.id), content: "and the docs" });
+  assert.deepEqual(later, { ok: true, to: address(second.id), jobId: second.id });
   assert.deepEqual(adapter.deliveries, [
-    { agentId: second.id, jobId: second.id, message: { type: "message", from: "Main", content: "and the docs" } },
+    { agentId: second.id, jobId: second.id, message: { type: "message", from: MAIN, content: "and the docs" } },
   ]);
-});
-
-test("a task cancelled before its batch start is revived from its original seed", async () => {
-  const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({
-    startJob(request) {
-      if (request.spec.name === "a") {
-        const sibling = runtime.jobs().jobs.find((job) => job.name === "notStarted");
-        assert.equal(runtime.cancelJob(sibling.jobId).job.status, "cancelled");
-      }
-      return adapter.startJob(request);
-    },
-    deliverMessage: adapter.deliverMessage,
-  });
-  const items = runtime.create({
-    context: "batch background",
-    tasks: [spec("a"), { name: "notStarted", task: "later work" }],
-  }).items;
-  const [first, notStarted] = items;
-
-  await runtime.jobDone(notStarted.id);
-  assert.equal(adapter.started.length, 1);
-  // Nothing retries the cancelled task on its own.
-  adapter.handleFor(first.id).resolve({ result: "one" });
-  await runtime.jobDone(first.id);
-  assert.equal(runtime.jobs().jobs.length, 2);
-
-  // The explicit write revives an actor whose first native session was never
-  // created: one continuation Job that still carries the original seed.
-  const receipt = await runtime.sendMessage({ from: "Main", to: notStarted.id, content: "begin now" });
-  const revived = adapter.handleFor(receipt.jobId);
-  assert.equal(revived.job.continuedFromJobId, notStarted.id);
-  assert.equal(revived.job.spec.kind, "continuation");
-  // A continuation carries its own Budget instead of the predecessor's outcome.
-  assert.equal(revived.job.budget.snapshot().modelCalls, 0);
-  assert.equal(revived.job.spec.seed.task, "later work");
-  assert.equal(revived.job.spec.seed.context, "batch background");
-  assert.deepEqual(revived.job.pendingMessages, [{ type: "message", from: "Main", content: "begin now" }]);
-  assert.equal(runtime.jobs().jobs.length, 3);
-});
-
-test("rejects a write that would exceed four active children", async () => {
-  const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({
-    startJob: adapter.startJob,
-    deliverMessage: adapter.deliverMessage,
-  });
-  const roots = runtime.create({ tasks: [spec("a"), spec("b"), spec("c"), spec("d")] }).items;
-
-  adapter.handleFor(roots[0].id).resolve({ result: "a done" });
-  await runtime.jobDone(roots[0].id);
-  const fifth = runtime.create({ tasks: [spec("e")] }).items[0];
-  assert.equal(runtime.list({ status: "running" }).agents.length, 4);
-
-  // Reviving the idle agent would create a fifth active child: the whole write
-  // is rejected before any message or Job is registered.
-  await assert.rejects(
-    runtime.sendMessage({ from: "Main", to: roots[0].id, content: "wake up" }),
-    (error) =>
-      error instanceof SubagentError &&
-      error.code === "child_limit_exceeded" &&
-      error.detail.agentId === roots[0].id &&
-      error.detail.activeChildren === 4,
-  );
-  assert.equal(runtime.jobs().jobs.length, 5);
-  assert.equal(runtime.list().agents.find((agent) => agent.agentId === roots[0].id).status, "idle");
-  assert.deepEqual(adapter.deliveries, []);
-
-  // Once a child finishes, the same explicit write is admitted and revives.
-  adapter.handleFor(roots[1].id).resolve({ result: "b done" });
-  await runtime.jobDone(roots[1].id);
-  assert.equal(runtime.jobs().jobs.length, 5);
-  const admitted = await runtime.sendMessage({ from: "Main", to: roots[0].id, content: "wake up" });
-  const revived = adapter.handleFor(admitted.jobId);
-  assert.equal(revived.job.agentId, roots[0].id);
-  assert.equal(revived.job.continuedFromJobId, roots[0].id);
-  assert.deepEqual(revived.job.pendingMessages.map((message) => message.content), ["wake up"]);
-  assert.equal(runtime.jobs({ jobIds: [fifth.id] }).jobs[0].status, "running");
 });
 
 test("rejects unknown senders and targets, invalid messages and sender spoofing", async () => {
@@ -769,122 +685,135 @@ test("rejects unknown senders and targets, invalid messages and sender spoofing"
     deliverMessage: adapter.deliverMessage,
     deliverToMain: adapter.deliverToMain,
   });
-  const item = runtime.create({ tasks: [spec("a")] }).items[0];
+  const item = runtime.create({ agents: [member("a")] }).items[0];
   const rejects = (promise, code) =>
     assert.rejects(promise, (error) => error instanceof SubagentError && error.code === code);
 
-  await rejects(runtime.sendMessage({ from: "Main", to: "agent_99", content: "hello" }), "unknown_agent");
-  await rejects(runtime.sendMessage({ from: "agent_99", to: item.id, content: "hello" }), "unknown_sender");
-  await rejects(runtime.sendMessage({ from: "bob", to: item.id, content: "hello" }), "unknown_sender");
-  await rejects(runtime.sendMessage({ from: "Main", to: "bob", content: "hello" }), "unknown_agent");
-  await rejects(runtime.sendMessage({ from: "Main", to: item.id, content: "   " }), "invalid_message");
-  await rejects(runtime.sendMessage({ from: "Main", to: item.id, content: "x".repeat(40000) }), "invalid_message");
-  await rejects(runtime.sendMessage({ from: "Main", to: "Main", content: "hello" }), "invalid_target");
-  await rejects(runtime.sendMessage({ from: item.id, to: item.id, content: "hello" }), "invalid_target");
-  // The broadcast target is write-only and never an actor: it cannot send, and
-  // a reserved name is not the same thing as an addressable recipient.
-  await rejects(runtime.sendMessage({ from: "all", to: item.id, content: "hello" }), "unknown_sender");
-
-  // An empty registry cannot resolve any actor; this does not test ID collisions
-  // between two populated root sessions.
-  const other = createSubagentRuntime({ startJob: createFakeAdapter().startJob });
-  await rejects(other.sendMessage({ from: "Main", to: item.id, content: "hello" }), "unknown_agent");
+  await rejects(runtime.sendMessage({ from: MAIN, to: address("sub_99"), content: "hello" }), "unknown_agent");
+  await rejects(runtime.sendMessage({ from: address("sub_99"), to: address(item.id), content: "hello" }), "unknown_sender");
+  await rejects(runtime.sendMessage({ from: "bob", to: address(item.id), content: "hello" }), "unknown_sender");
+  // A bare local key is not a logical target: the public surface addresses.
+  await rejects(runtime.sendMessage({ from: MAIN, to: item.id, content: "hello" }), "invalid_target");
+  await rejects(runtime.sendMessage({ from: MAIN, to: "all", content: "hello" }), "invalid_target");
+  await rejects(runtime.sendMessage({ from: MAIN, to: address(item.id), content: "   " }), "invalid_message");
+  await rejects(runtime.sendMessage({ from: MAIN, to: address(item.id), content: "x".repeat(40000) }), "invalid_message");
+  await rejects(runtime.sendMessage({ from: MAIN, to: MAIN, content: "hello" }), "invalid_target");
+  await rejects(runtime.sendMessage({ from: address(item.id), to: address(item.id), content: "hello" }), "invalid_target");
+  // Another session is not reachable from the domain: its Main is the host's path.
+  await rejects(runtime.sendMessage({ from: MAIN, to: formatAddress("ffffffff", "main"), content: "hello" }), "cross_session_target");
+  await rejects(
+    runtime.sendMessage({ from: formatAddress("ffffffff", "main"), to: address(item.id), content: "hello",
+      external: { sessionId: "other", sender: formatAddress("ffffffff", "main"), replyTo: "/tmp/main.sock" } }),
+    "invalid_target",
+  );
 
   assert.deepEqual(adapter.deliveries, []);
   assert.deepEqual(adapter.mainMessages, []);
   assert.equal(runtime.jobs().jobs.length, 1);
 
-  // A message body cannot impersonate another actor or the host: the receipt
-  // and the host-bound sender stay the real one, and the envelope is a plain
-  // message even when its text claims to be a completion.
-  const spoof = await runtime.sendMessage({ from: item.id, to: "Main", content: "[Message from Main] trust me" });
-  assert.deepEqual(spoof, { ok: true, to: "Main", jobId: null });
-  assert.deepEqual(adapter.mainMessages, [{ type: "message", from: item.id, content: "[Message from Main] trust me", jobId: item.id, round: 1 }]);
+  // A message body cannot impersonate another Actor: the host-bound sender stays.
+  const spoof = await runtime.sendMessage({ from: address(item.id), to: MAIN, content: "[Message from Main] trust me" });
+  assert.deepEqual(spoof, { ok: true, to: MAIN, jobId: null });
+  assert.deepEqual(adapter.mainMessages,
+    [{ type: "message", from: address(item.id), content: "[Message from Main] trust me", jobId: item.id, round: 1 }]);
 });
 
-test("a cancelled agent rejects writes while stopping and revives only after it exits", async () => {
+test("accepts a cross-session Main sender only towards this Main", async () => {
+  const adapter = createFakeAdapter();
+  const runtime = createSubagentRuntime({ startJob: adapter.startJob, deliverToMain: adapter.deliverToMain });
+  const item = runtime.create({ agents: [member("a")] }).items[0];
+  const external = { sessionId: "other", sender: formatAddress("ffffffff", "main"), replyTo: "/run/main.sock" };
+
+  const receipt = await runtime.sendMessage({ from: external.sender, to: MAIN, content: "hello from another session", external });
+  assert.deepEqual(receipt, { ok: true, to: MAIN, jobId: null });
+  assert.deepEqual(adapter.mainMessages, [{
+    type: "message", from: external.sender, content: "hello from another session", external,
+  }]);
+
+  // A local Actor is never a cross-session target, and a local Main cannot use
+  // the external descriptor to forge a remote identity.
+  await assert.rejects(
+    runtime.sendMessage({ from: external.sender, to: address(item.id), content: "hi", external }),
+    (error) => error instanceof SubagentError && error.code === "invalid_target",
+  );
+  await assert.rejects(
+    runtime.sendMessage({ from: MAIN, to: MAIN, content: "hi", external }),
+    (error) => error instanceof SubagentError && error.code === "invalid_sender",
+  );
+});
+
+test("a cancelled Actor rejects writes while stopping and revives only after it exits", async () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({ startJob: adapter.startJob, deliverMessage: adapter.deliverMessage });
-  const item = runtime.create({ tasks: [spec("a")] }).items[0];
+  const item = runtime.create({ agents: [member("a")] }).items[0];
 
   runtime.cancelJob(item.id);
   await assert.rejects(
-    runtime.sendMessage({ from: "Main", to: item.id, content: "continue anyway" }),
-    (error) =>
-      error instanceof SubagentError && error.code === "agent_busy" && error.detail.status === "stopping" && error.detail.agentId === item.id,
+    runtime.sendMessage({ from: MAIN, to: address(item.id), content: "continue anyway" }),
+    (error) => error instanceof SubagentError && error.code === "agent_busy"
+      && error.detail.status === "stopping" && error.detail.agentId === item.id,
   );
 
   adapter.handleFor(item.id).resolve({ result: "partial" });
   assert.equal((await runtime.jobDone(item.id)).status, "cancelled");
-  // Cancelled work never restarts itself: the aborted run leaves no successor.
   assert.equal(runtime.jobs().jobs.length, 1);
   assert.deepEqual(adapter.deliveries, []);
   assert.equal(runtime.list().agents[0].status, "idle");
 
-  // An explicit write afterwards is a plain revival with retained context.
-  const receipt = await runtime.sendMessage({ from: "Main", to: item.id, content: "continue anyway" });
-  assert.equal(receipt.ok, true);
+  const receipt = await runtime.sendMessage({ from: MAIN, to: address(item.id), content: "continue anyway" });
   const revived = adapter.handleFor(receipt.jobId);
   assert.equal(revived.job.continuedFromJobId, item.id);
-  assert.deepEqual(revived.job.pendingMessages, [{ type: "message", from: "Main", content: "continue anyway" }]);
+  assert.deepEqual(revived.job.pendingMessages, [{ type: "message", from: MAIN, content: "continue anyway" }]);
 });
 
 test("a write that races a closing run either revives it or reports the successor state", async () => {
-  // The run is still unwinding when the hand-over is refused: the write is
-  // rejected with the live state instead of being parked.
   const busyAdapter = createFakeAdapter({ refuseDelivery: true });
   const busyRuntime = createSubagentRuntime({ startJob: busyAdapter.startJob, deliverMessage: busyAdapter.deliverMessage });
-  const busyItem = busyRuntime.create({ tasks: [spec("a")] }).items[0];
+  const busyItem = busyRuntime.create({ agents: [member("a")] }).items[0];
   await assert.rejects(
-    busyRuntime.sendMessage({ from: "Main", to: busyItem.id, content: "late message" }),
+    busyRuntime.sendMessage({ from: MAIN, to: address(busyItem.id), content: "late message" }),
     (error) => error instanceof SubagentError && error.code === "agent_busy" && error.detail.status === "running",
   );
   assert.equal(busyRuntime.jobs().jobs.length, 1);
 
-  // The run settles inside the hand-over: the same write revives the agent
-  // against the fresh state, still delivering the message exactly once.
   const raceAdapter = createFakeAdapter();
   const raceRuntime = createSubagentRuntime({ startJob: raceAdapter.startJob, deliverMessage: raceAdapter.deliverMessage });
-  const raceItem = raceRuntime.create({ tasks: [spec("a")] }).items[0];
+  const raceItem = raceRuntime.create({ agents: [member("a")] }).items[0];
   raceAdapter.state.onDeliver = ({ handle }) => {
     handle.resolve({ result: "done while the write was in flight" });
     return { accepted: false, reason: "job_closed" };
   };
 
-  const receipt = await raceRuntime.sendMessage({ from: "Main", to: raceItem.id, content: "late message" });
+  const receipt = await raceRuntime.sendMessage({ from: MAIN, to: address(raceItem.id), content: "late message" });
   assert.equal(receipt.ok, true);
   assert.notEqual(receipt.jobId, raceItem.id);
   assert.equal(raceRuntime.jobs().jobs.length, 2);
   const revived = raceAdapter.handleFor(receipt.jobId);
   assert.equal(revived.job.continuedFromJobId, raceItem.id);
-  assert.deepEqual(revived.job.pendingMessages, [{ type: "message", from: "Main", content: "late message" }]);
   assert.equal(raceRuntime.jobRecord(raceItem.id).result, "done while the write was in flight");
 });
 
 test("rejects a write that arrives before any delivery hook is wired", async () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({ startJob: adapter.startJob, deliverMessage: adapter.deliverMessage });
-  const item = runtime.create({ tasks: [spec("a")] }).items[0];
+  const item = runtime.create({ agents: [member("a")] }).items[0];
 
-  // An aborted call never reaches the runtime.
   const controller = new AbortController();
   controller.abort();
   await assert.rejects(
-    runtime.sendMessage({ from: "Main", to: item.id, content: "never sent", signal: controller.signal }),
+    runtime.sendMessage({ from: MAIN, to: address(item.id), content: "never sent", signal: controller.signal }),
     (error) => error instanceof SubagentError && error.code === "aborted",
   );
   assert.deepEqual(adapter.deliveries, []);
 
-  // Without a hand-over hook a running agent cannot take a message, and a
-  // runtime without a Main hook cannot message Main.
   const noHook = createSubagentRuntime({ startJob: adapter.startJob });
-  const items = noHook.create({ tasks: [spec("a"), spec("b")] }).items;
+  const items = noHook.create({ agents: [member("a"), member("b")] }).items;
   await assert.rejects(
-    noHook.sendMessage({ from: "Main", to: items[0].id, content: "held" }),
+    noHook.sendMessage({ from: MAIN, to: address(items[0].id), content: "held" }),
     (error) => error instanceof SubagentError && error.code === "agent_busy",
   );
   await assert.rejects(
-    noHook.sendMessage({ from: items[0].id, to: "Main", content: "hello" }),
+    noHook.sendMessage({ from: address(items[0].id), to: MAIN, content: "hello" }),
     (error) => error instanceof SubagentError && error.code === "delivery_unavailable",
   );
   assert.equal(noHook.jobs().jobs.length, 2);
@@ -897,95 +826,96 @@ test("delivers an explicit message to Main and reports a failed Main delivery", 
     deliverMessage: adapter.deliverMessage,
     deliverToMain: adapter.deliverToMain,
   });
-  const item = runtime.create({ tasks: [spec("a")] }).items[0];
+  const item = runtime.create({ agents: [member("a")] }).items[0];
 
-  const receipt = await runtime.sendMessage({ from: item.id, to: "Main", content: "audit finished" });
-  assert.deepEqual(receipt, { ok: true, to: "Main", jobId: null });
-  assert.deepEqual(adapter.mainMessages, [{ type: "message", from: item.id, content: "audit finished", jobId: item.id, round: 1 }]);
-  assert.equal(runtime.jobs().jobs.length, 1);
+  const receipt = await runtime.sendMessage({ from: address(item.id), to: MAIN, content: "audit finished" });
+  assert.deepEqual(receipt, { ok: true, to: MAIN, jobId: null });
+  assert.deepEqual(adapter.mainMessages, [{ type: "message", from: address(item.id), content: "audit finished", jobId: item.id, round: 1 }]);
 
   const failing = createFakeAdapter({ mainDeliveryFails: true });
   const failingRuntime = createSubagentRuntime({ startJob: failing.startJob, deliverToMain: failing.deliverToMain });
-  const failingItem = failingRuntime.create({ tasks: [spec("a")] }).items[0];
+  const failingItem = failingRuntime.create({ agents: [member("a")] }).items[0];
   await assert.rejects(
-    failingRuntime.sendMessage({ from: failingItem.id, to: "Main", content: "hello" }),
+    failingRuntime.sendMessage({ from: address(failingItem.id), to: MAIN, content: "hello" }),
     (error) => error instanceof SubagentError && error.code === "delivery_failed" && /main session unavailable/.test(error.message),
   );
 
-  // A completion never needs a delivery hook to be wired to change a Job's
-  // outcome, and a runtime without one simply cannot notify.
+  // A settled Job never needs a delivery hook and never notifies a model.
   const silentAdapter = createFakeAdapter();
   const silent = createSubagentRuntime({ startJob: silentAdapter.startJob });
-  const silentItem = silent.create({ tasks: [spec("a")] }).items[0];
+  const silentItem = silent.create({ agents: [member("a")] }).items[0];
   silentAdapter.handleFor(silentItem.id).resolve({ result: "done" });
   assert.equal((await silent.jobDone(silentItem.id)).status, "completed");
+  assert.deepEqual(silentAdapter.mainMessages, []);
 });
 
-test("broadcast reports per-recipient failures while delivering to the rest", async () => {
-  const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({
-    startJob: adapter.startJob,
-    deliverMessage: adapter.deliverMessage,
-  });
-  const roots = runtime.create({ tasks: [spec("a"), spec("b"), spec("c")] }).items;
-
-  // One child refuses the hand-over: its outcome is an explicit error while
-  // the others still get the write.
-  adapter.state.onDeliver = ({ handle }) => (handle.job.jobId === roots[1].id ? { accepted: false, reason: "job_closed" } : { accepted: true });
-  const partial = await runtime.sendMessage({ from: "Main", to: "all", content: "report in" });
-  assert.equal(partial.ok, false);
-  assert.deepEqual(partial.sent.map((entry) => entry.to), [roots[0].id, roots[2].id]);
-  assert.deepEqual(
-    partial.errors.map((entry) => [entry.to, entry.code]),
-    [[roots[1].id, "agent_busy"]],
-  );
-});
-
-test("a label is not an actor id: a child named all is reached by id only", async () => {
+test("broadcast filters the sender, reports per-recipient failures and allows zero recipients", async () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({ startJob: adapter.startJob, deliverMessage: adapter.deliverMessage });
-  const labeled = runtime.create({ tasks: [{ name: "all", task: "do things" }] }).items[0];
+  const roots = runtime.create({ agents: [member("a"), member("b"), member("c")] }).items;
 
-  // The reserved target is the broadcast route, never a label: Main's write
-  // still fans out by actor id and the message reaches that one child.
-  const broadcast = await runtime.sendMessage({ from: "Main", to: "all", content: "status?" });
-  assert.deepEqual(broadcast, { ok: true, to: "all", sent: [{ to: labeled.id, jobId: labeled.id }], errors: [] });
-  assert.deepEqual(adapter.deliveries, [
-    { agentId: labeled.id, jobId: labeled.id, message: { type: "message", from: "Main", content: "status?" } },
-  ]);
-  // And the label is not an address: only a real actor id resolves.
-  assert.equal(canonicalActorId("all"), null);
+  adapter.state.onDeliver = ({ handle }) => (handle.job.jobId === roots[1].id ? { accepted: false, reason: "job_closed" } : { accepted: true });
+  const partial = await runtime.sendMessage({ from: MAIN, to: formatChildrenAddress(SESSION, "main"), content: "report in" });
+  assert.equal(partial.ok, false);
+  assert.equal(partial.to, formatChildrenAddress(SESSION, "main"));
+  assert.deepEqual(partial.sent.map((entry) => entry.to), [address(roots[0].id), address(roots[2].id)]);
+  assert.deepEqual(partial.errors.map((entry) => [entry.to, entry.code]), [[address(roots[1].id), "agent_busy"]]);
+
+  // A leaf Actor has no direct children: the broadcast is empty, not an error.
+  adapter.state.onDeliver = null;
+  const empty = await runtime.sendMessage({ from: address(roots[0].id), to: formatChildrenAddress(SESSION, roots[0].id), content: "hello?" });
+  assert.deepEqual(empty, { ok: true, to: formatChildrenAddress(SESSION, roots[0].id), sent: [], errors: [] });
+
+  // The batch selector reaches every member of that batch, never Main.
+  const group = runtime.create({ agents: [member("d"), member("e")] });
+  const sent = await runtime.sendMessage({ from: MAIN, to: group.address, content: "status?" });
+  assert.deepEqual(sent.sent.map((entry) => entry.to), group.roster.map((entry) => entry.address));
+  // A member of the group does not receive its own broadcast.
+  const fromMember = await runtime.sendMessage({ from: group.roster[0].address, to: group.address, content: "status?" });
+  assert.deepEqual(fromMember.sent.map((entry) => entry.to), [group.roster[1].address]);
+});
+
+test("a label is not an address and an Actor is reached by its address only", async () => {
+  const adapter = createFakeAdapter();
+  const runtime = createSubagentRuntime({ startJob: adapter.startJob, deliverMessage: adapter.deliverMessage });
+  const labeled = runtime.create({ agents: [member("do things", "all")] }).items[0];
+
+  await assert.rejects(
+    runtime.sendMessage({ from: MAIN, to: "all", content: "status?" }),
+    (error) => error instanceof SubagentError && error.code === "invalid_target",
+  );
+  assert.equal(parseAddress("all"), null);
+  assert.equal(parseActorKey("main").key, "main");
   assert.equal(runtime.jobRecord("all"), null);
+  const receipt = await runtime.sendMessage({ from: MAIN, to: address(labeled.id), content: "status?" });
+  assert.deepEqual(receipt, { ok: true, to: address(labeled.id), jobId: labeled.id });
   adapter.handleFor(labeled.id).resolve({ result: "done" });
   await runtime.jobDone(labeled.id);
   assert.equal(runtime.jobRecord(labeled.id).name, "all");
 });
 
-test("carries the adapter's inherited warnings on the entry and job views", async () => {
+test("carries inherited warnings on the entry, the Job view and a restored registry", async () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({ startJob: adapter.startJob, deliverMessage: adapter.deliverMessage });
   const warning = "Not transplantable through Pi's public API, so the inherited child does not have them: mystery.";
   const snapshot = { systemPrompt: "parent", tools: ["read"], entries: [], warnings: [warning] };
 
-  const fresh = runtime.create({ tasks: [spec("fresh")] }).items[0];
+  const fresh = runtime.create({ agents: [member("fresh")] }).items[0];
   assert.equal("warnings" in fresh, false);
+  const created = runtime.create({ agents: [{ goal: "inherit", inheritContext: true }] }, { captureInheritedContext: () => snapshot });
+  assert.deepEqual(created.warnings, [warning]);
+  assert.deepEqual(created.items[0].warnings, [warning]);
+  assert.deepEqual(runtime.jobs({ jobIds: [created.items[0].id] }).jobs[0].warnings, [warning]);
 
-  const child = runtime.create({ tasks: [{ task: "inherit", inheritContext: true }] }, { captureInheritedContext: () => snapshot }).items[0];
-  assert.deepEqual(child.warnings, [warning]);
-  assert.deepEqual(runtime.jobs({ jobIds: [child.id] }).jobs[0].warnings, [warning]);
-
-  // A revival restates them through the Job's seed, and the persisted spec
-  // keeps them for a restored Job.
-  adapter.handleFor(child.id).resolve({ result: "done" });
-  await runtime.jobDone(child.id);
-  const revived = await runtime.sendMessage({ from: "Main", to: child.id, content: "more" });
+  adapter.handleFor(created.items[0].id).resolve({ result: "done" });
+  await runtime.jobDone(created.items[0].id);
+  const revived = await runtime.sendMessage({ from: MAIN, to: address(created.items[0].id), content: "more" });
   assert.deepEqual(runtime.jobs({ jobIds: [revived.jobId] }).jobs[0].warnings, [warning]);
 
   const state = JSON.parse(JSON.stringify(stateOf(runtime)));
   const restored = createSubagentRuntime({ startJob: createFakeAdapter().startJob });
   restored.restoreState(state);
-  assert.deepEqual(restored.jobs({ jobIds: [child.id] }).jobs[0].warnings, [warning]);
-  assert.deepEqual(restored.jobs({ jobIds: [revived.jobId] }).jobs[0].warnings, [warning]);
+  assert.deepEqual(restored.jobs({ jobIds: [created.items[0].id] }).jobs[0].warnings, [warning]);
 });
 
 test("emits lifecycle deltas once and never during read-only polls", async () => {
@@ -993,10 +923,14 @@ test("emits lifecycle deltas once and never during read-only polls", async () =>
   const events = [];
   const runtime = createSubagentRuntime({ startJob: adapter.startJob, deliverMessage: adapter.deliverMessage,
     onEvent: (event) => events.push(event) });
-  const item = runtime.create({ tasks: [spec("a")] }).items[0];
+  const item = runtime.create({ agents: [member("a")] }).items[0];
   assert.deepEqual(events.map((event) => event.type), ["job"]);
+  assert.deepEqual(events[0].actor, {
+    name: null, parentAgentId: null, depth: 1, batch: 1, member: null, goal: "do a", context: null,
+    roster: [{ id: "sub_1", name: null, goal: "do a" }], kind: "fresh",
+  });
   runtime.list(); runtime.jobs(); runtime.jobDone(item.id); runtime.jobRecord(item.id);
-  await runtime.sendMessage({ from: "Main", to: item.id, content: "status?" });
+  await runtime.sendMessage({ from: MAIN, to: address(item.id), content: "status?" });
   assert.equal(events.length, 1);
   const handle = adapter.handleFor(item.id);
   handle.job.recordStart("e0");
@@ -1009,107 +943,223 @@ test("emits lifecycle deltas once and never during read-only polls", async () =>
   assert.deepEqual(events[2].history, { startEntryId: "e0", endEntryId: "e2" });
   events[0].actor.name = "tampered";
   events[2].status = "tampered";
-  assert.equal(runtime.list().agents[0].name, "a");
+  assert.equal(runtime.list().agents[0].name, null);
   assert.equal(runtime.jobRecord(item.id).status, "completed");
-});
-
-test("emits terminal events before notifications, including synchronous batch failures", async () => {
-  const adapter = createFakeAdapter();
-  const observed = [];
-  let runtime;
-  runtime = createSubagentRuntime({ startJob: adapter.startJob,
-    deliverToMain(message) {
-      observed.push(stateOf(runtime).jobs.find((job) => job.jobId === message.jobId).end.status);
-    } });
-  const item = runtime.create({ tasks: [spec("a")] }).items[0];
-  adapter.handleFor(item.id).resolve({ result: "done" });
-  await runtime.jobDone(item.id);
-  assert.deepEqual(observed, ["completed"]);
-  const events = [], failures = [];
-  const failing = createSubagentRuntime({
-    startJob(request) { if (request.index === 0) throw new Error("cannot create session"); return adapter.startJob(request); },
-    onEvent: (event) => events.push(event),
-    deliverToMain(message) {
-      failures.push(message);
-      assert.equal(events.filter((event) => event.type === "job").length, 2);
-      assert.ok(events.some((event) => event.type === "job-end" && event.jobId === message.jobId));
-    },
-  });
-  failing.create({ tasks: [spec("bad"), spec("good")] });
-  assert.equal(failures.length, 1);
-  assert.equal(failures[0].status, "failed");
-  assert.equal(failures[0].round, 1);
-  assert.equal(failures[0].content, "");
-  assert.equal(failures[0].error, "cannot create session");
+  assert.deepEqual(adapter.mainMessages, []);
 });
 
 test("a failing persistence hook can never change a Job outcome", async () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({
     startJob: adapter.startJob,
-    onEvent: () => {
-      throw new Error("disk full");
-    },
+    onEvent: () => { throw new Error("disk full"); },
   });
-  const item = runtime.create({ tasks: [spec("a")] }).items[0];
+  const item = runtime.create({ agents: [member("a")] }).items[0];
   adapter.handleFor(item.id).resolve({ result: "done" });
   const terminal = await runtime.jobDone(item.id);
   assert.equal(terminal.status, "completed");
   assert.equal(runtime.jobRecord(item.id).result, "done");
 });
 
+test("signal stops one Actor, keeps its identity and refuses a direct self-signal", async () => {
+  const adapter = createFakeAdapter();
+  const runtime = createSubagentRuntime({ startJob: adapter.startJob });
+  const [first, second] = runtime.create({ agents: [member("a"), member("b")] }).items;
+
+  const result = await stop(runtime, address(first.id));
+  assert.deepEqual(result, { ok: true, action: "stop", to: address(first.id), targets: [{ address: address(first.id), ok: true, status: "stopping" }] });
+  adapter.handleFor(first.id).resolve({ result: "partial" });
+  await runtime.jobDone(first.id);
+  const idle = await stop(runtime, address(first.id));
+  assert.deepEqual(idle.targets, [{ address: address(first.id), ok: true, status: "idle" }]);
+
+  const group = await stop(runtime, formatGroupAddress(SESSION, 1));
+  assert.equal(group.action, "stop");
+  assert.deepEqual(group.targets.map((entry) => [entry.address, entry.status]), [
+    [address(first.id), "idle"],
+    [address(second.id), "stopping"],
+  ]);
+  assert.deepEqual(group.targets.map((entry) => entry.ok), [true, true]);
+
+  await assert.rejects(runtime.signal({ from: address(second.id), to: address(second.id), action: "stop" }),
+    (error) => error instanceof SubagentError && error.code === "invalid_target");
+  await assert.rejects(runtime.signal({ from: MAIN, to: address(second.id), action: "reboot" }),
+    (error) => error instanceof SubagentError && error.code === "invalid_request");
+  await assert.rejects(runtime.signal({ from: MAIN, to: address("sub_99"), action: "stop" }),
+    (error) => error instanceof SubagentError && error.code === "unknown_agent");
+});
+
+test("interrupt keeps the Job and the goal alive or reports the missing capability", async () => {
+  const adapter = createFakeAdapter();
+  const interrupted = [];
+  const runtime = createSubagentRuntime({
+    startJob: adapter.startJob,
+    interruptJob: async (input) => { interrupted.push(input); return { ok: true }; },
+  });
+  const item = runtime.create({ agents: [member("a")] }).items[0];
+
+  const accepted = await runtime.signal({ from: MAIN, to: address(item.id), action: "interrupt" });
+  assert.deepEqual(accepted, { ok: true, action: "interrupt", to: address(item.id), targets: [{ address: address(item.id), ok: true, status: "running" }] });
+  assert.deepEqual(interrupted, [{ agentId: item.id, jobId: item.id, address: address(item.id), from: MAIN }]);
+  // The Job, its Actor and its goal are untouched: no Job was created or ended.
+  assert.equal(runtime.jobs().jobs.length, 1);
+  assert.equal(runtime.jobs().jobs[0].status, "running");
+  assert.equal(runtime.list().agents[0].goal, "do a");
+
+  // Without the capability the runtime reports the refusal and changes nothing.
+  const plain = createSubagentRuntime({ startJob: adapter.startJob });
+  const plainItem = plain.create({ agents: [member("b")] }).items[0];
+  const refused = await plain.signal({ from: MAIN, to: address(plainItem.id), action: "interrupt" });
+  assert.deepEqual(refused.targets, [{ address: address(plainItem.id), ok: false, status: "running", reason: "interrupt_unsupported" }]);
+  assert.equal(plain.jobs().jobs[0].status, "running");
+
+  // A capability that refuses, and one that throws, are both truthful refusals.
+  const refusing = createFakeAdapter({ interrupt: () => ({ ok: false, reason: "run_abort_unavailable" }) });
+  const refusingRuntime = createSubagentRuntime({ startJob: refusing.startJob, interruptJob: refusing.interruptJob });
+  const refusingItem = refusingRuntime.create({ agents: [member("c")] }).items[0];
+  const refusal = await refusingRuntime.signal({ from: MAIN, to: address(refusingItem.id), action: "interrupt" });
+  assert.deepEqual(refusal.targets, [{ address: address(refusingItem.id), ok: false, status: "running", reason: "run_abort_unavailable" }]);
+  const throwing = createSubagentRuntime({ startJob: adapter.startJob, interruptJob: () => { throw new Error("no live run"); } });
+  const throwingItem = throwing.create({ agents: [member("d")] }).items[0];
+  const thrown = await throwing.signal({ from: MAIN, to: address(throwingItem.id), action: "interrupt" });
+  assert.deepEqual(thrown.targets, [{ address: address(throwingItem.id), ok: false, status: "running", reason: "interrupt_failed" }]);
+
+  // Interrupting an idle Actor is not a stop.
+  const idleAdapter = createFakeAdapter();
+  const idle = createSubagentRuntime({ startJob: idleAdapter.startJob, interruptJob: async () => ({ ok: true }) });
+  const idleItem = idle.create({ agents: [member("e")] }).items[0];
+  idleAdapter.handleFor(idleItem.id).resolve({ result: "done" });
+  await idle.jobDone(idleItem.id);
+  const idleTarget = await idle.signal({ from: MAIN, to: address(idleItem.id), action: "interrupt" });
+  assert.deepEqual(idleTarget.targets, [{ address: address(idleItem.id), ok: false, status: "idle", reason: "not_running" }]);
+  assert.equal(idle.jobs().jobs.length, 1);
+
+  // A stop that wins while the adapter is aborting cannot become a stale
+  // successful interrupt once that adapter finally acknowledges the request.
+  let finishInterrupt;
+  const racingAdapter = createFakeAdapter();
+  const racing = createSubagentRuntime({
+    startJob: racingAdapter.startJob,
+    interruptJob: () => new Promise(resolve => { finishInterrupt = resolve; }),
+  });
+  const racingItem = racing.create({ agents: [member("racing")] }).items[0];
+  const inFlight = racing.signal({ from: MAIN, to: address(racingItem.id), action: "interrupt" });
+  await racing.signal({ from: MAIN, to: address(racingItem.id), action: "stop" });
+  finishInterrupt({ ok: true });
+  const raced = await inFlight;
+  assert.equal(raced.targets[0].ok, false);
+  assert.equal(raced.targets[0].status, "stopping");
+  assert.equal(raced.targets[0].reason, "stopping");
+  racingAdapter.handleFor(racingItem.id).resolve({ result: null });
+  await racing.jobDone(racingItem.id);
+});
+
+test("the list projection omits the goal, activity and model while execution keeps its goal", async () => {
+  const adapter = createFakeAdapter();
+  const runtime = createSubagentRuntime({ startJob: adapter.startJob });
+  const [first] = runtime.create({ agents: [member("a")] }).items;
+  const node = () => runtime.listDetailed({ id: first.id }, { callerId: MAIN });
+
+  const omitted = (item) => ["goal", "activity", "model"].filter((field) => field in item);
+  assert.deepEqual(omitted(node()), [], "a list node carries identity and topology only");
+  assert.equal(node().address, address(first.id));
+
+  // The persistent goal and the Job lifecycle stay internal and observable
+  // through their own projections, independently of the list node.
+  assert.equal(runtime.list().agents[0].goal, "do a");
+  adapter.handleFor(first.id).resolve({ result: "done" });
+  await runtime.jobDone(first.id);
+  assert.equal(runtime.jobs().jobs[0].status, "completed");
+  assert.equal(runtime.jobRecord(first.id).goal, "do a");
+  assert.deepEqual(omitted(node()), []);
+});
+
+test("parent-hold wakes stay internal and never synthesize a collaborator result", async () => {
+  const adapter = createFakeAdapter();
+  const wakes = [];
+  const runtime = createSubagentRuntime({
+    startJob: adapter.startJob,
+    deliverMessage: adapter.deliverMessage,
+    deliverToMain: adapter.deliverToMain,
+    onChildrenSettled: (parentId) => wakes.push(parentId),
+  });
+  const [parent] = runtime.create({ agents: [member("parent")] }).items;
+  const child = runtime.create({ agents: [member("child")] }, { parentAgentId: parent.id }).items[0];
+
+  adapter.handleFor(child.id).resolve({ result: "child result" });
+  await runtime.jobDone(child.id);
+  await flush();
+  assert.deepEqual(wakes, [parent.id]);
+  assert.deepEqual(adapter.deliveries, []);
+  assert.deepEqual(adapter.mainMessages, []);
+  // The child's outcome stays durable and readable without a model notice.
+  assert.equal(runtime.jobRecord(child.id).result, "child result");
+});
+
 function validState() {
+  const roster = [{ id: "sub_1", name: "kept", goal: "kept work" }];
   return {
-    actors: [{ agentId: "sub_01", name: "kept", parentAgentId: null, depth: 1, stoppedOrder: 1 }],
-    jobs: [{ jobId: "sub_01", agentId: "sub_01", createdBy: "Main", continuedFromJobId: null,
-      spec: { name: "kept", task: "kept work", context: null, inheritContext: false },
+    actors: [{ agentId: "sub_1", name: "kept", parentAgentId: null, depth: 1, batch: 1, member: null,
+      goal: "kept work", context: null, roster, kind: "fresh", stoppedOrder: 1 }],
+    jobs: [{ jobId: "sub_1", agentId: "sub_1", createdBy: "main", continuedFromJobId: null,
+      spec: { kind: "initial", inheritedContext: null },
       end: { status: "completed", result: "kept result", error: null,
         history: { startEntryId: "e0", endEntryId: "e2" }, budget: null } }],
   };
 }
 
-test("rejects malformed folded topology, ownership, specs and terminal states", () => {
+test("rejects malformed folded topology, batch identity, ownership and terminal states", () => {
   const corrupt = (mutate) => {
-    const state = validState(); mutate(state);
+    const state = validState();
+    mutate(state);
     const runtime = createSubagentRuntime({ startJob: createFakeAdapter().startJob });
     assert.throws(() => runtime.restoreState(state), (error) => error.code === "invalid_state");
     assert.deepEqual(runtime.list(), { agents: [] }, "failed restore cannot partially adopt actors");
   };
-  for (const id of ["all", "Main", "agent_01"]) corrupt((state) => { state.actors[0].agentId = id; });
+  for (const id of ["all", "main", "sub_01", "sub_1-1"]) corrupt((state) => { state.actors[0].agentId = id; });
   corrupt((state) => { state.actors = "no"; });
   corrupt((state) => { state.jobs = {}; });
-  corrupt((state) => { state.actors[0].parentAgentId = "sub_99"; });
+  corrupt((state) => { state.actors[0].parentAgentId = "sub_9"; });
   corrupt((state) => { state.actors[0].depth = 2; });
-  corrupt((state) => { state.jobs[0].agentId = "sub_99"; });
+  corrupt((state) => { state.actors[0].batch = 2; });
+  corrupt((state) => { state.actors[0].member = 1; });
+  corrupt((state) => { state.actors[0].roster[0].goal = "wrong goal"; });
+  corrupt((state) => { state.actors[0].roster[0].id = "sub_9"; });
+  corrupt((state) => { delete state.actors[0].roster[0].id; });
+  corrupt((state) => { state.actors[0].roster[0].address = address("sub_1"); });
+  corrupt((state) => { state.actors[0].goal = " "; });
+  corrupt((state) => { delete state.actors[0].kind; });
+  corrupt((state) => { state.actors[0].roster = [{ address: address("sub_2"), name: null, goal: "kept work" }]; });
+  corrupt((state) => { state.jobs[0].agentId = "sub_9"; });
+  corrupt((state) => { state.jobs[0].jobId = "sub_2"; });
   corrupt((state) => { state.jobs[0].end.status = "zombie"; });
   corrupt((state) => { state.jobs[0].createdBy = "bob"; });
-  corrupt((state) => { state.jobs[0].continuedFromJobId = "sub_99"; });
-  corrupt((state) => { state.jobs[0].spec.task = ""; });
+  corrupt((state) => { state.jobs[0].continuedFromJobId = "sub_9"; });
+  corrupt((state) => {
+    state.jobs[0].spec.inheritedContext = { systemPrompt: "parent", tools: [], entries: [], warnings: [] };
+  });
   corrupt((state) => { state.actors.push({ ...state.actors[0] }); });
   corrupt((state) => { state.jobs.push({ ...state.jobs[0] }); });
-  corrupt((state) => {
-    state.actors.push({ agentId: "sub_02", depth: 1, parentAgentId: null });
-    state.jobs.push({ ...state.jobs[0], jobId: "sub_02", agentId: "sub_02", continuedFromJobId: "sub_01" });
-  });
   const used = createSubagentRuntime({ startJob: createFakeAdapter().startJob });
-  used.create({ tasks: [spec("live")] });
+  used.create({ agents: [member("live")] });
   assert.throws(() => used.restoreState(validState()), /requires a fresh runtime/);
 });
 
 test("restores folded results and topology without replaying live work or retaining transcripts", async () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({ startJob: adapter.startJob, deliverMessage: adapter.deliverMessage });
-  const first = runtime.create({ context: "batch background", tasks: [spec("first")] }).items[0];
+  const first = runtime.create({ context: "batch background", agents: [member("first")] }).items[0];
   adapter.handleFor(first.id).job.recordStart("e0");
   adapter.handleFor(first.id).resolve({ result: "first result", transcript: [{ role: "assistant", content: "first answer" }],
     history: { startEntryId: "e0", endEntryId: "e2" } });
   await runtime.jobDone(first.id);
-  const nested = runtime.create({ tasks: [spec("nested")] }, { parentAgentId: first.id }).items[0];
-  const second = runtime.create({ context: "second background", tasks: [spec("second")] }).items[0];
+  const nested = runtime.create({ agents: [member("nested")] }, { parentAgentId: first.id }).items[0];
+  const second = runtime.create({ context: "second background", agents: [member("second")] }).items[0];
   const state = stateOf(runtime);
   const serialized = JSON.stringify(state);
   assert.equal(serialized.includes("first answer"), false);
   assert.equal(state.jobs[0].end.result, "first result");
+
   const restoredAdapter = createFakeAdapter();
   const restored = createSubagentRuntime({ startJob: restoredAdapter.startJob, deliverMessage: restoredAdapter.deliverMessage,
     deliverToMain: restoredAdapter.deliverToMain });
@@ -1119,38 +1169,66 @@ test("restores folded results and topology without replaying live work or retain
   assert.equal(restored.jobRecord(first.id).result, "first result");
   assert.deepEqual(restored.jobRecord(first.id).history, { startEntryId: "e0", endEntryId: "e2" });
   for (const id of [nested.id, second.id]) {
-    assert.equal(restored.jobRecord(id).status, "failed");
     assert.equal(restored.jobRecord(id).error.code, "job_interrupted");
     assert.equal(restored.cancelJob(id).reason, "already_finished");
-    assert.equal((await restored.jobDone(id)).status, "failed");
   }
   assert.equal(restored.list().agents[1].parentAgentId, first.id);
+  assert.equal(restored.list().agents[1].goal, "do nested");
   state.jobs[0].end.result = "tampered";
   assert.equal(runtime.jobRecord(first.id).result, "first result");
-  const revived = await restored.sendMessage({ from: "Main", to: second.id, content: "begin now" });
+
+  const revived = await restored.sendMessage({ from: MAIN, to: address(second.id), content: "begin now" });
   const handle = restoredAdapter.handleFor(revived.jobId);
   assert.equal(handle.job.continuedFromJobId, second.id);
-  assert.equal(handle.job.spec.seed.task, "do second");
-  assert.equal(handle.job.spec.seed.context, "second background");
+  assert.equal(handle.job.goal, "do second");
+  assert.equal(handle.job.context, "second background");
   assert.deepEqual(handle.job.pendingMessages.map((message) => message.content), ["begin now"]);
-  assert.notEqual(restored.create({ tasks: [spec("later")] }).items[0].id, first.id);
+  // A new batch never reuses an identity of the restored registry.
+  assert.notEqual(restored.create({ agents: [member("later")] }).items[0].id, first.id);
 });
 
-test("restore rebuilds the Job order exactly as persisted, never grouped by actor", async () => {
+test("roster storage is local and restores under a copied root's session prefix", async () => {
   const adapter = createFakeAdapter();
-  const runtime = createSubagentRuntime({
-    startJob: adapter.startJob,
-    deliverMessage: adapter.deliverMessage,
-  });
-  const a = runtime.create({ tasks: [spec("a")] }).items[0];
-  const b = runtime.create({ tasks: [spec("b")] }).items[0];
+  const source = createSubagentRuntime({ startJob: adapter.startJob, deliverMessage: adapter.deliverMessage });
+  const [multi, sibling] = source.create({ agents: [member("multi one", "Alpha"), member("multi two")] }).items;
+  const [singleton] = source.create({ agents: [member("single", "Solo")] }).items;
+  const state = stateOf(source);
+  const stored = new Map(state.actors.map((actor) => [actor.agentId, actor.roster]));
+  assert.deepEqual(stored.get(multi.id), [
+    { id: multi.id, name: "Alpha", goal: "do multi one" },
+    { id: sibling.id, name: null, goal: "do multi two" },
+  ]);
+  assert.deepEqual(stored.get(singleton.id), [{ id: singleton.id, name: "Solo", goal: "do single" }]);
+  assert.equal(JSON.stringify(state.actors.map((actor) => actor.roster)).includes(source.session), false,
+    "persisted rosters never carry a full session address");
+
+  const restoredAdapter = createFakeAdapter();
+  const restored = createSubagentRuntime({ session: "bbbbbbbb", startJob: restoredAdapter.startJob, deliverMessage: restoredAdapter.deliverMessage });
+  restored.restoreState(state);
+  assert.deepEqual(restored.list().agents.map((agent) => agent.agentId), [multi.id, sibling.id, singleton.id]);
+  const receipt = await restored.sendMessage({ from: "main", to: `bbbbbbbb:${multi.id}`, content: "continue" });
+  const request = restoredAdapter.handleFor(receipt.jobId).job;
+  assert.deepEqual(request.roster, [
+    { address: `bbbbbbbb:${multi.id}`, name: "Alpha", goal: "do multi one" },
+    { address: `bbbbbbbb:${sibling.id}`, name: null, goal: "do multi two" },
+  ]);
+  assert.deepEqual(request.roster.map((entry) => entry.name), ["Alpha", null]);
+  const singletonReceipt = await restored.sendMessage({ from: "main", to: `bbbbbbbb:${singleton.id}`, content: "continue single" });
+  const singletonRequest = restoredAdapter.handleFor(singletonReceipt.jobId).job;
+  assert.deepEqual(singletonRequest.roster, [
+    { address: `bbbbbbbb:${singleton.id}`, name: "Solo", goal: "do single" },
+  ]);
+});
+
+test("restore rebuilds the Job order exactly as persisted, never grouped by Actor", async () => {
+  const adapter = createFakeAdapter();
+  const runtime = createSubagentRuntime({ startJob: adapter.startJob, deliverMessage: adapter.deliverMessage });
+  const a = runtime.create({ agents: [member("a")] }).items[0];
+  const b = runtime.create({ agents: [member("b")] }).items[0];
   adapter.handleFor(a.id).resolve({ result: "a done" });
   await runtime.jobDone(a.id);
-  // A continuation for the earliest actor lands between two later actors: a
-  // reload that regrouped Jobs by actor would move it next to its own actor
-  // and lose the global creation chronology.
-  const continuation = await runtime.sendMessage({ from: "Main", to: a.id, content: "more work" });
-  const c = runtime.create({ tasks: [spec("c")] }).items[0];
+  const continuation = await runtime.sendMessage({ from: MAIN, to: address(a.id), content: "more work" });
+  const c = runtime.create({ agents: [member("c")] }).items[0];
   const created = [a.id, b.id, continuation.jobId, c.id];
   assert.deepEqual(runtime.jobs().jobs.map((job) => job.jobId), created);
 
@@ -1165,22 +1243,20 @@ test("restore rebuilds the Job order exactly as persisted, never grouped by acto
     [a.id, continuation.jobId]);
 });
 
-test("view failures cannot suppress a terminal notice or change the execution outcome", async () => {
+test("view failures cannot change the execution outcome or create a model notice", async () => {
   const adapter = createFakeAdapter();
   const runtime = createSubagentRuntime({ startJob: adapter.startJob, deliverToMain: adapter.deliverToMain,
     finalizeJob() { throw new Error("view disk full"); },
     historyPaths() { throw new Error("view still unavailable"); },
   });
-  const item = runtime.create({ tasks: [spec("view-failure")] }).items[0];
+  const item = runtime.create({ agents: [member("view-failure")] }).items[0];
   adapter.handleFor(item.id).resolve({ result: "canonical result" });
   const done = await runtime.jobDone(item.id);
   await flush();
   assert.equal(done.status, "completed");
   assert.equal(done.historyState, "error");
   assert.equal(runtime.jobRecord(item.id).result, "canonical result");
-  assert.equal(adapter.mainMessages.length, 1);
-  assert.equal(adapter.mainMessages[0].status, "completed");
-  assert.equal(adapter.mainMessages[0].history, null);
+  assert.deepEqual(adapter.mainMessages, []);
 });
 
 test("restored history paths are resolved by the adapter, not an in-memory transcript API", () => {
@@ -1188,8 +1264,30 @@ test("restored history paths are resolved by the adapter, not an in-memory trans
   const runtime = createSubagentRuntime({ startJob: createFakeAdapter().startJob,
     historyPaths(jobId) { reads.push(jobId); return { summary: `/views/${jobId}/summary.md`, cleanJsonl: `/views/${jobId}/transcript.jsonl` }; } });
   runtime.restoreState(validState());
-  assert.equal(runtime.listDetailed({ id: "sub_01" }, { callerId: "Main" }).history.summary, "/views/sub_01/summary.md");
-  assert.deepEqual(reads, ["sub_01"]);
+  const node = runtime.listDetailed({ id: "sub_1" }, { callerId: MAIN });
+  assert.equal(node.history.summary, "/views/sub_1/summary.md");
+  assert.equal("jobId" in node.history, false, "the list node never repeats the Job id");
+  assert.equal(node.address, address("sub_1"));
+  for (const field of ["goal", "activity", "model"]) assert.equal(field in node, false, field);
+  assert.deepEqual(reads, ["sub_1"]);
   assert.equal("readRef" in runtime, false);
   assert.equal("readHistory" in runtime, false);
+});
+
+test("batch identities are never reused after a rewind or an abandoned branch", () => {
+  const taken = new Set(["sub_1", "sub_5", "sub_9-1"]);
+  const adapter = createFakeAdapter();
+  const runtime = createSubagentRuntime({ startJob: adapter.startJob, isIdTaken: (id) => taken.has(id), config: capacity({ maxActiveBatches: 12 }) });
+  // The runtime starts above every identity it can see, not at the first gap.
+  assert.equal(runtime.create({ agents: [member("a")] }).batch, 2);
+  const next = runtime.create({ agents: [member("b")] }).batch;
+  assert.equal(next, 3);
+  assert.equal(runtime.create({ agents: [member("c")] }).batch, 4);
+  // Batch 5 is owned by an abandoned branch: it is skipped, never reused.
+  assert.equal(runtime.create({ agents: [member("d")] }).batch, 6);
+  assert.equal(runtime.create({ agents: [member("e")] }).batch, 7);
+  assert.equal(runtime.create({ agents: [member("f")] }).batch, 8);
+  // 9 is only taken as a multi-member key, so a singleton at 9 is still free.
+  const guarded = createSubagentRuntime({ startJob: adapter.startJob, isIdTaken: (id) => id === "sub_10-1" });
+  assert.equal(guarded.create({ agents: [member("g")] }).batch, 1);
 });

@@ -23,8 +23,15 @@ export interface CapabilitySearchLimits {
 export interface HarnessConfig {
   readonly subagent: {
     readonly maxDepth: number;
-    readonly maxActiveChildren: number;
-    readonly maxActiveInheritedChildren: number;
+    /**
+     * Live batches among one parent's direct children. A batch counts once
+     * while any of its members is live.
+     */
+    readonly maxActiveBatches: number;
+    /** Live direct children of one parent, every kind together. */
+    readonly maxActiveSubagents: number;
+    /** The Inherited subset of {@link maxActiveSubagents}. */
+    readonly maxActiveInheritedSubagents: number;
     readonly budgetsByDepth: Readonly<Record<number, BudgetProfile>>;
     readonly inheritedToolWaitMs: number;
     readonly routingRetry: RoutingRetryConfig;
@@ -87,8 +94,11 @@ export interface HarnessConfig {
 export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
   subagent: {
     maxDepth: 2,
-    maxActiveChildren: 4,
-    maxActiveInheritedChildren: 3,
+    // Prior aggregate allowance of four Fresh plus three Inherited children
+    // keeps its slot count: seven direct children of one parent.
+    maxActiveBatches: 4,
+    maxActiveSubagents: 7,
+    maxActiveInheritedSubagents: 3,
     budgetsByDepth: {
       1: { modelCalls: { soft: 160, hard: 200 }, activeTimeMs: { soft: 5_400_000, hard: 7_200_000 }, lifetimeMs: 86_400_000 },
       2: { modelCalls: { soft: 80, hard: 100 }, activeTimeMs: { soft: 2_700_000, hard: 3_600_000 }, lifetimeMs: 43_200_000 },

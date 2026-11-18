@@ -7,6 +7,9 @@ import { RPC_METHODS } from './protocol.ts';
 import { buildApplicationPort } from './ports/application.ts';
 import { buildMainPort } from './ports/main.ts';
 import { createHarnessRpcServer } from './transport.ts';
+import {
+  ensurePrivateDirectory, inspectEndpoint, releaseOwnedEmptyDirectory, type EndpointIdentity,
+} from '../ipc/endpoint.ts';
 import { harnessRpcTarget, publishHarnessRpcRecord, removeHarnessRpcRecord, type HarnessRpcTarget } from './discovery.ts';
 import { buildToolPort } from './ports/tool-info.ts';
 import { buildSubagentPort } from './ports/subagent.ts';
@@ -54,6 +57,12 @@ export function installHarnessRpc(
     generation: () => generation, bindRoot: () => ++generation, suspend() {},
   };
   const endpoint = harnessRpcTarget(root.socketRoot, root.sessionId);
+  // The endpoint lease owns the private directory it publishes into. Capture
+  // that identity once, before the asynchronous server starts: teardown may
+  // remove only this exact directory, and only once every endpoint is closed.
+  ensurePrivateDirectory(endpoint.socketDir);
+  const inspected = inspectEndpoint(endpoint.socketDir);
+  const directoryIdentity: EndpointIdentity | null = inspected.kind === 'directory' ? inspected.identity : null;
   const makeSlot = (binding: RpcSessionBinding) => ({
     binding,
     tool: buildToolPort(binding.api, binding.ctx),
@@ -88,7 +97,7 @@ export function installHarnessRpc(
   const router = createRouter(deps, main);
   const server = createHarnessRpcServer({
     address: endpoint.address, root: root.socketRoot,
-    isControlRequest: request => [RPC_METHODS.subagentStop, RPC_METHODS.streamUnsubscribe,
+    isControlRequest: request => [RPC_METHODS.subagentSignal, RPC_METHODS.streamUnsubscribe,
       RPC_METHODS.approvalsRespond, RPC_METHODS.mainInterrupt].some(method => method === request.method),
     handler: async (request, connection) => {
       try { return await router(request, connection); }
@@ -161,8 +170,31 @@ export function installHarnessRpc(
       closed = true;
       slot = undefined;
       available = false;
-      await server.close();
-      removeRecord();
+      const failures: unknown[] = [];
+      try {
+        await server.close();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        removeRecord();
+      } catch (error) {
+        failures.push(error);
+      }
+      // Another endpoint of this session (the root main listener) may still be
+      // bound while this host closes: a non-empty directory is deliberately
+      // retained, never reported as a leak. A replaced or foreign directory is
+      // left in place and surfaces as a release failure.
+      if (directoryIdentity !== null) {
+        const released = releaseOwnedEmptyDirectory(endpoint.socketDir, directoryIdentity);
+        if (released.error !== null) failures.push(released.error);
+        if (released.reason === 'not_owned') {
+          failures.push(new Error('The Harness RPC session directory no longer belongs to this endpoint and was left in place.'));
+        }
+      }
+      if (failures.length !== 0) {
+        throw new AggregateError(failures, 'The Harness RPC endpoint did not retire cleanly.');
+      }
     },
     status: () => ({ enabled: true, available: available && failure === undefined,
       address: endpoint.address, ...(failure === undefined ? {} : { error: failure }) }),

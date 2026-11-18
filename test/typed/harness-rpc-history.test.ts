@@ -7,6 +7,7 @@ import type { JobSnapshotView, SubagentRuntime } from "../../src/subagent/runtim
 import type { RootService } from "../../src/subagent/root-service.ts";
 import type { NativeLiveSnapshot } from "../../src/subagent/native-types.ts";
 import { startRunningJob } from "./support/rpc-job-fixture.ts";
+import { formatAddress } from "../../src/subagent/address.ts";
 
 function rootWithRuntime(
   runtime: SubagentRuntime,
@@ -96,6 +97,7 @@ test("history distinguishes unknown, not-yet-started and unreadable intervals", 
       jobSnapshot: (_id: string): JobSnapshotView => ({
         jobId: running.jobId,
         agentId: running.jobId,
+        address: formatAddress("01a1deac", running.jobId),
         name: null,
         round: 1,
         status: "running",

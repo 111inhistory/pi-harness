@@ -38,6 +38,15 @@
       ]
     },
     {
+      "path": "valid/request-subagent-signal.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": true,
+      "conformance": [
+        "envelope"
+      ]
+    },
+    {
       "path": "valid/request-params-null.json",
       "kind": "frame",
       "schema": "MethodRequest",
@@ -226,7 +235,7 @@
       ]
     },
     {
-      "path": "invalid/request-subagent-task-unknown-field.json",
+      "path": "invalid/request-subagent-agent-unknown-field.json",
       "kind": "frame",
       "schema": "MethodRequest",
       "valid": false,

@@ -2,12 +2,15 @@
   "id": "create-1",
   "method": "subagent.create",
   "params": {
-    "context": "work",
-    "tasks": [
+    "context": "Repository at /tmp/project; tests run with npm test.",
+    "agents": [
       {
-        "name": "one",
-        "task": "Inspect the repo",
+        "name": "parser",
+        "goal": "Fix the parser edge case and verify the tests",
         "inheritContext": false
+      },
+      {
+        "goal": "Review the parser change for regressions"
       }
     ]
   }

@@ -65,10 +65,7 @@ export function getAgentSocketPath(id: string, socketDir: string = DEFAULT_SOCKE
   return ipc.agentPath(id, socketDir);
 }
 
-export function getBroadcastSocketPath(parentId: string, socketDir: string = DEFAULT_SOCKET_DIR): string {
-  const normalized = (parentId === "Main" || parentId === "main" || !parentId) ? "main" : parentId;
-  return ipc.broadcastPath(normalized, socketDir);
-}
+
 
 interface NdjsonReaderOptions {
   onFrame: (frame: unknown) => unknown;

@@ -7,18 +7,22 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 import { sendDelivery, DELIVERY_CUSTOM_TYPE } from "../../src/subagent/delivery.ts";
 
-import { createSubagentRuntime, SubagentError, type DeliverMessageRequest } from "../../src/subagent/runtime.ts";
+import {
+  createSubagentRuntime,
+  SubagentError,
+  type DeliverMessageRequest,
+  type RuntimeEvent,
+} from "../../src/subagent/runtime.ts";
 import {
   adjudicateTerminal,
   firstEffectiveStopping,
   takeQueuedMessages,
-  terminalNotification,
 } from "../../src/subagent/lifecycle.ts";
-import type {
-  LifecycleError,
-  StoppingReason,
-  TerminalNotification,
-} from "../../src/subagent/lifecycle.ts";
+import type { LifecycleError, StoppingReason } from "../../src/subagent/lifecycle.ts";
+import { formatAddress } from "../../src/subagent/address.ts";
+
+const SESSION = "01a1deac";
+const MAIN_ADDRESS = formatAddress(SESSION, "main");
 
 interface FakeService {
   id: number;
@@ -77,34 +81,51 @@ function adapter() {
   };
 }
 
-test("multilingual task batches are admitted and allocated atomically", () => {
+test("multilingual goal batches are admitted and allocated atomically", () => {
   const fake = adapter();
-  const runtime = createSubagentRuntime({ startJob: fake.startJob });
-  const items = runtime.create({
+  const runtime = createSubagentRuntime({ session: SESSION, startJob: fake.startJob });
+  const created = runtime.create({
     context: "共享背景：保留中文、English and emoji 🙂",
-    tasks: [
-      { name: "中文任务", task: "检查配置文件" },
-      { name: "english", task: "Inspect the configuration file" },
-      { name: "emoji", task: "Verify 🙂 handling" },
+    agents: [
+      { name: "中文任务", goal: "检查配置文件" },
+      { name: "english", goal: "Inspect the configuration file" },
+      { name: "emoji", goal: "Verify 🙂 handling" },
     ],
-  }).items as Array<{ id: string }>;
-  assert.deepEqual(items.map((item) => item.id), ["sub_01", "sub_02", "sub_03"]);
+  });
+  const items = created.items as Array<{ id: string; address: string; goal: string }>;
+  assert.deepEqual(items.map((item) => item.id), ["sub_1-1", "sub_1-2", "sub_1-3"]);
+  assert.deepEqual(items.map((item) => item.address), [
+    formatAddress(SESSION, "sub_1-1"),
+    formatAddress(SESSION, "sub_1-2"),
+    formatAddress(SESSION, "sub_1-3"),
+  ]);
   assert.equal(fake.started.length, 3);
-  assert.equal(fake.started[0]!.request.spec.task, "检查配置文件");
+  assert.equal(fake.started[0]!.request.goal, "检查配置文件");
+  assert.equal(fake.started[0]!.request.context, "共享背景：保留中文、English and emoji 🙂");
+  assert.deepEqual(fake.started[0]!.request.roster.map((entry: { goal: string }) => entry.goal), [
+    "检查配置文件", "Inspect the configuration file", "Verify 🙂 handling",
+  ]);
+  assert.deepEqual(created.roster.map((entry) => entry.name), ["中文任务", "english", "emoji"]);
 });
 
-test("terminal notifications cover completion, cancellation and failure with sender and round", async () => {
+test("each Job publishes exactly one terminal event and never an auto result message", async () => {
   const fake = adapter();
+  const events: RuntimeEvent[] = [];
   const runtime = createSubagentRuntime({
+    session: SESSION,
     startJob: fake.startJob,
     deliverToMain: fake.deliverToMain,
+    deliverMessage: fake.deliverMessage,
+    onEvent: (event) => { events.push(event); },
   });
   const [completed, cancelled, failed] = runtime.create({
-    tasks: [{ task: "complete" }, { task: "cancel" }, { task: "fail" }],
-  }).items as unknown as [{ id: string }, { id: string }, { id: string }];
+    agents: [{ goal: "complete" }, { goal: "cancel" }, { goal: "fail" }],
+  }).items as unknown as [{ id: string; address: string }, { id: string; address: string }, { id: string; address: string }];
+  const ends = (): Array<{ jobId: string; agentId: string; status: string }> =>
+    events.filter((event) => event.type === "job-end") as unknown as Array<{ jobId: string; agentId: string; status: string }>;
 
   fake.handleFor(completed.id).resolve({ result: "done", messages: [] });
-  runtime.stop(cancelled.id);
+  runtime.cancelJob(cancelled.id);
   fake.handleFor(cancelled.id).resolve({ result: "partial", messages: [] });
   fake.handleFor(failed.id).reject(new Error("provider failed"));
 
@@ -114,73 +135,59 @@ test("terminal notifications cover completion, cancellation and failure with sen
     runtime.jobDone(failed.id),
   ]);
 
-  assert.deepEqual(
-    fake.mainMessages.map((message) => ({
-      type: message.type,
-      from: message.from,
-      jobId: message.jobId,
-      round: message.round,
-      status: message.status,
-    })),
-    [
-      { type: "notification", from: completed.id, jobId: completed.id, round: 1, status: "completed" },
-      { type: "notification", from: cancelled.id, jobId: cancelled.id, round: 1, status: "cancelled" },
-      { type: "notification", from: failed.id, jobId: failed.id, round: 1, status: "failed" },
-    ],
-  );
-  assert.equal(fake.mainMessages[0].error, null);
-  assert.equal(fake.mainMessages[0].history, null, "a memory-only host has no derived history files");
-  assert.equal(fake.mainMessages[0].content, "done");
-  assert.equal(fake.mainMessages[1].content, "partial");
-  assert.equal(fake.mainMessages[2].content, "");
-  assert.match(fake.mainMessages[2].error, /provider failed/);
+  assert.deepEqual(ends().map(({ jobId, status }) => ({ jobId, status })), [
+    { jobId: completed.id, status: "completed" },
+    { jobId: cancelled.id, status: "cancelled" },
+    { jobId: failed.id, status: "failed" },
+  ]);
+  assert.deepEqual(fake.mainMessages, [], "Main receives no synthesized terminal message");
+  assert.deepEqual(fake.deliveries, [], "a collaborator result is never auto-delivered as a message");
 
-  // A continuation is a new execution round of the same sender; its terminal
-  // event must not be mergeable with round one.
-  const revived = (await runtime.sendMessage({ from: "Main", to: completed.id, content: "continue" })) as { jobId: string };
+  // Read-only polls and repeated completion never republish the terminal event.
+  runtime.listDetailed({}, { callerId: "main" });
+  await runtime.jobDone(completed.id);
+  assert.equal(ends().length, 3);
+
+  // A continuation is a new Job of the same Actor with its own single terminal.
+  const revived = await runtime.sendMessage({ from: MAIN_ADDRESS, to: completed.address, content: "continue" });
+  assert.ok("jobId" in revived && revived.jobId);
   fake.handleFor(revived.jobId).resolve({ result: "second", messages: [] });
   await runtime.jobDone(revived.jobId);
-  const continuation = fake.mainMessages.at(-1) as TerminalNotification;
-  assert.equal(continuation.from, completed.id);
-  assert.equal(continuation.jobId, revived.jobId);
-  assert.equal(continuation.round, 2);
-  assert.equal(continuation.status, "completed");
-  assert.equal(continuation.content, "second");
-  assert.ok(!continuation.content.includes("done"));
-
-  // Read-only polls and repeated stops never resend a terminal notice.
-  runtime.stop(completed.id);
-  runtime.listDetailed({}, { callerId: "Main" });
-  await runtime.jobDone(revived.jobId);
-  assert.equal(fake.mainMessages.length, 4);
+  const continuation = ends().at(-1);
+  assert.equal(continuation?.jobId, revived.jobId);
+  assert.equal(continuation?.status, "completed");
+  const continuationRegistration = events.find((event) => event.type === "job" && event.jobId === revived.jobId);
+  assert.ok(continuationRegistration && continuationRegistration.type === "job");
+  assert.equal(continuationRegistration.agentId, completed.id);
+  assert.equal(ends().length, 4);
+  assert.deepEqual(fake.mainMessages, []);
 });
 
-test("a late terminal notification does not revive a stopped parent; explicit messages do", async () => {
+test("a stopped parent is not revived by a child settlement; an explicit message is", async () => {
   const fake = adapter();
   const notices: DeliverMessageRequest[] = [];
   const runtime = createSubagentRuntime({
+    session: SESSION,
     startJob: fake.startJob,
     deliverMessage: async request => { notices.push(request); return { accepted: true }; },
   });
-  const parent = runtime.create({ tasks: [{ name: "parent", task: "coordinate" }] }).items[0]!;
-  const child = runtime.create({ tasks: [{ name: "child", task: "report" }] }, { parentAgentId: parent.id }).items[0]!;
-  runtime.stop(parent.id);
+  const parent = runtime.create({ agents: [{ name: "parent", goal: "coordinate" }] }).items[0]!;
+  const child = runtime.create({ agents: [{ name: "child", goal: "report" }] }, { parentAgentId: parent.id }).items[0]!;
+  runtime.cancelJob(parent.id);
   fake.handleFor(parent.id).resolve({ result: "cancelled parent", messages: [] });
   await runtime.jobDone(parent.id);
   fake.handleFor(child.id).resolve({ result: "child done", messages: [] });
   await runtime.jobDone(child.id);
   assert.equal(runtime.jobs().jobs.length, 2);
-  assert.equal(notices.length, 1);
-  assert.equal(notices[0]!.agentId, parent.id);
-  assert.equal(notices[0]!.jobId, null);
-  assert.equal(notices[0]!.message.type, "notification");
+  assert.deepEqual(notices, [], "child settlement is an internal wake, not a handoff");
 
-  const revived = await runtime.sendMessage({ from: "Main", to: parent.id, content: "continue explicitly" });
-  assert.ok('jobId' in revived && revived.jobId);
+  const revived = await runtime.sendMessage({ from: MAIN_ADDRESS, to: parent.address, content: "continue explicitly" });
+  assert.ok("jobId" in revived && revived.jobId);
   assert.equal(runtime.jobs().jobs.length, 3);
   const request = fake.started.at(-1)!.request;
   assert.equal(request.pendingMessages.length, 1);
   assert.equal(request.pendingMessages[0].type, "message");
+  assert.equal(request.pendingMessages[0].content, "continue explicitly");
   fake.handleFor(revived.jobId).resolve({ result: "parent resumed", messages: [] });
   await runtime.jobDone(revived.jobId);
 });
@@ -240,54 +247,51 @@ test("real SDK queue extraction preserves two steering messages and a follow-up"
   }) as AgentMessage), [onlyFollowUp]);
 });
 
-test("a sibling revival does not steal the terminal notice from the direct parent", async () => {
+test("a sibling-triggered continuation delivers only to the target and notifies Main of nothing", async () => {
   const fake = adapter();
   const runtime = createSubagentRuntime({
+    session: SESSION,
     startJob: fake.startJob,
     deliverToMain: fake.deliverToMain,
     deliverMessage: fake.deliverMessage,
   });
   const [peer, revived] = runtime.create({
-    tasks: [{ name: "peer", task: "wake sibling" }, { name: "sibling", task: "wait" }],
-  }).items as unknown as [{ id: string }, { id: string }];
+    agents: [{ name: "peer", goal: "wake sibling" }, { name: "sibling", goal: "wait" }],
+  }).items as unknown as [{ id: string; address: string }, { id: string; address: string }];
   fake.handleFor(peer.id).resolve({ result: "peer done", messages: [] });
   fake.handleFor(revived.id).resolve({ result: "sibling done", messages: [] });
   await Promise.all([runtime.jobDone(peer.id), runtime.jobDone(revived.id)]);
 
-  const continuation = (await runtime.sendMessage({ from: peer.id, to: revived.id, content: "continue" })) as { jobId: string };
+  const continuation = (await runtime.sendMessage({ from: peer.address, to: revived.address, content: "continue" })) as { jobId: string };
   fake.handleFor(continuation.jobId).resolve({ result: "sibling round two", messages: [] });
   await runtime.jobDone(continuation.jobId);
 
-  const terminal = fake.mainMessages.find((message) => message.jobId === continuation.jobId);
-  assert.ok(terminal, "the direct parent (Main) receives the continuation terminal notice");
-  assert.equal(terminal.from, revived.id);
-  assert.equal(terminal.round, 2);
-  assert.equal(
-    fake.deliveries.some((delivery) => delivery.agentId === peer.id && delivery.message?.type === "notification"),
-    false,
-    "the peer that triggered the continuation is not the notification owner",
-  );
+  assert.deepEqual(fake.mainMessages, [], "the direct parent receives no synthesized terminal notice");
+  assert.deepEqual(fake.deliveries, [], "the peer that triggered the continuation is not a notification owner");
+  const request = fake.started.at(-1)!.request;
+  assert.equal(request.agentId, revived.id);
+  assert.equal(request.pendingMessages.length, 1);
+  assert.equal(request.pendingMessages[0].content, "continue");
   assert.equal(runtime.jobs({ jobIds: [continuation.jobId] }).jobs[0]!.status, "completed");
 });
 
-test("parked messages retain independent native payloads and terminal metadata", () => {
+test("parked peer deliveries retain independent native payloads", () => {
   const sent: any[] = [];
   const options = { send: (entry: any) => { sent.push(entry); } };
-  sendDelivery({ sourceId: "sub_child", round: 1, content: "PROGRESS_A" }, options);
+  sendDelivery({ sourceId: "sub_child", round: 1, content: "PROGRESS_A", jobId: "sub_child#r2" }, options);
   sendDelivery({ sourceId: "sub_child", round: 1, content: "PROGRESS_B" }, options);
-  sendDelivery({ sourceId: "sub_child", round: 1, content: "TERMINAL_C",
-    terminal: { status: "completed", details: { jobId: "sub_child#r1" } } }, options);
   const agent = new Agent({ streamFn: (() => { throw new Error("stream must not be called"); }) as never,
     steeringMode: "one-at-a-time", followUpMode: "one-at-a-time" });
   for (const message of sent) agent.steer(message);
   const parked = takeQueuedMessages(agent, (queue) => ({ role: "user",
     content: [{ type: "text", text: `subagent-queue-probe-${queue}` }], timestamp: 0 }) as AgentMessage);
-  assert.equal(parked.length, 3);
+  assert.equal(parked.length, 2);
   assert.deepEqual(parked, sent);
   assert.equal((parked[0] as any).customType, DELIVERY_CUSTOM_TYPE);
   assert.equal((parked[0] as any).content, "PROGRESS_A");
-  assert.equal((parked[2] as any).details.source, "host");
-  assert.equal((parked[2] as any).details.status, "completed");
+  assert.equal((parked[0] as any).details.sourceId, "sub_child");
+  assert.equal((parked[0] as any).details.jobId, "sub_child#r2");
+  assert.equal((parked[1] as any).details.jobId, undefined);
 });
 
 test("the first stopping reason survives later terminal observations", () => {
@@ -317,31 +321,6 @@ test("the first stopping reason survives later terminal observations", () => {
     adjudicateTerminal({ stopping: null, budgetError: null, executionError: null, executionStatus: "completed" }),
     { status: "completed", error: null },
   );
-});
-
-test("terminalNotification keeps host ownership of type, sender, Job and round", () => {
-  const envelope = terminalNotification({
-    agentId: "sub_01",
-    jobId: "sub_01#r2",
-    round: 2,
-    name: "audit",
-    status: "completed",
-    content: "finished",
-    error: null,
-    history: { summary: "summary.md", cleanJsonl: "session.clean.jsonl" },
-  });
-  assert.deepEqual(envelope, {
-    type: "notification",
-    from: "sub_01",
-    subagentId: "sub_01",
-    jobId: "sub_01#r2",
-    round: 2,
-    name: "audit",
-    status: "completed",
-    content: "finished",
-    error: null,
-    history: { summary: "summary.md", cleanJsonl: "session.clean.jsonl" },
-  });
 });
 
 test("service retirement is idempotent in flight and forgets a completed generation", async () => {
@@ -451,6 +430,7 @@ test("a frozen terminal outcome keeps its status when history finalization fails
     releaseHistory = resolve;
   });
   const runtime = createSubagentRuntime({
+    session: SESSION,
     startJob: () => ({
       done: Promise.resolve({ result: "work done", messages: [{ role: "assistant", content: [] }] }),
       cancel() {},
@@ -462,7 +442,7 @@ test("a frozen terminal outcome keeps its status when history finalization fails
     },
   });
 
-  const actor = runtime.create({ tasks: [{ name: "frozen", task: "do work" }] }).items[0] as { id: string };
+  const actor = runtime.create({ agents: [{ name: "frozen", goal: "do work" }] }).items[0] as { id: string };
   await new Promise((resolve) => setImmediate(resolve));
   const stopping = runtime.cancelJob(actor.id);
   assert.equal(stopping.ok, false);
@@ -481,6 +461,7 @@ test("a frozen terminal outcome keeps its status when history finalization fails
 
 test("execution failures keep cancellation as the frozen reason while history stays separate", async () => {
   const runtime = createSubagentRuntime({
+    session: SESSION,
     startJob: () => ({
       done: Promise.reject(new SubagentError("native_failed", "native run failed")),
       cancel() {},
@@ -489,7 +470,7 @@ test("execution failures keep cancellation as the frozen reason while history st
       throw new Error("summary write failed");
     },
   });
-  const actor = runtime.create({ tasks: [{ task: "fail" }] }).items[0] as { id: string };
+  const actor = runtime.create({ agents: [{ goal: "fail" }] }).items[0] as { id: string };
   const terminal = await runtime.jobDone(actor.id);
   assert.equal(terminal.status, "failed");
   assert.ok(terminal.error);

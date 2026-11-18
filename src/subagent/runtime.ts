@@ -1,40 +1,58 @@
 /**
  * Pi-independent Subagent lifecycle.
- * Batches register atomically, then every admitted Job starts directly.
- * Limits apply to each parent's active children and nesting depth, not global concurrency.
- * Runtime owns cancellation, Budget verdicts, finalization and terminal publication.
+ *
+ * An Actor is a persistent collaborator: one batch identity, one goal, one
+ * retained conversation. A Job is one execution of that Actor; a continuation
+ * is another execution of the same Actor and the same goal.
+ *
+ * Batches register atomically, then every admitted Job starts directly. One
+ * creation is admitted against four independent limits: live batches, live
+ * Actors (all kinds and the Inherited subset), and the parent's live direct
+ * children. Nothing here is a global scheduler.
+ *
+ * Runtime owns composition and cancellation, Budget verdicts, finalization and
+ * the single terminal publication. It never synthesizes a model-facing
+ * completion message: a settled Job publishes one `job-end` event and one
+ * internal parent wake, while collaborators report through explicit writes.
  * Messages received before an adapter is ready are buffered as startup input.
- * Explicit messages revive idle actors on their retained context or original seed.
- * A parent with nonterminal direct children keeps its current Job: while its
- * runner waits for them it pauses active-time accounting, then resumes it on
- * the next wake. Active time does not accrue while waiting; the lifetime lease does.
- * Lifecycle events (`onEvent`) let the adapter persist topology and outcomes;
- * `restoreState` rebuilds them without replaying work.
+ * Explicit messages revive idle actors on their retained context or original
+ * seed. A parent with nonterminal direct children keeps its current Job: while
+ * its runner waits for them it pauses active-time accounting, then resumes it
+ * on the next wake. Active time does not accrue while waiting; the lifetime
+ * lease does. Lifecycle events (`onEvent`) let the adapter persist topology and
+ * outcomes; `restoreState` rebuilds them without replaying work.
+ *
  */
 
 import { randomUUID } from "node:crypto";
 import { DEFAULT_HARNESS_CONFIG, type HarnessConfig } from '../harness-config.ts';
 import { watchSubagentBudget } from './budget-watch.ts';
-import { terminalResultContent } from "./result.ts";
+import {
+  actorKey,
+  formatAddress,
+  formatChildrenAddress,
+  formatGroupAddress,
+  MAIN_ACTOR,
+  parseActorKey,
+  parseAddress,
+  SESSION_PATTERN,
+} from "./address.ts";
 
 import { createJobBudget, profileForDepth, type BudgetPhase, type BudgetSnapshot, type BudgetSnapshotDetail, type BudgetTerminal, type BudgetTerminalError, type BudgetTermination, type JobBudgetPort } from './job-budget.ts';
 import {
   adjudicateTerminal,
   firstEffectiveStopping,
-  terminalNotification,
 } from "./lifecycle.ts";
 import type {
   LifecycleError,
   StoppingReason,
-  TerminalNotification,
   TerminalStatus,
 } from "./lifecycle.ts";
-import { formatAgentSocketPath } from "./address.ts";
 
 /**
  * How many sibling rows `list` shows per parent. This is a display window, not
  * the admission limit: `subagent.maxActiveChildren` decides how many children a
- * parent may have running.
+ * parent may have live.
  */
 const LIST_SIBLING_WINDOW = 4;
 
@@ -59,30 +77,56 @@ export interface InheritedContext {
   [key: string]: unknown;
 }
 
-export interface FreshJobSpec {
-  kind?: undefined;
-  name: string | null;
-  task: string;
-  context: string | null;
-  inheritContext: boolean;
-  inheritedContext: InheritedContext | null;
+/**
+ * One Job's persisted spec. The Actor owns the goal, the batch context and the
+ * roster; a Job only records how it was composed. A continuation repeats no
+ * composition: it is another execution of the recorded Actor.
+ */
+export interface JobSpec {
+  readonly kind: "initial" | "continuation";
+  readonly inheritedContext: InheritedContext | null;
 }
-
-export interface ContinuationJobSpec {
-  kind: "continuation";
-  name: string | null;
-  seed: JobSpec | null;
-}
-
-export type JobSpec = FreshJobSpec | ContinuationJobSpec;
 export type PersistedJobSpec = Record<string, unknown>;
+
+/** One declared member of a batch, in the public full-address projection. */
+export interface RosterEntry {
+  readonly address: string;
+  /** The declared display label, or null when the member declared none. */
+  readonly name: string | null;
+  readonly goal: string;
+}
+
+/**
+ * One launch-roster member as persisted: only the session-local Actor key,
+ * label and goal. The full address is derived from the current root session on
+ * load, so a copied/forked root does not inherit another session's prefix.
+ */
+export interface LocalRosterEntry {
+  readonly id: string;
+  readonly name: string | null;
+  readonly goal: string;
+}
 
 export interface JobRequest {
   agentId: string;
+  /** This Actor's logical address. */
+  address: string;
   jobId: string;
   index: number | null;
+  /** The creating Actor's local key, or null for Main. */
   parentAgentId: string | null;
+  /** The creating Actor's logical address; null when Main created the batch. */
+  parentAddress: string | null;
   depth: number | null;
+  batch: number;
+  /** This batch's group selector. */
+  group: string;
+  /** The Actor's persistent goal for this execution. */
+  goal: string;
+  /** The batch's shared context, or null. */
+  context: string | null;
+  /** The immutable launch roster of the batch. */
+  roster: readonly RosterEntry[];
   spec: JobSpec;
   origin: unknown;
   budget: JobBudgetPort;
@@ -111,11 +155,11 @@ export interface StartedJobHandle {
 /**
  * A sender from another live session, resolved by the host from the shared
  * session directory. The runtime never reads that directory itself: it accepts
- * only a host-validated descriptor, exactly like the sender id of a local write.
+ * only a host-validated descriptor, exactly like the local key of a local write.
  */
 export interface ExternalSender {
   readonly sessionId: string;
-  /** The composite wire identity `<session-uid>:Main`, for display. */
+  /** The composite wire identity `<session-uid>:main`, for display. */
   readonly sender: string;
   /** The sender's real managed Main endpoint, usable as a reply address. */
   readonly replyTo: string;
@@ -130,7 +174,7 @@ export interface MessageEnvelope {
   external?: ExternalSender;
 }
 
-export type RuntimeDelivery = MessageEnvelope | TerminalNotification;
+export type RuntimeDelivery = MessageEnvelope;
 
 export interface DeliverMessageRequest {
   agentId: string;
@@ -165,7 +209,17 @@ export interface JobEvent {
   type: "job";
   jobId: string;
   agentId: string;
-  actor?: { name: string | null; parentAgentId: string | null; depth: number };
+  actor?: {
+    name: string | null;
+    parentAgentId: string | null;
+    depth: number;
+    batch: number;
+    member: number | null;
+    goal: string;
+    context: string | null;
+    roster: readonly LocalRosterEntry[];
+    kind: "fresh" | "inherited";
+  };
   index: number | null;
   createdBy: string;
   continuedFromJobId: string | null;
@@ -193,28 +247,72 @@ export interface JobEndEvent {
 
 export type RuntimeEvent = JobEvent | JobStartEvent | JobEndEvent;
 
+
+export type SignalAction = "interrupt" | "stop";
+
+/** One target's outcome inside a signal request. */
+export interface SignalTargetResult {
+  readonly address: string;
+  readonly ok: boolean;
+  readonly status: string;
+  readonly reason?: string;
+}
+
+export interface SignalResult {
+  readonly ok: boolean;
+  readonly action: SignalAction;
+  readonly to: string;
+  readonly targets: readonly SignalTargetResult[];
+}
+
+/**
+ * One interrupt request handed to the execution side.
+ *
+ * Interrupt cancels the Job's current native run (the in-flight tool call and
+ * model turn). The execution side appends one brief sender-bound interruption
+ * notice and continues the same Job, Actor and Budget in a fresh turn; the
+ * runtime then keeps the Job `running`. `ok: false` is a truthful refusal, never
+ * a request to stop.
+ */
+export interface InterruptJobInput {
+  readonly agentId: string;
+  readonly jobId: string;
+  readonly address: string;
+  /** The requesting Actor's logical address. */
+  readonly from: string;
+}
+
+export type InterruptOutcome = { readonly ok: true } | { readonly ok: false; readonly reason: string };
+
 export interface RuntimeOptions {
+  /** The root session's 8-hex uid; the namespace of every logical address. */
+  session: string;
   startJob: (request: JobRequest) => unknown;
   deliverMessage?: (request: DeliverMessageRequest) => DeliveryOutcome | Promise<DeliveryOutcome> | null | undefined;
   deliverToMain?: (message: RuntimeDelivery) => unknown;
   onEvent?: (event: RuntimeEvent) => void;
   /**
    * Lightweight wake for a parent whose last direct child just became truly
-   * terminal. It runs after that child's terminal notice was queued or
-   * attempted, including when no delivery handler exists or delivery failed;
-   * it never schedules or revives anything by itself.
+   * terminal. It runs after that child's terminal event, including when no
+   * delivery handler exists; it never schedules, revives or answers anything.
    */
   onChildrenSettled?: (parentId: string) => void;
   allowInherited?: boolean;
-  socketDir?: string;
   historyPaths?: (jobId: string) => JobHistoryPaths | null;
-  resultPath?: (jobId: string) => string | null;
   prepareInherited?: (input: { agentId: string; snapshot: InheritedContext }) => unknown;
   isIdTaken?: (id: string) => boolean;
   onIdAllocated?: (id: string) => void;
   finalizeJob?: (input: FinalizeJobInput) => unknown;
-  /** Pure address formatting port; the default is SDK/transport free. */
-  agentSocketPath?: (id: string, socketDir?: string) => string;
+  /**
+   * The execution side's interrupt capability: abort the current native run,
+   * append the sender-bound notice and continue the same Job. Absent means this
+   * adapter cannot interrupt, which the runtime reports as
+   * `interrupt_unsupported` instead of degrading into a stop.
+   */
+  interruptJob?: (input: InterruptJobInput) => InterruptOutcome | Promise<InterruptOutcome>;
+  /** Ephemeral live phase of one Actor's running Job; null when none is known. */
+  /** Monotonic clock for ephemeral elapsed times; defaults to `Date.now`. */
+  now?: () => number;
   /**
    * The root's resolved Harness settings. Standalone runtimes fall back to the
    * built-in defaults; a root service passes its own snapshot.
@@ -223,44 +321,59 @@ export interface RuntimeOptions {
 }
 
 export interface CreatedAgentItem {
+  /** This Actor's local key, as create and list show it. */
   id: string;
-  socket: string;
+  /** This Actor's full logical address. */
+  address: string;
+  name: string | null;
+  goal: string;
   /** The host attaches the settled identity after local readiness. */
   role?: string | null;
   model?: string | null;
   warnings?: string[];
 }
 
-export interface CreatedAgents {
+export interface CreatedBatch {
+  batch: number;
+  /** The batch's group selector. */
+  address: string;
+  /** The immutable launch roster, in declared order. */
+  roster: readonly RosterEntry[];
   items: CreatedAgentItem[];
   warnings?: string[];
 }
 
 export interface AgentView {
   agentId: string;
+  address: string;
   name: string | null;
+  goal: string;
+  batch: number;
   parentAgentId: string | null;
-  status: "running" | "idle" | "stopped";
+  status: "running" | "idle";
   depth: number;
-  /** Which admission pool the actor belongs to; derived from its first Job spec. */
+  /** Which admission pool the actor belongs to; recorded with its topology. */
   kind: "fresh" | "inherited";
 }
 
 export interface DetailedAgentItem {
   id: string;
+  address: string;
+  name: string | null;
   status: string;
-  socket: string;
-  children: DetailedAgentItem[];
   /** Absent for the Main node. */
   kind?: "fresh" | "inherited";
-  history?: { jobId: string } & JobHistoryPaths;
+  /** Settled routing identity, assembled once by the root for list and CLI. */
+  role?: string | null;
+  history?: JobHistoryPaths;
   historyError?: LifecycleError;
-  historyDir?: string;
+  children: DetailedAgentItem[];
 }
 
 export interface JobView {
   jobId: string;
   agentId: string;
+  address: string;
   name: string | null;
   parentAgentId: string | null;
   depth: number | null;
@@ -277,9 +390,11 @@ export interface JobView {
 export interface JobRecordView {
   jobId: string;
   agentId: string;
+  address: string;
   name: string | null;
   round: number;
-  task: string | null;
+  /** The Actor's persistent goal. */
+  goal: string;
   status: JobStatus;
   error: LifecycleError | null;
   result: unknown;
@@ -301,6 +416,7 @@ export interface JobRecordView {
 export interface JobSnapshotView {
   jobId: string;
   agentId: string;
+  address: string;
   name: string | null;
   round: number;
   status: JobStatus;
@@ -315,14 +431,6 @@ export interface CancelJobResult {
   job: JobView;
 }
 
-export interface StopResult {
-  ok: boolean;
-  id: string;
-  status: string;
-  /** Present when the stop was refused by `cancelJob`. */
-  reason?: string;
-}
-
 export interface MessageReceipt {
   ok: true;
   to: string;
@@ -331,7 +439,7 @@ export interface MessageReceipt {
 
 export interface BroadcastReceipt {
   ok: boolean;
-  to: "all";
+  to: string;
   sent: Array<{ to: string; jobId: string | null }>;
   errors: Array<{ to: string; code: string; message: string }>;
 }
@@ -346,11 +454,17 @@ export interface RestoreResult {
 interface Agent {
   agentId: string;
   name: string | null;
+  goal: string;
+  context: string | null;
+  roster: readonly RosterEntry[];
+  kind: "fresh" | "inherited";
+  batch: number;
+  member: number | null;
   parentAgentId: string | null;
   depth: number;
-  status: "running" | "idle" | "stopped";
+  status: "running" | "idle";
   jobIds: string[];
-  pending: Array<MessageEnvelope | TerminalNotification>;
+  pending: MessageEnvelope[];
   stoppedOrder?: number;
 }
 
@@ -378,7 +492,10 @@ interface Job {
   stopping: StoppingReason | null;
   historyState?: HistoryState;
   historyError?: LifecycleError;
-  completionQueued?: boolean;
+  /** Ephemeral timing of the current status; never persisted. */
+  /** Ephemeral start of a parent-hold pause; null while active. */
+  waitingSince: number | null;
+  /** Ephemeral end time of the terminal transition; never persisted. */
 }
 
 interface TaskOptions {
@@ -390,7 +507,12 @@ interface TaskOptions {
 
 interface PlannedEntry {
   index: number;
-  spec: FreshJobSpec;
+  /** Optional display label; the address is the identity. */
+  name: string | null;
+  goal: string;
+  inheritContext: boolean;
+  /** Prepared per-member inherited conversation; null until prepared. */
+  inheritedContext: InheritedContext | null;
 }
 
 interface HistoryFilter {
@@ -403,30 +525,32 @@ interface JobsFilter {
   jobIds?: unknown;
 }
 
-interface MessagePlan {
-  from: string;
+/** One validated write handed to a delivery path. */
+interface SendPlan {
+  fromKey: string;
+  fromAddress: string;
+  /** The requested target address, echoed in the receipt. */
   to: string;
   content: string;
   external?: ExternalSender;
 }
 
+/** One resolved logical target and the Actor keys it selects. */
+type ResolvedTarget =
+  | { readonly kind: "main" | "actor"; readonly address: string; readonly key: string }
+  | { readonly kind: "broadcast"; readonly address: string; readonly keys: readonly string[] };
+
 const MAX_MESSAGE_CHARS = 32768;
-const MAIN_ACTOR_ID = "Main";
-const BROADCAST_TARGET = "all";
 
-const BATCH_FIELDS = new Set(["context", "tasks"]);
-const TASK_FIELDS = new Set(["name", "task", "inheritContext"]);
+const BATCH_FIELDS = new Set(["context", "agents"]);
+const MEMBER_FIELDS = new Set(["name", "goal", "inheritContext"]);
 
-/** A live Job occupies its actor and its parent's active-child allowance. */
+/** A live Job occupies its actor and its admission slots. */
 const LIVE_STATUSES = new Set(["running", "stopping", "finalizing"]);
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
-// Actor ids are `sub_NN` under Main and `<parent>_NN` below it; a Job id is its
-// actor id for the first round and `<actor>#rN` for continuations. `all` and
-// `Main` can never match, which keeps the broadcast target and the root actor
-// outside the resolvable actor space.
-const AGENT_ID_PATTERN = /^sub_[0-9a-zA-Z_]+$/;
-const JOB_ID_PATTERN = /^sub_[0-9a-zA-Z_]+(#r[0-9]+)?$/;
+/** A Job id is its actor key for the first round and `<actor>#rN` after that. */
+const JOB_ID_PATTERN = /^sub_[1-9][0-9]*(-[1-9][0-9]*)?(#r[1-9][0-9]*)?$/;
 
 /** Terminal state of a Job that was still live when the process went away. */
 const INTERRUPTED: LifecycleError = Object.freeze({
@@ -552,17 +676,6 @@ function stateError(message: string, detail: Record<string, unknown> = {}): Suba
 }
 
 /**
- * Canonicalize an actor id: `Main` (case-insensitive) or a generated subagent
- * id. The broadcast target `all` is not an actor. Returns null for anything else.
- */
-export function canonicalActorId(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (trimmed.toLowerCase() === MAIN_ACTOR_ID.toLowerCase()) return MAIN_ACTOR_ID;
-  return AGENT_ID_PATTERN.test(trimmed) ? trimmed : null;
-}
-
-/**
  * Give one inherited consumer its own native session containers.
  *
  * A captured history is immutable data: `SessionManager` appends by pushing new
@@ -588,13 +701,11 @@ export function copyInheritedEntries(entries: unknown): unknown {
 }
 
 /**
- * The persisted form of a Job spec. A continuation is persisted by name only
- * (its seed is the actor's first spec), and captured conversation entries are
- * never persisted: a durable adapter stores them in the actor's own session.
+ * The persisted form of a Job spec. Captured conversation entries are never
+ * persisted: a durable adapter stores them in the actor's own session.
  */
 function persistedSpec(spec: JobSpec): PersistedJobSpec {
-  if (spec.kind === "continuation") return { kind: "continuation", name: spec.name ?? null };
-  const copy: PersistedJobSpec = { ...spec };
+  const copy: PersistedJobSpec = { kind: spec.kind };
   if (spec.inheritedContext !== null) {
     const { entries: _entries, ...meta } = spec.inheritedContext;
     // Model definitions can carry headers, provider callbacks and runtime
@@ -610,26 +721,63 @@ function persistedSpec(spec: JobSpec): PersistedJobSpec {
   return copy;
 }
 
-function inheritedContextOf(spec: JobSpec | null | undefined): InheritedContext | null {
-  if (spec === null || spec === undefined) return null;
-  if (spec.kind === "continuation") return inheritedContextOf(spec.seed);
-  return spec.inheritedContext;
-}
-
-function childKindOfSpec(spec: JobSpec | null | undefined): "fresh" | "inherited" {
-  if (spec === null || spec === undefined) return "fresh";
-  if (spec.kind === "continuation") return childKindOfSpec(spec.seed);
-  return spec.inheritContext === true ? "inherited" : "fresh";
+/**
+ * Non-fatal warnings that belong to a Job's entry (for example inherited tools
+ * that Pi's public API cannot transplant).
+ */
+function inheritedWarnings(spec: JobSpec | null | undefined): string[] {
+  const warnings = spec?.inheritedContext?.warnings;
+  if (!Array.isArray(warnings)) return [];
+  return warnings.filter((warning): warning is string => typeof warning === "string");
 }
 
 /**
- * Non-fatal warnings that belong to a Job's entry (for example inherited tools
- * that Pi's public API cannot transplant). A continuation reads its seed's.
+ * The launch roster as persisted: the session-local Actor key, label and goal
+ * only. Full addresses are deliberately not stored. A stored full address, an
+ * unknown key, a reordered member or a changed label/goal is invalid.
  */
-function inheritedWarnings(spec: JobSpec | null | undefined): string[] {
-  const warnings = inheritedContextOf(spec)?.warnings;
-  if (!Array.isArray(warnings)) return [];
-  return warnings.filter((warning): warning is string => typeof warning === "string");
+function localRosterEntries(value: unknown): LocalRosterEntry[] | null {
+  if (!Array.isArray(value)) return null;
+  const roster: LocalRosterEntry[] = [];
+  for (const item of value) {
+    if (!isPlainObject(item)) return null;
+    if (Object.keys(item).some((key) => key !== "id" && key !== "name" && key !== "goal")) return null;
+    const { id, name, goal } = item;
+    if (typeof id !== "string" || typeof goal !== "string") return null;
+    const parsed = parseActorKey(id);
+    if (parsed === null || parsed.batch === null) return null;
+    if (name !== null && typeof name !== "string") return null;
+    roster.push({ id, name, goal });
+  }
+  return roster;
+}
+
+/** Project the stored local roster to the current root's full addresses. */
+function projectRoster(session: string, roster: readonly LocalRosterEntry[]): RosterEntry[] {
+  return roster.map((entry) => ({ address: formatAddress(session, entry.id), name: entry.name, goal: entry.goal }));
+}
+
+/** The local roster a batch must have for its member layout, in declared order. */
+function expectedLocalRoster(members: readonly { key: string; name: string | null; goal: string }[]): LocalRosterEntry[] {
+  return members.map((member) => ({ id: member.key, name: member.name, goal: member.goal }));
+}
+
+function sameLocalRoster(a: readonly LocalRosterEntry[], b: readonly LocalRosterEntry[]): boolean {
+  return a.length === b.length && a.every((entry, index) => {
+    const other = b[index];
+    return other !== undefined && entry.id === other.id && entry.name === other.name && entry.goal === other.goal;
+  });
+}
+
+/** Convert this runtime's full launch projection into its stored local form. */
+function storedRoster(roster: readonly RosterEntry[]): LocalRosterEntry[] {
+  return roster.map((entry) => {
+    const parsed = parseAddress(entry.address);
+    if (parsed === null || parsed.kind !== "actor") {
+      throw stateError(`Launch roster address ${describe(entry.address)} is not a local Actor address.`);
+    }
+    return { id: parsed.key, name: entry.name, goal: entry.goal };
+  });
 }
 
 function isBudgetPhase(value: unknown): value is BudgetPhase {
@@ -700,19 +848,26 @@ function restoredHistoryError(value: unknown, jobId: string): LifecycleError | u
  * Validate a restored registry description (see `restoreState`).
  *
  * The description is folded from the adapter's own events, but it is still
- * read back from a file that may be truncated or hand-edited, so topology and
- * ownership are checked before anything reaches the registry. The runtime
- * itself decides the terminal outcome of every Job that never ended.
+ * read back from a file that may be truncated or hand-edited, so topology,
+ * batch identity and ownership are checked before anything reaches the
+ * registry. Batch identity is never inferred from the local segment alone: the
+ * recorded topology and the local roster of its batch must agree. The roster is
+ * stored without a session prefix; this runtime projects it onto the current
+ * root session when restoring. The runtime itself decides the terminal outcome
+ * of every Job that never ended.
  */
-function planRestore(state: unknown): { actors: Agent[]; jobs: Array<Job & { interrupted: boolean }> } {
+function planRestore(session: string, state: unknown): { actors: Agent[]; jobs: Array<Job & { interrupted: boolean }> } {
   if (!isPlainObject(state) || !Array.isArray(state.actors) || !Array.isArray(state.jobs)) {
     throw stateError("The restored subagent state must carry actor and Job lists.");
   }
   const actors = new Map<string, Agent>();
+  const localRosters = new Map<string, LocalRosterEntry[]>();
   for (const candidate of state.actors) {
     if (!isPlainObject(candidate)) throw stateError("A restored actor entry must be an object.");
     const agentId = candidate.agentId;
-    if (typeof agentId !== "string" || !AGENT_ID_PATTERN.test(agentId)) throw stateError(`${describe(agentId)} is not a subagent actor id.`);
+    if (typeof agentId !== "string") throw stateError(`${describe(agentId)} is not a subagent actor id.`);
+    const keyRef = parseActorKey(agentId);
+    if (keyRef === null || keyRef.batch === null) throw stateError(`${describe(agentId)} is not a subagent actor id.`);
     if (actors.has(agentId)) throw stateError(`Actor ${agentId} appears more than once.`);
     const depth = candidate.depth;
     // Historical topology stays readable even when the configured maximum depth
@@ -724,10 +879,26 @@ function planRestore(state: unknown): { actors: Agent[]; jobs: Array<Job & { int
     if (parentAgentId !== null && typeof parentAgentId !== "string") {
       throw stateError(`Actor ${agentId} has an invalid parent.`, { agentId });
     }
+    if (candidate.batch !== keyRef.batch) throw stateError(`Actor ${agentId} records batch ${describe(candidate.batch)}.`, { agentId });
+    if (candidate.member !== keyRef.member) throw stateError(`Actor ${agentId} records member ${describe(candidate.member)}.`, { agentId });
+    const goal = candidate.goal;
+    if (typeof goal !== "string" || goal.trim() === "") throw stateError(`Actor ${agentId} has no goal.`, { agentId });
+    const context = candidate.context ?? null;
+    if (context !== null && typeof context !== "string") throw stateError(`Actor ${agentId} has an invalid context.`, { agentId });
+    const localRoster = localRosterEntries(candidate.roster);
+    if (localRoster === null) throw stateError(`Actor ${agentId} has no valid launch roster.`, { agentId });
+    localRosters.set(agentId, localRoster);
+    if (candidate.kind !== "fresh" && candidate.kind !== "inherited") throw stateError(`Actor ${agentId} has an invalid kind.`, { agentId });
     const stoppedOrder = candidate.stoppedOrder;
     actors.set(agentId, {
       agentId,
       name: typeof candidate.name === "string" ? candidate.name : null,
+      goal,
+      context,
+      roster: projectRoster(session, localRoster),
+      kind: candidate.kind,
+      batch: keyRef.batch,
+      member: keyRef.member,
       parentAgentId,
       depth,
       status: "idle",
@@ -742,6 +913,36 @@ function planRestore(state: unknown): { actors: Agent[]; jobs: Array<Job & { int
     if ((parent?.depth ?? 0) + 1 !== actor.depth) throw stateError(`Actor ${actor.agentId} has an inconsistent depth.`);
   }
 
+  // Every batch must be exactly the set of Actors its recorded roster names,
+  // in one parent, with one shared context.
+  const batches = new Map<number, Agent[]>();
+  for (const actor of actors.values()) {
+    const members = batches.get(actor.batch) ?? [];
+    members.push(actor);
+    batches.set(actor.batch, members);
+  }
+  for (const [batch, members] of batches) {
+    const first = at(members, 0);
+    const expected = expectedLocalRoster(members
+      .map((member) => ({ key: member.agentId, name: member.name, goal: member.goal }))
+      .sort((a, b) => (parseActorKey(a.key)?.member ?? 0) - (parseActorKey(b.key)?.member ?? 0)));
+    for (const member of members) {
+      if (member.parentAgentId !== first.parentAgentId) {
+        throw stateError(`Batch ${batch} spans more than one parent.`, { batch });
+      }
+      if (member.context !== first.context) throw stateError(`Batch ${batch} records more than one context.`, { batch });
+      const recordedRoster = localRosters.get(member.agentId);
+      if (recordedRoster === undefined || !sameLocalRoster(recordedRoster, expected)) {
+        throw stateError(`Actor ${member.agentId} does not match the recorded roster of batch ${batch}.`, { batch, agentId: member.agentId });
+      }
+    }
+    const recorded = members.map((member) => member.agentId).sort();
+    const rostered = expected.map((entry) => entry.id).sort();
+    if (recorded.join("\u0000") !== rostered.join("\u0000")) {
+      throw stateError(`Batch ${batch} does not match its recorded roster.`, { batch });
+    }
+  }
+
   const jobs = new Map<string, Job & { interrupted: boolean }>();
   for (const candidate of state.jobs) {
     if (!isPlainObject(candidate)) throw stateError("A restored Job entry must be an object.");
@@ -750,14 +951,18 @@ function planRestore(state: unknown): { actors: Agent[]; jobs: Array<Job & { int
     if (jobs.has(jobId)) throw stateError(`Job ${jobId} appears more than once.`);
     const actor = typeof candidate.agentId === "string" ? actors.get(candidate.agentId) : undefined;
     if (actor === undefined) throw stateError(`Job ${jobId} belongs to unknown actor ${describe(candidate.agentId)}.`);
+    if (jobId !== actor.agentId && !jobId.startsWith(`${actor.agentId}#r`)) {
+      throw stateError(`Job ${jobId} does not belong to ${actor.agentId}.`);
+    }
     const rawSpec = candidate.spec;
     if (!isPlainObject(rawSpec)) throw stateError(`Job ${jobId} has no spec.`);
-    if (rawSpec.kind !== undefined && rawSpec.kind !== "continuation") throw stateError(`Job ${jobId} has an unknown spec kind.`);
-    if (rawSpec.kind !== "continuation" && (typeof rawSpec.task !== "string" || rawSpec.task.trim() === "")) {
-      throw stateError(`Job ${jobId} has no non-empty task.`);
+    if (rawSpec.kind !== "initial" && rawSpec.kind !== "continuation") throw stateError(`Job ${jobId} has an unknown spec kind.`);
+    if (rawSpec.inheritedContext != null && !isPlainObject(rawSpec.inheritedContext)) {
+      throw stateError(`Job ${jobId} has a malformed inherited snapshot.`);
     }
-    const createdBy = candidate.createdBy ?? MAIN_ACTOR_ID;
-    if (typeof createdBy !== "string" || (createdBy !== MAIN_ACTOR_ID && !actors.has(createdBy))) {
+    if (actor.kind === "fresh" && rawSpec.inheritedContext != null) throw stateError(`Fresh Job ${jobId} has an inherited snapshot.`);
+    const createdBy = candidate.createdBy ?? MAIN_ACTOR;
+    if (typeof createdBy !== "string" || (createdBy !== MAIN_ACTOR && !actors.has(createdBy))) {
       throw stateError(`Job ${jobId} names unknown creator ${describe(createdBy)}.`);
     }
     const started = candidate.started === true;
@@ -774,19 +979,10 @@ function planRestore(state: unknown): { actors: Agent[]; jobs: Array<Job & { int
     const end = isPlainObject(candidate.end) ? candidate.end : null;
     const bounds = end === null ? (candidate.history ?? (started ? { startEntryId, endEntryId: null } : null)) : end.history;
     if (bounds != null && historyBounds(bounds) === null) throw stateError(`Job ${jobId} has malformed history bounds.`);
-    const spec: JobSpec = rawSpec.kind === "continuation"
-      ? {
-          kind: "continuation",
-          name: typeof rawSpec.name === "string" ? rawSpec.name : null,
-          seed: jobs.get(actor.jobIds[0] ?? "")?.spec ?? null,
-        }
-      : {
-          name: typeof rawSpec.name === "string" ? rawSpec.name : null,
-          task: typeof rawSpec.task === "string" ? rawSpec.task : "",
-          context: typeof rawSpec.context === "string" ? rawSpec.context : null,
-          inheritContext: rawSpec.inheritContext === true,
-          inheritedContext: isPlainObject(rawSpec.inheritedContext) ? structuredClone(rawSpec.inheritedContext) : null,
-        };
+    const spec: JobSpec = {
+      kind: rawSpec.kind === "continuation" ? "continuation" : "initial",
+      inheritedContext: isPlainObject(rawSpec.inheritedContext) ? { ...rawSpec.inheritedContext } : null,
+    };
     const historyState = end === null ? undefined : restoredHistoryState(end.historyState, jobId);
     const historyError = end === null ? undefined : restoredHistoryError(end.historyError, jobId);
     const restored: Job & { interrupted: boolean } = {
@@ -806,6 +1002,7 @@ function planRestore(state: unknown): { actors: Agent[]; jobs: Array<Job & { int
       // A restored Job is terminal; its Budget snapshot is reporting only.
       budgetSnapshot: restoredBudgetSnapshot(end?.budget, jobId),
       stopping: null,
+      waitingSince: null,
       ...(historyState === undefined ? {} : { historyState }),
       ...(historyError === undefined ? {} : { historyError }),
     };
@@ -821,27 +1018,30 @@ function terminalStatus(status: unknown, jobId: string): TerminalStatus {
 }
 
 /**
- * Registry + scheduler for subagents.
+ * Registry of Actors and their Jobs.
  *
- * task(batch, options) validates the whole batch, registers every entry in
- * input order, then starts every admitted Job without a global execution cap.
- * Nothing touches the registry before validation succeeds.
+ * An Actor is a persistent collaborator (one batch identity, one goal, one
+ * retained conversation); a Job is one execution of it. create(batch, options)
+ * validates the whole batch, admits it against the parent's three limits,
+ * registers every member in declared order and starts every Job. Nothing touches
+ * the registry before validation and admission succeed.
  */
 export class SubagentRuntime {
+  /** The root session's address namespace. */
+  readonly session: string;
   #startJob: (request: JobRequest) => unknown;
   #deliverMessage: ((request: DeliverMessageRequest) => DeliveryOutcome | Promise<DeliveryOutcome> | null | undefined) | null;
   #deliverToMain: ((message: RuntimeDelivery) => unknown) | null;
   #onEvent: ((event: RuntimeEvent) => void) | null;
   #onChildrenSettled: ((parentId: string) => void) | null;
   #allowInherited: boolean;
-  #socketDir: string | undefined;
   #historyPaths: ((jobId: string) => JobHistoryPaths | null) | null;
-  #resultPath: ((jobId: string) => string | null) | null;
   #prepareInherited: ((input: { agentId: string; snapshot: InheritedContext }) => unknown) | null;
   #isIdTaken: ((id: string) => boolean) | null;
   #onIdAllocated: ((id: string) => void) | null;
   #finalizeJob: ((input: FinalizeJobInput) => unknown) | null;
-  #agentSocketPath: (id: string, socketDir?: string) => string;
+  #interruptJob: ((input: InterruptJobInput) => InterruptOutcome | Promise<InterruptOutcome>) | null;
+  #now: () => number;
   #config: HarnessConfig;
 
   #agents = new Map<string, Agent>();
@@ -850,147 +1050,143 @@ export class SubagentRuntime {
   #handles = new Map<string, StartedJobHandle | null>();
   #budgetWatches = new Map<string, () => void>();
   #waiters = new Map<string, Set<(view: JobView) => void>>();
-  #childSequences = new Map<string, number>();
+  /** Highest batch number this runtime ever allocated or restored. */
+  #highestBatch = 0;
   #transitionDepth = 0;
-  #completions: Job[] = [];
   #settledParents = new Set<string>();
 
   constructor(options: RuntimeOptions) {
     const {
+      session,
       startJob,
       deliverMessage,
       deliverToMain,
       onEvent,
       onChildrenSettled,
       allowInherited = true,
-      socketDir,
       historyPaths,
-      resultPath,
       prepareInherited,
       isIdTaken,
       onIdAllocated,
       finalizeJob,
-      agentSocketPath,
+      interruptJob,
+      now,
       config = DEFAULT_HARNESS_CONFIG,
     } = options;
 
+    if (typeof session !== "string" || !SESSION_PATTERN.test(session)) {
+      throw new SubagentError("invalid_session", `A Subagent runtime needs the root session's 8-hex uid; received ${describe(session)}.`);
+    }
+    this.session = session;
     this.#startJob = startJob;
     this.#deliverMessage = deliverMessage ?? null;
     this.#deliverToMain = deliverToMain ?? null;
     this.#onEvent = onEvent ?? null;
     this.#onChildrenSettled = onChildrenSettled ?? null;
     this.#allowInherited = allowInherited;
-    this.#socketDir = socketDir;
     this.#historyPaths = historyPaths ?? null;
-    this.#resultPath = resultPath ?? null;
     this.#prepareInherited = prepareInherited ?? null;
     this.#isIdTaken = isIdTaken ?? null;
     this.#onIdAllocated = onIdAllocated ?? null;
     this.#finalizeJob = finalizeJob ?? null;
-    this.#agentSocketPath = agentSocketPath ?? formatAgentSocketPath;
+    this.#interruptJob = interruptJob ?? null;
+    this.#now = now ?? Date.now;
     this.#config = config;
   }
 
-  /** Validate, atomically register and start a batch; return the public Agent view. */
-  create(batch: unknown, options: TaskOptions = {}): CreatedAgents {
+  /** Validate, atomically register and start a batch; return its launch projection. */
+  create(batch: unknown, options: TaskOptions = {}): CreatedBatch {
     return this.#withTransition(() => {
-      const { entries, snapshot } = this.#planBatch(batch, options);
-      // Task language is not a lifecycle decision. The router may prefer
-      // English, but the runtime no longer rejects a batch by character ratio.
+      const { members, snapshot, context } = this.#planBatch(batch, options);
       const parentAgentId = options.parentAgentId ?? null;
       const parent = parentAgentId === null ? null : this.#agents.get(parentAgentId);
-      if (parentAgentId !== null && !parent) {
+      if (parentAgentId !== null && parent === undefined) {
         throw new SubagentError("unknown_parent", `No parent agent registered as ${describe(parentAgentId)}.`);
       }
       const depth = (parent?.depth ?? 0) + 1;
-      const maxDepth = this.#config.subagent.maxDepth;
-      if (depth > maxDepth) {
-        throw new SubagentError(
-          "max_depth_exceeded",
-          `Agent depth ${depth} exceeds the maximum depth ${maxDepth}; depth-${maxDepth} agents cannot create children.`,
-          { parentAgentId, depth, maxDepth },
-        );
-      }
-      const maxActiveChildren = this.#config.subagent.maxActiveChildren;
-      const maxActiveInheritedChildren = this.#config.subagent.maxActiveInheritedChildren;
-      const active = this.#activeChildren(parentAgentId);
+      const requestedInherited = members.filter((member) => member.inheritContext).length;
+      const refusal = this.#admissionRefusal({
+        parentAgentId,
+        depth,
+        requested: members.length,
+        inherited: requestedInherited,
+        newBatch: true,
+      });
+      if (refusal !== null) throw refusal;
 
-      let requestedFresh = 0;
-      let requestedInherited = 0;
-      for (const entry of entries) {
-        if (entry.spec.inheritContext) requestedInherited += 1;
-        else requestedFresh += 1;
-      }
-
-      if (requestedFresh > 0 && active.fresh + requestedFresh > maxActiveChildren) {
-        throw new SubagentError(
-          "child_limit_exceeded",
-          `Agent ${parentAgentId ?? "Main"} already has ${active.fresh} active fresh children; at most ${maxActiveChildren} are allowed.`,
-          {
-            parentAgentId,
-            kind: "fresh",
-            activeChildren: active.fresh,
-            requestedChildren: requestedFresh,
-            maxActiveChildren,
-          },
-        );
-      }
-      if (requestedInherited > 0 && active.inherited + requestedInherited > maxActiveInheritedChildren) {
-        throw new SubagentError(
-          "child_limit_exceeded",
-          `Agent ${parentAgentId ?? "Main"} already has ${active.inherited} active inherited children; at most ${maxActiveInheritedChildren} are allowed.`,
-          {
-            parentAgentId,
-            kind: "inherited",
-            activeChildren: active.inherited,
-            requestedChildren: requestedInherited,
-            maxActiveChildren: maxActiveInheritedChildren,
-          },
-        );
-      }
-      const agentIds = entries.map(() => this.#allocateAgentId(parentAgentId));
+      const batchNumber = this.#allocateBatch();
+      const multi = members.length > 1;
+      const keys = members.map((_member, position) => actorKey(batchNumber, multi ? position + 1 : null));
+      const roster: RosterEntry[] = members.map((member, position) => ({
+        address: formatAddress(this.session, at(keys, position)),
+        name: member.name,
+        goal: member.goal,
+      }));
       // Same batch, same parent context instant. Each inherited child gets its
       // own conversation: materialized by the adapter, or an in-memory copy.
-      entries.forEach((entry, position) => {
-        if (!entry.spec.inheritContext) return;
-        const agentId = at(agentIds, position);
+      members.forEach((member, position) => {
+        if (!member.inheritContext) return;
+        const agentId = at(keys, position);
         try {
           if (snapshot === null) throw new Error("no calling context was captured");
           const prepared = this.#prepareInherited === null
             ? { ...snapshot, entries: copyInheritedEntries(snapshot.entries) }
             : this.#prepareInherited({ agentId, snapshot });
           if (!isPlainObject(prepared)) throw new Error("the prepared inherited context is not an object");
-          entry.spec.inheritedContext = prepared;
+          member.inheritedContext = prepared;
         } catch (error) {
           throw new SubagentError("inherited_snapshot_failed", `Failed to store the calling context for ${agentId}: ${errorMessage(error)}`);
         }
       });
-      const registered: Job[] = [];
 
-      for (const [position, entry] of entries.entries()) {
-        const agentId = at(agentIds, position);
-        const agent: Agent = { agentId, name: entry.spec.name, parentAgentId, depth, status: "running", jobIds: [], pending: [] };
+      const createdBy = parentAgentId ?? MAIN_ACTOR;
+      const registered: Job[] = [];
+      const warnings = new Set<string>();
+      for (const [position, member] of members.entries()) {
+        const agentId = at(keys, position);
+        const agent: Agent = {
+          agentId,
+          name: member.name,
+          goal: member.goal,
+          context,
+          roster,
+          kind: member.inheritContext ? "inherited" : "fresh",
+          batch: batchNumber,
+          member: multi ? position + 1 : null,
+          parentAgentId,
+          depth,
+          status: "running",
+          jobIds: [],
+          pending: [],
+        };
         this.#agents.set(agentId, agent);
-        registered.push(
-          this.#createJob(agent, {
-            index: entry.index,
-            spec: entry.spec,
-            origin: options.origin ?? null,
-            createdBy: parentAgentId ?? MAIN_ACTOR_ID,
-          }),
-        );
+        this.#onIdAllocated?.(agentId);
+        const spec: JobSpec = { kind: "initial", inheritedContext: member.inheritedContext };
+        for (const warning of inheritedWarnings(spec)) warnings.add(warning);
+        registered.push(this.#createJob(agent, {
+          index: position,
+          spec,
+          origin: options.origin ?? null,
+          createdBy,
+        }));
       }
 
       // Register the complete batch before any adapter can observe or start it.
       for (const job of registered) this.#start(job);
-      return { items: registered.map((job): CreatedAgentItem => {
-        const warnings = inheritedWarnings(job.spec);
-        return {
+      const created: CreatedBatch = {
+        batch: batchNumber,
+        address: formatGroupAddress(this.session, batchNumber),
+        roster,
+        items: registered.map((job): CreatedAgentItem => ({
           id: job.agentId,
-          socket: this.#agentSocketPath(job.agentId, this.#socketDir),
-          ...(warnings.length > 0 ? { warnings } : {}),
-        };
-      }) };
+          address: formatAddress(this.session, job.agentId),
+          name: this.#agents.get(job.agentId)?.name ?? null,
+          goal: this.#agents.get(job.agentId)?.goal ?? "",
+          ...(inheritedWarnings(job.spec).length === 0 ? {} : { warnings: inheritedWarnings(job.spec) }),
+        })),
+      };
+      if (warnings.size > 0) created.warnings = [...warnings];
+      return created;
     });
   }
 
@@ -1032,6 +1228,7 @@ export class SubagentRuntime {
       // Set while an explicit cancel or an expired Budget waits for the native
       // run to exit; the terminal payload is published from there.
       stopping: null,
+      waitingSince: null,
     };
     agent.jobIds.push(jobId);
     this.#jobs.set(jobId, job);
@@ -1039,7 +1236,21 @@ export class SubagentRuntime {
       type: "job",
       jobId,
       agentId: agent.agentId,
-      ...(agent.jobIds.length === 1 ? { actor: { name: agent.name, parentAgentId: agent.parentAgentId, depth: agent.depth } } : {}),
+      ...(agent.jobIds.length === 1
+        ? {
+            actor: {
+              name: agent.name,
+              parentAgentId: agent.parentAgentId,
+              depth: agent.depth,
+              batch: agent.batch,
+              member: agent.member,
+              goal: agent.goal,
+              context: agent.context,
+              roster: storedRoster(agent.roster),
+              kind: agent.kind,
+            },
+          }
+        : {}),
       index,
       createdBy,
       continuedFromJobId,
@@ -1060,6 +1271,24 @@ export class SubagentRuntime {
     return jobId;
   }
 
+  /**
+   * A batch number this root never used: monotonic over the session and checked
+   * against every branch and Actor file, so a rewound or abandoned branch never
+   * hands its identity to a new batch.
+   */
+  #allocateBatch(): number {
+    let batch = this.#highestBatch + 1;
+    while (this.#batchIsTaken(batch)) batch += 1;
+    this.#highestBatch = batch;
+    return batch;
+  }
+
+  #batchIsTaken(batch: number): boolean {
+    if (this.#isIdTaken?.(actorKey(batch)) === true) return true;
+    if (this.#isIdTaken?.(actorKey(batch, 1)) === true) return true;
+    return this.#agents.has(actorKey(batch));
+  }
+
   #emit(event: RuntimeEvent): void {
     if (this.#onEvent === null) return;
     try {
@@ -1072,39 +1301,53 @@ export class SubagentRuntime {
 
   /** Agent-level snapshot; job status is reported by jobs(), not here. */
   list(filter: HistoryFilter | null = null): { agents: AgentView[] } {
-    const targetId = filter?.id;
+    const targetId = filter?.id === undefined ? null : this.#localKey(filter.id);
+    if (filter?.id !== undefined && targetId === null) return { agents: [] };
     const agents: AgentView[] = [];
     for (const agent of this.#agents.values()) {
-      if (targetId && agent.agentId !== targetId) continue;
+      if (targetId !== null && agent.agentId !== targetId) continue;
       if (filter?.status !== undefined && filter.status !== agent.status) continue;
       agents.push({
         agentId: agent.agentId,
+        address: formatAddress(this.session, agent.agentId),
         name: agent.name,
+        goal: agent.goal,
+        batch: agent.batch,
         parentAgentId: agent.parentAgentId,
         status: agent.status,
         depth: agent.depth,
-        kind: this.#childKind(agent),
+        kind: agent.kind,
       });
     }
     return { agents };
   }
 
-  /** Public contract view for list tool, including unified ID, socket and history paths. */
+  /**
+   * Public projection of the visible tree, shared by the list tool and the CLI.
+   *
+   * A node carries addresses and topology, not goals, model configuration or
+   * activity. The root attaches the role from its retained identity.
+   */
   listDetailed(
     filter: HistoryFilter | null,
     { callerId }: { callerId: string },
   ): DetailedAgentItem | null {
-    const targetId = filter?.id;
+    const caller = this.#localKey(callerId);
+    if (caller === null) throw new SubagentError("unknown_agent", `${describe(callerId)} is not an actor address of this session.`);
+    const targetId = filter?.id === undefined ? null : this.#localKey(filter.id);
+    if (filter?.id !== undefined && targetId === null) return null;
     const agents = [...this.#agents.values()];
     const visible = new Set<string>();
     const main: DetailedAgentItem = {
-      id: MAIN_ACTOR_ID,
+      id: MAIN_ACTOR,
+      address: formatAddress(this.session, MAIN_ACTOR),
+      name: null,
       status: "running",
-      socket: this.#agentSocketPath(MAIN_ACTOR_ID, this.#socketDir),
+      role: null,
       children: [],
     };
     if (filter?.all === true) {
-      visible.add(MAIN_ACTOR_ID);
+      visible.add(MAIN_ACTOR);
       for (const agent of agents) visible.add(agent.agentId);
     } else {
       const group = (parentId: string | null, selfId?: string) => this.#visibleGroup(parentId, selfId);
@@ -1112,45 +1355,50 @@ export class SubagentRuntime {
         if (agent.status !== "running") return;
         for (const child of group(agent.agentId)) visible.add(child.agentId);
       };
-      if (callerId === MAIN_ACTOR_ID) {
-        visible.add(MAIN_ACTOR_ID);
+      if (caller === MAIN_ACTOR) {
+        visible.add(MAIN_ACTOR);
         for (const child of group(null)) {
           visible.add(child.agentId);
           addChildren(child);
         }
       } else {
-        const caller = this.#agents.get(callerId);
-        if (!caller) throw new SubagentError("unknown_agent", `No subagent registered as ${callerId}.`);
-        visible.add(caller.parentAgentId ?? MAIN_ACTOR_ID);
-        for (const peer of group(caller.parentAgentId, callerId)) visible.add(peer.agentId);
-        addChildren(caller);
+        const self = this.#agents.get(caller);
+        if (!self) throw new SubagentError("unknown_agent", `No subagent registered as ${caller}.`);
+        visible.add(self.parentAgentId ?? MAIN_ACTOR);
+        for (const peer of group(self.parentAgentId, caller)) visible.add(peer.agentId);
+        addChildren(self);
       }
     }
     const nodes = new Map<string, DetailedAgentItem>();
-    if (visible.has(MAIN_ACTOR_ID)) nodes.set(MAIN_ACTOR_ID, main);
+    if (visible.has(MAIN_ACTOR)) nodes.set(MAIN_ACTOR, main);
     const listed = [...visible]
-      .filter((id) => id !== MAIN_ACTOR_ID)
+      .filter((id) => id !== MAIN_ACTOR)
       .map((id) => this.#agents.get(id))
       .filter((agent): agent is Agent => agent !== undefined);
     for (const agent of listed) {
       const liveJob = this.#liveJobOf(agent);
-      const currentStatus = liveJob ? liveJob.status : (agent.status === "idle" ? "stopped" : agent.status);
+      const currentStatus = liveJob ? liveJob.status : agent.status;
       if (filter?.status !== undefined && filter.status !== currentStatus && filter.status !== agent.status) continue;
       const item: DetailedAgentItem = {
         id: agent.agentId,
-        status: currentStatus,
-        socket: this.#agentSocketPath(agent.agentId, this.#socketDir),
-        kind: this.#childKind(agent),
+        address: formatAddress(this.session, agent.agentId),
+        name: agent.name,
+        status: liveJob ? "running" : "stopped(unknown)",
+        kind: agent.kind,
+        role: null,
         children: [],
       };
       const latest = [...agent.jobIds]
         .reverse()
         .map((jobId) => this.#jobs.get(jobId))
         .find((job): job is Job => job !== undefined && TERMINAL_STATUSES.has(job.status));
+      if (!liveJob && latest !== undefined) {
+        item.status = latest.status === "completed" ? "idle" : `stopped(${latest.status})`;
+      }
       if (latest !== undefined && this.#historyPaths !== null) {
         try {
           const history = this.#historyPaths(latest.jobId);
-          if (history) item.history = { jobId: latest.jobId, ...history };
+          if (history) item.history = history;
         } catch (error) {
           // A derived view belongs to this row only. One unreadable history
           // must neither hide healthy siblings nor rewrite the Job outcome.
@@ -1161,11 +1409,11 @@ export class SubagentRuntime {
     }
     for (const agent of listed) {
       const node = nodes.get(agent.agentId);
-      const parent = nodes.get(agent.parentAgentId ?? MAIN_ACTOR_ID);
+      const parent = nodes.get(agent.parentAgentId ?? MAIN_ACTOR);
       if (node && parent) parent.children.push(node);
     }
-    const rootId = targetId ?? (filter?.all === true || callerId === MAIN_ACTOR_ID
-      ? MAIN_ACTOR_ID : this.#agents.get(callerId)?.parentAgentId ?? MAIN_ACTOR_ID);
+    const rootId = targetId ?? (filter?.all === true || caller === MAIN_ACTOR
+      ? MAIN_ACTOR : this.#agents.get(caller)?.parentAgentId ?? MAIN_ACTOR);
     return nodes.get(rootId) ?? null;
   }
 
@@ -1177,6 +1425,72 @@ export class SubagentRuntime {
     const self = siblings.find((agent) => agent.agentId === selfId);
     return [...(self ? [self] : []), ...active.filter((agent) => agent !== self), ...stopped.filter((agent) => agent !== self)]
       .slice(0, LIST_SIBLING_WINDOW);
+  }
+
+  /**
+   * The live direct children of one parent, for the three independent limits.
+   * A batch counts once while any of its members is live; `stopping` and
+   * `finalizing` Jobs still occupy their slots until the native run exits.
+   */
+  #liveChildren(parentAgentId: string | null): { total: number; inherited: number; batches: Set<number> } {
+    let total = 0;
+    let inherited = 0;
+    const batches = new Set<number>();
+    for (const agent of this.#agents.values()) {
+      if (agent.parentAgentId !== parentAgentId || !this.#hasActiveJob(agent)) continue;
+      total += 1;
+      if (agent.kind === "inherited") inherited += 1;
+      batches.add(agent.batch);
+    }
+    return { total, inherited, batches };
+  }
+
+  /**
+   * One creation or revival against one parent's three limits. All three count
+   * that parent's live direct children, so no session-wide scheduler appears
+   * here; batch identity itself is session-wide and unlimited in scope.
+   */
+  #admissionRefusal(input: {
+    parentAgentId: string | null;
+    depth: number;
+    requested: number;
+    inherited: number;
+    newBatch: boolean;
+  }): SubagentError | null {
+    const { maxDepth, maxActiveBatches, maxActiveSubagents, maxActiveInheritedSubagents } = this.#config.subagent;
+    const parentLabel = input.parentAgentId ?? MAIN_ACTOR;
+    // Historical topology stays readable when the configured maximum depth is
+    // lower now; admission of new work refuses it here.
+    if (input.depth > maxDepth) {
+      return new SubagentError(
+        "max_depth_exceeded",
+        `Agent depth ${input.depth} exceeds the maximum depth ${maxDepth}; depth-${maxDepth} agents cannot create children.`,
+        { parentAgentId: input.parentAgentId, depth: input.depth, maxDepth },
+      );
+    }
+    const live = this.#liveChildren(input.parentAgentId);
+    if (input.newBatch && live.batches.size + 1 > maxActiveBatches) {
+      return new SubagentError(
+        "batch_limit_exceeded",
+        `${parentLabel} already has ${live.batches.size} live batches; at most ${maxActiveBatches} are allowed.`,
+        { parentAgentId: input.parentAgentId, activeBatches: live.batches.size, maxActiveBatches },
+      );
+    }
+    if (live.total + input.requested > maxActiveSubagents) {
+      return new SubagentError(
+        "subagent_limit_exceeded",
+        `${parentLabel} already has ${live.total} live direct children; at most ${maxActiveSubagents} are allowed.`,
+        { parentAgentId: input.parentAgentId, activeChildren: live.total, requestedChildren: input.requested, maxActiveSubagents },
+      );
+    }
+    if (live.inherited + input.inherited > maxActiveInheritedSubagents) {
+      return new SubagentError(
+        "inherited_limit_exceeded",
+        `${parentLabel} already has ${live.inherited} live inherited children; at most ${maxActiveInheritedSubagents} are allowed.`,
+        { parentAgentId: input.parentAgentId, activeInherited: live.inherited, requestedInherited: input.inherited, maxActiveInheritedSubagents },
+      );
+    }
+    return null;
   }
 
   /** Job-level snapshot, optionally restricted to specific job ids. */
@@ -1207,39 +1521,38 @@ export class SubagentRuntime {
    */
   hasActiveChildren(agentId: string): boolean {
     if (typeof agentId !== "string" || agentId === "") return false;
+    if (agentId !== MAIN_ACTOR && !this.#agents.has(agentId)) return false;
+    const parentKey = agentId === MAIN_ACTOR ? null : agentId;
     for (const agent of this.#agents.values()) {
-      if (agent.parentAgentId === agentId && this.#hasActiveJob(agent)) return true;
+      if (agent.parentAgentId === parentKey && this.#hasActiveJob(agent)) return true;
     }
     return false;
   }
 
   /**
-   * Accept a write for a same-runtime actor or for the reserved broadcast
-   * target.
+   * Accept a write for a local Actor or for one broadcast selector.
    *
-   * The sender identity comes from the host surface, never from message text.
-   * The receipt means "this message entered a delivery path" — a live Job took
-   * it, a starting adapter will receive buffered input, or an idle agent was revived with a
-   * new Job for it — and never waits for a model response.
+   * The sender identity comes from the host, never from message text. The
+   * receipt means "this message entered a delivery path" — a live Job took it,
+   * a starting adapter will receive buffered input, or an idle Actor was revived
+   * with a new Job for it — and never waits for a model response.
    *
-   * Reviving an idle agent creates a Job, so it is admitted exactly like a new
-   * child: while the parent already holds the maximum number of active children
-   * the whole write is rejected with `child_limit_exceeded` before any message
-   * or Job is registered.
+   * Reviving an idle Actor creates a Job, so it is admitted exactly like a new
+   * child: while the parent already holds its live-child or live-batch
+   * allowance, the whole write is rejected before any message or Job exists.
    *
-   * A write that arrives while the agent is stopping, or while its run closes
+   * A write that arrives while the Actor is stopping, or while its run closes
    * underneath the hand-over, is rejected with `agent_busy` instead of being
    * parked in a deferred state: the caller retries against the successor state.
    *
-   * `to: "all"` broadcasts to the sender's direct children and answers with
-   * one explicit outcome per recipient.
+   * `to` is one logical address: an Actor, a batch group (`batch_<n>`) or an
+   * Actor's direct children (`<actor>/children`). Broadcasts always exclude the
+   * sender; an empty recipient set after that filter is an ordinary zero-target
+   * receipt, while a single target equal to the sender is a direct self-send.
    *
    * A sender that is not registered here is accepted only with an `external`
    * descriptor that the host resolved from the shared session directory. That
    * path is Main-to-Main only: another session may reach this Main, nothing else.
-   *
-   * @param {{ from: string, to: string, content: string, signal?: AbortSignal, external?: ExternalSender }} message
-   * @returns {Promise<{ ok: true, to: string, jobId: string | null } | { ok: boolean, to: "all", sent: object[], errors: object[] }>}
    */
   async sendMessage(
     input: { from?: unknown; to?: unknown; content?: unknown; signal?: AbortSignal; external?: ExternalSender } = {},
@@ -1248,25 +1561,100 @@ export class SubagentRuntime {
     if (signal?.aborted) {
       throw new SubagentError("aborted", "The write was aborted before it was delivered.");
     }
-    const plan = this.#planMessage({ from, to, content, ...(external === undefined ? {} : { external }) });
-
-    if (plan.to === MAIN_ACTOR_ID) {
-      return this.#sendToMain(plan);
+    const body = this.#messageBody(content);
+    const sender = this.#sender(from, external);
+    const target = this.#target(to, sender.key);
+    if (external !== undefined && target.kind !== "main") {
+      throw new SubagentError("invalid_target", "A cross-session message is delivered to the target session's Main only.", { actorId: target.address });
     }
-    if (plan.to === BROADCAST_TARGET) {
-      return this.#broadcast(plan);
+    if (target.kind === "main") {
+      if (external === undefined && sender.key === MAIN_ACTOR) {
+        throw new SubagentError("invalid_target", "An actor cannot send a message to itself.", { actorId: sender.address });
+      }
+      return this.#sendToMain({ fromKey: sender.key, fromAddress: sender.address, to: target.address, content: body, ...(external === undefined ? {} : { external }) });
     }
-    return this.#sendToAgent(plan);
+    if (target.kind === "broadcast") {
+      return this.#broadcast(sender.key, sender.address, target, body);
+    }
+    if (target.key === sender.key) {
+      throw new SubagentError("invalid_target", "An actor cannot send a message to itself.", { actorId: sender.address });
+    }
+    return this.#sendToAgent(sender.key, sender.address, target.key, target.address, body);
   }
 
   /**
-   * Cancel one job without touching any other job or agent.
+   * Control one Actor or one selector: `interrupt` or `stop`.
+   *
+   * `stop` ends the current Job, keeps the Actor's goal, identity and history,
+   * and occupies capacity until the native resource has actually exited (exactly
+   * like `cancelJob`). `interrupt` never ends the Job: the execution side
+   * aborts the current native run, appends one brief sender-bound interruption
+   * notice and continues the same Job, Actor and Budget; when that capability is
+   * unavailable the truthful answer is `interrupt_unsupported`.
+   */
+  async signal(input: { from?: unknown; to?: unknown; action?: unknown } = {}): Promise<SignalResult> {
+    const action = input.action;
+    if (action !== "interrupt" && action !== "stop") {
+      throw new SubagentError("invalid_request", 'signal requires an action of "interrupt" or "stop".');
+    }
+    const sender = this.#sender(input.from, undefined);
+    const target = this.#target(input.to, sender.key);
+    if (target.kind === "actor" && target.key === sender.key) {
+      throw new SubagentError("invalid_target", "An actor cannot signal itself.", { actorId: sender.address });
+    }
+    if (target.kind === "main") {
+      throw new SubagentError("invalid_target", "Main has no Job in this runtime to signal.", { actorId: target.address });
+    }
+    const keys = target.kind === "broadcast" ? target.keys : [target.key];
+    const targets: SignalTargetResult[] = [];
+    for (const key of keys) targets.push(await this.#signalOne(key, action, sender.address));
+    return { ok: targets.every((entry) => entry.ok), action, to: target.address, targets };
+  }
+
+  async #signalOne(key: string, action: SignalAction, fromAddress: string): Promise<SignalTargetResult> {
+    const address = formatAddress(this.session, key);
+    const agent = this.#agents.get(key);
+    if (agent === undefined) return { address, ok: false, status: "unknown", reason: "unknown_agent" };
+    const live = this.#liveJobOf(agent);
+    if (action === "stop") {
+      if (live === null) return { address, ok: true, status: "idle" };
+      const result = this.cancelJob(live.jobId);
+      return {
+        address,
+        ok: result.ok,
+        status: result.job.status,
+        ...(result.reason === undefined ? {} : { reason: result.reason }),
+      };
+    }
+    if (live === null) return { address, ok: false, status: "idle", reason: "not_running" };
+    if (live.status !== "running" || live.stopping !== null) return { address, ok: false, status: live.status, reason: live.status };
+    if (this.#interruptJob === null) return { address, ok: false, status: "running", reason: "interrupt_unsupported" };
+    let outcome: InterruptOutcome;
+    try {
+      outcome = await this.#interruptJob({ agentId: key, jobId: live.jobId, address, from: fromAddress });
+    } catch (error) {
+      return { address, ok: false, status: live.status, reason: errorInfo(error, "interrupt_failed").code };
+    }
+    // The native run may have settled while the interruption was in flight.
+    if (this.#jobs.get(live.jobId) !== live || !LIVE_STATUSES.has(live.status)) {
+      return { address, ok: false, status: live.status, reason: "already_finished" };
+    }
+    if (live.status !== "running" || live.stopping !== null) {
+      return { address, ok: false, status: live.status, reason: live.status === "running" ? "stopping" : live.status };
+    }
+    if (isPlainObject(outcome) && outcome.ok === true) {
+      return { address, ok: true, status: "running" };
+    }
+    const reason = isPlainObject(outcome) && typeof outcome.reason === "string" ? outcome.reason : "interrupt_unsupported";
+    return { address, ok: false, status: "running", reason };
+  }
+
+  /**
+   * Cancel one Job without touching any other Job or Actor.
    *
    * A Job whose adapter has not started goes directly through finalization.
-   * A started Job stays `stopping` (occupying its actor and topology allowance)
+   * A started Job stays `stopping` (occupying its Actor and admission slots)
    * until the adapter's handle settles, then publishes its cancelled payload.
-   *
-   * @returns {{ ok: boolean, reason?: string, job: object }}
    */
   cancelJob(jobId: unknown): CancelJobResult {
     return this.#withTransition(() => {
@@ -1295,24 +1683,6 @@ export class SubagentRuntime {
       this.#beginStopping(job, "cancelled", { code: "cancelled", message });
       return { ok: true, job: this.#jobView(job) };
     });
-  }
-
-  /**
-   * Stop one subagent by id gracefully.
-   * Stops native execution, or finalizes immediately if no adapter has started.
-   */
-  stop(id: unknown): StopResult {
-    if (typeof id !== "string" || id === "") {
-      throw new SubagentError("invalid_request", "stop requires an id.");
-    }
-    const agent = this.#agents.get(id);
-    if (!agent) throw new SubagentError("unknown_agent", `No subagent found with id "${id}".`);
-    const liveJob = this.#liveJobOf(agent);
-    if (liveJob) {
-      const res = this.cancelJob(liveJob.jobId);
-      return { ok: res.ok, id, status: res.job?.status ?? "stopping", ...(res.reason === undefined ? {} : { reason: res.reason }) };
-    }
-    return { ok: true, id, status: agent.status };
   }
 
   /** Resolves once the job reaches a terminal status (or immediately if it already has). */
@@ -1366,9 +1736,10 @@ export class SubagentRuntime {
     const record: JobRecordView = {
       jobId: job.jobId,
       agentId: job.agentId,
+      address: formatAddress(this.session, job.agentId),
       name: agent?.name ?? null,
       round: Math.max(1, (agent?.jobIds.indexOf(job.jobId) ?? 0) + 1),
-      task: job.spec.kind === "continuation" ? null : job.spec.task,
+      goal: agent?.goal ?? "",
       status: job.status,
       error: structuredClone(job.error),
       result: structuredClone(job.result),
@@ -1393,6 +1764,7 @@ export class SubagentRuntime {
     return {
       jobId: job.jobId,
       agentId: job.agentId,
+      address: formatAddress(this.session, job.agentId),
       name: agent?.name ?? null,
       round: Math.max(1, (agent?.jobIds.indexOf(job.jobId) ?? 0) + 1),
       status: job.status,
@@ -1405,7 +1777,9 @@ export class SubagentRuntime {
   /**
    * Restore a registry folded from persisted events into a fresh runtime.
    *
-   * `state.actors` carry `{ agentId, name, parentAgentId, depth, stoppedOrder }`;
+   * `state.actors` carry the recorded topology
+   * (`{ agentId, name, parentAgentId, depth, batch, member, goal, context,
+   * roster, kind, stoppedOrder }`);
    * `state.jobs` carry the registered Job fields plus `end` (the terminal
    * outcome, or null) in creation order. A Job without an end was live when
    * its process went away: it becomes `failed` with `job_interrupted`, is
@@ -1420,10 +1794,10 @@ export class SubagentRuntime {
     if (this.#agents.size > 0 || this.#jobs.size > 0) {
       throw new SubagentError("invalid_state", "restoreState requires a fresh runtime; this runtime already has registered actors or jobs.");
     }
-    const restored = planRestore(state);
+    const restored = planRestore(this.session, state);
     for (const actor of restored.actors) {
       this.#agents.set(actor.agentId, actor);
-      this.#noteSequence(actor);
+      if (actor.batch > this.#highestBatch) this.#highestBatch = actor.batch;
     }
     this.#stoppedSequence = Math.max(0, ...restored.actors.map((actor) => actor.stoppedOrder ?? 0));
     const interrupted: string[] = [];
@@ -1440,18 +1814,10 @@ export class SubagentRuntime {
     return { actors: this.#agents.size, jobs: this.#jobs.size, interrupted };
   }
 
-  /** Terminal notifications wait until the transition that produced them settled. */
-  #flushCompletions() {
-    if (this.#completions.length === 0) return;
-    const jobs = this.#completions;
-    this.#completions = [];
-    for (const job of jobs) this.#notifyTerminal(job);
-  }
-
   /**
    * Queue a parent wake when the just-ended Job was its last active direct
-   * child. The wake is deferred with terminal notifications, so it cannot
-   * overtake the notice that made the child terminal.
+   * child. The wake is deferred until the current transition settles, so it
+   * cannot overtake the terminal event that made the child terminal.
    */
   #queueChildrenSettled(job: Job): void {
     if (this.#onChildrenSettled === null) return;
@@ -1482,8 +1848,8 @@ export class SubagentRuntime {
 
   /**
    * Coalesce one synchronous transition: a batch that registers four Jobs,
-   * starts them and fails one of them publishes its notification once the
-   * whole batch is registered.
+   * starts them and fails one of them publishes its events and its one parent
+   * wake once the whole batch is registered.
    */
   #withTransition<T>(run: () => T): T {
     this.#transitionDepth += 1;
@@ -1491,34 +1857,36 @@ export class SubagentRuntime {
       return run();
     } finally {
       this.#transitionDepth -= 1;
-      if (this.#transitionDepth === 0) {
-        this.#flushCompletions();
-        this.#flushChildrenSettled();
-      }
+      if (this.#transitionDepth === 0) this.#flushChildrenSettled();
     }
   }
 
-  #planBatch(batch: unknown, options: TaskOptions): { entries: PlannedEntry[]; snapshot: InheritedContext | null } {
+  /**
+   * Validate one batch description. Creation is minimal: one optional shared
+   * context and one or more members, each with a goal and an optional display
+   * label. The old task-batch fields are not aliases; an unknown field is an
+   * error, so a caller cannot half-migrate.
+   */
+  #planBatch(batch: unknown, options: TaskOptions): { members: PlannedEntry[]; snapshot: InheritedContext | null; context: string | null } {
     if (!isPlainObject(batch)) {
-      throw new SubagentError("invalid_batch", "task expects an object with a tasks array.");
+      throw new SubagentError("invalid_batch", "subagent_create expects an object with a non-empty agents array.");
     }
     for (const key of Object.keys(batch)) {
       if (!BATCH_FIELDS.has(key)) {
         throw new SubagentError("invalid_batch", `Unknown batch field ${describe(key)}.`);
       }
     }
-    if (!Array.isArray(batch.tasks) || batch.tasks.length === 0) {
-      throw new SubagentError("invalid_batch", "tasks must be a non-empty array.");
+    if (!Array.isArray(batch.agents) || batch.agents.length === 0) {
+      throw new SubagentError("invalid_batch", "agents must be a non-empty array.");
     }
-
     const rawContext = batch.context;
-    if (rawContext !== undefined && typeof rawContext !== "string") {
+    if (rawContext !== undefined && rawContext !== null && typeof rawContext !== "string") {
       throw new SubagentError("invalid_batch", "context must be a string when provided.");
     }
-    const context = rawContext ?? null;
-    const entries = batch.tasks.map((raw, index) => this.#planTask(raw, index, context));
+    const context = typeof rawContext === "string" ? rawContext : null;
+    const members = batch.agents.map((raw, index) => this.#planMember(raw, index));
 
-    if (entries.some((entry) => entry.spec.inheritContext)) {
+    if (members.some((member) => member.inheritContext)) {
       const allowInherited = options.allowInherited ?? this.#allowInherited;
       if (!allowInherited) {
         throw new SubagentError(
@@ -1539,21 +1907,21 @@ export class SubagentRuntime {
       if (!isPlainObject(snapshot)) {
         throw new SubagentError("inherited_snapshot_failed", "The inherited-context snapshot function returned no snapshot.");
       }
-      return { entries, snapshot };
+      return { members, snapshot, context };
     }
 
-    return { entries, snapshot: null };
+    return { members, snapshot: null, context };
   }
 
-  #planTask(raw: unknown, index: number, context: string | null): PlannedEntry {
-    const where = `tasks[${index}]`;
+  #planMember(raw: unknown, index: number): PlannedEntry {
+    const where = `agents[${index}]`;
     const reject = (message: string, detail: Record<string, unknown> = {}): never => {
       throw new SubagentError("invalid_task", message, { index, ...detail });
     };
 
     if (!isPlainObject(raw)) throw new SubagentError("invalid_task", `${where} must be an object.`, { index });
     for (const key of Object.keys(raw)) {
-      if (!TASK_FIELDS.has(key)) reject(`${where} has unknown field ${describe(key)}.`, { field: key });
+      if (!MEMBER_FIELDS.has(key)) reject(`${where} has unknown field ${describe(key)}.`, { field: key });
     }
     if (raw.inheritContext !== undefined && typeof raw.inheritContext !== "boolean") {
       reject(`${where}.inheritContext must be a boolean when provided.`, { field: "inheritContext" });
@@ -1561,27 +1929,20 @@ export class SubagentRuntime {
 
     let name: string | null = null;
     const rawName = raw.name;
-    if (rawName !== undefined) {
+    if (rawName !== undefined && rawName !== null) {
       if (typeof rawName !== "string") throw new SubagentError("invalid_task", `${where}.name must be a non-empty string.`, { index, field: "name" });
       const trimmedName = rawName.trim();
       if (trimmedName === "") reject(`${where}.name must be a non-empty string.`, { field: "name" });
       name = trimmedName;
     }
-    const rawTask = raw.task;
-    if (typeof rawTask !== "string") throw new SubagentError("invalid_task", `${where}.task must be a non-empty string.`, { index, field: "task" });
-    const task = rawTask.trim();
-    if (task === "") reject(`${where}.task must be a non-empty string.`, { field: "task" });
+    const rawGoal = raw.goal;
+    if (typeof rawGoal !== "string") {
+      throw new SubagentError("invalid_task", `${where}.goal must be a non-empty string.`, { index, field: "goal" });
+    }
+    const goal = rawGoal.trim();
+    if (goal === "") reject(`${where}.goal must be a non-empty string.`, { field: "goal" });
 
-    return {
-      index,
-      spec: {
-        name,
-        task,
-        context,
-        inheritContext: raw.inheritContext === true,
-        inheritedContext: null,
-      },
-    };
+    return { index, name, goal, inheritContext: raw.inheritContext === true, inheritedContext: null };
   }
 
   #start(job: Job): void {
@@ -1637,12 +1998,20 @@ export class SubagentRuntime {
     const pending = agent === undefined ? [] : agent.pending.splice(0);
     const budget = job.budget;
     if (budget === null) throw stateError(`Job ${job.jobId} has no Budget.`);
+    if (agent === undefined) throw stateError(`Job ${job.jobId} has no Actor.`);
     return {
       agentId: job.agentId,
+      address: formatAddress(this.session, job.agentId),
       jobId: job.jobId,
       index: job.index,
-      parentAgentId: agent?.parentAgentId ?? null,
-      depth: agent?.depth ?? null,
+      parentAgentId: agent.parentAgentId,
+      parentAddress: agent.parentAgentId === null ? null : formatAddress(this.session, agent.parentAgentId),
+      depth: agent.depth,
+      batch: agent.batch,
+      group: formatGroupAddress(this.session, agent.batch),
+      goal: agent.goal,
+      context: agent.context,
+      roster: agent.roster,
       spec: job.spec,
       origin: job.origin,
       budget,
@@ -1719,6 +2088,7 @@ export class SubagentRuntime {
 
     // Set before calling the hook: reentrant stop or finalization cannot change this outcome.
     job.status = "finalizing";
+    job.waitingSince = null;
     const finalizeJob = this.#finalizeJob;
     if (finalizeJob === null) {
       this.#end(job, outcome);
@@ -1771,6 +2141,7 @@ export class SubagentRuntime {
       const budget = job.budget;
       if (budget === null) throw stateError(`Job ${job.jobId} has no Budget.`);
       budget.pauseActive();
+      if (job.waitingSince === null) job.waitingSince = this.#now();
       this.#watchBudget(job);
     });
   }
@@ -1788,6 +2159,7 @@ export class SubagentRuntime {
       if (job.status !== "running") throw this.#resumeRefusal(job);
       const budget = job.budget;
       if (budget === null) throw stateError(`Job ${job.jobId} has no Budget.`);
+      job.waitingSince = null;
       const started = budget.startActive();
       if (!started.ok) {
         if (started.terminal === null) {
@@ -1870,14 +2242,13 @@ export class SubagentRuntime {
         job.historyError = terminalInfo.historyError;
       }
       this.#handles.delete(job.jobId);
+      job.waitingSince = null;
       this.#emitEnd(job);
       this.#settle(job);
     });
-    // The notification is the only thing a terminal transition sends outwards;
-    // it is attempted after the terminal event of this transition was emitted.
-    this.#queueCompletion(job);
-    // The parent wake is queued after its child's terminal notice, so a notice
-    // enqueued by the synchronous delivery attempt always precedes the wake.
+    // A settled Job never synthesizes a model-facing completion message: the
+    // durable outcome lives in the job-end event, the views and the record. The
+    // parent wake stays internal and cannot carry a collaborator result.
     this.#queueChildrenSettled(job);
   }
 
@@ -1918,152 +2289,53 @@ export class SubagentRuntime {
     this.#refreshAgent(job.agentId);
   }
 
-  /**
-   * Notify the Job's creator exactly once that it became terminal.
-   *
-   * The envelope carries bounded final output from this Job, not actor history.
-   * Delivery is best effort: one attempt, no retry, no acknowledgement, and a
-   * failure here can never change the Job's outcome.
-   */
-  #queueCompletion(job: Job): void {
-    if (job.completionQueued === true) return;
-    job.completionQueued = true;
-    this.#completions.push(job);
-    if (this.#transitionDepth > 0) return;
-    this.#flushCompletions();
-  }
-
-  #notifyTerminal(job: Job): void {
-    // Completed, cancelled and failed rounds all publish one typed terminal
-    // event. The delivery coordinator hands it to a live parent Job or appends
-    // it to retained history; the runtime never suppresses a normal completion.
-    if (!TERMINAL_STATUSES.has(job.status)) return;
-    const sourceAgent = this.#agents.get(job.agentId);
-    // Host notifications follow topology, not whoever revived this round. A
-    // peer that wakes an idle agent must not steal its terminal notice from
-    // the direct parent. `createdBy` stays the audit field on the Job.
-    const creator = sourceAgent?.parentAgentId ?? MAIN_ACTOR_ID;
-    if (typeof creator !== "string") return;
-    const round = Math.max(1, (sourceAgent?.jobIds.indexOf(job.jobId) ?? 0) + 1);
-    let history: JobHistoryPaths | null = null;
-    try {
-      history = this.#historyPaths?.(job.jobId) ?? null;
-    } catch {
-      // A derived view may be unavailable. It must not suppress the one terminal
-      // notice or reject the already-settled execution's completion chain.
-    }
-    let resultPath: string | null = null;
-    try { resultPath = this.#resultPath?.(job.jobId) ?? null; } catch { /* Keep the terminal notice if its artifact is unavailable. */ }
-    const envelope = terminalNotification({
-      agentId: job.agentId,
-      jobId: job.jobId,
-      round,
-      name: job.spec.name,
-      status: terminalStatus(job.status, job.jobId),
-      content: terminalResultContent(job.result, resultPath),
-      error: job.error ?? null,
-      history,
-    });
-    if (creator === MAIN_ACTOR_ID) {
-      if (this.#deliverToMain === null) return;
-      const deliverToMain = this.#deliverToMain;
-      this.#attempt(() => deliverToMain(envelope));
-      return;
-    }
-    const agent = this.#agents.get(creator);
-    if (agent === undefined || this.#deliverMessage === null) return;
-    const live = this.#liveJobOf(agent);
-    const targetJobId = live !== null && live.status === "running" ? live.jobId : null;
-    const deliverMessage = this.#deliverMessage;
-    this.#attempt(() => deliverMessage({ agentId: creator, jobId: targetJobId, message: envelope }));
-  }
-
   #attempt(run: () => unknown): void {
     try {
       const pending = run();
       if (isPromiseLike(pending)) pending.then(undefined, () => {});
     } catch {
-      // See #notifyTerminal: one attempt, never retried.
+      // One attempt, never retried.
     }
   }
 
   /**
-   * Admission for waking an idle agent: revival creates a Job, so it counts as
-   * an active child exactly like a new `task` entry. When it does not fit, the
-   * caller rejects the whole write instead of holding a deferred revival.
+   * Admission for waking an idle Actor: revival creates a Job and makes the
+   * Actor live again, so it is admitted exactly like a new member — the same
+   * three limits of its parent, and a batch counts once more when no member of
+   * it is live any more. When it does not fit, the caller rejects the whole
+   * write instead of holding a deferred revival.
    */
   #reviveRefusal(agent: Agent): SubagentError | null {
-    // A restored actor may sit deeper than the current limit. Its history stays
-    // readable, but reviving it would create a Job at an unconfigured depth.
-    const maxDepth = this.#config.subagent.maxDepth;
-    if (agent.depth > maxDepth) {
-      return new SubagentError(
-        "max_depth_exceeded",
-        `Agent ${agent.agentId} sits at depth ${agent.depth}, beyond the configured maximum depth ${maxDepth}; it cannot be revived.`,
-        { agentId: agent.agentId, depth: agent.depth, maxDepth },
-      );
-    }
-    const kind = this.#childKind(agent);
-    const limit = kind === "inherited"
-      ? this.#config.subagent.maxActiveInheritedChildren
-      : this.#config.subagent.maxActiveChildren;
-    const activeCounts = this.#activeChildren(agent.parentAgentId);
-    const activeChildren = kind === "inherited" ? activeCounts.inherited : activeCounts.fresh;
-    if (activeChildren + 1 <= limit) return null;
-    return new SubagentError(
-      "child_limit_exceeded",
-      `Agent ${agent.parentAgentId ?? "Main"} already has ${activeChildren} active ${kind} children; reviving ${agent.agentId} ` +
-        `would exceed ${limit}.`,
-      {
-        agentId: agent.agentId,
-        parentAgentId: agent.parentAgentId,
-        kind,
-        activeChildren,
-        requestedChildren: 1,
-        maxActiveChildren: limit,
-      },
-    );
+    const live = this.#liveChildren(agent.parentAgentId);
+    return this.#admissionRefusal({
+      parentAgentId: agent.parentAgentId,
+      depth: agent.depth,
+      requested: 1,
+      inherited: agent.kind === "inherited" ? 1 : 0,
+      newBatch: !live.batches.has(agent.batch),
+    });
   }
 
   /**
-   * Register the continuation Job for an idle agent that should wake.
+   * Register the continuation Job for an idle Actor that should wake.
    *
-   * A continuation has no task of its own; it carries the agent's original
-   * seed (the first Job's spec) so an actor that never started at all — a task
-   * cancelled before its SDK initialized, so no native session exists — can
-   * still be revived into its first session. The adapter uses the seed only
-   * when there is no retained conversation; a live session is never re-seeded
-   * and never re-runs the original task on its own.
+   * A continuation repeats no composition: the Actor's recorded goal, context,
+   * roster and retained conversation are the execution's context. An Actor that
+   * never started at all — its first Job was cancelled before the SDK
+   * initialized — still revives into its first session; the adapter uses the
+   * retained conversation when there is one and never re-runs the goal alone.
    */
   #scheduleContinuation(agent: Agent, createdBy: string): Job {
     const previousId = agent.jobIds[agent.jobIds.length - 1];
-    const seedId = agent.jobIds[0];
     const previous = previousId === undefined ? undefined : this.#jobs.get(previousId);
-    const seed = seedId === undefined ? null : (this.#jobs.get(seedId)?.spec ?? null);
     return this.#createJob(agent, {
-      spec: { kind: "continuation", name: agent.name, seed },
+      // Until the first native session exists, the original capture is the
+      // Actor's only execution identity. A retained session supersedes it in the adapter.
+      spec: { kind: "continuation", inheritedContext: previous?.spec.inheritedContext ?? null },
       origin: previous?.origin ?? null,
       createdBy,
       continuedFromJobId: previous?.jobId ?? null,
     });
-  }
-
-  #childKind(agent: Agent): "fresh" | "inherited" {
-    const seedId = agent.jobIds[0];
-    const seedSpec = seedId === undefined ? undefined : this.#jobs.get(seedId)?.spec;
-    return childKindOfSpec(seedSpec);
-  }
-
-  #activeChildren(parentAgentId: string | null): { fresh: number; inherited: number } {
-    let fresh = 0;
-    let inherited = 0;
-    for (const agent of this.#agents.values()) {
-      if (agent.parentAgentId === parentAgentId && this.#hasActiveJob(agent)) {
-        if (this.#childKind(agent) === "inherited") inherited += 1;
-        else fresh += 1;
-      }
-    }
-    return { fresh, inherited };
   }
 
   /** A Job occupies its actor until it is truly terminal, finalizing included. */
@@ -2085,8 +2357,8 @@ export class SubagentRuntime {
     agent.status = active ? "running" : "idle";
   }
 
-  #planMessage(input: { from?: unknown; to?: unknown; content?: unknown; external?: ExternalSender }): MessagePlan {
-    const { from, to, content } = input;
+  /** Message body validation shared by every write path. */
+  #messageBody(content: unknown): string {
     if (typeof content !== "string" || content.trim() === "") {
       throw new SubagentError("invalid_message", "A message body must be a non-empty string.");
     }
@@ -2097,51 +2369,116 @@ export class SubagentRuntime {
         { length: content.length },
       );
     }
-    const sender = canonicalActorId(from);
-    // Only the host sets `external`, and only for a frame that named another
-    // live session. It is the one way a sender outside this runtime is admitted,
-    // and it is Main-to-Main only: another session reaches this Main, nothing else.
-    const external = input.external;
-    if (sender === null) {
-      throw new SubagentError("unknown_sender", `${describe(from)} is not a sender registered in this runtime.`, {
-        from: typeof from === "string" ? from : null,
-      });
-    }
-    if (external !== undefined && sender !== MAIN_ACTOR_ID) {
-      throw new SubagentError("invalid_sender", "Only Main may send a cross-session message.", { actorId: sender });
-    }
-    if (external === undefined && sender !== MAIN_ACTOR_ID && !this.#agents.has(sender)) {
-      throw new SubagentError("unknown_sender", `${describe(from)} is not a sender registered in this runtime.`, {
-        from: typeof from === "string" ? from : null,
-      });
-    }
-    const recipient =
-      typeof to === "string" && to.trim().toLowerCase() === BROADCAST_TARGET ? BROADCAST_TARGET : canonicalActorId(to);
-    if (recipient === null || (recipient !== MAIN_ACTOR_ID && recipient !== BROADCAST_TARGET && !this.#agents.has(recipient))) {
-      throw new SubagentError("unknown_agent", `${describe(to)} is not a recipient registered in this runtime.`, {
-        to: typeof to === "string" ? to : null,
-      });
-    }
-    if (external !== undefined && recipient !== MAIN_ACTOR_ID) {
-      throw new SubagentError("invalid_target", "A cross-session message is delivered to the target session's Main only.", { actorId: recipient });
-    }
-    // Another session's Main is delivered to this Main, not to a local actor
-    // with the same id; the self-send rule applies to local traffic only.
-    if (external === undefined && recipient === sender) {
-      throw new SubagentError("invalid_target", "An actor cannot send a message to itself.", { actorId: sender });
-    }
-    return { from: sender, to: recipient, content, ...(external === undefined ? {} : { external }) };
+    return content;
   }
 
-  /** The typed envelope of one explicit write; `type` and `from` are host-owned. */
-  #messageEnvelope(plan: MessagePlan): MessageEnvelope {
-    const envelope: MessageEnvelope = { type: "message", from: plan.from, content: plan.content,
-      ...(plan.external === undefined ? {} : { external: plan.external }) };
+  /**
+   * Canonicalize a local Actor identity: a local segment or a full address of
+   * this session. `Main` is accepted as the display spelling of `main`, never
+   * as a second key.
+   */
+  #localKey(value: unknown): string | null {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    if (trimmed === "") return null;
+    const address = parseAddress(trimmed);
+    if (address !== null) {
+      if (address.session !== this.session || address.kind !== "actor") return null;
+      return address.key;
+    }
+    return parseActorKey(trimmed)?.key ?? null;
+  }
+
+  /**
+   * The sender of one write. A local frame names a local key; an external frame
+   * arrives with a host-validated descriptor whose `sender` is the remote
+   * `<session>:main` address, and is delivered to this Main as that sender.
+   */
+  #sender(from: unknown, external: ExternalSender | undefined): { key: string; address: string } {
+    if (external !== undefined) {
+      if (!isPlainObject(external)
+        || typeof external.sessionId !== "string" || external.sessionId === ""
+        || typeof external.sender !== "string" || typeof external.replyTo !== "string" || external.replyTo === "") {
+        throw new SubagentError("unknown_sender", "The external sender descriptor is malformed.");
+      }
+      const remote = parseAddress(external.sender);
+      if (remote === null || remote.kind !== "actor" || remote.key !== MAIN_ACTOR || remote.session === this.session) {
+        throw new SubagentError("invalid_sender", "Only another live session's Main may send a cross-session message.", {
+          actorId: typeof from === "string" ? from : null,
+        });
+      }
+      if (from !== undefined && from !== external.sender) {
+        throw new SubagentError("invalid_sender", "The declared sender does not match the resolved external session.", {
+          actorId: typeof from === "string" ? from : null,
+        });
+      }
+      return { key: MAIN_ACTOR, address: external.sender };
+    }
+    const key = this.#localKey(from);
+    if (key === null) {
+      throw new SubagentError("unknown_sender", `${describe(from)} is not a sender registered in this runtime.`, {
+        from: typeof from === "string" ? from : null,
+      });
+    }
+    if (key !== MAIN_ACTOR && !this.#agents.has(key)) {
+      throw new SubagentError("unknown_sender", `${describe(from)} is not a sender registered in this runtime.`, {
+        from: typeof from === "string" ? from : null,
+      });
+    }
+    return { key, address: formatAddress(this.session, key) };
+  }
+
+  /**
+   * Resolve one full logical target into its recipients. A foreign session is
+   * refused here: only the host's cross-session path may write another session,
+   * and only to its Main. Broadcast recipients never include the sender.
+   */
+  #target(value: unknown, senderKey?: string): ResolvedTarget {
+    const address = parseAddress(value);
+    if (address === null) {
+      throw new SubagentError("invalid_target", `${describe(value)} is not a logical address of this session.`, {
+        to: typeof value === "string" ? value : null,
+      });
+    }
+    if (address.session !== this.session) {
+      throw new SubagentError("cross_session_target", `The address ${address.address} belongs to another session; only Main reaches another Main.`, {
+        to: address.address,
+        session: address.session,
+      });
+    }
+    if (address.kind === "actor") {
+      if (address.key !== MAIN_ACTOR && !this.#agents.has(address.key)) {
+        throw new SubagentError("unknown_agent", `No subagent registered as ${address.address}.`, { to: address.address });
+      }
+      return { kind: address.key === MAIN_ACTOR ? "main" : "actor", address: address.address, key: address.key };
+    }
+    const keys = address.kind === "group"
+      ? [...this.#agents.values()]
+          .filter((agent) => agent.batch === address.batch)
+          .map((agent) => agent.agentId)
+      : [...this.#agents.values()]
+          .filter((agent) => agent.parentAgentId === (address.actor.key === MAIN_ACTOR ? null : address.actor.key))
+          .map((agent) => agent.agentId);
+    return {
+      kind: "broadcast",
+      address: address.address,
+      keys: keys.filter((key) => key !== senderKey),
+    };
+  }
+
+  /** The typed envelope of one explicit write; `type` and the sender are host-owned. */
+  #messageEnvelope(input: { fromKey: string; fromAddress: string; content: string; external?: ExternalSender }): MessageEnvelope {
+    const envelope: MessageEnvelope = {
+      type: "message",
+      from: input.fromAddress,
+      content: input.content,
+      ...(input.external === undefined ? {} : { external: input.external }),
+    };
     // A Subagent message belongs to its sender's current execution round. The
-    // host can therefore correlate it with that round's terminal notice without
-    // asking the caller to supply transport or run identity.
-    if (plan.from !== MAIN_ACTOR_ID) {
-      const source = this.#agents.get(plan.from);
+    // host can therefore correlate it with that round without asking the caller
+    // to supply transport or run identity.
+    if (input.fromKey !== MAIN_ACTOR) {
+      const source = this.#agents.get(input.fromKey);
       const live = source === undefined ? null : this.#liveJobOf(source);
       if (live !== null) {
         envelope.jobId = live.jobId;
@@ -2151,7 +2488,7 @@ export class SubagentRuntime {
     return envelope;
   }
 
-  async #sendToMain(plan: MessagePlan): Promise<MessageReceipt> {
+  async #sendToMain(plan: SendPlan): Promise<MessageReceipt> {
     if (this.#deliverToMain === null) {
       throw new SubagentError("delivery_unavailable", "This runtime cannot deliver messages to Main.");
     }
@@ -2160,15 +2497,15 @@ export class SubagentRuntime {
     } catch (error) {
       throw new SubagentError("delivery_failed", `Could not deliver the message to Main: ${errorMessage(error)}`);
     }
-    return { ok: true, to: MAIN_ACTOR_ID, jobId: null };
+    return { ok: true, to: plan.to, jobId: null };
   }
 
   /**
-   * Hand over to a live adapter, buffer startup input, or explicitly revive an idle actor.
+   * Hand over to a live adapter, buffer startup input, or explicitly revive an idle Actor.
    */
-  async #sendToAgent(plan: MessagePlan): Promise<MessageReceipt> {
-    const agent = this.#agents.get(plan.to);
-    if (agent === undefined) throw new SubagentError("unknown_agent", `No subagent registered as ${describe(plan.to)}.`);
+  async #sendToAgent(fromKey: string, fromAddress: string, toKey: string, toAddress: string, content: string): Promise<MessageReceipt> {
+    const agent = this.#agents.get(toKey);
+    if (agent === undefined) throw new SubagentError("unknown_agent", `No subagent registered as ${toAddress}.`);
     // At most two transitions: the first hand-over, and — if the run closed
     // while that was in flight — one fresh decision against the successor
     // state. Never a third: parking or retrying is the caller's business.
@@ -2176,14 +2513,14 @@ export class SubagentRuntime {
       const live = this.#liveJobOf(agent);
 
       if (live === null) {
-        // No live Job: the agent is idle, so this write revives it. The
+        // No live Job: the Actor is idle, so this write revives it. The
         // admission check and the new Job happen in the same synchronous step.
         const refusal = this.#reviveRefusal(agent);
         if (refusal !== null) throw refusal;
-        agent.pending.push(this.#messageEnvelope(plan));
-        const revived = this.#scheduleContinuation(agent, plan.from);
+        agent.pending.push(this.#messageEnvelope({ fromKey, fromAddress, content }));
+        const revived = this.#scheduleContinuation(agent, fromKey);
         this.#start(revived);
-        return this.#receipt(plan, revived.jobId);
+        return { ok: true, to: toAddress, jobId: revived.jobId };
       }
       if (live.status === "stopping") {
         throw this.#busyError(agent, "stopping");
@@ -2193,60 +2530,56 @@ export class SubagentRuntime {
       }
       if (!this.#handles.has(live.jobId)) {
         // A registered sibling has not entered its adapter yet; buffer its initial input.
-        agent.pending.push(this.#messageEnvelope(plan));
-        return this.#receipt(plan, live.jobId);
+        agent.pending.push(this.#messageEnvelope({ fromKey, fromAddress, content }));
+        return { ok: true, to: toAddress, jobId: live.jobId };
       }
 
-      if (await this.#handToJob(live, plan)) {
-        return this.#receipt(plan, live.jobId);
+      if (await this.#handToJob(live, { fromKey, fromAddress, content })) {
+        return { ok: true, to: toAddress, jobId: live.jobId };
       }
       // Refused: the native run closed underneath the hand-over. Loop once
-      // more to revive the now-idle agent or to report the successor state.
+      // more to revive the now-idle Actor or to report the successor state.
     }
 
     throw this.#busyError(agent, "running");
   }
 
   /**
-   * Broadcast one write to the sender's direct children.
+   * Broadcast one write to a resolved selector.
    *
-   * The recipient set is a snapshot of actor ids whose `parentAgentId` is the
-   * sender — no grandchildren, no siblings, no ancestors and never the sender
-   * itself. Each recipient gets the same single-target send (so idle children
-   * are revived under the ordinary admission rules) and its own explicit
-   * outcome; partial fanout is reported, never hidden, and never retried.
+   * The recipient set is a snapshot taken by {@link #target}: a batch's members
+   * or one Actor's direct children, never the sender. An empty set after that
+   * filter is an ordinary zero-recipient receipt, not an error. Each recipient
+   * gets the same single-target send (so idle children are revived under the
+   * ordinary admission rules) and its own explicit outcome; partial fanout is
+   * reported, never hidden, and never retried.
    */
-  async #broadcast(plan: MessagePlan): Promise<BroadcastReceipt> {
-    // Root-level children are parented to `null`, so the reserved Main actor
-    // resolves to that same key here and nowhere else.
-    const parentKey = plan.from === MAIN_ACTOR_ID ? null : plan.from;
-    const recipients: string[] = [];
-    for (const agent of this.#agents.values()) {
-      if (agent.parentAgentId === parentKey) recipients.push(agent.agentId);
-    }
+  async #broadcast(fromKey: string, fromAddress: string, target: ResolvedTarget, content: string): Promise<BroadcastReceipt> {
+    const keys = target.kind === "broadcast" ? target.keys : [];
     const sent: BroadcastReceipt["sent"] = [];
     const errors: BroadcastReceipt["errors"] = [];
-    for (const agentId of recipients) {
+    for (const agentId of keys) {
+      const to = formatAddress(this.session, agentId);
       try {
-        const receipt = await this.#sendToAgent({ from: plan.from, to: agentId, content: plan.content });
-        sent.push({ to: agentId, jobId: receipt.jobId });
+        const receipt = await this.#sendToAgent(fromKey, fromAddress, agentId, to, content);
+        sent.push({ to, jobId: receipt.jobId });
       } catch (error) {
         const info = errorInfo(error, "delivery_failed");
-        errors.push({ to: agentId, code: info.code, message: info.message });
+        errors.push({ to, code: info.code, message: info.message });
       }
     }
-    return { ok: errors.length === 0, to: BROADCAST_TARGET, sent, errors };
+    return { ok: errors.length === 0, to: target.address, sent, errors };
   }
 
   /** Hand one message to a live Job; the adapter owns it from there. */
-  async #handToJob(job: Job, plan: MessagePlan): Promise<boolean> {
+  async #handToJob(job: Job, message: { fromKey: string; fromAddress: string; content: string }): Promise<boolean> {
     if (this.#deliverMessage === null) return false;
     let outcome;
     try {
       outcome = await this.#deliverMessage({
         agentId: job.agentId,
         jobId: job.jobId,
-        message: this.#messageEnvelope(plan),
+        message: this.#messageEnvelope(message),
       });
     } catch (error) {
       // A thrown SDK handoff error does not prove the message stayed outside
@@ -2256,14 +2589,10 @@ export class SubagentRuntime {
     return outcome?.accepted === true;
   }
 
-  #receipt(plan: MessagePlan, jobId: string | null): MessageReceipt {
-    return { ok: true, to: plan.to, jobId };
-  }
-
   #busyError(agent: Agent, status: "stopping" | "finalizing" | "running"): SubagentError {
     const reason =
       status === "stopping"
-        ? "is stopping its current run; its terminal result is published when that run exits"
+        ? "is stopping its current run; its outcome is published when that run exits"
         : "is finishing its current run";
     return new SubagentError("agent_busy", `Agent ${agent.agentId} ${reason}; send the message again when it is idle.`, {
       agentId: agent.agentId,
@@ -2280,27 +2609,6 @@ export class SubagentRuntime {
     return null;
   }
 
-  #allocateAgentId(parentAgentId: string | null): string {
-    const prefix = parentAgentId ?? "sub";
-    let sequence = this.#childSequences.get(prefix) ?? 0;
-    let candidate: string;
-    do {
-      sequence += 1;
-      candidate = `${prefix}_${String(sequence).padStart(2, "0")}`;
-    } while (this.#agents.has(candidate) || this.#isIdTaken?.(candidate));
-    this.#childSequences.set(prefix, sequence);
-    this.#onIdAllocated?.(candidate);
-    return candidate;
-  }
-
-  /** Keep generated ids ahead of every restored actor. */
-  #noteSequence(actor: Agent): void {
-    const prefix = actor.parentAgentId ?? "sub";
-    if (!actor.agentId.startsWith(`${prefix}_`)) return;
-    const sequence = Number.parseInt(actor.agentId.slice(prefix.length + 1), 10);
-    if (Number.isSafeInteger(sequence) && sequence > (this.#childSequences.get(prefix) ?? 0)) this.#childSequences.set(prefix, sequence);
-  }
-
   #requireJob(jobId: unknown): Job {
     const job = typeof jobId === "string" ? this.#jobs.get(jobId) : null;
     if (!job) throw new SubagentError("unknown_job", `No job registered as ${describe(jobId)}.`);
@@ -2313,12 +2621,14 @@ export class SubagentRuntime {
   }
 
   #jobView(job: Job): JobView {
+    const agent = this.#agents.get(job.agentId);
     const view: JobView = {
       jobId: job.jobId,
       agentId: job.agentId,
-      name: job.spec.name,
-      parentAgentId: this.#agents.get(job.agentId)?.parentAgentId ?? null,
-      depth: this.#agents.get(job.agentId)?.depth ?? null,
+      address: formatAddress(this.session, job.agentId),
+      name: agent?.name ?? null,
+      parentAgentId: agent?.parentAgentId ?? null,
+      depth: agent?.depth ?? null,
       status: job.status,
       continuedFromJobId: job.continuedFromJobId,
     };

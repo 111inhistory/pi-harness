@@ -1,22 +1,22 @@
 /**
- * `/subagent` command: the user-facing read/stop entry for the current root.
+ * `/subagent` command: the user-facing read/control entry for the current root.
  *
  * The command owns argument parsing, service resolution and error reporting.
  * Rendering lives in `status-view.ts`; state changes go through `RootService`
- * and `Runtime` only. It never sends a message to a subagent or a peer session:
+ * only. It never sends a message to a subagent or a peer session:
  * `sessions connect` only appends local context to the current conversation.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { RootService } from "./root-service.ts";
 import type { SessionConnect } from "./session-peers.ts";
-import { SubagentError, type StopResult } from "./runtime.ts";
+import { SubagentError, type SignalAction, type SignalResult } from "./runtime.ts";
 import { renderSubagentList } from "./status-view.ts";
-import { sessionMainAddress, type LiveSession } from "./session-directory.ts";
+import { type LiveSession } from "./session-directory.ts";
+import { formatAddress, MAIN_ACTOR } from "./address.ts";
 
 export type SubagentCommand =
   | { readonly verb: "list"; readonly all: boolean; readonly id: string | null }
-  | { readonly verb: "stop"; readonly actorId: string }
-  | { readonly verb: "stopAll" }
+  | { readonly verb: SignalAction; readonly target: string }
   | { readonly verb: "sessions" }
   | { readonly verb: "sessionsConnect"; readonly target: string };
 
@@ -38,7 +38,7 @@ export function parseCommand(raw: string): SubagentCommand {
       if (token === "--id") {
         const value = rest[index + 1];
         if (value === undefined || value.startsWith("-")) {
-          throw new SubagentError("invalid_command_args", "list --id requires an actor id.", { field: "id" });
+          throw new SubagentError("invalid_command_args", "list --id requires an agent id.", { field: "id" });
         }
         id = value;
         index += 1;
@@ -62,12 +62,12 @@ export function parseCommand(raw: string): SubagentCommand {
     return { verb: "sessionsConnect", target };
   }
 
-  if (verb === "stop") {
-    if (rest.length === 1 && rest[0] === "--all") return { verb: "stopAll" };
+  if (verb === "interrupt" || verb === "stop") {
     if (rest.length !== 1 || rest[0]!.startsWith("-")) {
-      throw new SubagentError("invalid_command_args", "stop requires one actor id or --all.", { field: "stop" });
+      throw new SubagentError("invalid_command_args",
+        `${verb} requires one target: an agent id, a full logical address, main or children.`, { field: verb });
     }
-    return { verb: "stop", actorId: rest[0]! };
+    return { verb, target: rest[0]! };
   }
 
   throw new SubagentError("invalid_command_args", `Unknown subcommand: ${verb}.`, { field: "subcommand" });
@@ -85,40 +85,31 @@ function report(ctx: ExtensionContext, error: unknown): void {
   ctx.ui.notify(messageOf(error), "error");
 }
 
-function describeStop(result: StopResult): string {
-  if (result.ok) {
-    if (result.status === "idle" || result.status === "stopped") return `${result.id} has no running job.`;
-    return `Stop requested: ${result.id} (${result.status})`;
-  }
-  switch (result.reason) {
-    case "already_finished": return `${result.id} already finished.`;
-    case "stopping": return `${result.id} is already stopping.`;
-    case "finalizing": return `${result.id} is finalizing.`;
-    case "budget_exceeded": return `${result.id} was stopped by its budget.`;
-    default: return `Stop refused: ${result.id} (${result.status}).`;
+function refusal(target: { readonly address: string; readonly status: string; readonly reason?: string }): string {
+  switch (target.reason) {
+    case "already_finished": return `${target.address} already finished.`;
+    case "stopping": return `${target.address} is already stopping.`;
+    case "finalizing": return `${target.address} is finalizing.`;
+    case "budget_exceeded": return `${target.address} was stopped by its budget.`;
+    case "interrupt_unsupported": return `${target.address} cannot be interrupted by this execution; nothing changed.`;
+    default: return `Signal refused: ${target.address} (${target.status}).`;
   }
 }
 
-/** Request cancellation for every running Job and summarize immediately. */
-function stopAll(service: RootService): string {
-  const running = service.runtime.jobs().jobs.filter((job) => job.status === "running");
-  if (running.length === 0) return "No running jobs.";
-  const outcomes = running.map((job) => {
-    try {
-      const result = service.runtime.cancelJob(job.jobId);
-      return { agentId: job.agentId, ok: result.ok, reason: result.reason, failure: null as string | null };
-    } catch (error) {
-      return { agentId: job.agentId, ok: false, reason: undefined, failure: messageOf(error) };
-    }
-  });
-  const requested = outcomes.filter((outcome) => outcome.ok).length;
-  const failed = outcomes.filter((outcome) => outcome.failure !== null).length;
-  const refused = outcomes.length - requested - failed;
-  const lines = outcomes.map((outcome) => outcome.failure !== null
-    ? `  failed     ${outcome.agentId}: ${outcome.failure}`
-    : `  ${outcome.ok ? "requested" : (outcome.reason ?? "refused")}  ${outcome.agentId}`);
+function describeSignal(result: SignalResult): string {
+  const [only] = result.targets;
+  if (result.targets.length === 1 && only !== undefined) {
+    if (!only.ok) return refusal(only);
+    if (only.status === "idle") return `${only.address} has no running job.`;
+    if (result.action === "interrupt") return `Interrupted: ${only.address} (${only.status})`;
+    return `Stop requested: ${only.address} (${only.status})`;
+  }
+  const ok = result.targets.filter((target) => target.ok).length;
+  const lines = result.targets.map((target) => target.ok
+    ? `  ${result.action === "interrupt" ? "interrupted" : "requested"}  ${target.address} (${target.status})`
+    : `  refused    ${refusal(target)}`);
   return [
-    `Stop results for ${outcomes.length} job(s): ${requested} requested, ${refused} refused, ${failed} failed`,
+    `Signal ${result.action} for ${result.targets.length} agent(s): ${ok} accepted, ${result.targets.length - ok} refused`,
     ...lines,
   ].join("\n");
 }
@@ -131,7 +122,7 @@ async function showList(
   const filter: { all?: boolean; id?: string } = {};
   if (command.all) filter.all = true;
   if (command.id !== null) filter.id = command.id;
-  const tree = await service.list(filter, "Main");
+  const tree = await service.list(filter, MAIN_ACTOR);
   // The listing may have taken an await. Re-check ownership on the same
   // service before reading anything else: a retired root must not be read.
   try {
@@ -141,23 +132,19 @@ async function showList(
     return;
   }
   const actors = service.runtime.list().agents;
-  const jobs = service.runtime.jobs().jobs;
-  const roles = new Map(actors.map((agent) => [agent.agentId, service.actors.get(agent.agentId)?.roleId ?? null]));
   const text = renderSubagentList({
     root: service.sessionId.slice(0, 8),
     tree,
     actors,
-    jobs,
-    roles,
-    historyDir: tree?.historyDir ?? null,
+    models: new Map(actors.map(actor => [actor.agentId, service.actors.get(actor.agentId)?.modelRef?.id ?? "-"])),
   });
   ctx.ui.notify(text, "info");
 }
 
 /**
- * Every live session under this socket root, with the managed socket address of
- * its Main. A user pastes that address into another session to let its agents
- * reach this one; the model never receives this catalog on its own.
+ * Every live session under this socket root, with the logical Main address the
+ * model writes to. A user pastes that address into another session to let its
+ * agents reach this one; the model never receives this catalog on its own.
  */
 function renderSessions(sessions: readonly LiveSession[], currentSessionId: string): string {
   const lines = [`Live sessions (${sessions.length}):`];
@@ -167,7 +154,7 @@ function renderSessions(sessions: readonly LiveSession[], currentSessionId: stri
     const name = session.name === null ? "(unnamed)" : session.name;
     lines.push(`${marker} ${session.uid}  ${name}  pid ${session.pid}  ${session.cwd}`);
     lines.push(`    session ${session.sessionId}`);
-    lines.push(`    main: ${sessionMainAddress(session)}`);
+    lines.push(`    main: ${formatAddress(session.uid, MAIN_ACTOR)}`);
   }
   return lines.join("\n");
 }
@@ -207,20 +194,16 @@ async function run(raw: string, ctx: ExtensionContext, current: (ctx: ExtensionC
       await showList(service, command, ctx);
       return;
     }
-    if (command.verb === "stop") {
-      ctx.ui.notify(describeStop(service.stop(command.actorId)), "info");
+    if (command.verb === "interrupt" || command.verb === "stop") {
+      ctx.ui.notify(describeSignal(await service.signal(command.target, command.verb, MAIN_ACTOR)), "info");
       return;
     }
     if (command.verb === "sessions") {
       ctx.ui.notify(renderSessions(await service.listSessions(), service.sessionId), "info");
       return;
     }
-    if (command.verb === "sessionsConnect") {
-      const result = await service.connectSession(command.target);
-      ctx.ui.notify(renderConnect(result), "info");
-      return;
-    }
-    ctx.ui.notify(stopAll(service), "info");
+    const result = await service.connectSession(command.target);
+    ctx.ui.notify(renderConnect(result), "info");
   } catch (error) {
     report(ctx, error);
   }
@@ -233,9 +216,15 @@ export function installSubagentCommand(
   sessionCandidates: () => Promise<readonly LiveSession[]>,
 ): void {
   api.registerCommand("subagent", {
-    description: "Inspect subagents of the current root, stop them, list live sessions, and connect one",
+    description: "Inspect agent activity, interrupt or stop agents, list live sessions, and connect one",
     getArgumentCompletions: async (prefix) => {
       const text = prefix.trimStart();
+      const flag = /^list\s+(--\S*)$/.exec(text);
+      if (flag !== null) {
+        return "--all".startsWith(flag[1]!)
+          ? [{ value: "list --all", label: "--all", description: "Expand the whole tree" }]
+          : null;
+      }
       const action = /^sessions\s+(\S*)$/.exec(text);
       if (action !== null) {
         return "connect".startsWith(action[1]!)
@@ -257,9 +246,22 @@ export function installSubagentCommand(
           }));
         return items.length === 0 ? null : items;
       }
+      const targetPrefix = /^(interrupt|stop)\s+(\S*)$/.exec(text);
+      if (targetPrefix !== null) {
+        const fragment = targetPrefix[2]!.toLowerCase();
+        const items = ["children", "main"]
+          .filter((value) => value.startsWith(fragment))
+          .map((value) => ({
+            value: `${targetPrefix[1]} ${value}`,
+            label: value,
+            description: value === "children" ? "Every direct child of Main" : "Main itself (has no controllable Job)",
+          }));
+        return items.length === 0 ? null : items;
+      }
       const items = [
-        { value: "list", label: "list", description: "Show the subagent tree" },
-        { value: "stop", label: "stop", description: "Stop one actor or --all" },
+        { value: "list", label: "list", description: "Show the agent tree with live activity" },
+        { value: "interrupt", label: "interrupt", description: "Cancel one agent's current native run, keep its Job" },
+        { value: "stop", label: "stop", description: "End one agent's current Job, keep the Agent" },
         { value: "sessions", label: "sessions", description: "List live sessions and their cross-session addresses" },
       ].filter((item) => item.value.startsWith(prefix.trim()));
       return items.length === 0 ? null : items;

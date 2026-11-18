@@ -38,25 +38,25 @@ import {
   type ManagedWriteTool,
 } from "./message-write.ts";
 import type { ManagedWriteHost } from "./managed-send.ts";
+import { MAIN_ACTOR } from "./address.ts";
 import { droppedInheritedTools, inheritedToolsWarning } from "./tool-policy.ts";
-import type { CreatedAgents, DetailedAgentItem, StopResult } from "./runtime.ts";
+import type { CreatedBatch, DetailedAgentItem, SignalResult } from "./runtime.ts";
 
-/** Resolved active-child caps reported to the model in the prompt section. */
+/** Resolved admission caps reported to the model in the prompt section. */
 export interface ChildCapacity {
-  readonly maxActiveChildren: number;
-  readonly maxActiveInheritedChildren: number;
+  readonly maxActiveBatches: number;
+  readonly maxActiveSubagents: number;
+  readonly maxActiveInheritedSubagents: number;
 }
 
 /** The caller-facing scope of one installed surface. */
 export interface SubagentSurfaceScope {
-  /** The surface owner: `Main` for the root session, else the child actor's own id. */
+  /** The surface owner: canonical `main` for the root, else the child actor's own key. */
   readonly callerId: string;
   /** Nesting depth of the surface owner below Main. */
   readonly depth: number;
   /** Whether this surface's creator admission accepts Inherited children. */
   readonly allowInherited: boolean;
-  /** Working directory of the surface owner. */
-  readonly cwd: string;
   /** The root's resolved maximum nesting depth; a child at it is a leaf. */
   readonly maxDepth: number;
   /**
@@ -95,9 +95,10 @@ export interface SubagentSurfaceHost extends ManagedWriteHost {
    * root surface's own registration was resolved earlier.
    */
   readonly maxDepth: number;
-  create(batch: unknown, options: SubagentSurfaceCreateOptions, ctx: ExtensionContext): Promise<CreatedAgents>;
-  list(filter: unknown, callerId: string): Promise<DetailedAgentItem | null>;
-  stop(target: unknown): StopResult;
+  create(batch: SubagentCreateBatch, options: SubagentSurfaceCreateOptions, ctx: ExtensionContext): Promise<CreatedBatch>;
+  list(filter: SubagentListFilter, callerId: string): Promise<DetailedAgentItem | null>;
+  /** Signal one target for `callerId`; the root binds the sender's full address. */
+  signal(target: string, action: SubagentSignalTarget["action"], callerId: string): Promise<SignalResult>;
 }
 
 /** The only shape the surface needs from a registered tool. */
@@ -134,13 +135,47 @@ export function captureContextForChild(
   return dropped.length === 0 ? snapshot : { ...snapshot, warnings: [inheritedToolsWarning(dropped)] };
 }
 
+/** One created member as callers address it. */
+export interface CreatedMemberView {
+  /** This actor's local key, as create and list show it. */
+  readonly id: string;
+  /** This actor's full logical address, the messaging and signal target. */
+  readonly address: string;
+  readonly name: string | null;
+}
+
+/**
+ * The create result shared by the model tool and RPC clients.
+ *
+ * Execution keeps the numeric batch, the launch roster and per-member
+ * goal/role/model internally; callers only need the group address, each
+ * member's addressing identity and host diagnostics. Both public entry points
+ * project through {@link projectCreatedBatch} so the shape cannot drift.
+ */
+export interface CreatedBatchView {
+  /** The batch's group selector. */
+  readonly address: string;
+  readonly items: readonly CreatedMemberView[];
+  /** Host diagnostics that belong to the whole batch. */
+  readonly warnings?: readonly string[];
+}
+
+/** Pure public projection of a registered batch; execution state stays internal. */
+export function projectCreatedBatch(batch: CreatedBatch): CreatedBatchView {
+  return {
+    address: batch.address,
+    items: batch.items.map(item => ({ id: item.id, address: item.address, name: item.name })),
+    ...(batch.warnings === undefined ? {} : { warnings: batch.warnings }),
+  };
+}
+
 /** The tools one surface installs, already typed for their own parameters. */
 export interface SubagentSurfaceTools {
   /** null at the leaf depth, where a child may not create further subagents. */
-  readonly create: ToolDefinition<typeof createParameters, CreatedAgents> | null;
+  readonly create: ToolDefinition<typeof createParameters, CreatedBatchView> | null;
   readonly list: ToolDefinition<typeof listParameters, DetailedAgentItem | null>;
-  /** null at the leaf depth, where a child may not stop other agents. */
-  readonly stop: ToolDefinition<typeof stopParameters, StopResult> | null;
+  /** null at the leaf depth, where a child may not signal other agents. */
+  readonly signal: ToolDefinition<typeof signalParameters, SignalResult> | null;
   readonly msg_write: ManagedWriteTool;
 }
 
@@ -158,7 +193,7 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
   const { api, resolveHost, scope } = options;
   const caller = surfaceCaller(scope);
   const shallow = scope.depth < scope.maxDepth;
-  const messageTemplate = createMessageWriteTool({ cwd: scope.cwd, senderId: caller.callerId, host: UNRESOLVED_HOST });
+  const messageTemplate = createMessageWriteTool({ senderId: caller.callerId, host: UNRESOLVED_HOST });
   const msg_write: ManagedWriteTool = {
     ...messageTemplate,
     namespace: SUBAGENT_NAMESPACE,
@@ -166,9 +201,8 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       let resolved: Promise<SubagentSurfaceHost> | undefined;
       const host = (): Promise<SubagentSurfaceHost> => resolved ??= resolveHost(ctx);
-      return createMessageWriteTool({ cwd: scope.cwd, senderId: caller.callerId, host: {
-        resolveEndpoint: async address => (await host()).resolveEndpoint(address),
-        sessionEndpoint: async address => (await host()).sessionEndpoint(address),
+      return createMessageWriteTool({ senderId: caller.callerId, host: {
+        resolveTarget: async address => (await host()).resolveTarget(address),
         sendMessage: async command => (await host()).sendMessage(command),
         sendCrossSession: async command => (await host()).sendCrossSession(command),
       } }).execute(toolCallId, params, signal, onUpdate, ctx);
@@ -180,13 +214,13 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
         name: "subagent_create",
         namespace: SUBAGENT_NAMESPACE,
         defaultActive: false,
-        label: "Create Subagent",
+        label: "Create Subagents",
         description: TOOL_TEXT.create.description,
         promptGuidelines: [SUBAGENT_NAMESPACE_INSTRUCTIONS, TOOL_TEXT.create.guideline],
         parameters: createParameters,
         async execute(toolCallId, params, _signal, _onUpdate, ctx) {
           const host = await resolveHost(ctx);
-          return respond(await host.create(params, {
+          const created = await host.create(params, {
             parentAgentId: caller.parentAgentId,
             allowInherited: scope.allowInherited,
             origin: {
@@ -197,7 +231,8 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
               mode: ctx.mode,
             },
             captureInheritedContext: () => captureContextForChild(api, ctx, scope.depth + 1, host.maxDepth, toolCallId),
-          }, ctx));
+          }, ctx);
+          return respond(projectCreatedBatch(created));
         },
       }
     : null;
@@ -216,30 +251,30 @@ export function createSurfaceTools(options: SubagentSurfaceToolOptions): Subagen
     },
   };
 
-  const stop: SubagentSurfaceTools["stop"] = shallow
+  const signal: SubagentSurfaceTools["signal"] = shallow
     ? {
-        name: "subagent_stop",
+        name: "subagent_signal",
         namespace: SUBAGENT_NAMESPACE,
         defaultActive: false,
-        label: "Stop Subagent",
-        description: TOOL_TEXT.stop.description,
-        promptGuidelines: [SUBAGENT_NAMESPACE_INSTRUCTIONS],
-        parameters: stopParameters,
+        label: "Signal Subagent",
+        description: TOOL_TEXT.signal.description,
+        promptGuidelines: [SUBAGENT_NAMESPACE_INSTRUCTIONS, TOOL_TEXT.signal.guideline],
+        parameters: signalParameters,
         async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
           const host = await resolveHost(ctx);
-          return respond(host.stop(params.id));
+          return respond(await host.signal(params.target, params.action, caller.callerId));
         },
       }
     : null;
 
-  return { create, list, stop, msg_write };
+  return { create, list, signal, msg_write };
 }
 
 /**
  * Install one session surface on a Pi extension API.
  *
  * `resolveHost` is the owner's resolver: it receives the current execute
- * context of *every* tool call, including list and stop. A child surface's
+ * context of *every* tool call, including list and signal. A child surface's
  * resolver returns its captured root service guarded by its generation, not a
  * service derived from `ctx.sessionId`.
  */
@@ -258,29 +293,27 @@ export function installSessionSurface(
   });
   if (tools.create !== null) api.registerTool(tools.create);
   api.registerTool(tools.list);
-  if (tools.stop !== null) api.registerTool(tools.stop);
+  if (tools.signal !== null) api.registerTool(tools.signal);
   api.registerTool(tools.msg_write);
   api.on("before_agent_start", (event, ctx) => {
     const limits = scope.capacityFor(ctx);
     event.systemPromptOptions.sections.subagent_capacity = fillPrompt(TOOL_TEXT.create.capacity, {
-      fresh: limits.maxActiveChildren,
-      inherited: limits.maxActiveInheritedChildren,
+      batches: limits.maxActiveBatches,
+      subagents: limits.maxActiveSubagents,
+      inherited: limits.maxActiveInheritedSubagents,
     });
   });
 }
 
-/** `Main` is the root caller; every other caller is the child actor's own id. */
+/** The root caller is the canonical `main` key; every other caller is its own actor key. */
 function surfaceCaller(scope: SubagentSurfaceScope): { callerId: string; parentAgentId: string | null } {
-  const callerId = scope.callerId.toLowerCase() === "main" ? "Main" : scope.callerId;
-  return { callerId, parentAgentId: callerId === "Main" ? null : callerId };
+  const callerId = scope.callerId;
+  return { callerId, parentAgentId: callerId === MAIN_ACTOR ? null : callerId };
 }
 
 /** Unreachable host of the metadata template: execute is always replaced. */
 const UNRESOLVED_HOST: ManagedWriteHost = {
-  resolveEndpoint: async () => {
-    throw new Error("The Subagent surface host was not resolved for this tool execution.");
-  },
-  sessionEndpoint: async () => {
+  resolveTarget: async () => {
     throw new Error("The Subagent surface host was not resolved for this tool execution.");
   },
   sendMessage: async () => {
@@ -304,12 +337,12 @@ const TOOL_TEXT: SurfaceToolText = {
     capacity: text('create', 'capacity'),
     parameters: {
       context: text('create', 'parameters', 'context'),
-      tasks: {
-        description: text('create', 'parameters', 'tasks', 'description'),
+      agents: {
+        description: text('create', 'parameters', 'agents', 'description'),
         items: {
-          name: text('create', 'parameters', 'tasks', 'items', 'name'),
-          task: text('create', 'parameters', 'tasks', 'items', 'task'),
-          inheritContext: text('create', 'parameters', 'tasks', 'items', 'inheritContext'),
+          name: text('create', 'parameters', 'agents', 'items', 'name'),
+          goal: text('create', 'parameters', 'agents', 'items', 'goal'),
+          inheritContext: text('create', 'parameters', 'agents', 'items', 'inheritContext'),
         },
       },
     },
@@ -319,9 +352,10 @@ const TOOL_TEXT: SurfaceToolText = {
     guideline: text('list', 'guideline'),
     parameters: { all: text('list', 'parameters', 'all'), id: text('list', 'parameters', 'id') },
   },
-  stop: {
-    description: text('stop', 'description'),
-    parameters: { id: text('stop', 'parameters', 'id') },
+  signal: {
+    description: text('signal', 'description'),
+    guideline: text('signal', 'guideline'),
+    parameters: { target: text('signal', 'parameters', 'target'), action: text('signal', 'parameters', 'action') },
   },
   msgWriteGuidelines: promptStrings('subagent-tools.json', 'msg_write', 'guidelines'),
 };
@@ -336,13 +370,13 @@ export const SUBAGENT_NAMESPACE: ToolNamespace = Object.freeze({
 
 const createParameters = Type.Object({
   context: Type.Optional(Type.String({ description: TOOL_TEXT.create.parameters.context })),
-  tasks: Type.Array(
+  agents: Type.Array(
     Type.Object({
-      name: Type.Optional(Type.String({ description: TOOL_TEXT.create.parameters.tasks.items.name })),
-      task: Type.String({ description: TOOL_TEXT.create.parameters.tasks.items.task }),
-      inheritContext: Type.Optional(Type.Boolean({ description: TOOL_TEXT.create.parameters.tasks.items.inheritContext })),
+      name: Type.Optional(Type.String({ description: TOOL_TEXT.create.parameters.agents.items.name })),
+      goal: Type.String({ description: TOOL_TEXT.create.parameters.agents.items.goal }),
+      inheritContext: Type.Optional(Type.Boolean({ description: TOOL_TEXT.create.parameters.agents.items.inheritContext })),
     }, { additionalProperties: false }),
-    { minItems: 1, description: TOOL_TEXT.create.parameters.tasks.description },
+    { minItems: 1, description: TOOL_TEXT.create.parameters.agents.description },
   ),
 }, { additionalProperties: false });
 
@@ -351,9 +385,12 @@ const listParameters = Type.Object({
   id: Type.Optional(Type.String({ description: TOOL_TEXT.list.parameters.id })),
 });
 
-const stopParameters = Type.Object({
-  id: Type.String({ description: TOOL_TEXT.stop.parameters.id }),
-});
+const signalParameters = Type.Object({
+  target: Type.String({ description: TOOL_TEXT.signal.parameters.target }),
+  action: Type.Union([Type.Literal("interrupt"), Type.Literal("stop")], {
+    description: TOOL_TEXT.signal.parameters.action,
+  }),
+}, { additionalProperties: false });
 
 /** The parts of `prompts/subagent-tools.json` this module renders. */
 interface SurfaceToolText {
@@ -364,9 +401,9 @@ interface SurfaceToolText {
     readonly capacity: string;
     readonly parameters: {
       readonly context: string;
-      readonly tasks: {
+      readonly agents: {
         readonly description: string;
-        readonly items: { readonly name: string; readonly task: string; readonly inheritContext: string };
+        readonly items: { readonly name: string; readonly goal: string; readonly inheritContext: string };
       };
     };
   };
@@ -375,11 +412,15 @@ interface SurfaceToolText {
     readonly guideline: string;
     readonly parameters: { readonly all: string; readonly id: string };
   };
-  readonly stop: { readonly description: string; readonly parameters: { readonly id: string } };
+  readonly signal: {
+    readonly description: string;
+    readonly guideline: string;
+    readonly parameters: { readonly target: string; readonly action: string };
+  };
   readonly msgWriteGuidelines: readonly string[];
 }
 
 // The declared tool parameter types, exported so callers can name a batch.
-export type SubagentTaskBatch = Static<typeof createParameters>;
+export type SubagentCreateBatch = Static<typeof createParameters>;
 export type SubagentListFilter = Static<typeof listParameters>;
-export type SubagentStopTarget = Static<typeof stopParameters>;
+export type SubagentSignalTarget = Static<typeof signalParameters>;

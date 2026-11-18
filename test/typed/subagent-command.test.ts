@@ -1,5 +1,5 @@
 /**
- * `/subagent` command contract: parsing, read-only listing and stop summaries.
+ * `/subagent` command contract: parsing, read-only listing and signal summaries.
  *
  * These cases use a fake service so they pin the command's own behaviour. The
  * SDK registration path is covered separately.
@@ -12,31 +12,36 @@ import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand } from "@
 import subagentExtension from "../../extensions/harness.ts";
 import { installSubagentCommand, parseCommand } from "../../src/subagent/command.ts";
 import type { RootService } from "../../src/subagent/root-service.ts";
-import { SubagentError, type AgentView, type DetailedAgentItem, type JobView } from "../../src/subagent/runtime.ts";
+import {
+  SubagentError,
+  type AgentView,
+  type DetailedAgentItem,
+  type SignalResult,
+} from "../../src/subagent/runtime.ts";
 import { renderSubagentList } from "../../src/subagent/status-view.ts";
-import { sessionMainAddress } from "../../src/subagent/session-directory.ts";
+import { formatAddress, MAIN_ACTOR } from "../../src/subagent/address.ts";
 
 const actor = (agentId: string, kind: AgentView["kind"], status: AgentView["status"], depth: number): AgentView => ({
-  agentId, name: null, parentAgentId: null, status, depth, kind,
+  agentId, address: `01a1958d:${agentId}`, name: null, goal: "g", batch: 1,
+  parentAgentId: null, status, depth, kind,
 });
 
-const job = (agentId: string, status: JobView["status"], calls: number): JobView => ({
-  jobId: `job-${agentId}`, agentId, name: null, parentAgentId: null, depth: 1,
-  status, continuedFromJobId: null,
-  budget: {
-    jobId: `job-${agentId}`, depth: 1, phase: "normal", modelCalls: calls, activeTimeMs: 0,
-    rejectedProjectedModelCalls: null, running: true, warningTaken: false, terminal: null,
-  },
+/** A list node carries identity and topology only: no goal, activity or model. */
+const node = (
+  id: string,
+  children: DetailedAgentItem[] = [],
+  extra: Partial<DetailedAgentItem> = {},
+): DetailedAgentItem => ({
+  id, address: `01a1958d:${id}`, status: "idle", name: null, children, ...extra,
 });
 
-const tree: DetailedAgentItem = {
-  id: "Main", status: "running", socket: "/tmp/main.sock", children: [
-    { id: "sub_01", status: "running", socket: "/tmp/sub_01.sock", kind: "fresh", children: [
-      { id: "sub_01_01", status: "running", socket: "/tmp/sub_01_01.sock", kind: "inherited", children: [] },
-    ] },
-    { id: "sub_02", status: "stopped", socket: "/tmp/sub_02.sock", kind: "fresh", children: [] },
-  ],
-};
+const tree: DetailedAgentItem = node("main", [
+  node("sub_1", [
+    node("sub_1_1", [], { kind: "inherited" }),
+  ], { kind: "fresh", role: "executor", name: "parser", status: "running(tool-12s)" }),
+  node("sub_2", [], { kind: "fresh", name: "reviewer", status: "stopped(failed)" }),
+], { status: "running" });
+
 
 function context(notifications: Array<{ text: string; type: string }>): ExtensionCommandContext {
   return {
@@ -65,9 +70,10 @@ test("parses the supported subcommands and rejects the rest", () => {
   assert.deepEqual(parseCommand(""), { verb: "list", all: false, id: null });
   assert.deepEqual(parseCommand("list"), { verb: "list", all: false, id: null });
   assert.deepEqual(parseCommand("list --all"), { verb: "list", all: true, id: null });
-  assert.deepEqual(parseCommand("list --id sub_01"), { verb: "list", all: false, id: "sub_01" });
-  assert.deepEqual(parseCommand("stop sub_01"), { verb: "stop", actorId: "sub_01" });
-  assert.deepEqual(parseCommand("stop --all"), { verb: "stopAll" });
+  assert.deepEqual(parseCommand("list --id sub_1"), { verb: "list", all: false, id: "sub_1" });
+  assert.deepEqual(parseCommand("interrupt sub_1"), { verb: "interrupt", target: "sub_1" });
+  assert.deepEqual(parseCommand("stop children"), { verb: "stop", target: "children" });
+  assert.deepEqual(parseCommand("stop main"), { verb: "stop", target: "main" });
   assert.deepEqual(parseCommand("sessions"), { verb: "sessions" });
   assert.deepEqual(parseCommand("sessions connect bbbbbb"), { verb: "sessionsConnect", target: "bbbbbb" });
   assert.deepEqual(
@@ -75,7 +81,8 @@ test("parses the supported subcommands and rejects the rest", () => {
     { verb: "sessionsConnect", target: "01a1958d-0000-7000-8000-000000000000" },
   );
   for (const raw of [
-    "show", "stop", "stop a b", "list --id", "list --bogus", "list --id --all", "stop --bogus",
+    "show", "signal sub_1 stop", "stop --all", "interrupt", "interrupt a b",
+    "interrupt --all", "stop --bogus", "list --id", "list --bogus", "list --id --all",
     "sessions all", "sessions connect", "sessions connect a b", "sessions connect --all",
   ]) {
     assert.throws(
@@ -93,32 +100,36 @@ test("argument errors never resolve the root service", async () => {
     throw new Error("must not resolve");
   });
   const notifications: Array<{ text: string; type: string }> = [];
-  await handler("stop", context(notifications));
+  await handler("interrupt", context(notifications));
   assert.equal(resolved, 0);
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0]?.type, "error");
   assert.match(notifications[0]?.text ?? "", /^invalid_command_args: /);
 });
 
-test("the list view reports kind, full-root counts and hidden nodes", () => {
+test("the list view reports names, addresses, kinds, roles and models", () => {
   const text = renderSubagentList({
     root: "01a1958d",
     tree,
     actors: [
-      actor("sub_01", "fresh", "running", 1),
-      actor("sub_01_01", "inherited", "running", 2),
-      actor("sub_02", "fresh", "idle", 1),
-      actor("sub_03", "inherited", "idle", 1),
+      actor("sub_1", "fresh", "running", 1),
+      actor("sub_1_1", "inherited", "running", 2),
+      actor("sub_2", "fresh", "idle", 1),
+      actor("sub_3", "inherited", "idle", 1),
     ],
-    jobs: [job("sub_01", "running", 12), job("sub_01_01", "running", 3)],
-    roles: new Map([["sub_01", "executor"], ["sub_01_01", "researcher"]]),
-    historyDir: "/tmp/views",
+    models: new Map([["sub_1", "fake-a"], ["sub_2", "fake-b"]]),
   });
-  assert.match(text, /^Subagents · 01a1958d · 4 actors · 2 active \(1 fresh \/ 1 inherited\)$/m);
-  assert.match(text, /● sub_01\s+d1\s+fresh\s+executor\s+running\s+12 calls/);
-  assert.match(text, /  ● sub_01_01\s+d2\s+inherited\s+researcher\s+running\s+3 calls/);
-  assert.match(text, /○ sub_02\s+d1\s+fresh\s+-\s+idle\s+–/);
-  assert.match(text, /window shows 3 of 4 · history \/tmp\/views/);
+  assert.match(text, /^Subagents · 01a1958d · 4 agents · 2 active \(1 fresh \/ 1 inherited\)$/m);
+  assert.match(text, /^  01a1958d:sub_1 \(parser\)\s+fresh\s+executor\s+fake-a\s+running\(tool-12s\)$/m);
+  assert.match(text, /^ {4}01a1958d:sub_1_1\s+inherited\s+-\s+-\s+idle$/m,
+    'an undeclared label adds no placeholder and never replaces the address');
+  assert.match(text, /^  01a1958d:sub_2 \(reviewer\)\s+fresh\s+-\s+fake-b\s+stopped\(failed\)$/m,
+    'the declared label is shown for a terminal agent as well');
+  assert.doesNotMatch(text, /sub_1_1 \(|\(\)|\(unnamed\)/, 'no synthetic name for a null label');
+  assert.doesNotMatch(text, /goal|activity|thinking|tool_call|elapsed|completed/i,
+    'the list never renders a goal, an activity phase or a lifecycle status');
+  assert.match(text, /window shows 3 of 4$/m, 'the footer counts the hidden rows');
+  assert.doesNotMatch(text, /history/i, 'the list never renders a history directory');
 });
 
 test("list resolves the windowed tree and renders it despite unhealthy persistence", async () => {
@@ -132,45 +143,26 @@ test("list resolves the windowed tree and renders it despite unhealthy persisten
       filters.push(filter);
       return tree;
     },
+    actors: {
+      get: (agentId: string) => ({ modelRef: agentId === "sub_1" ? { provider: "fake", id: "fake-model" } : null }),
+    },
     runtime: {
       list: () => ({ agents: [
-        actor("sub_01", "fresh", "running", 1),
-        actor("sub_01_01", "inherited", "running", 2),
-        actor("sub_02", "fresh", "idle", 1),
+        actor("sub_1", "fresh", "running", 1),
+        actor("sub_1_1", "inherited", "running", 2),
+        actor("sub_2", "fresh", "idle", 1),
       ] }),
-      jobs: () => ({ jobs: [job("sub_01", "running", 12)] }),
     },
-    actors: { get: (id: string) => (id === "sub_01" ? { roleId: "executor" } : null) },
   } as unknown as RootService;
   const { handler } = install(service);
   await handler("list --all", context(notifications));
   assert.deepEqual(filters, [{ all: true }]);
   const text = notifications[0]?.text ?? "";
-  assert.match(text, /^Subagents · 01a1958d · 3 actors · 2 active/m);
+  assert.match(text, /^Subagents · 01a1958d · 3 agents · 2 active/m);
   assert.match(text, /executor/);
-});
-
-test("the depth column keeps absolute depth for a filtered subtree", () => {
-  const subtree: DetailedAgentItem = {
-    id: "Main", status: "running", socket: "/tmp/main.sock", children: [
-      { id: "sub_01_01", status: "running", socket: "/tmp/sub_01_01.sock", kind: "inherited", children: [
-        { id: "sub_01_01_01", status: "running", socket: "/tmp/sub_01_01_01.sock", kind: "inherited", children: [] },
-      ] },
-    ],
-  };
-  const text = renderSubagentList({
-    root: "01a1958d",
-    tree: subtree,
-    actors: [
-      actor("sub_01_01", "inherited", "running", 2),
-      actor("sub_01_01_01", "inherited", "running", 3),
-    ],
-    jobs: [],
-    roles: new Map(),
-    historyDir: null,
-  });
-  assert.match(text, /  ● sub_01_01\s+d2\s+inherited/);
-  assert.match(text, /    ● sub_01_01_01\s+d3\s+inherited/);
+  assert.match(text, /fake-model/, 'the CLI resolves the model from the actor identity');
+  assert.match(text, /01a1958d:sub_1 \(parser\)/, 'the tree projection, not a second actor lookup, carries the label');
+  assert.doesNotMatch(text, /goal|activity|thinking|tool_call|elapsed/i);
 });
 
 test("a root replaced during the listing await is not rendered", async () => {
@@ -180,8 +172,7 @@ test("a root replaced during the listing await is not rendered", async () => {
     sessionId: "01a1958d-0000-7000-8000-000000000000",
     list: async () => tree,
     assertCurrent: () => { throw new SubagentError("runtime_closed", "The root is not accepting new operations."); },
-    runtime: { list: () => { reads += 1; return { agents: [] }; }, jobs: () => ({ jobs: [] }) },
-    actors: { get: () => null },
+    runtime: { list: () => { reads += 1; return { agents: [] }; } },
   } as unknown as RootService;
   let resolutions = 0;
   const { handler } = install(async () => {
@@ -195,49 +186,62 @@ test("a root replaced during the listing await is not rendered", async () => {
   assert.equal(notifications[0]?.text, "Root changed while listing; run /subagent again.");
 });
 
-test("stop reports requested and refused stops without inventing state", async () => {
+test("interrupt and stop report accepted, idle and refused targets without inventing state", async () => {
   const notifications: Array<{ text: string; type: string }> = [];
+  const calls: Array<{ target: string; action: string; callerId: string }> = [];
+  const results: SignalResult[] = [
+    { ok: true, action: "interrupt", to: "01a1958d:sub_1", targets: [{ address: "01a1958d:sub_1", ok: true, status: "running" }] },
+    { ok: true, action: "stop", to: "01a1958d:sub_2", targets: [{ address: "01a1958d:sub_2", ok: true, status: "stopping" }] },
+    { ok: true, action: "stop", to: "01a1958d:sub_3", targets: [{ address: "01a1958d:sub_3", ok: true, status: "idle" }] },
+    { ok: false, action: "stop", to: "01a1958d:sub_2", targets: [{ address: "01a1958d:sub_2", ok: false, status: "completed", reason: "already_finished" }] },
+    { ok: false, action: "interrupt", to: "01a1958d:sub_1", targets: [{ address: "01a1958d:sub_1", ok: false, status: "running", reason: "interrupt_unsupported" }] },
+  ];
   const service = {
-    stop: () => ({ ok: true, id: "sub_01", status: "stopping" }),
-  } as unknown as RootService;
-  const { handler } = install(service);
-  await handler("stop sub_01", context(notifications));
-  assert.equal(notifications[0]?.text, "Stop requested: sub_01 (stopping)");
-
-  const idle = {
-    stop: () => ({ ok: true, id: "sub_03", status: "idle" }),
-  } as unknown as RootService;
-  await install(idle).handler("stop sub_03", context(notifications));
-  assert.equal(notifications[1]?.text, "sub_03 has no running job.");
-
-  const refused = {
-    stop: () => ({ ok: false, id: "sub_02", status: "completed", reason: "already_finished" }),
-  } as unknown as RootService;
-  const refusedHandler = install(refused).handler;
-  await refusedHandler("stop sub_02", context(notifications));
-  assert.equal(notifications[2]?.text, "sub_02 already finished.");
-});
-
-test("stop --all requests every running job and summarizes immediately", async () => {
-  const notifications: Array<{ text: string; type: string }> = [];
-  const cancelled: string[] = [];
-  const service = {
-    runtime: {
-      jobs: () => ({ jobs: [job("sub_01", "running", 1), job("sub_02", "running", 2), job("sub_03", "completed", 3)] }),
-      cancelJob: (jobId: string) => {
-        cancelled.push(jobId);
-        if (jobId === "job-sub_02") throw new Error("native handle gone");
-        return { ok: true, job: { jobId, status: "stopping" } };
-      },
+    signal: async (target: string, action: string, callerId: string) => {
+      calls.push({ target, action, callerId });
+      return results.shift()!;
     },
   } as unknown as RootService;
   const { handler } = install(service);
-  await handler("stop --all", context(notifications));
-  assert.deepEqual(cancelled, ["job-sub_01", "job-sub_02"]);
+
+  await handler("interrupt sub_1", context(notifications));
+  await handler("stop sub_2", context(notifications));
+  await handler("stop sub_3", context(notifications));
+  await handler("stop sub_2", context(notifications));
+  await handler("interrupt sub_1", context(notifications));
+
+  assert.deepEqual(calls, [
+    { target: "sub_1", action: "interrupt", callerId: "main" },
+    { target: "sub_2", action: "stop", callerId: "main" },
+    { target: "sub_3", action: "stop", callerId: "main" },
+    { target: "sub_2", action: "stop", callerId: "main" },
+    { target: "sub_1", action: "interrupt", callerId: "main" },
+  ]);
+  assert.equal(notifications[0]?.text, "Interrupted: 01a1958d:sub_1 (running)");
+  assert.equal(notifications[1]?.text, "Stop requested: 01a1958d:sub_2 (stopping)");
+  assert.equal(notifications[2]?.text, "01a1958d:sub_3 has no running job.");
+  assert.equal(notifications[3]?.text, "01a1958d:sub_2 already finished.");
+  assert.equal(notifications[4]?.text, "01a1958d:sub_1 cannot be interrupted by this execution; nothing changed.");
+});
+
+test("a children target summarizes every filtered child", async () => {
+  const notifications: Array<{ text: string; type: string }> = [];
+  const service = {
+    signal: async () => ({
+      ok: true,
+      action: "stop",
+      to: "01a1958d:main/children",
+      targets: [
+        { address: "01a1958d:sub_1", ok: true, status: "stopping" },
+        { address: "01a1958d:sub_2", ok: false, status: "completed", reason: "already_finished" },
+      ],
+    }),
+  } as unknown as RootService;
+  await install(service).handler("stop children", context(notifications));
   const text = notifications[0]?.text ?? "";
-  assert.match(text, /^Stop results for 2 job\(s\): 1 requested, 0 refused, 1 failed$/m);
-  assert.match(text, /requested\s+sub_01/);
-  assert.match(text, /failed\s+sub_02: native handle gone/);
+  assert.match(text, /^Signal stop for 2 agent\(s\): 1 accepted, 1 refused$/m);
+  assert.match(text, /requested\s+01a1958d:sub_1 \(stopping\)/);
+  assert.match(text, /refused\s+01a1958d:sub_2 already finished\./);
 });
 
 test("a transitioning root is reported with its error code", async () => {
@@ -283,7 +287,7 @@ test("a connect lookup failure is reported with its code and appends nothing", a
   assert.deepEqual(notifications, [{ text: "session_not_found: No live session matches zzzzzz.", type: "error" }]);
 });
 
-test("connect completes its action and current live targets without activating a service", async () => {
+test("completions offer verbs, session connect targets and target sugar without activating a service", async () => {
   type Options = Parameters<ExtensionAPI["registerCommand"]>[1];
   let options: Options | undefined;
   const api = {
@@ -309,7 +313,12 @@ test("connect completes its action and current live targets without activating a
   sessions = [];
   assert.equal(await values("sessions connect "), null, "exited sessions disappear on the next completion read");
   assert.equal(await values("sessions unknown "), null);
+  assert.deepEqual(await values("int"), ["interrupt"]);
   assert.deepEqual(await values("sto"), ["stop"]);
+  assert.deepEqual(await values("interrupt "), ["interrupt children", "interrupt main"]);
+  assert.deepEqual(await values("stop chi"), ["stop children"]);
+  assert.equal(await values("stop sub_1"), null);
+  assert.deepEqual(await values("list --a"), ["list --all"]);
 });
 
 test("the harness extension registers the subagent command", () => {
@@ -337,9 +346,9 @@ test("sessions lists live sessions with their managed Main address and native na
   assert.match(text, /^Live sessions \(2\):/m);
   assert.match(text, /^\* aaaaaa\s+\(unnamed\)\s+pid 11\s+\/tmp\/project-a$/m);
   assert.match(text, /^ {2}bbbbbb\s+parser work\s+pid 22\s+\/tmp\/project-b$/m);
-  // The displayed Main address is the native managed endpoint of each session.
-  assert.ok(text.includes(`main: ${sessionMainAddress(current)}`), text);
-  assert.ok(text.includes(`main: ${sessionMainAddress(other)}`), text);
+  // The displayed Main address is the logical address msg_write accepts.
+  assert.ok(text.includes(`main: ${formatAddress(current.uid, MAIN_ACTOR)}`), text);
+  assert.ok(text.includes(`main: ${formatAddress(other.uid, MAIN_ACTOR)}`), text);
   assert.match(text, /session other-session/);
 });
 

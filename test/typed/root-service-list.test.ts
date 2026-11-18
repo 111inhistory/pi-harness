@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -34,7 +34,7 @@ function createHarnessContext(options: {
   return { api, context };
 }
 
-test("top-level/default list attaches historyDir to root when durable storage is enabled", async () => {
+test("top-level/default durable list projects per-Job history paths without the storage directory", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "root-list-top-"));
   const agentDir = path.join(cwd, "agent");
   await mkdir(agentDir, { recursive: true });
@@ -55,37 +55,37 @@ test("top-level/default list attaches historyDir to root when durable storage is
   try {
     await service.initialize();
 
-    service.runtime.restoreState({
-      actors: [
-        { agentId: "sub_01", parentAgentId: null, depth: 1, name: "worker" },
-      ],
-      jobs: [
-        {
-          jobId: "sub_01",
-          agentId: "sub_01",
-          spec: { task: "initial investigation" },
-          status: "completed",
-          end: { status: "completed", result: "investigation finished successfully" },
-        },
-      ],
-    });
+    // Drive the real domain events and v3 fold instead of hand-written v2
+    // restore literals: a finishing Job writes its actor/job-start/job-end
+    // records and its view through the production paths.
+    service.runner.start = request => {
+      request.recordStart(null);
+      return { ready: Promise.resolve(),
+        done: Promise.resolve({ status: "completed", result: "investigation finished successfully" }), cancel() {} };
+    };
+    const actor = service.runtime.create({ agents: [{ goal: "initial investigation" }] }).items[0]!;
+    await service.runtime.jobDone(actor.id);
 
-    const root = await service.list({}, "Main");
+    const jobs = service.runtime.jobs.bind(service.runtime);
+    let jobProjections = 0;
+    service.runtime.jobs = (...args) => { jobProjections++; return jobs(...args); };
+    const root = await service.list({}, "main");
+    assert.equal(jobProjections, 1, "list shares one historical Job projection instead of rebuilding it per row");
     assert.ok(root, "Root service list should return a root tree item");
-    assert.equal(root.id, "Main");
+    assert.equal(root.id, "main");
+    assert.equal("historyDir" in root, false, "the list never publishes the internal views directory");
 
     const expectedHistoryDir = path.join(agentDir, SUBAGENT_SESSIONS_DIR, sessionId, "views");
-    assert.equal(root.historyDir, expectedHistoryDir, "Root item should carry historyDir when durable");
 
     assert.equal(root.children.length, 1);
     const child = root.children[0]!;
-    assert.equal(child.id, "sub_01");
-    assert.equal(child.historyDir, undefined, "Child items should not attach historyDir");
+    assert.equal(child.id, actor.id);
+    assert.equal("historyDir" in child, false, "no node advertises historyDir");
 
-    assert.ok(child.history, "Child item should retain per-agent history");
-    assert.equal(child.history.jobId, "sub_01");
-    assert.equal(child.history.summary, path.join(expectedHistoryDir, "sub_01", "summary.md"));
-    assert.equal(child.history.cleanJsonl, path.join(expectedHistoryDir, "sub_01", "transcript.jsonl"));
+    assert.ok(child.history, "Child item should retain per-Job history paths");
+    assert.equal("jobId" in child.history, false, "the list node never repeats the Job id");
+    assert.equal(child.history.summary, path.join(expectedHistoryDir, actor.id, "summary.md"));
+    assert.equal(child.history.cleanJsonl, path.join(expectedHistoryDir, actor.id, "transcript.jsonl"));
 
     assert.ok(existsSync(child.history.summary), "summary.md should exist in views");
     assert.ok(existsSync(child.history.cleanJsonl), "transcript.jsonl should exist in views");
@@ -98,7 +98,7 @@ test("top-level/default list attaches historyDir to root when durable storage is
   }
 });
 
-test("id-selected subtree attaches historyDir to returned subtree root and covers multiple rounds", async () => {
+test("id-selected subtree covers the current round without publishing historyDir or jobId", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "root-list-sub-"));
   const agentDir = path.join(cwd, "agent");
   await mkdir(agentDir, { recursive: true });
@@ -119,49 +119,33 @@ test("id-selected subtree attaches historyDir to returned subtree root and cover
   try {
     await service.initialize();
 
-    service.runtime.restoreState({
-      actors: [
-        { agentId: "sub_01", parentAgentId: null, depth: 1, name: "worker" },
-      ],
-      jobs: [
-        {
-          jobId: "sub_01",
-          agentId: "sub_01",
-          spec: { task: "round 1 task" },
-          status: "completed",
-          end: { status: "completed", result: "round 1 result" },
-        },
-        {
-          jobId: "sub_01_r2",
-          agentId: "sub_01",
-          spec: { task: "round 2 task" },
-          status: "completed",
-          continuedFromJobId: "sub_01",
-          end: { status: "completed", result: "round 2 result" },
-        },
-      ],
-    });
+    let result = "round 1 result";
+    service.runner.start = request => {
+      request.recordStart(null);
+      return { ready: Promise.resolve(), done: Promise.resolve({ status: "completed", result }), cancel() {} };
+    };
+    const actor = service.runtime.create({ agents: [{ goal: "round 1 task" }] }).items[0]!;
+    await service.runtime.jobDone(actor.id);
+    result = "round 2 result";
+    const wake = await service.runtime.sendMessage({ from: "main", to: actor.address, content: "round 2 task" });
+    assert.ok("jobId" in wake && wake.jobId);
+    await service.runtime.jobDone(wake.jobId);
 
     const expectedHistoryDir = path.join(agentDir, SUBAGENT_SESSIONS_DIR, sessionId, "views");
-
-    // Simulate earlier round's view directory already written in previous round
-    const round1Dir = path.join(expectedHistoryDir, "sub_01");
-    await mkdir(round1Dir, { recursive: true });
-    await writeFile(path.join(round1Dir, "summary.md"), "# Round 1 summary\n", "utf-8");
-    await writeFile(path.join(round1Dir, "transcript.jsonl"), "", "utf-8");
-
-    const subtree = await service.list({ id: "sub_01" }, "Main");
+    const subtree = await service.list({ id: actor.id }, "main");
     assert.ok(subtree, "Subtree should be returned for existing agent id");
-    assert.equal(subtree.id, "sub_01");
-    assert.equal(subtree.historyDir, expectedHistoryDir, "Subtree root should carry historyDir when durable");
+    assert.equal(subtree.id, actor.id);
+    assert.equal("historyDir" in subtree, false, "a subtree root never advertises historyDir");
 
-    assert.ok(subtree.history, "Agent should carry latest history");
-    assert.equal(subtree.history.jobId, "sub_01_r2");
-    assert.equal(subtree.history.summary, path.join(expectedHistoryDir, "sub_01_r2", "summary.md"));
+    assert.ok(subtree.history, "Agent should carry latest history paths");
+    assert.equal("jobId" in subtree.history, false, "the caller infers the round from the path, not a Job id field");
+    assert.equal(subtree.history.summary, path.join(expectedHistoryDir, wake.jobId, "summary.md"));
 
-    // Both previous and current round folders exist in historyDir
-    assert.ok(existsSync(path.join(expectedHistoryDir, "sub_01", "summary.md")), "Previous round view exists");
-    assert.ok(existsSync(path.join(expectedHistoryDir, "sub_01_r2", "summary.md")), "Latest round view exists");
+    // The current round is the one whose canonical expected path was used.
+    assert.ok((await readFile(subtree.history.summary, "utf-8")).includes("round 2 result"));
+    // Both previous and current round folders exist in the internal views dir.
+    assert.ok(existsSync(path.join(expectedHistoryDir, actor.id, "summary.md")), "Previous round view exists");
+    assert.ok(existsSync(path.join(expectedHistoryDir, wake.jobId, "summary.md")), "Latest round view exists");
   } finally {
     await service.retire();
     await rm(cwd, { recursive: true, force: true });
@@ -186,39 +170,27 @@ test("memory-only mode does not advertise nonexistent durable history", async ()
   try {
     await service.initialize();
 
-    service.runtime.restoreState({
-      actors: [
-        { agentId: "sub_01", parentAgentId: null, depth: 1, name: "worker" },
-      ],
-      jobs: [
-        {
-          jobId: "sub_01",
-          agentId: "sub_01",
-          spec: { task: "memory task" },
-          status: "completed",
-          result: "memory result",
-          end: { status: "completed" },
-        },
-      ],
-    });
+    service.runner.start = request => {
+      request.recordStart(null);
+      return { ready: Promise.resolve(), done: Promise.resolve({ status: "completed", result: "memory result" }), cancel() {} };
+    };
+    const actor = service.runtime.create({ agents: [{ goal: "memory task" }] }).items[0]!;
+    await service.runtime.jobDone(actor.id);
 
-    const root = await service.list({}, "Main");
+    const root = await service.list({}, "main");
     assert.ok(root);
-    assert.equal(root.id, "Main");
-    assert.equal(root.historyDir, undefined, "Root item must not advertise historyDir in memory-only mode");
-    assert.equal("historyDir" in root, false);
+    assert.equal(root.id, "main");
+    assert.equal("historyDir" in root, false, "Root item must not advertise historyDir in memory-only mode");
 
     assert.equal(root.children.length, 1);
-    assert.equal(root.children[0]!.historyDir, undefined);
     assert.equal("historyDir" in root.children[0]!, false);
 
-    const subtree = await service.list({ id: "sub_01" }, "Main");
+    const subtree = await service.list({ id: actor.id }, "main");
     assert.ok(subtree);
-    assert.equal(subtree.id, "sub_01");
-    assert.equal(subtree.historyDir, undefined, "Subtree root must not advertise historyDir in memory-only mode");
-    assert.equal("historyDir" in subtree, false);
+    assert.equal(subtree.id, actor.id);
+    assert.equal("historyDir" in subtree, false, "Subtree root must not advertise historyDir in memory-only mode");
 
-    const missing = await service.list({ id: "nonexistent" }, "Main");
+    const missing = await service.list({ id: "nonexistent" }, "main");
     assert.equal(missing, null);
   } finally {
     await service.retire();

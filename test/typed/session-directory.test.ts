@@ -10,7 +10,6 @@ import test from "node:test";
 
 import {
   liveSessions,
-  parseSessionSenderId,
   registerSession,
   SESSION_DIRECTORY,
   sessionByUid,
@@ -19,7 +18,8 @@ import {
   unregisterSession,
   updateSessionName,
 } from "../../src/subagent/session-directory.ts";
-import { deriveSessionUid, getAgentSocketPath } from "../../src/ipc/socket.ts";
+import { deriveSessionUid } from "../../src/ipc/socket.ts";
+import { formatAddress, formatMainEndpointPath, MAIN_ACTOR, parseAddress } from "../../src/subagent/address.ts";
 
 async function root(t: test.TestContext): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "pi-session-directory-"));
@@ -36,7 +36,7 @@ test("a published session is readable by uid and publishes its Main endpoint", a
   assert.equal(session.socketDir, path.join(socketRoot, session.uid));
   assert.equal(session.pid, process.pid);
   assert.equal(session.name, "parser work");
-  assert.equal(sessionMainAddress(session), getAgentSocketPath("Main", session.socketDir));
+  assert.equal(sessionMainAddress(session), formatMainEndpointPath(session.socketDir));
 
   const live = await liveSessions(socketRoot);
   assert.deepEqual(live.map((entry) => entry.sessionId), ["session-alpha"]);
@@ -44,21 +44,21 @@ test("a published session is readable by uid and publishes its Main endpoint", a
   assert.equal(await sessionByUid(socketRoot, "../escape"), null);
 });
 
-test("the wire identity is the stable session uid followed by Main", () => {
+test("the wire identity is the stable session uid followed by the Main actor", () => {
   const uid = deriveSessionUid("session-alpha");
   assert.match(uid, /^[0-9a-f]{8}$/, "one uid rule on every platform, not a per-platform fold");
   const sender = sessionSenderId(uid);
-  assert.equal(sender, `${uid}:Main`);
-  assert.deepEqual(parseSessionSenderId(sender), { uid });
-  assert.deepEqual(parseSessionSenderId("deadbeef:Main"), { uid: "deadbeef" });
-  assert.equal(parseSessionSenderId("DEADBEEF:Main"), null, "the uid is lowercase only");
-  assert.equal(parseSessionSenderId("abc123:Main"), null, "no legacy short uid format");
-  assert.equal(parseSessionSenderId("deadbee:Main"), null, "a uid is exactly eight hex digits");
-  assert.equal(parseSessionSenderId("deadbeeg:Main"), null, "a uid contains hex digits only");
-  assert.equal(parseSessionSenderId(`${uid}:sub_01`), null, "a subagent is not a cross-session identity");
-  assert.equal(parseSessionSenderId("Main"), null, "a local actor id is not a session identity");
-  assert.equal(parseSessionSenderId(`${uid}:`), null);
-  assert.equal(parseSessionSenderId(`:Main`), null);
+  assert.equal(sender, `${uid}:main`);
+  assert.equal(formatAddress(uid, MAIN_ACTOR), sender);
+  assert.deepEqual(parseAddress(sender), { kind: "actor", session: uid, key: "main", batch: null, member: null, address: sender });
+  assert.equal(parseAddress("DEADBEEF:main"), null, "the uid is lowercase only");
+  assert.equal(parseAddress("abc123:main"), null, "no legacy short uid format");
+  assert.equal(parseAddress("deadbee:main"), null, "a uid is exactly eight hex digits");
+  assert.equal(parseAddress("deadbeeg:main"), null, "a uid contains hex digits only");
+  assert.equal(parseAddress(`${uid}:sub_1`)?.kind, "actor", "a subagent address is still a full logical address");
+  assert.equal(parseAddress("main"), null, "a bare local key is not a full address");
+  assert.equal(parseAddress(`${uid}:`), null);
+  assert.equal(parseAddress(":main"), null);
 });
 
 test("a record's socket directory is compared with native path identity", async (t) => {

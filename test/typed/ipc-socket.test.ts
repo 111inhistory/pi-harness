@@ -38,12 +38,13 @@ function errorCode(error: unknown): string | undefined {
   return error instanceof SocketWriteError ? error.code : undefined;
 }
 
-test("the inbound validator requires explicit sender and string content without a Main fallback", () => {
+test("the inbound validator requires explicit sender, target and string content without a Main fallback", () => {
   assert.deepEqual(
-    validateInboundFrame({ from: "sub_01", content: "hello", ignored: true }),
-    { from: "sub_01", content: "hello" },
+    validateInboundFrame({ from: "sub_01", to: "aaaaaaa1:main", content: "hello", ignored: true }),
+    { from: "sub_01", to: "aaaaaaa1:main", content: "hello" },
   );
-  assert.deepEqual(validateInboundFrame({ from: "sub_01", content: "" }), { from: "sub_01", content: "" });
+  assert.deepEqual(validateInboundFrame({ from: "sub_01", to: "aaaaaaa1:main", content: "" }),
+    { from: "sub_01", to: "aaaaaaa1:main", content: "" });
 
   const invalid: unknown[] = [
     null,
@@ -51,13 +52,16 @@ test("the inbound validator requires explicit sender and string content without 
     42,
     [],
     {},
-    { content: "missing sender" },
-    { from: "", content: "blank sender" },
-    { from: "   ", content: "blank sender" },
-    { from: 7, content: "numeric sender" },
-    { from: "sub_01" },
-    { from: "sub_01", content: 1 },
-    { from: "sub_01", content: null },
+    { content: "missing sender", to: "aaaaaaa1:main" },
+    { from: "", to: "aaaaaaa1:main", content: "blank sender" },
+    { from: "   ", to: "aaaaaaa1:main", content: "blank sender" },
+    { from: 7, to: "aaaaaaa1:main", content: "numeric sender" },
+    { from: "sub_01", to: "aaaaaaa1:main" },
+    { from: "sub_01", content: "missing target" },
+    { from: "sub_01", to: "", content: "blank target" },
+    { from: "sub_01", to: 7, content: "numeric target" },
+    { from: "sub_01", to: "aaaaaaa1:main", content: 1 },
+    { from: "sub_01", to: "aaaaaaa1:main", content: null },
   ];
   for (const frame of invalid) {
     assert.throws(
@@ -121,13 +125,13 @@ test("a supplied validator skips only the bad frame and the later valid frame st
   await server.ready;
 
   const frames = [
-    JSON.stringify({ content: "missing sender" }),
-    JSON.stringify({ from: "sub_02", content: "valid", extra: "dropped" }),
+    JSON.stringify({ to: "aaaaaaa1:main", content: "missing sender" }),
+    JSON.stringify({ from: "sub_02", to: "aaaaaaa1:main", content: "valid", extra: "dropped" }),
   ].join("\n") + "\n";
   await assert.rejects(writeSocket(server.address, frames), { code: 'invalid_message' });
   await waitFor(() => received.length === 1, "validated inbound frame");
 
-  assert.deepEqual(received, [{ from: "sub_02", content: "valid" }]);
+  assert.deepEqual(received, [{ from: "sub_02", to: "aaaaaaa1:main", content: "valid" }]);
   assert.equal(errors.length, 1);
   assert.equal((errors[0] as InboundFrameError).code, "invalid_message");
 });
@@ -172,32 +176,13 @@ test("platform transports classify endpoints without claiming ownership", () => 
   assert.equal(windowsIpc.key(String.raw`\\.\pipe\Case-Sensitive`), String.raw`\\.\pipe\case-sensitive`.toLowerCase());
 });
 
-test("endpoint namespace membership is address classification, not ownership", () => {
-  const socketDir = String.raw`C:\Users\fixture\Temp\pi-session\abcdef`;
-  const otherDir = String.raw`C:\Users\fixture\Temp\pi-session\123456`;
-  const main = windowsIpc.agentPath("Main", socketDir);
-  assert.equal(windowsIpc.belongsToNamespace(main, socketDir), true);
-  assert.equal(windowsIpc.belongsToNamespace(windowsIpc.broadcastPath("Main", socketDir), socketDir), true);
-  assert.equal(windowsIpc.belongsToNamespace(main, socketDir.toUpperCase()), true, "the pipe prefix folds the root's case");
-  assert.equal(windowsIpc.belongsToNamespace(main, otherDir), false, "another session's directory is another namespace");
-  assert.equal(windowsIpc.belongsToNamespace(String.raw`\\.\pipe\arbitrary-service`, socketDir), false);
-  assert.equal(windowsIpc.belongsToNamespace(String.raw`C:\data\file.sock`, socketDir), false);
-
-  assert.equal(unixIpc.belongsToNamespace("/tmp/root/abcdef/Main.sock", "/tmp/root/abcdef"), true);
-  assert.equal(unixIpc.belongsToNamespace("/tmp/root/abcdef/sub_01/children.sock", "/tmp/root/abcdef"), true);
-  assert.equal(unixIpc.belongsToNamespace("/tmp/root/abcdef/Main.sock", "/tmp/root/ABCDEF"), false, "POSIX paths stay case-sensitive");
-  assert.equal(unixIpc.belongsToNamespace("/tmp/root/abcdefg/Main.sock", "/tmp/root/abcdef"), false);
-  assert.equal(unixIpc.belongsToNamespace("/tmp/root/abcdef/notes.txt", "/tmp/root/abcdef"), false, "a plain file is not an endpoint");
-});
-
 const windowsRoot = String.raw`C:\Users\fixture\Temp\pi-session\abcdef`;
-test("Windows endpoints use a flat pipe namespace and distinct actor/broadcast names", () => {
+test("Windows endpoints use a flat pipe namespace and distinct endpoint names", () => {
   const main = windowsIpc.agentPath("Main", windowsRoot);
   const child = windowsIpc.agentPath("sub_01", windowsRoot);
-  const broadcast = windowsIpc.broadcastPath("main", windowsRoot);
   assert.ok(isWindowsPipe(main));
   assert.match(main, /pi-harness-[0-9a-f]{8}-Main\.sock$/);
-  assert.equal(new Set([main, child, broadcast]).size, 3);
+  assert.notEqual(main, child);
   assert.notEqual(main, windowsIpc.agentPath("Main", windowsRoot + "-other"));
   assert.equal(windowsIpc.key(main), windowsIpc.key(main.toUpperCase()));
   assert.ok(windowsIpc.isEndpoint(String.raw`\\.\pipe\external-service`));

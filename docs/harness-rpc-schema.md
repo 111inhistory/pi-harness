@@ -31,7 +31,7 @@ sha256sum --check schemas/SHA256SUMS
 | 校验目标 | 引用 | 说明 |
 | --- | --- | --- |
 | 任意帧 | 顶层 `oneOf` | `RpcRequest`、`RpcResponse`、`RpcEventFrame` 三选一 |
-| 客户端请求（严格） | `#/$defs/MethodRequest` | 按 `method` 字面量区分 38 个方法；要求必填参数的方法缺少 `params` 时校验失败 |
+| 客户端请求（严格） | `#/$defs/MethodRequest` | 按 `method` 字面量区分 41 个方法；要求必填参数的方法缺少 `params` 时校验失败 |
 | 客户端请求（通用） | `#/$defs/RpcRequest` | 只校验 `id`、`method`、可选 `params`；未知请求字段被 transport 忽略 |
 | 响应 | `#/$defs/RpcResponse` | `ok:true` 携带 `result`；`ok:false` 携带 `error`；`id` 可为 `null` |
 | 订阅帧 | `#/$defs/RpcEventFrame` | `{event:{subscription,seq,payload}}`；`seq` 从 1 起、每连接单调 |
@@ -63,8 +63,8 @@ sha256sum --check schemas/SHA256SUMS
 | `jobs.list` | `JobsListParams` | `JobsListResult` |
 | `jobs.get` | `JobIdParams` | `JobGetResult` |
 | `jobs.result` | `JobIdParams` | `JobRecordView` |
-| `subagent.create` | `SubagentCreateParams` | `CreatedAgents` |
-| `subagent.stop` | `SubagentStopParams` | `StopResult` |
+| `subagent.create` | `SubagentCreateParams` | `CreatedBatch` |
+| `subagent.signal` | `SubagentSignalParams` | `SignalResult` |
 | `message.send` | `MessageSendParams` | `MessageSendResult` |
 | `history.read` | `JobIdParams` | `HistoryReadResult` |
 | `stream.subscribe` | `JobIdParams` | `StreamSubscribeResult` |
@@ -136,11 +136,11 @@ schema 与实现使用同一套集合模型，不把成员关系压成单一状�
 
 ## 实现与契约差异
 
-当前 schema 与 router/ports 的线上输出一致，没有需要保留的实现差异。`message.send` 的跨会话回执 `{ok:true, delivered:"session", path}` 仍在 `MessageSendResult` 联合中；接口契约方法表未逐字命名该分支。
+当前 schema 与 router/ports 的线上输出一致，没有需要保留的实现差异。`message.send` 的跨会话回执 `{ok:true, delivered:"session", to}` 仍在 `MessageSendResult` 联合中；接口契约方法表未逐字命名该分支。
 
 ## 验证
 
-- `npm run check:rpc-schema`：38 个方法与 `$defs` 覆盖一致；`MethodRequest` 每个方法恰好一个分支；`$ref` 均可解析；样例请求／响应／事件／发现记录通过 TypeBox 校验；`valid/`、`invalid/`、`transport/`、`stateful/` 夹具按 manifest 声明验证（含 `conformance` 标签、`nativeValidity` 标签、`conversation` 逐帧 schema 与 `scenarios` 有状态序列）；`strict` 对话还校验上游 `AssistantMessage`/`Usage`/`toolCall` 必填字段；schema 与 manifest 的生成字节匹配 Git 追踪的 SHA-256。
+- `npm run check:rpc-schema`：41 个方法与 `$defs` 覆盖一致；`MethodRequest` 每个方法恰好一个分支；`$ref` 均可解析；样例请求／响应／事件／发现记录通过 TypeBox 校验；`valid/`、`invalid/`、`transport/`、`stateful/` 夹具按 manifest 声明验证（含 `conformance` 标签、`nativeValidity` 标签、`conversation` 逐帧 schema 与 `scenarios` 有状态序列）；`strict` 对话还校验上游 `AssistantMessage`/`Usage`/`toolCall` 必填字段；schema 与 manifest 的生成字节匹配 Git 追踪的 SHA-256。
 - `test/typed/harness-rpc-schema.test.ts`：用真实 `createRouter`、工具端口、子 Agent 端口、历史端口与执行流端口产生结果，逐个方法校验 `$defs`；覆盖 `record:null`、`history_unavailable`、`stream` 的 `session`/`job` 事件、广播与跨会话回执、错误 envelope 与全部方法请求。
 - 夹具是普通 JSON/NDJSON，其他语言可直接读取；`scripts/check-rpc-schema.mjs` 只是仓库 CI，不是跨语言运行时。
 - 传输、实际 SDK 宿主与 CLI 子进程测试使用平台地址生成器，Windows 对应真实 Named Pipe；平台验收以 CI 结果为准。真实在线供应商多轮不在这些离线测试的覆盖范围。

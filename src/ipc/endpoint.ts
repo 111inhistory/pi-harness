@@ -201,6 +201,55 @@ export function ensurePrivateSocketRoot(
   };
 }
 
+export interface DirectoryRelease {
+  removed: boolean;
+  reason: "released" | "missing" | "not_owned" | "not_empty" | "error";
+  error: Error | null;
+}
+
+/**
+ * Remove one empty directory this root created for its endpoint.
+ *
+ * The directory is only a container for the endpoint, so cleanup must not
+ * remove anything a later instance or the user put there: the recorded
+ * device/inode identity, the effective-user ownership, the private mode and
+ * emptiness are all re-checked first, and a failed or moved directory is left
+ * in place with the reason surfaced. `rmdir` itself refuses a non-empty
+ * directory, so no recursive delete is ever performed.
+ */
+export function releaseOwnedEmptyDirectory(
+  directory: string,
+  identity: EndpointIdentity,
+  userId: number | null = effectiveUserId(),
+): DirectoryRelease {
+  try {
+    const current = inspectEndpoint(directory);
+    if (current.kind === "missing") return { removed: false, reason: "missing", error: null };
+    if (current.kind !== "directory" || current.identity === null) {
+      return { removed: false, reason: "not_owned", error: null };
+    }
+    if (current.identity.dev !== identity.dev || current.identity.ino !== identity.ino) {
+      return { removed: false, reason: "not_owned", error: null };
+    }
+    if (process.platform === "win32") {
+      // Windows has no POSIX uid/mode on a directory; the private-directory
+      // helper checks the effective ACL instead of faking POSIX semantics.
+      if (!windowsPrivateDirectory(directory)) return { removed: false, reason: "not_owned", error: null };
+    } else {
+      if (userId !== null && current.uid !== userId) return { removed: false, reason: "not_owned", error: null };
+      if (current.mode === null || (current.mode & 0o077) !== 0) return { removed: false, reason: "not_owned", error: null };
+    }
+    fs.rmdirSync(directory);
+    return { removed: true, reason: "released", error: null };
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return { removed: false, reason: "missing", error: null };
+    if (errorCode(error) === "ENOTEMPTY" || errorCode(error) === "EEXIST") {
+      return { removed: false, reason: "not_empty", error: null };
+    }
+    return { removed: false, reason: "error", error: error instanceof Error ? error : new Error(String(error)) };
+  }
+}
+
 /**
  * Strict containment inside one Unix endpoint directory.
  *

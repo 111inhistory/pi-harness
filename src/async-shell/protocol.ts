@@ -22,6 +22,7 @@ export const ASYNC_SHELL_KIND = "async-shell";
 export const MAX_RESULT_BYTES = 32 * 1024;
 
 const MAX_ID_CHARS = 12;
+const MAX_AGENT_ID_CHARS = 64;
 const MAX_TOKEN_CHARS = 512;
 const MAX_PATH_CHARS = 4096;
 
@@ -46,6 +47,8 @@ export interface ShellResult {
 
 export interface AsyncShellRegisterFrame {
   readonly kind: typeof ASYNC_SHELL_KIND;
+  /** The Actor that owns this execution lease; the root routes by it. */
+  readonly agentId: string;
   readonly token: string;
   readonly operation: "register";
   readonly id: string;
@@ -55,6 +58,8 @@ export interface AsyncShellRegisterFrame {
 
 export interface AsyncShellCompleteFrame {
   readonly kind: typeof ASYNC_SHELL_KIND;
+  /** The Actor that owns this execution lease; the root routes by it. */
+  readonly agentId: string;
   readonly token: string;
   readonly operation: "complete";
   readonly id: string;
@@ -147,6 +152,7 @@ function shellResult(value: unknown, id: string): ShellResult {
 export function validateAsyncShellFrame(value: unknown): AsyncShellFrame {
   if (!record(value)) throw new AsyncShellFrameError("The frame must be an object.");
   if (value["kind"] !== ASYNC_SHELL_KIND) throw new AsyncShellFrameError("The frame is not an async-shell frame.");
+  const agentId = text(value["agentId"], "agentId", MAX_AGENT_ID_CHARS);
   const token = text(value["token"], "token", MAX_TOKEN_CHARS);
   const id = text(value["id"], "id", MAX_ID_CHARS);
   if (!isTaskId(id)) throw new AsyncShellFrameError("id must have the form job_<8 lowercase hexadecimal digits>.");
@@ -157,12 +163,12 @@ export function validateAsyncShellFrame(value: unknown): AsyncShellFrame {
     if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
       throw new AsyncShellFrameError("pid must be a positive integer.");
     }
-    return { kind: ASYNC_SHELL_KIND, token, operation, id, directory, pid };
+    return { kind: ASYNC_SHELL_KIND, agentId, token, operation, id, directory, pid };
   }
   if (operation === "complete") {
     if (typeof value["notify"] !== "boolean") throw new AsyncShellFrameError("notify must be a boolean.");
     return {
-      kind: ASYNC_SHELL_KIND, token, operation, id, notify: value["notify"],
+      kind: ASYNC_SHELL_KIND, agentId, token, operation, id, notify: value["notify"],
       result: shellResult(value["result"], id),
     };
   }

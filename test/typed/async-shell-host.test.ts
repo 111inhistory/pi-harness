@@ -23,13 +23,13 @@ function fixture(options: { deliver?: () => Promise<void>; cancel?: () => Promis
   const events: string[] = [];
   const host = new AsyncShellHost({
     accepting: () => true,
-    address: owner => `/tmp/project/${owner}.sock`,
+    mainAddress: () => '/tmp/project/main.sock',
     deliver: async owner => { events.push(`deliver:${owner}`); await options.deliver?.(); },
     wake: owner => { events.push(`wake:${owner}`); },
     cancel: async () => { events.push('cancel'); await options.cancel?.(); },
   });
   const frame = (owner: string) => ({
-    kind: 'async-shell', token: host.environment(owner).PI_ASYNC_SHELL_TOKEN,
+    kind: 'async-shell', agentId: owner, token: host.environment(owner).PI_ASYNC_SHELL_TOKEN,
     operation: 'register', id, directory, pid: process.pid,
   });
   return { host, events, frame };
@@ -84,7 +84,9 @@ test('execution tokens isolate recipients and fence revoked execution callbacks'
   const { host, frame } = fixture();
   const old = frame('sub_1');
   frame('sub_2');
-  await assert.rejects(host.receive('sub_2', old), /no longer owns/);
+  await assert.rejects(host.receive('sub_2', old), /names another Agent/);
+  await assert.rejects(host.receive('sub_1', { ...old, agentId: 'sub_2' }), /names another Agent/);
+  await assert.rejects(host.receive('sub_2', { ...old, agentId: 'sub_2' }), /no longer owns/);
   await assert.rejects(host.receive('sub_1', { ...old, directory: '/tmp/project/foreign-task' }), /does not match/);
   assert.equal(host.hasPending('sub_1'), false);
   await host.receive('sub_1', old);

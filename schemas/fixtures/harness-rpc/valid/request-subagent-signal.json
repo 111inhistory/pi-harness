@@ -1,0 +1,8 @@
+{
+  "id": "signal-1",
+  "method": "subagent.signal",
+  "params": {
+    "target": "01a1deac:sub_1-1",
+    "action": "interrupt"
+  }
+}

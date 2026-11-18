@@ -2,9 +2,9 @@
  * Resolved Harness settings as the Subagent runtime consumes them.
  *
  * These cases exercise the production runtime with its own config snapshot:
- * depth admission, per-depth Budget profiles, the live active-children limit
- * (independent of the fixed list window), the deadline watch, and historical
- * topology whose depth is above a reduced maximum.
+ * depth admission, per-depth Budget profiles, the three independent per-parent
+ * limits (batches, direct subagents and the inherited subset), the deadline
+ * watch, and historical topology whose depth is above a reduced maximum.
  */
 
 import assert from "node:assert/strict";
@@ -16,6 +16,10 @@ import {
   createSubagentRuntime,
   type JobRequest,
 } from "../../src/subagent/runtime.ts";
+import { formatAddress, parseActorKey } from "../../src/subagent/address.ts";
+
+const SESSION = "01a1deac";
+const addressOf = (agentId: string): string => formatAddress(SESSION, agentId);
 
 function config(value: unknown) {
   return resolveHarnessConfig([{ source: "test", value }]);
@@ -51,12 +55,40 @@ function adapter() {
   };
 }
 
-function completedJob(jobId: string, agentId: string, createdBy: string, task: string) {
+/** One restored Actor description. */
+function restoredActor(
+  agentId: string,
+  depth: number,
+  parentAgentId: string | null,
+  kind: "fresh" | "inherited" = "fresh",
+  stoppedOrder = depth,
+) {
+  const key = parseActorKey(agentId);
+  assert.ok(key !== null && key.batch !== null, `${agentId} is a subagent actor key`);
+  const goal = `goal of ${agentId}`;
   return {
-    jobId,
+    agentId,
+    name: null,
+    parentAgentId,
+    depth,
+    batch: key.batch,
+    member: key.member,
+    goal,
+    context: null,
+    roster: [{ id: agentId, name: null, goal }],
+    kind,
+    stoppedOrder,
+  };
+}
+
+function completedJob(agentId: string, createdBy: string) {
+  return {
+    jobId: agentId,
     agentId,
     createdBy,
-    spec: { name: null, task, context: null, inheritContext: false, inheritedContext: null },
+    // The canonical v3 persisted spec. The context kind lives on the Actor;
+    // restoration must derive it from there instead of expecting a third field.
+    spec: { kind: "initial", inheritedContext: null },
     started: true,
     startEntryId: "e0",
     end: {
@@ -72,6 +104,7 @@ function completedJob(jobId: string, agentId: string, createdBy: string, task: s
 test("every reachable depth uses its configured Budget profile", () => {
   const fake = adapter();
   const runtime = createSubagentRuntime({
+    session: SESSION,
     config: config({ subagent: { maxDepth: 3, budgetsByDepth: {
       3: {
         modelCalls: { soft: 5, hard: 7 },
@@ -82,11 +115,11 @@ test("every reachable depth uses its configured Budget profile", () => {
     startJob: (request) => fake.startJob(request),
   });
 
-  const first = runtime.create({ tasks: [{ task: "depth one" }] }).items[0];
+  const first = runtime.create({ agents: [{ goal: "depth one" }] }).items[0];
   assert.ok(first);
-  const second = runtime.create({ tasks: [{ task: "depth two" }] }, { parentAgentId: first.id }).items[0];
+  const second = runtime.create({ agents: [{ goal: "depth two" }] }, { parentAgentId: first.id }).items[0];
   assert.ok(second);
-  const third = runtime.create({ tasks: [{ task: "depth three" }] }, { parentAgentId: second.id }).items[0];
+  const third = runtime.create({ agents: [{ goal: "depth three" }] }, { parentAgentId: second.id }).items[0];
   assert.ok(third);
 
   assert.deepEqual(runtime.list().agents.map((agent) => agent.depth), [1, 2, 3]);
@@ -100,34 +133,34 @@ test("every reachable depth uses its configured Budget profile", () => {
     [7_200_000, 3_600_000, 2_000],
   );
   assert.throws(
-    () => runtime.create({ tasks: [{ task: "depth four" }] }, { parentAgentId: third.id }),
+    () => runtime.create({ agents: [{ goal: "depth four" }] }, { parentAgentId: third.id }),
     (error: unknown) => error instanceof SubagentError
       && error.code === "max_depth_exceeded"
       && error.detail.maxDepth === 3,
   );
 });
 
-test("the configured active-children limit is live admission, not the list window", async () => {
+test("the configured direct-subagent limit is live admission, not the list window", async () => {
   const wide = adapter();
   const runtime = createSubagentRuntime({
-    config: config({ subagent: { maxActiveChildren: 6 } }),
+    session: SESSION,
+    config: config({ subagent: { maxActiveSubagents: 6 } }),
     startJob: (request) => wide.startJob(request),
   });
   const created = runtime.create({
-    tasks: Array.from({ length: 6 }, (_, index) => ({ task: `child ${index}` })),
+    agents: Array.from({ length: 6 }, (_, index) => ({ goal: `child ${index}` })),
   }).items;
   assert.equal(created.length, 6);
   assert.equal(runtime.list({ status: "running" }).agents.length, 6);
   assert.throws(
-    () => runtime.create({ tasks: [{ task: "seventh" }] }),
+    () => runtime.create({ agents: [{ goal: "seventh" }] }),
     (error: unknown) => error instanceof SubagentError
-      && error.code === "child_limit_exceeded"
-      && error.detail.kind === "fresh"
+      && error.code === "subagent_limit_exceeded"
       && error.detail.activeChildren === 6
       && error.detail.requestedChildren === 1
-      && error.detail.maxActiveChildren === 6,
+      && error.detail.maxActiveSubagents === 6,
   );
-  const main = runtime.listDetailed(null, { callerId: "Main" });
+  const main = runtime.listDetailed(null, { callerId: "main" });
   assert.ok(main);
   assert.equal(main.children.length, 4, "the display window stays four rows independently of admission");
 
@@ -136,38 +169,74 @@ test("the configured active-children limit is live admission, not the list windo
 
   const narrow = adapter();
   const narrowRuntime = createSubagentRuntime({
-    config: config({ subagent: { maxActiveChildren: 2 } }),
+    session: SESSION,
+    config: config({ subagent: { maxActiveSubagents: 2 } }),
     startJob: (request) => narrow.startJob(request),
   });
-  const first = narrowRuntime.create({ tasks: [{ task: "one" }] }).items[0];
+  const first = narrowRuntime.create({ agents: [{ goal: "one" }] }).items[0];
   assert.ok(first);
-  const second = narrowRuntime.create({ tasks: [{ task: "two" }] }).items[0];
+  const second = narrowRuntime.create({ agents: [{ goal: "two" }] }).items[0];
   assert.ok(second);
   assert.throws(
-    () => narrowRuntime.create({ tasks: [{ task: "three" }] }),
+    () => narrowRuntime.create({ agents: [{ goal: "three" }] }),
     (error: unknown) => error instanceof SubagentError
-      && error.code === "child_limit_exceeded"
-      && error.detail.kind === "fresh"
+      && error.code === "subagent_limit_exceeded"
       && error.detail.activeChildren === 2
       && error.detail.requestedChildren === 1
-      && error.detail.maxActiveChildren === 2,
+      && error.detail.maxActiveSubagents === 2,
   );
   // A freed slot is reused immediately.
   narrow.handle(first.id).resolve({ result: "done" });
   await narrowRuntime.jobDone(first.id);
-  assert.equal(narrowRuntime.create({ tasks: [{ task: "three" }] }).items.length, 1);
+  assert.equal(narrowRuntime.create({ agents: [{ goal: "three" }] }).items.length, 1);
+});
+
+test("the batch limit counts live batches, not their members", async () => {
+  const fake = adapter();
+  const runtime = createSubagentRuntime({
+    session: SESSION,
+    config: config({ subagent: { maxActiveBatches: 2, maxActiveSubagents: 6 } }),
+    startJob: (request) => fake.startJob(request),
+  });
+  const first = runtime.create({ agents: [{ goal: "b1m1" }, { goal: "b1m2" }, { goal: "b1m3" }] }).items;
+  const second = runtime.create({ agents: [{ goal: "b2m1" }, { goal: "b2m2" }] }).items;
+  assert.equal(runtime.list({ status: "running" }).agents.length, 5, "the member cap still has room");
+  assert.throws(
+    () => runtime.create({ agents: [{ goal: "b3m1" }] }),
+    (error: unknown) => error instanceof SubagentError
+      && error.code === "batch_limit_exceeded"
+      && error.detail.activeBatches === 2
+      && error.detail.maxActiveBatches === 2,
+  );
+
+  // One batch stays live while any member runs; finishing one member frees no
+  // batch slot, but finishing every member of the first batch does.
+  fake.handle(first[0]!.id).resolve({ result: "done" });
+  await runtime.jobDone(first[0]!.id);
+  assert.throws(
+    () => runtime.create({ agents: [{ goal: "b3m1" }] }),
+    (error: unknown) => error instanceof SubagentError && error.code === "batch_limit_exceeded",
+  );
+  for (const item of first.slice(1)) {
+    fake.handle(item.id).resolve({ result: "done" });
+    await runtime.jobDone(item.id);
+  }
+  const third = runtime.create({ agents: [{ goal: "b3m1" }, { goal: "b3m2" }] }).items;
+  assert.equal(third.length, 2);
+  void second;
 });
 
 test("a configured depth-one maximum admits a leaf child but no descendant", () => {
   const fake = adapter();
   const runtime = createSubagentRuntime({
+    session: SESSION,
     config: config({ subagent: { maxDepth: 1 } }),
     startJob: (request) => fake.startJob(request),
   });
-  const leaf = runtime.create({ tasks: [{ task: "only child" }] }).items[0];
+  const leaf = runtime.create({ agents: [{ goal: "only child" }] }).items[0];
   assert.ok(leaf);
   assert.throws(
-    () => runtime.create({ tasks: [{ task: "grandchild" }] }, { parentAgentId: leaf.id }),
+    () => runtime.create({ agents: [{ goal: "grandchild" }] }, { parentAgentId: leaf.id }),
     (error: unknown) => error instanceof SubagentError
       && error.code === "max_depth_exceeded"
       && error.detail.maxDepth === 1,
@@ -180,6 +249,7 @@ test("the runtime deadline watch uses the configured active-time limit", async (
   t.mock.method(performance, "now", () => now);
   const fake = adapter();
   const runtime = createSubagentRuntime({
+    session: SESSION,
     config: config({ subagent: { budgetsByDepth: {
       1: {
         modelCalls: { soft: 2, hard: 3 },
@@ -189,7 +259,7 @@ test("the runtime deadline watch uses the configured active-time limit", async (
     } } }),
     startJob: (request) => fake.startJob(request),
   });
-  const item = runtime.create({ tasks: [{ task: "watched" }] }).items[0];
+  const item = runtime.create({ agents: [{ goal: "watched" }] }).items[0];
   assert.ok(item);
   const profile = fake.handles[0]?.request.budget.snapshot({ detail: true }).profile;
   assert.equal(profile?.activeTimeMs.hard, 2_000);
@@ -206,309 +276,294 @@ test("the runtime deadline watch uses the configured active-time limit", async (
 
 test("historical depth stays readable but cannot be revived under a reduced maximum", async () => {
   const runtime = createSubagentRuntime({
+    session: SESSION,
     config: config({ subagent: { maxDepth: 2 } }),
     startJob: () => ({ done: new Promise(() => {}), cancel() {} }),
   });
   const restored = runtime.restoreState({
     actors: [
-      { agentId: "sub_01", name: null, parentAgentId: null, depth: 1, stoppedOrder: 1 },
-      { agentId: "sub_01_01", name: null, parentAgentId: "sub_01", depth: 2, stoppedOrder: 2 },
-      { agentId: "sub_01_01_01", name: null, parentAgentId: "sub_01_01", depth: 3, stoppedOrder: 3 },
+      restoredActor("sub_2", 1, null, "fresh", 1),
+      restoredActor("sub_3", 2, "sub_2", "fresh", 2),
+      restoredActor("sub_4", 3, "sub_3", "fresh", 3),
     ],
     jobs: [
-      completedJob("sub_01", "sub_01", "Main", "first generation"),
-      completedJob("sub_01_01", "sub_01_01", "sub_01", "second generation"),
-      completedJob("sub_01_01_01", "sub_01_01_01", "sub_01_01", "third generation"),
+      completedJob("sub_2", "main"),
+      completedJob("sub_3", "sub_2"),
+      completedJob("sub_4", "sub_3"),
     ],
   });
   assert.deepEqual(restored.interrupted, []);
   assert.deepEqual(runtime.list().agents.map((agent) => [agent.agentId, agent.depth]), [
-    ["sub_01", 1],
-    ["sub_01_01", 2],
-    ["sub_01_01_01", 3],
+    ["sub_2", 1],
+    ["sub_3", 2],
+    ["sub_4", 3],
   ]);
-  const record = runtime.jobRecord("sub_01_01_01");
+  const record = runtime.jobRecord("sub_4");
   assert.equal(record?.status, "completed");
   assert.equal(record?.result, "done");
 
   await assert.rejects(
-    runtime.sendMessage({ from: "Main", to: "sub_01_01_01", content: "continue" }),
+    runtime.sendMessage({ from: addressOf("main"), to: addressOf("sub_4"), content: "continue" }),
     (error: unknown) => error instanceof SubagentError
       && error.code === "max_depth_exceeded"
-      && error.detail.agentId === "sub_01_01_01"
       && error.detail.depth === 3
       && error.detail.maxDepth === 2,
   );
   assert.throws(
-    () => runtime.create({ tasks: [{ task: "depth three again" }] }, { parentAgentId: "sub_01_01" }),
+    () => runtime.create({ agents: [{ goal: "depth three again" }] }, { parentAgentId: "sub_3" }),
     (error: unknown) => error instanceof SubagentError
       && error.code === "max_depth_exceeded"
       && error.detail.maxDepth === 2,
   );
   // A depth that the current configuration still admits keeps working.
-  const admitted = runtime.create({ tasks: [{ task: "depth two again" }] }, { parentAgentId: "sub_01" });
+  const admitted = runtime.create({ agents: [{ goal: "depth two again" }] }, { parentAgentId: "sub_2" });
   assert.equal(runtime.list().agents.find((agent) => agent.agentId === admitted.items[0]?.id)?.depth, 2);
 });
 
-test("Fresh pool full while an Inherited child is still admitted, and the inverse", () => {
+test("the inherited cap is a subset of the direct-subagent cap, not a separate pool", () => {
   const fake = adapter();
   const capture = () => ({ systemPrompt: "p", tools: [], entries: [] });
   const runtime = createSubagentRuntime({
-    config: config({ subagent: { maxActiveChildren: 2, maxActiveInheritedChildren: 1 } }),
+    session: SESSION,
+    config: config({ subagent: { maxActiveSubagents: 5, maxActiveInheritedSubagents: 2 } }),
     startJob: (request) => fake.startJob(request),
   });
 
-  // Admit 2 Fresh children -> fresh pool full (2/2)
-  runtime.create({ tasks: [{ task: "fresh 1" }, { task: "fresh 2" }] });
-  assert.throws(
-    () => runtime.create({ tasks: [{ task: "fresh 3" }] }),
-    (error: unknown) => error instanceof SubagentError
-      && error.code === "child_limit_exceeded"
-      && error.detail.kind === "fresh"
-      && error.detail.activeChildren === 2
-      && error.detail.maxActiveChildren === 2,
+  // Two Fresh and two Inherited children: total 4/5, inherited 2/2.
+  runtime.create({ agents: [{ goal: "fresh 1" }, { goal: "fresh 2" }] });
+  runtime.create(
+    { agents: [{ goal: "inherited 1", inheritContext: true }, { goal: "inherited 2", inheritContext: true }] },
+    { captureInheritedContext: capture },
   );
 
-  // Inherited child is still admitted while Fresh pool is full
-  const inherited = runtime.create(
-    { tasks: [{ task: "inherited 1", inheritContext: true }] },
-    { captureInheritedContext: capture },
-  ).items[0];
-  assert.ok(inherited);
-
-  // Now Inherited pool is also full (1/1)
+  // A third Inherited child still fits the total cap but exceeds the subset.
   assert.throws(
     () => runtime.create(
-      { tasks: [{ task: "inherited 2", inheritContext: true }] },
+      { agents: [{ goal: "inherited 3", inheritContext: true }] },
       { captureInheritedContext: capture },
     ),
     (error: unknown) => error instanceof SubagentError
-      && error.code === "child_limit_exceeded"
-      && error.detail.kind === "inherited"
-      && error.detail.activeChildren === 1
-      && error.detail.maxActiveChildren === 1,
+      && error.code === "inherited_limit_exceeded"
+      && error.detail.activeInherited === 2
+      && error.detail.requestedInherited === 1
+      && error.detail.maxActiveInheritedSubagents === 2,
   );
 
-  // Inverse: Inherited pool full while Fresh child is still admitted
-  const fake2 = adapter();
-  const runtime2 = createSubagentRuntime({
-    config: config({ subagent: { maxActiveChildren: 1, maxActiveInheritedChildren: 2 } }),
-    startJob: (request) => fake2.startJob(request),
-  });
-  runtime2.create(
-    { tasks: [{ task: "inh 1", inheritContext: true }, { task: "inh 2", inheritContext: true }] },
-    { captureInheritedContext: capture },
-  );
+  // A Fresh child is admitted while the inherited subset is full.
+  runtime.create({ agents: [{ goal: "fresh 3" }] });
+  assert.equal(runtime.list({ status: "running" }).agents.length, 5);
   assert.throws(
-    () => runtime2.create(
-      { tasks: [{ task: "inh 3", inheritContext: true }] },
-      { captureInheritedContext: capture },
-    ),
+    () => runtime.create({ agents: [{ goal: "fresh 4" }] }),
     (error: unknown) => error instanceof SubagentError
-      && error.code === "child_limit_exceeded"
-      && error.detail.kind === "inherited"
-      && error.detail.activeChildren === 2
-      && error.detail.maxActiveChildren === 2,
+      && error.code === "subagent_limit_exceeded"
+      && error.detail.activeChildren === 5
+      && error.detail.maxActiveSubagents === 5,
   );
-  const fresh = runtime2.create({ tasks: [{ task: "fresh 1" }] }).items[0];
-  assert.ok(fresh);
 });
 
-test("a mixed batch validates each pool atomically and refusal detail reports kind and pool limit", () => {
+test("the runtime bounds an inherited declaration above the total by the total", () => {
   const fake = adapter();
   const capture = () => ({ systemPrompt: "p", tools: [], entries: [] });
   const runtime = createSubagentRuntime({
-    config: config({ subagent: { maxActiveChildren: 2, maxActiveInheritedChildren: 2 } }),
+    session: SESSION,
+    // The inherited declaration stays at its default 3; the total is 2.
+    config: config({ subagent: { maxActiveSubagents: 2 } }),
+    startJob: (request) => fake.startJob(request),
+  });
+  const created = runtime.create({
+    agents: [
+      { goal: "i1", inheritContext: true },
+      { goal: "i2", inheritContext: true },
+    ],
+  }, { captureInheritedContext: capture }).items;
+  assert.equal(created.length, 2, "the declared inherited cap does not override the smaller total");
+  assert.equal(runtime.list({ status: "running" }).agents.length, 2);
+
+  // A third Inherited child is refused by the total, the effective upper bound.
+  assert.throws(
+    () => runtime.create(
+      { agents: [{ goal: "i3", inheritContext: true }] },
+      { captureInheritedContext: capture },
+    ),
+    (error: unknown) => error instanceof SubagentError
+      && error.code === "subagent_limit_exceeded"
+      && error.detail.activeChildren === 2
+      && error.detail.maxActiveSubagents === 2,
+  );
+});
+
+test("a mixed batch validates every limit atomically and refusal detail names the limit", () => {
+  const fake = adapter();
+  const capture = () => ({ systemPrompt: "p", tools: [], entries: [] });
+  const runtime = createSubagentRuntime({
+    session: SESSION,
+    config: config({ subagent: { maxActiveSubagents: 4, maxActiveInheritedSubagents: 2 } }),
     startJob: (request) => fake.startJob(request),
   });
 
-  // Mixed batch where Fresh exceeds: 3 fresh + 1 inherited (caps: 2 fresh, 2 inherited)
+  // Mixed batch where the direct-subagent cap is exceeded before registration.
   assert.throws(
     () => runtime.create({
-      tasks: [
-        { task: "f1" },
-        { task: "f2" },
-        { task: "f3" },
-        { task: "i1", inheritContext: true },
+      agents: [
+        { goal: "f1" },
+        { goal: "f2" },
+        { goal: "f3" },
+        { goal: "f4" },
+        { goal: "i1", inheritContext: true },
       ],
     }, { captureInheritedContext: capture }),
     (error: unknown) => error instanceof SubagentError
-      && error.code === "child_limit_exceeded"
-      && error.message === 'Agent Main already has 0 active fresh children; at most 2 are allowed.'
+      && error.code === "subagent_limit_exceeded"
+      && error.message === "main already has 0 live direct children; at most 4 are allowed."
       && error.detail.parentAgentId === null
-      && error.detail.kind === "fresh"
       && error.detail.activeChildren === 0
-      && error.detail.requestedChildren === 3
-      && error.detail.maxActiveChildren === 2,
+      && error.detail.requestedChildren === 5
+      && error.detail.maxActiveSubagents === 4,
   );
   // Atomic: nothing was registered
   assert.equal(runtime.list().agents.length, 0);
 
-  // Mixed batch where Inherited exceeds: 1 fresh + 3 inherited
+  // The inherited subset is checked after the total, so it refuses on its own.
   assert.throws(
     () => runtime.create({
-      tasks: [
-        { task: "f1" },
-        { task: "i1", inheritContext: true },
-        { task: "i2", inheritContext: true },
-        { task: "i3", inheritContext: true },
+      agents: [
+        { goal: "f1" },
+        { goal: "i1", inheritContext: true },
+        { goal: "i2", inheritContext: true },
+        { goal: "i3", inheritContext: true },
       ],
     }, { captureInheritedContext: capture }),
     (error: unknown) => error instanceof SubagentError
-      && error.code === "child_limit_exceeded"
-      && error.message === 'Agent Main already has 0 active inherited children; at most 2 are allowed.'
+      && error.code === "inherited_limit_exceeded"
+      && error.message === "main already has 0 live inherited children; at most 2 are allowed."
       && error.detail.parentAgentId === null
-      && error.detail.kind === "inherited"
-      && error.detail.activeChildren === 0
-      && error.detail.requestedChildren === 3
-      && error.detail.maxActiveChildren === 2,
+      && error.detail.activeInherited === 0
+      && error.detail.requestedInherited === 3
+      && error.detail.maxActiveInheritedSubagents === 2,
   );
   assert.equal(runtime.list().agents.length, 0);
 
-  // Mixed batch within limits admits all atomically
+  // Mixed batch within every limit admits all atomically
   const created = runtime.create({
-    tasks: [
-      { task: "f1" },
-      { task: "f2" },
-      { task: "i1", inheritContext: true },
-      { task: "i2", inheritContext: true },
+    agents: [
+      { goal: "f1" },
+      { goal: "f2" },
+      { goal: "i1", inheritContext: true },
+      { goal: "i2", inheritContext: true },
     ],
   }, { captureInheritedContext: capture });
   assert.equal(created.items.length, 4);
   assert.equal(runtime.list({ status: "running" }).agents.length, 4);
 });
 
-test("reviving an Inherited agent consumes the inherited pool while reviving a Fresh agent consumes the fresh pool", async () => {
+test("reviving an Inherited agent consumes the inherited subset while a Fresh revival consumes only the total", async () => {
   const fake = adapter();
   const capture = () => ({ systemPrompt: "p", tools: [], entries: [] });
   const runtime = createSubagentRuntime({
-    config: config({ subagent: { maxActiveChildren: 1, maxActiveInheritedChildren: 1 } }),
+    session: SESSION,
+    config: config({ subagent: { maxActiveSubagents: 3, maxActiveInheritedSubagents: 1 } }),
     startJob: (request) => fake.startJob(request),
     deliverMessage: async () => ({ accepted: true }),
   });
 
-  const fresh1 = runtime.create({ tasks: [{ task: "fresh 1" }] }).items[0]!;
+  const fresh1 = runtime.create({ agents: [{ goal: "fresh 1" }] }).items[0]!;
   const inh1 = runtime.create(
-    { tasks: [{ task: "inh 1", inheritContext: true }] },
+    { agents: [{ goal: "inh 1", inheritContext: true }] },
     { captureInheritedContext: capture },
   ).items[0]!;
 
-  // Finish both so they are idle
+  // Finish both so they are idle.
   fake.handle(fresh1.id).resolve({ result: "done" });
   await runtime.jobDone(fresh1.id);
   fake.handle(inh1.id).resolve({ result: "done" });
   await runtime.jobDone(inh1.id);
   assert.equal(runtime.list({ status: "running" }).agents.length, 0);
 
-  // Admit a fresh child: fresh pool full (1/1), inherited pool free (0/1)
-  const fresh2 = runtime.create({ tasks: [{ task: "fresh 2" }] }).items[0]!;
-  assert.ok(fresh2);
-
-  // Reviving fresh1 fails because fresh pool is full
-  await assert.rejects(
-    runtime.sendMessage({ from: "Main", to: fresh1.id, content: "wake" }),
-    (error: unknown) => error instanceof SubagentError
-      && error.code === "child_limit_exceeded"
-      && error.detail.kind === "fresh"
-      && error.detail.activeChildren === 1
-      && error.detail.requestedChildren === 1
-      && error.detail.maxActiveChildren === 1
-      && error.message.includes("active fresh children"),
-  );
-
-  // Reviving inh1 succeeds because inherited pool has capacity (0/1)
-  const inhReceipt = await runtime.sendMessage({ from: "Main", to: inh1.id, content: "wake" });
-  assert.ok(inhReceipt.ok);
-  const inhJobId = "jobId" in inhReceipt ? inhReceipt.jobId : null;
-  assert.ok(inhJobId, "the inherited revival registered its continuation Job");
-
-  // Now inherited pool is full (1/1). Free fresh pool by finishing fresh2
-  fake.handle(fresh2.id).resolve({ result: "done" });
-  await runtime.jobDone(fresh2.id);
-
-  // Finish inh1 again so it becomes idle, then create inh2 to fill inherited pool
-  fake.handle(inhJobId).resolve({ result: "done" });
-  await runtime.jobDone(inhJobId);
+  // One live Inherited and one live Fresh child: total 2/3, inherited 1/1.
   const inh2 = runtime.create(
-    { tasks: [{ task: "inh 2", inheritContext: true }] },
+    { agents: [{ goal: "inh 2", inheritContext: true }] },
     { captureInheritedContext: capture },
   ).items[0]!;
-  assert.ok(inh2);
+  const fresh2 = runtime.create({ agents: [{ goal: "fresh 2" }] }).items[0]!;
+  assert.ok(inh2 && fresh2);
 
-  // Reviving inh1 now fails because inherited pool is full (1/1)
+  // Reviving inh1 keeps the total in range but exceeds the inherited subset.
   await assert.rejects(
-    runtime.sendMessage({ from: "Main", to: inh1.id, content: "wake again" }),
+    runtime.sendMessage({ from: addressOf("main"), to: inh1.address, content: "wake" }),
     (error: unknown) => error instanceof SubagentError
-      && error.code === "child_limit_exceeded"
-      && error.detail.kind === "inherited"
-      && error.detail.activeChildren === 1
-      && error.detail.requestedChildren === 1
-      && error.detail.maxActiveChildren === 1
-      && error.message.includes("active inherited children"),
+      && error.code === "inherited_limit_exceeded"
+      && error.detail.activeInherited === 1
+      && error.detail.requestedInherited === 1
+      && error.detail.maxActiveInheritedSubagents === 1
+      && error.message.includes("live inherited children"),
   );
 
-  // Reviving fresh1 succeeds because fresh pool has capacity (0/1)
-  const freshReceipt = await runtime.sendMessage({ from: "Main", to: fresh1.id, content: "wake fresh" });
+  // Reviving the Fresh actor only consumes the total: the inherited subset is
+  // full but does not block it.
+  const freshReceipt = await runtime.sendMessage({ from: addressOf("main"), to: fresh1.address, content: "wake fresh" });
   assert.ok(freshReceipt.ok);
+
+  // The total is now full (3/3), so another revival is refused by that limit.
+  await assert.rejects(
+    runtime.sendMessage({ from: addressOf("main"), to: inh1.address, content: "wake again" }),
+    (error: unknown) => error instanceof SubagentError
+      && error.code === "subagent_limit_exceeded"
+      && error.detail.activeChildren === 3
+      && error.detail.maxActiveSubagents === 3,
+  );
 });
 
 test("restored actors keep the pool of their persisted creation spec", async () => {
   const fake = adapter();
   const capture = () => ({ systemPrompt: "p", tools: [], entries: [] });
   const runtime = createSubagentRuntime({
-    config: config({ subagent: { maxActiveChildren: 1, maxActiveInheritedChildren: 1 } }),
+    session: SESSION,
+    config: config({ subagent: { maxActiveSubagents: 5, maxActiveInheritedSubagents: 1 } }),
     startJob: (request) => fake.startJob(request),
     deliverMessage: async () => ({ accepted: true }),
   });
   // The persisted creation spec is the only source of an actor's kind: no
   // separate field is stored, so restoration must derive it from the first Job.
-  const inheritedSeed = {
-    ...completedJob("sub_01", "sub_01", "Main", "inherited seed"),
-    spec: { name: null, task: "inherited seed", context: null, inheritContext: true, inheritedContext: null },
-  };
   const restored = runtime.restoreState({
     actors: [
-      { agentId: "sub_01", name: null, parentAgentId: null, depth: 1, stoppedOrder: 1 },
-      { agentId: "sub_02", name: null, parentAgentId: null, depth: 1, stoppedOrder: 2 },
+      restoredActor("sub_2", 1, null, "inherited", 1),
+      restoredActor("sub_3", 1, null, "fresh", 2),
     ],
-    jobs: [inheritedSeed, completedJob("sub_02", "sub_02", "Main", "fresh seed")],
+    jobs: [
+      completedJob("sub_2", "main"),
+      completedJob("sub_3", "main"),
+    ],
   });
   assert.deepEqual(restored.interrupted, []);
 
-  const fresh = runtime.create({ tasks: [{ task: "fresh holder" }] }).items[0]!;
-  const inherited = runtime.create(
-    { tasks: [{ task: "inherited holder", inheritContext: true }] },
-    { captureInheritedContext: capture },
-  ).items[0]!;
+  // Revive the restored Inherited actor; it now consumes the only subset slot.
+  const inhReceipt = await runtime.sendMessage({ from: addressOf("main"), to: addressOf("sub_2"), content: "wake inherited" });
+  assert.ok(inhReceipt.ok);
+  const inhJobId = "jobId" in inhReceipt ? inhReceipt.jobId : null;
+  assert.ok(inhJobId);
 
-  // Both pools are full. Each refusal names the pool the restored actor occupies.
-  await assert.rejects(
-    runtime.sendMessage({ from: "Main", to: "sub_02", content: "wake fresh" }),
+  runtime.create({ agents: [{ goal: "fresh holder 1" }] });
+  runtime.create({ agents: [{ goal: "fresh holder 2" }] });
+  // A new Inherited child exceeds the subset while the total still has room.
+  assert.throws(
+    () => runtime.create(
+      { agents: [{ goal: "inherited holder", inheritContext: true }] },
+      { captureInheritedContext: capture },
+    ),
     (error: unknown) => error instanceof SubagentError
-      && error.code === "child_limit_exceeded"
-      && error.detail.kind === "fresh"
-      && error.detail.agentId === "sub_02",
-  );
-  await assert.rejects(
-    runtime.sendMessage({ from: "Main", to: "sub_01", content: "wake inherited" }),
-    (error: unknown) => error instanceof SubagentError
-      && error.code === "child_limit_exceeded"
-      && error.detail.kind === "inherited"
-      && error.detail.agentId === "sub_01",
+      && error.code === "inherited_limit_exceeded"
+      && error.detail.activeInherited === 1
+      && error.detail.maxActiveInheritedSubagents === 1,
   );
 
-  // Freeing one pool admits only the actor that belongs to it.
-  fake.handle(fresh.id).resolve({ result: "done" });
-  await runtime.jobDone(fresh.id);
-  assert.ok((await runtime.sendMessage({ from: "Main", to: "sub_02", content: "wake fresh" })).ok);
-  await assert.rejects(
-    runtime.sendMessage({ from: "Main", to: "sub_01", content: "wake inherited" }),
-    (error: unknown) => error instanceof SubagentError
-      && error.code === "child_limit_exceeded"
-      && error.detail.kind === "inherited",
-  );
+  // The restored Fresh actor is admitted because it only consumes the total.
+  const freshReceipt = await runtime.sendMessage({ from: addressOf("main"), to: addressOf("sub_3"), content: "wake fresh" });
+  assert.ok(freshReceipt.ok);
+  assert.equal(runtime.list({ status: "running" }).agents.length, 4);
 
-  fake.handle(inherited.id).resolve({ result: "done" });
-  await runtime.jobDone(inherited.id);
-  assert.ok((await runtime.sendMessage({ from: "Main", to: "sub_01", content: "wake inherited" })).ok);
+  // Freeing the inherited slot admits the restored Inherited actor again.
+  fake.handle(inhJobId).resolve({ result: "done" });
+  await runtime.jobDone(inhJobId);
+  const again = await runtime.sendMessage({ from: addressOf("main"), to: addressOf("sub_2"), content: "wake inherited again" });
+  assert.ok(again.ok);
 });

@@ -43,7 +43,7 @@ func TestWriteSocketNamedPipe(t *testing.T) {
 	}()
 
 	frame := AsyncShellRegisterFrame{
-		Kind: "async-shell", Token: "test-token", Operation: "register",
+		Kind: "async-shell", AgentID: "main", Token: "test-token", Operation: "register",
 		ID: "job_11111111", Directory: `C:\tmp\job_11111111`, PID: os.Getpid(),
 	}
 	if err := writeSocket(address, frame); err != nil {
@@ -56,7 +56,7 @@ func TestWriteSocketNamedPipe(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &parsed); err != nil {
 			t.Fatal(err)
 		}
-		if parsed.Kind != "async-shell" || parsed.Token != "test-token" || parsed.Operation != "register" ||
+		if parsed.Kind != "async-shell" || parsed.AgentID != "main" || parsed.Token != "test-token" || parsed.Operation != "register" ||
 			parsed.ID != "job_11111111" || parsed.Directory != `C:\tmp\job_11111111` {
 			t.Fatalf("frame = %#v", parsed)
 		}

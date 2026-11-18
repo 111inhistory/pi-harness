@@ -95,7 +95,13 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
       nativeCancelled.resolve();
       finish.resolve();
     }, { once: true });
-    const completion = isolateFailure && dispatchedCalls === 1 ? firstFinished.promise : finish.promise;
+    // A normal finish gives the Job one in-band msg_write-presence reminder
+    // turn. Model it as a turn that completes on its own: the fixture must not
+    // make the reminder wait for an external event, or the Job could never
+    // reach its terminal append.
+    const completion = isolateFailure && dispatchedCalls === 1 ? firstFinished.promise
+      : isolateFailure && dispatchedCalls > children ? Promise.resolve()
+      : finish.promise;
     void completion.then(() => {
       const message: AssistantMessage = {
         role: 'assistant', api: model.api, provider: model.provider, model: model.id,
@@ -110,7 +116,6 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
   };
   let rejectTerminal = false;
   let terminalAttempts = 0;
-  let sentTerminalNotices = 0;
   let catalogReads = 0;
   const settingsManager = SettingsManager.inMemory({
     retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: 'off',
@@ -128,11 +133,6 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
           async execute() { return { content: [{ type: 'text', text: 'fixture' }], details: null }; },
         });
       }
-      const send = api.sendMessage.bind(api);
-      api.sendMessage = (message, options) => {
-        if (message.customType === 'agent-delivery') sentTerminalNotices += 1;
-        return send(message, options);
-      };
       const append = api.appendEntry.bind(api);
       api.appendEntry = (customType, data) => {
         if (customType === 'subagent-job-end') {
@@ -208,7 +208,7 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
     }
     const readsBeforeCreation = catalogReads;
     let returned = false;
-    const creation = create.execute('create', { tasks: Array.from({ length: children }, () => ({ task: 'Wait for navigation', inheritContext })) },
+    const creation = create.execute('create', { agents: Array.from({ length: children }, () => ({ goal: 'Wait for navigation', inheritContext })) },
       undefined, undefined, context);
     void creation.then(() => { returned = true; }, () => { returned = true; });
     if (children > 1) {
@@ -222,10 +222,12 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
     const created = await creation;
     const creationCatalogReads = catalogReads - readsBeforeCreation;
     assert.ok(dispatchedCalls <= children);
-    const registration = created.details as { items: Record<string, unknown>[] };
+    const registration = created.details as Record<string, unknown> & { items: Record<string, unknown>[] };
     assert.ok(registration.items[0]);
-    assert.equal(registration.items[0].model, model.id);
-    assert.equal(registration.items[0].role, packageRegistration && !inheritContext ? 'executor' : null);
+    // The public create result carries addressing identity and diagnostics only;
+    // the routed role and model stay internal execution state.
+    for (const field of ['batch', 'roster']) assert.equal(field in registration, false, field);
+    for (const field of ['goal', 'role', 'model']) assert.equal(field in registration.items[0]!, false, field);
     await started.promise;
     assert.ok(dispatchedModels.length >= 1, 'the Fresh/Inherited child must dispatch its first model request');
     assert.ok(dispatchedModels.every((id) => id === model.id),
@@ -258,12 +260,14 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
       const detach = root.subscribeJobEvents(job.jobId, () => {});
       assert.equal(typeof detach, 'function');
       detach!();
-      await assert.rejects(create.execute('blocked', { tasks: [{ task: 'Must not start', inheritContext: true }] },
+      const beforeBlocked = dispatchedCalls;
+      await assert.rejects(create.execute('blocked', { agents: [{ goal: 'Must not start', inheritContext: true }] },
         undefined, undefined, context), /fixture terminal metadata write failed/);
-      assert.equal(dispatchedCalls, 2, 'persistence failure still blocks new work');
-      const stop = session.getToolDefinition('subagent_stop')!;
-      const stopped = await stop.execute('stop', { id: sibling }, undefined, undefined, context);
-      assert.equal((stopped.details as { status: string }).status, 'stopping');
+      assert.equal(dispatchedCalls, beforeBlocked, 'persistence failure still blocks new work');
+      const signal = session.getToolDefinition('subagent_signal')!;
+      const stopped = await signal.execute('signal', { target: registration.items[1]!.address as string, action: 'stop' }, undefined, undefined, context);
+      const targets = (stopped.details as { targets: Array<{ status: string }> }).targets;
+      assert.equal(targets[0]?.status, 'stopping');
       await nativeCancelled.promise;
       await root.runtime.jobDone(job.jobId);
     }
@@ -281,8 +285,8 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
       assert.equal(result?.cancel, true, 'a failed terminal append must reach the before-hook cancellation result');
       if (isolateFailure) {
         assert.ok(root);
-        await assert.rejects(root.list({}, 'Main'), /not accepting new operations/);
-        assert.throws(() => root!.stop(registration.items[1]!.id), /not accepting new operations/);
+        await assert.rejects(root.list({}, 'main'), /not accepting new operations/);
+        assert.throws(() => root!.signal(registration.items[1]!.address as string, 'stop', 'main'), /not accepting new operations/);
         assert.throws(() => root!.liveSnapshot(registration.items[1]!.id as string), /not accepting new operations/);
         await assert.rejects(session.getToolDefinition('subagent_list')!.execute('retired', {}, undefined, undefined, context), /quiescing/);
       }
@@ -291,7 +295,6 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
       const terminal = session.sessionManager.getBranch().filter((entry) =>
         entry.type === 'custom' && entry.customType === 'subagent-job-end');
       assert.equal(terminal.length, children, 'the old root owns terminal appends until its before-hook settles');
-      assert.equal(sentTerminalNotices, children, 'the quiescing root still retains terminal notices');
     }
     return creationCatalogReads;
   } finally {

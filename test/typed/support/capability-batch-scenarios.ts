@@ -140,7 +140,7 @@ export async function runPackageSkillsScenario(
  * group, so every count in these scenarios is derived from this one list.
  */
 const SUBAGENT_MEMBERS = [
-  "subagent_create", "subagent_list", "subagent_stop", "msg_write",
+  "subagent_create", "subagent_list", "subagent_signal", "msg_write",
 ] as const;
 
 export async function runResponsesOnlyScenario(fixture: CapabilityScenarioFixture): Promise<void> {
@@ -437,7 +437,7 @@ export async function runCapabilityMissingScenario(fixture: CapabilityScenarioFi
 }
 
 export async function runNamespaceScenario(fixture: CapabilityScenarioFixture): Promise<void> {
-  const { session, cwd, controls, call, toolAnswer, create, stopped, chats } = fixture;
+  const { session, cwd, controls, call, toolAnswer, create, settled, chats } = fixture;
   const members = SUBAGENT_MEMBERS;
   const initial = session.getActiveToolNames();
   assert.ok(members.every((name) => !initial.includes(name)), "Main starts without any Subagent namespace member");
@@ -497,7 +497,7 @@ export async function runNamespaceScenario(fixture: CapabilityScenarioFixture): 
   const updatedWrite = session.getToolDefinition("write");
   assert.ok(updatedWrite);
   assert.equal(updatedWrite.description, nativeWrite.description);
-  assert.ok(toolEntry.tools.some((tool) => tool.name === "subagent_stop"));
+  assert.ok(toolEntry.tools.some((tool) => tool.name === "subagent_signal"));
   assert.ok(toolEntry.description.length > 0);
   const gate = deferred() as unknown as { promise: Promise<unknown>; resolve: () => void };
   controls.chat = async () => {
@@ -507,7 +507,7 @@ export async function runNamespaceScenario(fixture: CapabilityScenarioFixture): 
   const actor = await create("Namespace task");
   await deliverToActor(fixture, actor, "Namespace buffered message");
   gate.resolve();
-  await stopped(actor.id);
+  await settled(actor.id);
   const lastChat = chats.at(-1);
   assert.ok(lastChat);
   assert.match(lastChat.text, /Namespace buffered message/);

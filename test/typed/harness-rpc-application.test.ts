@@ -28,7 +28,7 @@ import shellPreflightExtension, { shellApprovalController } from "../../src/shel
 import type { ShellApprovalController } from "../../src/shell-approval/types.ts";
 import { installRootSubagentSurface } from "../../src/subagent/extension.ts";
 import type { HarnessSessionApplication } from "../../src/session/application.ts";
-import { registerSession, sessionMainAddress, unregisterSession } from "../../src/subagent/session-directory.ts";
+import { registerSession, sessionSenderId, unregisterSession } from "../../src/subagent/session-directory.ts";
 import type { RootService } from "../../src/subagent/root-service.ts";
 import { deferred, waitFor } from "../../test-support/async.ts";
 
@@ -428,13 +428,13 @@ test("session RPC lists published peers and connects by host-resolved identity o
   }));
   assert.ok(connected);
   assert.equal(asRecord(connected["session"])?.["uid"], peer.uid);
-  assert.equal(connected["address"], sessionMainAddress(peer));
+  assert.equal(connected["address"], sessionSenderId(peer.uid));
   assert.ok(asArray(connected["enabled"]).includes("msg_write")
     || asArray(connected["alreadyEnabled"]).includes("msg_write"));
   const contacts = fixture.session.sessionManager.getBranch()
     .filter((entry): entry is Extract<typeof entry, { type: "custom_message" }> => entry.type === "custom_message")
     .filter((entry) => entry.customType === "subagent-session-contact");
-  assert.ok(contacts.some((entry) => typeof entry.content === "string" && entry.content.includes(sessionMainAddress(peer))),
+  assert.ok(contacts.some((entry) => typeof entry.content === "string" && entry.content.includes(sessionSenderId(peer.uid))),
     "the host appends the resolved contact message to the live branch");
 
   await assert.rejects(

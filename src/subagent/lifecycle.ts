@@ -5,7 +5,10 @@
  * It answers the questions both sides must answer the same way:
  *
  * - Which reason wins when several terminal transitions become visible?
- * - What does one terminal notification say about its Job and execution round?
+ *
+ * A settled Job publishes one durable `job-end` event and one internal parent
+ * wake; it never synthesizes a model-facing completion message. Collaborators
+ * report through explicit `msg_write` writes.
  */
 
 export type TerminalStatus = "completed" | "failed" | "cancelled";
@@ -79,52 +82,6 @@ export function adjudicateTerminal(input: TerminalDecisionInput): TerminalDecisi
     return { status: "cancelled", error: { code: "cancelled", message: "Job cancelled." } };
   }
   return { status: "completed", error: null };
-}
-
-export interface TerminalNotificationInput {
-  agentId: string;
-  jobId: string;
-  round: number;
-  name?: string | null;
-  status: TerminalStatus;
-  content: string;
-  error?: LifecycleError | null;
-  history: unknown;
-}
-
-export interface TerminalNotification {
-  type: "notification";
-  from: string;
-  subagentId: string;
-  jobId: string;
-  round: number;
-  name?: string | null;
-  status: TerminalStatus;
-  content: string;
-  error: string | null;
-  history: unknown;
-}
-
-/**
- * Build the host-owned terminal envelope.
- *
- * `from`, `jobId` and `round` identify the sender and execution round of this
- * independent notification.
- */
-export function terminalNotification(input: TerminalNotificationInput): TerminalNotification {
-  const notification: TerminalNotification = {
-    type: "notification",
-    from: input.agentId,
-    subagentId: input.agentId,
-    jobId: input.jobId,
-    round: input.round,
-    status: input.status,
-    content: input.content,
-    error: input.error === null || input.error === undefined ? null : input.error.message,
-    history: input.history,
-  };
-  if (input.name !== undefined) notification.name = input.name;
-  return notification;
 }
 
 export type QueueMode = "all" | "one-at-a-time";

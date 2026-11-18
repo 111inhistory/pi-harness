@@ -1,42 +1,44 @@
-import assert from "node:assert/strict";
-import { once } from "node:events";
-import fsp from "node:fs/promises";
-import net from "node:net";
-import os from "node:os";
-import path from "node:path";
-import test from "node:test";
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import fsp from 'node:fs/promises';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
 
-import {
-  IpcOwnershipError,
-} from "../../src/ipc/endpoint.ts";
-import {
-  getAgentSocketPath,
-  getBroadcastSocketPath,
-  writeSocket,
-} from "../../src/ipc/socket.ts";
-import { AgentListeners } from "../../src/subagent/listeners.ts";
-import {
-  createSubagentRuntime,
-  SubagentError,
-  type BroadcastReceipt,
-} from "../../src/subagent/runtime.ts";
+import { IpcOwnershipError } from '../../src/ipc/endpoint.ts';
+import { writeSocket } from '../../src/ipc/socket.ts';
+import { formatMainEndpointPath } from '../../src/subagent/address.ts';
+import { RootListener } from '../../src/subagent/listeners.ts';
+import { SubagentError, type BroadcastReceipt } from '../../src/subagent/runtime.ts';
 
 async function socketRoot(t: test.TestContext): Promise<string> {
-  const root = await fsp.mkdtemp(path.join(os.tmpdir(), "pi-agent-listeners-"));
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'pi-root-listener-'));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   return root;
 }
 
-async function waitFor(predicate: () => boolean, label: string): Promise<void> {
-  const deadline = Date.now() + 2000;
-  while (!predicate()) {
-    if (Date.now() > deadline) assert.fail(`Timed out waiting for ${label}`);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
+/** One root session directory candidate; the listener creates it on bind. */
+function sessionDirectory(root: string): string {
+  return path.join(root, 'aaaaaaa1');
+}
+
+function listener(root: string, overrides: Partial<ConstructorParameters<typeof RootListener>[0]> = {}): RootListener {
+  const sessionDir = sessionDirectory(root);
+  return new RootListener({
+    mainAddress: formatMainEndpointPath(sessionDir),
+    socketRoot: root,
+    mainDirectory: process.platform === 'win32' ? null : sessionDir,
+    isAccepting: () => true,
+    deliver: async input => ({ ok: true, to: input.to, jobId: null }),
+    receiveShell: async () => {},
+    onError: () => {},
+    ...overrides,
+  });
 }
 
 function errorCode(error: unknown): string | undefined {
-  return typeof error === "object" && error !== null && "code" in error
+  return typeof error === 'object' && error !== null && 'code' in error
     ? String((error as { code?: unknown }).code)
     : undefined;
 }
@@ -44,7 +46,7 @@ function errorCode(error: unknown): string | undefined {
 async function canConnect(address: string): Promise<boolean> {
   const client = net.connect(address);
   try {
-    await once(client, "connect");
+    await once(client, 'connect');
     return true;
   } catch {
     return false;
@@ -53,269 +55,187 @@ async function canConnect(address: string): Promise<boolean> {
   }
 }
 
-test('endpoint resolution accepts registered addresses and rejects unknown addresses uniformly', async () => {
-  const root = path.join(os.tmpdir(), 'pi-listener-registry-fixture');
-  const listeners = new AgentListeners({
-    sessionId: 'test-session',
-    socketDir: root, baseSocketDir: root, maxDepth: 2,
-    actors: () => [{ agentId: 'sub_01', parentAgentId: null, depth: 1 }],
-    isAccepting: () => true,
-    send: async command => ({ ok: true, to: command.to, jobId: null }),
-    onError: error => { throw error; },
-  });
-  assert.deepEqual(await listeners.resolve(getAgentSocketPath('sub_01', root)), {
-    isManaged: true, isBroadcast: false, targetId: 'sub_01',
-  });
-  assert.deepEqual(await listeners.resolve(getBroadcastSocketPath('sub_01', root)), {
-    isManaged: true, isBroadcast: true, parentId: 'sub_01',
-  });
-  for (const address of [getAgentSocketPath('ghost', root), getAgentSocketPath('ghost', path.dirname(root))]) {
-    assert.deepEqual(await listeners.resolve(address), { isManaged: false });
-  }
-});
-
-test("all registered stopped actor endpoints stay reachable beyond the display window", { timeout: 15000 }, async (t) => {
+test('the root binds exactly one endpoint and no per-Actor or broadcast address exists', async t => {
   const root = await socketRoot(t);
-  const runtime = createSubagentRuntime({
-    startJob: () => ({ done: Promise.resolve({ result: "done", messages: [] }), cancel() {} }),
-  });
-  const created: Array<{ id: string }> = [];
-  for (const batchSize of [4, 2]) {
-    const batch = runtime.create({
-      tasks: Array.from({ length: batchSize }, (_, index) => ({ task: `stopped actor ${created.length + index}` })),
-    }).items as Array<{ id: string }>;
-    created.push(...batch);
-    for (const item of batch) await runtime.jobDone(item.id);
+  const server = listener(root);
+  t.after(() => server.close());
+  await server.sync();
+
+  const main = formatMainEndpointPath(sessionDirectory(root));
+  assert.equal(await canConnect(main), true, 'the main endpoint is reachable');
+  for (const stale of [
+    path.join(sessionDirectory(root), 'sub_1.sock'),
+    path.join(sessionDirectory(root), 'children.sock'),
+    path.join(sessionDirectory(root), 'main', 'children.sock'),
+  ]) {
+    assert.equal(await canConnect(stale), false, `no per-Actor or broadcast endpoint is bound: ${stale}`);
   }
-  assert.equal(created.length, 6);
-
-  const actors = runtime.list().agents;
-  assert.equal(actors.length, 6);
-  assert.ok(actors.every((actor) => actor.status === "idle"), "all registered actors are stopped (idle with no live Job)");
-
-  const sends: unknown[] = [];
-  const errors: Error[] = [];
-  const listeners = new AgentListeners({
-    sessionId: 'test-session',
-    socketDir: root,
-    baseSocketDir: root,
-    maxDepth: 2,
-    actors: () => runtime.list().agents,
-    isAccepting: () => true,
-    send: async (command) => {
-      sends.push(command);
-      return { ok: true, to: command.to, jobId: null };
-    },
-    onError: (error) => {
-      errors.push(error);
-    },
-  });
-  t.after(() => listeners.close());
-  await listeners.sync();
-
-  const addresses = [
-    getAgentSocketPath("Main", root),
-    ...actors.map((actor) => getAgentSocketPath(actor.agentId, root)),
-    getBroadcastSocketPath("Main", root),
-    ...actors.map((actor) => getBroadcastSocketPath(actor.agentId, root)),
-  ];
-  assert.equal(new Set(addresses).size, addresses.length);
-  for (const address of addresses) {
-    assert.equal(await canConnect(address), true, `listener must be reachable: ${address}`);
-  }
-  assert.deepEqual(errors, []);
-  assert.deepEqual(sends, [], "reachability alone does not deliver a domain message");
 });
 
-test("missing or invalid senders are rejected with onError and never reach runtime send", async (t) => {
+test('a message frame reaches the root delivery port once with its logical from/to', async t => {
   const root = await socketRoot(t);
-  const sends: unknown[] = [];
-  const errors: Error[] = [];
-  const listeners = new AgentListeners({
-    sessionId: 'test-session',
-    socketDir: root,
-    baseSocketDir: root,
-    maxDepth: 2,
-    actors: () => [{ agentId: "sub_01", parentAgentId: null, depth: 1 }],
-    isAccepting: () => true,
-    send: async (command) => {
-      sends.push(command);
-      return { ok: true, to: command.to, jobId: null };
-    },
-    onError: (error) => {
-      errors.push(error);
-    },
+  const delivered: Array<{ from: string; to: string; content: string }> = [];
+  const server = listener(root, {
+    deliver: async input => { delivered.push(input); return { ok: true, to: input.to, jobId: null }; },
   });
-  t.after(() => listeners.close());
-  await listeners.sync();
+  t.after(() => server.close());
+  await server.sync();
 
-  const frames = [
-    JSON.stringify({ content: "missing sender" }),
-    JSON.stringify({ from: "   ", content: "blank sender" }),
-    JSON.stringify({ from: "not-an-actor", content: "invalid sender" }),
-  ].join("\n") + "\n";
-  await assert.rejects(writeSocket(getAgentSocketPath("sub_01", root), frames), { code: 'invalid_message' });
-  await waitFor(() => errors.length === 3, "invalid sender reports");
-
-  assert.deepEqual(errors.map((error) => errorCode(error)), [
-    "invalid_message",
-    "invalid_message",
-    "unknown_sender",
-  ]);
-  assert.equal(sends.length, 0, "no invalid frame may reach the runtime send port");
+  const frame = { from: 'aaaaaaa1:sub_1', to: 'aaaaaaa1:main', content: 'line one\nline two' };
+  await writeSocket(formatMainEndpointPath(sessionDirectory(root)), frame);
+  assert.deepEqual(delivered, [frame], 'the frame is delivered as one message with a canonical sender and target');
 });
 
-test("one broadcast frame invokes the domain broadcast once and reports partial errors", async (t) => {
+test('malformed frames are refused at the boundary and never reach delivery', async t => {
+  const root = await socketRoot(t);
+  const delivered: unknown[] = [];
+  const errors: Error[] = [];
+  const server = listener(root, {
+    deliver: async input => { delivered.push(input); return { ok: true, to: input.to, jobId: null }; },
+    onError: error => { errors.push(error); },
+  });
+  t.after(() => server.close());
+  await server.sync();
+
+  const address = formatMainEndpointPath(sessionDirectory(root));
+  for (const frame of [
+    { to: 'aaaaaaa1:main', content: 'missing sender' },
+    { from: '   ', to: 'aaaaaaa1:main', content: 'blank sender' },
+    { from: 'aaaaaaa1:sub_1', content: 'missing target' },
+    { from: 'aaaaaaa1:sub_1', to: '', content: 'blank target' },
+    { from: 'aaaaaaa1:sub_1', to: 'aaaaaaa1:main', content: 7 },
+  ]) {
+    await assert.rejects(writeSocket(address, frame), { code: 'invalid_message' });
+  }
+  assert.deepEqual(delivered, []);
+  assert.deepEqual(errors.map(errorCode), Array(5).fill('invalid_message'));
+});
+
+test('an async shell frame is routed by its named Actor and never enters message admission', async t => {
+  const root = await socketRoot(t);
+  const shell: Array<{ actorId: string; frame: unknown }> = [];
+  const delivered: unknown[] = [];
+  const server = listener(root, {
+    deliver: async input => { delivered.push(input); return { ok: true, to: input.to, jobId: null }; },
+    receiveShell: async (actorId, frame) => { shell.push({ actorId, frame }); },
+  });
+  t.after(() => server.close());
+  await server.sync();
+
+  const address = formatMainEndpointPath(sessionDirectory(root));
+  const frame = { kind: 'async-shell', agentId: 'sub_1', token: 'token-a', operation: 'register',
+    id: 'job_11111111', directory: path.join(root, 'job_11111111'), pid: process.pid };
+  await writeSocket(address, frame);
+  assert.deepEqual(shell, [{ actorId: 'sub_1', frame }]);
+  assert.deepEqual(delivered, [], 'a shell callback never becomes an Agent message');
+
+  const { agentId: _omitted, ...unnamed } = frame;
+  await assert.rejects(writeSocket(address, unnamed), { code: 'invalid_message' });
+  assert.equal(shell.length, 1, 'a shell frame must name its Actor');
+});
+
+test('broadcast receipts surface partial failures as one error with the failing recipients', async t => {
   const root = await socketRoot(t);
   const receipt: BroadcastReceipt = {
     ok: false,
-    to: "all",
-    sent: [{ to: "sub_01", jobId: "sub_01" }],
-    errors: [{ to: "sub_02", code: "agent_busy", message: "Agent sub_02 is stopping." }],
+    to: 'aaaaaaa1:batch_2',
+    sent: [{ to: 'aaaaaaa1:sub_2-1', jobId: 'sub_2-1' }],
+    errors: [{ to: 'aaaaaaa1:sub_2-2', code: 'agent_busy', message: 'Agent sub_2-2 is stopping.' }],
   };
-  const sends: Array<{ from: string; to: string; content: string }> = [];
   const errors: Error[] = [];
-  const listeners = new AgentListeners({
-    sessionId: 'test-session',
-    socketDir: root,
-    baseSocketDir: root,
-    maxDepth: 2,
-    actors: () => [],
-    isAccepting: () => true,
-    send: async (command) => {
-      sends.push(command);
-      return receipt;
-    },
-    onError: (error) => {
-      errors.push(error);
-    },
+  const server = listener(root, {
+    deliver: async () => receipt,
+    onError: error => { errors.push(error); },
   });
-  t.after(() => listeners.close());
-  await listeners.sync();
+  t.after(() => server.close());
+  await server.sync();
 
-  await assert.rejects(writeSocket(
-    getBroadcastSocketPath("Main", root),
-    JSON.stringify({ from: "Main", content: "family status" }),
-  ), { code: 'broadcast_partial_failure' });
-  await waitFor(() => sends.length === 1 && errors.length === 1, "broadcast receipt");
-
-  assert.deepEqual(sends, [{ from: "Main", to: "all", content: "family status" }]);
-  const failure = errors[0];
-  assert.ok(failure instanceof SubagentError, "partial failure is reported as a typed domain error");
-  assert.equal(failure.code, "broadcast_partial_failure");
-  assert.deepEqual(failure.detail.errors, receipt.errors);
+  await assert.rejects(
+    writeSocket(formatMainEndpointPath(sessionDirectory(root)),
+      { from: 'aaaaaaa1:main', to: 'aaaaaaa1:batch_2', content: 'family status' }),
+    { code: 'broadcast_partial_failure' },
+  );
+  assert.equal(errors.length, 1);
 });
 
-test("close rejects new traffic and releases every registered socket", async (t) => {
+test('binding failure releases the partial endpoint and reports the refusal', async t => {
   const root = await socketRoot(t);
-  const listeners = new AgentListeners({
-    sessionId: 'test-session',
-    socketDir: root,
-    baseSocketDir: root,
-    maxDepth: 2,
-    actors: () => [],
-    isAccepting: () => true,
-    send: async (command) => ({ ok: true, to: command.to, jobId: null }),
-    onError: () => {},
-  });
-  t.after(() => listeners.close());
-  await listeners.sync();
+  const first = listener(root);
+  t.after(() => first.close());
+  await first.sync();
 
-  const agent = getAgentSocketPath("Main", root);
-  const broadcast = getBroadcastSocketPath("Main", root);
-  assert.equal(await canConnect(agent), true, "the Main endpoint accepts a connection while open");
-  assert.equal(await canConnect(broadcast), true, "the broadcast endpoint accepts a connection while open");
+  const second = listener(root, { onError: () => {} });
+  await assert.rejects(second.sync(), (error: unknown) => error instanceof IpcOwnershipError && error.code === 'ipc_endpoint_in_use');
+  await second.close();
+  assert.equal(await canConnect(formatMainEndpointPath(sessionDirectory(root))), true,
+    'the refused instance did not remove the live endpoint it did not bind');
+});
 
-  await listeners.close();
-  for (const address of [agent, broadcast]) {
-    assert.equal(await canConnect(address), false, `the released endpoint refuses a connection: ${address}`);
-    await assert.rejects(
-      writeSocket(address, { from: "Main", content: "after close" }),
-      (error: unknown) => ["ENOENT", "ECONNREFUSED"].includes(errorCode(error) ?? ""),
-    );
-  }
+test('close releases only the endpoint it bound and then the empty owned session directory', async t => {
+  const root = await socketRoot(t);
+  const server = listener(root);
+  await server.sync();
+  const main = formatMainEndpointPath(sessionDirectory(root));
+  const directory = sessionDirectory(root);
+  const identity = (await fsp.stat(directory)).ino;
+
+  await server.close();
+  assert.equal(await canConnect(main), false, 'the bound endpoint is released');
+  await assert.rejects(fsp.stat(directory), (error: NodeJS.ErrnoException) => error.code === 'ENOENT',
+    'the now-empty directory this root created is removed');
+  assert.ok(identity > 0);
+  await server.close();
+});
+
+test('a replaced endpoint or a non-empty directory is preserved on close', async t => {
+  const root = await socketRoot(t);
+  const server = listener(root);
+  await server.sync();
+  const main = formatMainEndpointPath(sessionDirectory(root));
+  // An unrelated file in the directory means it is no longer ours to remove.
+  await fsp.writeFile(path.join(sessionDirectory(root), 'user-data'), 'keep');
+  await server.close();
+  assert.equal((await fsp.readFile(path.join(sessionDirectory(root), 'user-data'), 'utf8')), 'keep');
+  assert.equal(await canConnect(main), false);
+  await fsp.rm(sessionDirectory(root), { recursive: true, force: true });
+});
+
+test('a closed root refuses new frames and reports the refusal to the sender', async t => {
+  const root = await socketRoot(t);
+  const server = listener(root);
+  await server.sync();
+  const address = formatMainEndpointPath(sessionDirectory(root));
+  // Keep a client connected across close so the endpoint is destroyed mid-flight.
+  const client = net.connect(address);
+  await once(client, 'connect');
+  const closing = server.close();
+  client.destroy();
+  await closing;
   await assert.rejects(
-    listeners.sync(),
-    (error: unknown) => error instanceof SubagentError && error.code === "runtime_closed",
+    writeSocket(address, { from: 'aaaaaaa1:sub_1', to: 'aaaaaaa1:main', content: 'late' }),
+    (error: unknown) => errorCode(error) === 'ENOENT' || errorCode(error) === 'missing_response',
   );
 });
 
-test("obstructed actor endpoint fails startup without takeover and binds on subsequent sync after blocker is closed", async (t) => {
+test('a delivery refusal keeps its code and is not retried', async t => {
   const root = await socketRoot(t);
-  const actorSocketPath = getAgentSocketPath("sub_01", root);
-
-  const blocker = net.createServer((socket) => socket.resume());
-  await new Promise<void>((resolve, reject) => {
-    blocker.once("error", reject);
-    blocker.listen(actorSocketPath, () => resolve());
-  });
-  t.after(() => {
-    if (blocker.listening) {
-      blocker.close();
-    }
-  });
-
-  let actors = [{ agentId: "sub_01", parentAgentId: null, depth: 1 }];
-  const sends: unknown[] = [];
   const errors: Error[] = [];
-  const listeners = new AgentListeners({
-    sessionId: "test-session",
-    socketDir: root,
-    baseSocketDir: root,
-    maxDepth: 2,
-    actors: () => actors,
-    isAccepting: () => true,
-    send: async (command) => {
-      sends.push(command);
-      return { ok: true, to: command.to, jobId: null };
+  const deliveries: unknown[] = [];
+  const server = listener(root, {
+    deliver: async input => {
+      deliveries.push(input);
+      throw new SubagentError('cross_session_target', 'An external frame may only address this session.');
     },
-    onError: (error) => {
-      errors.push(error);
-    },
+    onError: error => { errors.push(error); },
   });
-  t.after(() => listeners.close());
+  t.after(() => server.close());
+  await server.sync();
 
-  // First sync fails because of the competing live server on registered actor sub_01.
   await assert.rejects(
-    listeners.sync(),
-    (error: unknown) => error instanceof IpcOwnershipError && error.code === "ipc_endpoint_in_use",
+    writeSocket(formatMainEndpointPath(sessionDirectory(root)),
+      { from: 'bbbbbbb2:main', to: 'aaaaaaa1:main', content: 'hello' }),
+    { code: 'cross_session_target' },
   );
-
-  // The competing live server is preserved: not taken over or forcefully closed.
-  assert.equal(
-    await canConnect(actorSocketPath),
-    true,
-    "the blocker endpoint remains live and unaffected by first sync",
-  );
-
-  // Explicitly close the blocker.
-  await new Promise<void>((resolve) => blocker.close(() => resolve()));
-
-  // Add a newly registered actor to mirror a subsequent root.create batch.
-  actors = [
-    { agentId: "sub_01", parentAgentId: null, depth: 1 },
-    { agentId: "sub_02", parentAgentId: null, depth: 1 },
-  ];
-
-  // Second sync should bind both the previously obstructed earlier registered actor and the new actor.
-  await listeners.sync();
-  assert.equal(
-    await canConnect(actorSocketPath),
-    true,
-    "the previously obstructed earlier registered actor endpoint is bound on subsequent sync",
-  );
-  const secondActorSocketPath = getAgentSocketPath("sub_02", root);
-  assert.equal(
-    await canConnect(secondActorSocketPath),
-    true,
-    "the newly registered actor endpoint is also bound on subsequent sync",
-  );
-
-  await writeSocket(actorSocketPath, JSON.stringify({ from: "sub_01", content: "hello earlier actor" }));
-  await writeSocket(secondActorSocketPath, JSON.stringify({ from: "sub_02", content: "hello new actor" }));
-  assert.equal(sends.length, 2);
-  assert.deepEqual(sends, [
-    { from: "sub_01", to: "sub_01", content: "hello earlier actor" },
-    { from: "sub_02", to: "sub_02", content: "hello new actor" },
-  ]);
+  assert.equal(deliveries.length, 1);
+  assert.deepEqual(errors.map(errorCode), ['cross_session_target']);
 });

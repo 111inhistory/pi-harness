@@ -104,9 +104,8 @@ export interface NativeRootGuards {
   readonly mayPersist: boolean;
 }
 
-/** Immutable root configuration a Job composes addresses and guidance from. */
+/** Immutable root configuration a Job composes guidance from. */
 export interface NativeRootConfig {
-  readonly socketDir: string;
   readonly harness: HarnessConfig;
 }
 
@@ -212,6 +211,23 @@ export type NativePendingInput = NativePendingCustom;
 export interface NativeSessionEvent {
   readonly type?: string | undefined;
 }
+
+/**
+ * A sender-bound interruption admitted into a running Job. `content` is the
+ * execution-side brief notice; callers that only know the interrupter omit it
+ * and the runner uses the prompt asset's default text.
+ */
+export interface NativeInterruptNotice {
+  readonly from: string;
+  readonly content?: string;
+  readonly round?: string | number | undefined;
+  readonly jobId?: string | undefined;
+}
+
+/** The runner's admission answer; the domain maps it to the public signal result. */
+export type NativeInterruptResult =
+  | { readonly accepted: true }
+  | { readonly accepted: false; readonly reason: "job_closed" };
 
 /** A snapshot of one live native run, read without consuming its events. */
 export interface NativeLiveSnapshot {

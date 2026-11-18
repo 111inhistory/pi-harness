@@ -93,7 +93,7 @@ test("routes with exactly two classifier calls over the full assignment", async 
 
   const [first, second] = registry.calls;
   assert.equal(first.model, CLASSIFIER);
-  assert.deepEqual(first.context.state, { delegated_assignment: "# Batch context\n\nCONTEXT\n\n# Task\n\nTASK" });
+  assert.deepEqual(first.context.state, { delegated_assignment: "# Batch context\n\nCONTEXT\n\n# Goal\n\nTASK" });
   assert.equal(first.context.questions.role.instructions, CONFIG.instructions.role);
   assert.deepEqual(first.context.questions.role.criteria, {
     researcher: "RESEARCH INSTRUCTIONS",
@@ -103,7 +103,7 @@ test("routes with exactly two classifier calls over the full assignment", async 
 
   // Stage 2 reads the actual selected role text, not the label, and the same assignment.
   assert.deepEqual(second.context.state, {
-    delegated_assignment: "# Batch context\n\nCONTEXT\n\n# Task\n\nTASK",
+    delegated_assignment: "# Batch context\n\nCONTEXT\n\n# Goal\n\nTASK",
     selected_role: { id: "executor", instructions: "EXECUTOR INSTRUCTIONS" },
   });
   assert.equal(second.context.questions.model.instructions, CONFIG.instructions.model);
@@ -131,7 +131,7 @@ test("keeps batch context bytes; a blank context falls back to the task alone", 
     ],
   });
   await routeSubagent({ registry, budget: createBudget(), task: "TASK", context: "  padded  ", config: CONFIG });
-  assert.equal(registry.calls[0].context.state.delegated_assignment, "# Batch context\n\n  padded  \n\n# Task\n\nTASK");
+  assert.equal(registry.calls[0].context.state.delegated_assignment, "# Batch context\n\n  padded  \n\n# Goal\n\nTASK");
 
   await routeSubagent({ registry, budget: createBudget(), task: "TASK", context: "  \n ", config: CONFIG });
   assert.equal(registry.calls[2].context.state.delegated_assignment, "TASK");

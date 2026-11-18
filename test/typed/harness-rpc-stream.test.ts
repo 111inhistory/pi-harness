@@ -277,7 +277,7 @@ test("an already-terminal Job reports its boundary without a future terminal eve
 });
 
 test("subscribing to an unknown Job is a structured not-found", async () => {
-  const runtime = createSubagentRuntime({ startJob: () => ({ done: new Promise(() => {}) }) });
+  const runtime = createSubagentRuntime({ session: "01a1deac", startJob: () => ({ done: new Promise(() => {}) }) });
   const harness = rootFor(runtime, null);
   const port = buildStreamPort(harness.root);
   await assert.rejects(

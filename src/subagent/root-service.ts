@@ -5,8 +5,6 @@ import { installInheritedShellChecks } from '../shell-approval/bridge.ts';
 import { cancelTask } from '../async-shell/cancel.ts';
 import type { ShellResult } from '../async-shell/protocol.ts';
 import { existsSync } from 'node:fs';
-import { temporaryResultDirectory } from './temporary-results.ts';
-import { resultNeedsFile } from './result.ts';
 import {
   SessionManager,
   type ExtensionAPI,
@@ -15,31 +13,37 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import { DEFAULT_HARNESS_CONFIG, type HarnessConfig } from '../harness-config.ts';
-import { createSubagentStore, EVENTS, SUBAGENT_SESSIONS_DIR, writeFileAtomic } from './storage.ts';
+import { createSubagentStore, EVENTS, SUBAGENT_SESSIONS_DIR } from './storage.ts';
 import { hasJobView, jobViewPaths, writeJobView, readTranscript } from './view.ts';
+import { interruptionNotice } from './prompt.ts';
 import { routeSubagent } from './routing.ts';
 import { loadPresets } from '../preset/config.ts';
-import { DEFAULT_SOCKET_DIR, deriveSessionUid, getAgentSocketPath } from '../ipc/socket.ts';
-import type { LiveSession } from './session-directory.ts';
+import { DEFAULT_SOCKET_DIR, deriveSessionUid } from '../ipc/socket.ts';
+import { sessionByUid, type LiveSession } from './session-directory.ts';
+import {
+  formatAddress, formatChildrenAddress, formatMainEndpointPath, MAIN_ACTOR,
+  parseActorKey, parseAddress, type LogicalAddress,
+} from './address.ts';
 import { SessionPeers, type SessionConnect } from './session-peers.ts';
 import { ensurePrivateSocketRoot } from '../ipc/platform.ts';
 import { activateToolNames } from '../capability/activation.ts';
 import { createToolAccessView } from '../capability/tool-access-view.ts';
 import { setCapabilityParent, type CapabilityToolCatalog } from '../capability/scope.ts';
 import { ActorSessionStore } from './actor-sessions.ts';
-import { AgentListeners } from './listeners.ts';
+import { RootListener } from './listeners.ts';
 import { NativeJobRunner } from './native-runner.ts';
 import { NativeDeliveryRouter } from './native-delivery.ts';
 import type { DeliveryCustomMessage } from './delivery.ts';
 import { createNativeSessionFactory } from './native-session.ts';
 import { installSessionSurface, type SubagentSurfaceCreateOptions } from './surface.ts';
-import type { ManagedWriteHost, SessionEndpoint } from './managed-send.ts';
-import type { NativeCustomHandoff, NativeLiveSnapshot, NativeRouteResult, NativeRoutingPort, NativeSessionEvent, NativeStartedJob } from './native-types.ts';
+import type { ManagedWriteHost, ResolvedTarget } from './managed-send.ts';
+import type { NativeLiveSnapshot, NativeRouteResult, NativeRoutingPort, NativeSessionEvent } from './native-types.ts';
 import {
   createSubagentRuntime, copyInheritedEntries, SubagentError,
   type RuntimeEvent, type SubagentRuntime, type DetailedAgentItem,
-  type CreatedAgents, type JobHistoryPaths, type FinalizeJobInput,
-  type InheritedContext, type JobRequest,
+  type CreatedBatch, type JobHistoryPaths, type FinalizeJobInput,
+  type InheritedContext, type SignalResult,
+  type BroadcastReceipt, type ExternalSender, type MessageReceipt,
 } from './runtime.ts';
 
 interface RootServiceOptions {
@@ -98,15 +102,14 @@ export class RootService implements ManagedWriteHost {
   readonly runtime: SubagentRuntime;
   readonly actors: ActorSessionStore;
   readonly runner: NativeJobRunner;
-  readonly listeners: AgentListeners;
+  readonly listeners: RootListener;
   readonly shell: AsyncShellHost;
   readonly #delivery: NativeDeliveryRouter;
   readonly #peers: SessionPeers;
   readonly #store: ReturnType<typeof createSubagentStore<SessionManager>>;
   readonly #historyDir: string;
-  #temporaryResults: string | null = null;
   readonly #pendingEvents: RuntimeEvent[] = [];
-  #creation: { gate: Promise<void>; ready: { agentId: string; ready: Promise<void> }[] } | null = null;
+  #creation: { ready: { agentId: string; ready: Promise<void> }[] } | null = null;
   readonly #retainedScopes = new Map<string, { proxy: CapabilityToolCatalog; excluded: readonly string[] }>();
   /**
    * The root catalog as a child's parent chain sees it, with explicitly
@@ -160,19 +163,24 @@ export class RootService implements ManagedWriteHost {
         appendAnchor: (data) => this.#append(EVENTS.anchor, data),
       },
     });
+    this.#socketDir = socketDir;
+    // Callbacks, cross-session peers and local controls all reach the one main
+    // endpoint; the frame, not the destination path, names the owning Actor.
+    const mainAddress = formatMainEndpointPath(socketDir);
     this.shell = new AsyncShellHost({
-      address: (actorId) => getAgentSocketPath(actorId, socketDir),
+      mainAddress: () => mainAddress,
       accepting: () => this.active,
       wake: (actorId) => this.runner.wake(actorId),
       deliver: (actorId, result) => this.#shellResult(actorId, result),
       cancel: cancelTask,
     });
-    this.listeners = new AgentListeners({
-      socketDir, baseSocketDir: socketRoot, sessionId: this.sessionId,
-      maxDepth: this.#options.config.subagent.maxDepth,
-      actors: () => this.runtime.list().agents,
+    this.listeners = new RootListener({
+      mainAddress,
+      socketRoot,
+      // Windows Named Pipes have no directory of their own to release.
+      mainDirectory: process.platform === 'win32' ? null : socketDir,
       isAccepting: () => this.active,
-      send: (command) => this.sendMessage(command),
+      deliver: (input) => this.#deliver(input),
       receiveShell: (actorId, frame) => this.shell.receive(actorId, frame),
       onError: (error) => this.#report(error),
     });
@@ -194,7 +202,6 @@ export class RootService implements ManagedWriteHost {
           callerId: scope.senderId,
           depth: scope.depth,
           allowInherited: scope.allowInherited,
-          cwd: scope.cwd,
           maxDepth: scope.maxDepth,
           capacityFor: () => this.#options.config.subagent,
         });
@@ -207,7 +214,7 @@ export class RootService implements ManagedWriteHost {
         get canStartJob() { return owner.active; },
         get mayPersist() { return owner.#mayPersist(); },
       },
-      config: { socketDir, harness: this.#options.config }, actors: this.actors, sessions,
+      config: { harness: this.#options.config }, actors: this.actors, sessions,
       models: { inherited: (model) => capturedModel(model, this.#registry) },
       routing: { route: (input) => this.#route(input) },
       tools: { catalog: () => options.api.getAllTools() },
@@ -215,21 +222,29 @@ export class RootService implements ManagedWriteHost {
       notify: (message) => this.#report(new Error(message)),
     });
     this.runtime = createSubagentRuntime({
-      socketDir,
+      session: deriveSessionUid(sessionId),
       config: this.#options.config,
       isIdTaken: (id) => options.allocatedIds.has(id),
       onIdAllocated: (id) => options.allocatedIds.add(id),
       startJob: (request) => {
-        const creation = this.#creation;
-        const handle = creation === null ? this.runner.start(request) : this.#startAfterListeners(request, creation.gate);
-        creation?.ready.push({ agentId: request.agentId, ready: handle.ready });
+        // One external endpoint is bound for the whole generation, so a new
+        // batch has nothing to publish. Its readiness is still reported by the
+        // synchronous create call, so collect each started Job handle here.
+        const handle = this.runner.start(request);
+        this.#creation?.ready.push({ agentId: request.agentId, ready: handle.ready });
         return handle;
       },
       finalizeJob: (input) => this.#finalize(input),
       // Pure path projection only. Reading/rebuilding belongs to list(), not
       // domain transitions or notification publication.
       historyPaths: (jobId) => this.#historyPaths(jobId),
-      resultPath: (jobId) => this.#resultPath(jobId),
+      // Interrupt cancels the current native run only; the runner appends the
+      // sender-bound notice and the same Job/Actor/Budget continue. A refusal
+      // stays a refusal; it never degrades into a stop.
+      interruptJob: async ({ jobId, from }) => {
+        const outcome = await this.runner.interrupt(jobId, { from, content: interruptionNotice(from) });
+        return outcome.accepted ? { ok: true } : { ok: false, reason: outcome.reason };
+      },
       deliverMessage: (input) => this.#delivery.toAgent(input),
       deliverToMain: (message) => this.#delivery.toMain(message),
       onEvent: (event) => this.#event(event),
@@ -248,8 +263,6 @@ export class RootService implements ManagedWriteHost {
       canWake: () => this.active,
       activateReply: () => this.#activateReplyTool(),
       sendToMain: (message, triggerTurn) => this.#acceptMainDelivery(message, triggerTurn),
-      appendRetained: (agentId, message) => this.#appendNotice(agentId, message),
-      onError: (error) => this.#report(error),
     });
     // Validate the private root inside initialize(), so failure is latched and
     // tools report it rather than repeatedly rebuilding an insecure service.
@@ -263,6 +276,7 @@ export class RootService implements ManagedWriteHost {
   }
 
   readonly #socketRoot: string;
+  readonly #socketDir: string;
   /** Compaction holds SDK handoff; admitted messages remain owned by this root. */
   #compaction: { readonly promise: Promise<void>; readonly resolve: () => void } | null = null;
   readonly #mainDeliveries: Array<{ message: DeliveryCustomMessage; triggerTurn: boolean }> = [];
@@ -300,7 +314,11 @@ export class RootService implements ManagedWriteHost {
       const restoredJobs = jobs.map((job) => {
         if (job.end != null) return job;
         const seed = record(job.spec) && record(job.spec.inheritedContext) ? job.spec.inheritedContext : null;
-        const start = job.started === true ? job.startEntryId : seed?.seedLeafId ?? null;
+        // An unstarted continuation still owns only the interval after the
+        // Actor's sealed checkpoint, never the preceding Job's conversation.
+        const start = job.started === true ? job.startEntryId
+          : job.continuedFromJobId !== null ? this.actors.get(job.agentId)?.anchor ?? null
+          : seed?.seedLeafId ?? null;
         if (start !== null && typeof start !== 'string') throw new SubagentError('storage_corrupt', 'A Job has malformed native start bounds.');
         const end = this.actors.recoveryBoundEnd({ agentId: job.agentId, startEntryId: start }) ?? start;
         this.actors.seal(job.agentId, end);
@@ -318,57 +336,50 @@ export class RootService implements ManagedWriteHost {
       await this.listeners.sync();
       await this.#peers.publish();
     } catch (error) {
-      this.#failure = errorOf(error);
+      const primary = errorOf(error);
+      this.#failure = primary;
       this.#phase = 'failed';
+      // Release whatever this failed generation published: the single bound
+      // endpoint and its now-empty directory. A cleanup failure must not be
+      // swallowed: this generation stays fenced and both causes are reported.
+      try {
+        await this.listeners.close();
+      } catch (cleanupError) {
+        this.#failure = new AggregateError([primary, cleanupError], 'The root failed to initialize and did not release its endpoint.');
+      }
       this.#report(this.#failure);
     }
   }
 
-  async create(batch: unknown, options: SubagentSurfaceCreateOptions, ctx: ExtensionContext): Promise<CreatedAgents> {
+  async create(batch: unknown, options: SubagentSurfaceCreateOptions, ctx: ExtensionContext): Promise<CreatedBatch> {
     this.assertOperational();
     this.#registry = ctx.modelRegistry;
-    let open!: () => void;
-    let fail!: (error: unknown) => void;
-    const creation = { gate: new Promise<void>((resolve, reject) => { open = resolve; fail = reject; }), ready: [] as { agentId: string; ready: Promise<void> }[] };
-    let result: CreatedAgents;
+    const creation = { ready: [] as { agentId: string; ready: Promise<void> }[] };
+    let created: CreatedBatch;
     this.#creation = creation;
     try {
-      result = this.runtime.create(batch, options);
+      created = this.runtime.create(batch, options);
+      if (this.#persistenceFailure !== null) throw this.#persistenceFailure;
     } finally {
       this.#creation = null;
     }
-    try {
-      if (this.#persistenceFailure !== null) throw this.#persistenceFailure;
-      await this.listeners.sync();
-      open();
-    } catch (error) {
-      fail(error);
-    }
+    // A Job handle exists only after Runtime registered the whole batch, so a
+    // startup failure leaves the registered Actors in place: the caller gets
+    // the registered batch and must not recreate it.
     const started = await Promise.allSettled(creation.ready.map(item => item.ready));
     const failures = started.flatMap((outcome, index) => outcome.status === 'rejected'
       ? [{ agentId: creation.ready[index]!.agentId,
           code: outcome.reason instanceof SubagentError ? outcome.reason.code : 'session_unavailable',
           message: errorOf(outcome.reason).message }] : []);
     if (failures.length) throw new SubagentError('start_failed',
-      `Subagent startup failed: ${failures.map(item => item.agentId + ': ' + item.message).join('; ')}. Registered agents: ${result.items.map((item) => item.id).join(', ')}; do not recreate this batch.`,
-      { registered: result.items, failures });
-    return { ...result, items: result.items.map(item => {
+      `Subagent startup failed: ${failures.map(item => item.agentId + ': ' + item.message).join('; ')}. Registered agents: ${created.items.map((item) => item.id).join(', ')}; do not recreate this batch.`,
+      { registered: created.items, failures });
+    // The settled routing identity is host-attached after readiness; the domain
+    // item carries no role or model of its own.
+    return { ...created, items: created.items.map(item => {
       const actor = this.actors.get(item.id);
       return { ...item, role: actor?.roleId ?? null, model: actor?.modelRef?.id ?? null };
     }) };
-  }
-
-  #startAfterListeners(request: JobRequest, gate: Promise<void>): NativeStartedJob {
-    let handle: NativeStartedJob | null = null;
-    let cancelled = false;
-    const start = gate.then(() => {
-      if (cancelled) throw new SubagentError('cancelled', 'Subagent startup was cancelled.');
-      handle = this.runner.start(request);
-      return handle;
-    });
-    const ready = start.then(started => started.ready);
-    void ready.catch(() => {});
-    return { ready, done: start.then(started => started.done), cancel() { cancelled = true; handle?.cancel(); } };
   }
 
   async list(filter: unknown, callerId: string): Promise<DetailedAgentItem | null> {
@@ -381,32 +392,115 @@ export class RootService implements ManagedWriteHost {
       ...(typeof filter.all === 'boolean' ? { all: filter.all } : {}),
     }, { callerId });
     const latest = new Map<string, string>();
+    const live = new Map<string, string>();
     for (const job of this.runtime.jobs().jobs) {
       if (['completed', 'failed', 'cancelled'].includes(job.status)) latest.set(job.agentId, job.jobId);
+      else live.set(job.agentId, job.jobId);
     }
+    // List output carries the role, not execution configuration or activity.
     const enrich = (item: DetailedAgentItem): void => {
-      if (item.id === 'Main') item.status = this.#options.context.isIdle() ? 'idle' : 'running';
-      else {
-        const jobId = latest.get(item.id);
-        if (jobId !== undefined) {
-          try { const history = this.#view(jobId); if (history !== null) item.history = { jobId, ...history }; }
-          catch (error) { item.historyError = { code: 'history_read_failed', message: errorOf(error).message }; }
-        }
+      const actor = this.actors.get(item.id);
+      item.role = actor?.roleId ?? null;
+      const liveJobId = live.get(item.id);
+      if (liveJobId !== undefined) item.status = this.runner.executionStatus(liveJobId) ?? "running";
+      const jobId = latest.get(item.id);
+      if (jobId !== undefined) {
+        try { const history = this.#view(jobId); if (history !== null) item.history = history; }
+        catch (error) { item.historyError = { code: 'history_read_failed', message: errorOf(error).message }; }
       }
       item.children.forEach(enrich);
     };
     if (result) {
       enrich(result);
-      if (this.#store.durable) result.historyDir = this.#historyDir;
     }
     return result;
   }
 
-  stop(target: unknown) { this.assertCurrent(); return this.runtime.stop(target); }
-  resolveEndpoint(address: string) { this.assertOperational(); return this.listeners.resolve(address); }
+  /**
+   * Interrupt or stop one explicit target.
+   *
+   * The caller is bound here: a tool/RPC caller passes its own local key, and
+   * the root turns it into a full sender address. `target` is a full logical
+   * address from the model/RPC path; the CLI convenience forms (`main`,
+   * `children`, an actor key) are expanded to this session's address. A target
+   * in another session is refused: signal is a same-root control.
+   */
+  signal(target: string, action: 'interrupt' | 'stop', callerId: string): Promise<SignalResult> {
+    this.assertCurrent();
+    const own = deriveSessionUid(this.sessionId);
+    const parsed = parseAddress(target) ?? localSignalAddress(own, target);
+    if (parsed === null || parsed.session !== own) {
+      throw new SubagentError('invalid_target', 'Signal requires a full logical address in this session.');
+    }
+    const from = parseAddress(callerId) ?? localSignalAddress(own, callerId);
+    if (from === null || from.session !== own) {
+      throw new SubagentError('invalid_target', 'The signal sender is not a local Agent address.');
+    }
+    return this.runtime.signal({ from: from.address, to: parsed.address, action });
+  }
+
+  /** Classify one logical target against this root and the live session directory. */
+  resolveTarget(address: string): Promise<ResolvedTarget> {
+    this.assertOperational();
+    return this.#peers.target(address);
+  }
+
   sendMessage(command: Parameters<SubagentRuntime['sendMessage']>[0]) {
     this.assertOperational();
     return this.runtime.sendMessage(command);
+  }
+
+  sendCrossSession(command: Parameters<SessionPeers['send']>[0]): Promise<void> {
+    this.assertOperational();
+    return this.#peers.send(command);
+  }
+
+  /**
+   * Bind one declared sender at the IPC boundary.
+   *
+   * A bare local actor key is bound to this session; a foreign `<hex>:main`
+   * must name a live registered session and reaches Runtime as the typed
+   * external Main sender with that session's reply address. The declared
+   * string is not authority: Runtime still applies recipient admission.
+   */
+  async #bindSender(from: string): Promise<{ sender: string; external?: ExternalSender }> {
+    // The wire always carries a full logical address: a bare local key is not a
+    // sender identity here, so an external client cannot omit its session.
+    const claimed = parseAddress(from);
+    if (claimed === null || claimed.kind !== 'actor') {
+      throw new SubagentError('unknown_sender', 'The IPC sender is not a full logical Agent address.');
+    }
+    if (claimed.session === deriveSessionUid(this.sessionId)) return { sender: claimed.key };
+    if (claimed.key !== MAIN_ACTOR) {
+      throw new SubagentError('invalid_target', 'Cross-session messages are Main-to-Main only.');
+    }
+    const session = await sessionByUid(this.#socketRoot, claimed.session);
+    if (session === null) {
+      throw new SubagentError('unknown_session', 'The sending session is not registered under this socket root.');
+    }
+    return {
+      sender: MAIN_ACTOR,
+      // The reply address is the peer's logical Main address, the same kind of
+      // target msg_write accepts; the endpoint path stays internal.
+      external: { sessionId: session.sessionId, sender: from, replyTo: formatAddress(session.uid, MAIN_ACTOR) },
+    };
+  }
+
+  /** Admit one external message frame; the root owns sender and target binding. */
+  async #deliver(input: { from: string; to: string; content: string }): Promise<MessageReceipt | BroadcastReceipt> {
+    this.assertOperational();
+    const to = parseAddress(input.to);
+    if (to === null || to.session !== deriveSessionUid(this.sessionId)) {
+      throw new SubagentError('cross_session_target', 'An external frame may only address this session.');
+    }
+    const bound = await this.#bindSender(input.from);
+    if (bound.external !== undefined && (to.kind !== 'actor' || to.key !== MAIN_ACTOR)) {
+      throw new SubagentError('invalid_target', 'Cross-session messages are Main-to-Main only.');
+    }
+    // Runtime admits an external write only when the declared sender is the
+    // resolved remote Main itself; the bound descriptor is the authority.
+    return this.runtime.sendMessage({ from: bound.external?.sender ?? bound.sender, to: input.to, content: input.content,
+      ...(bound.external === undefined ? {} : { external: bound.external }) });
   }
 
   /** Observe one live Job's full native event stream (null when it has no live run). */
@@ -437,7 +531,7 @@ export class RootService implements ManagedWriteHost {
       display: true,
       details: { source: 'host', result },
     };
-    if (actorId === 'Main') {
+    if (actorId === MAIN_ACTOR) {
       await this.#options.api.sendMessage(message, { triggerTurn: true, deliverAs: 'steer' });
       return;
     }
@@ -461,7 +555,6 @@ export class RootService implements ManagedWriteHost {
   get socketRoot(): string { return this.#socketRoot; }
 
   listSessions(): Promise<LiveSession[]> { return this.#peers.list(); }
-  sessionEndpoint(address: string): Promise<SessionEndpoint> { return this.#peers.endpoint(address); }
   connectSession(target: string): Promise<SessionConnect> { return this.#peers.connect(target); }
 
   /**
@@ -546,7 +639,6 @@ export class RootService implements ManagedWriteHost {
   }
 
   syncSessionName(name: string | null): Promise<void> { return this.#peers.syncName(name); }
-  sendCrossSession(command: Parameters<SessionPeers['send']>[0]): Promise<void> { return this.#peers.send(command); }
 
   retire(): Promise<void> {
     if (this.#retirement !== null) return this.#retirement;
@@ -557,15 +649,17 @@ export class RootService implements ManagedWriteHost {
     const jobs = this.runtime.jobs().jobs.filter((job) => ['running', 'stopping', 'finalizing'].includes(job.status));
     for (const job of jobs) if (job.status === 'running') this.runtime.cancelJob(job.jobId);
     this.#retirement = (async () => {
-      const results = await Promise.allSettled([
-        this.shell.close(),
-        this.listeners.close(),
-        this.#peers.close(),
-        ...jobs.map((job) => this.runtime.jobDone(job.jobId)),
-      ]);
+      const results: Array<PromiseSettledResult<unknown>> = [];
+      // Shell first: cancellation may still report a terminal callback, and the
+      // main endpoint has to stay bound until those leases actually exit. Then
+      // the endpoint, then the published session record, then Job settlement.
+      for (const operation of [() => this.shell.close(), () => this.listeners.close(), () => this.#peers.close()]) {
+        results.push(...await Promise.allSettled([operation()]));
+      }
+      results.push(...await Promise.allSettled(jobs.map((job) => this.runtime.jobDone(job.jobId))));
       const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
-      // Job completion can enqueue its final notice. Drain after all producers
-      // retire, while this generation still owns the original SDK context.
+      // A settling Job can enqueue an accepted Main delivery. Drain after all
+      // producers retire, while this generation still owns the original context.
       this.#flushMainDeliveries();
       if (this.#mainDeliveryDrain !== null) await this.#mainDeliveryDrain;
       this.#phase = 'detached';
@@ -599,14 +693,9 @@ export class RootService implements ManagedWriteHost {
 
   async #finalize({ job, outcome }: FinalizeJobInput): Promise<void> {
     try {
-      if (!this.#store.durable) {
-        const text = resultText(outcome.result);
-        if (text !== null && resultNeedsFile(text)) {
-          this.#temporaryResults ??= temporaryResultDirectory();
-          writeFileAtomic(path.join(this.#temporaryResults, `${job.jobId}.txt`), text);
-        }
-        return;
-      }
+      // An in-memory root has no durable view to write; its live projection is
+      // the Job record, so finishing writes nothing outside the process.
+      if (!this.#store.durable) return;
       const descriptor = this.actors.get(job.agentId);
       const record = this.runtime.jobRecord(job.jobId);
       if (record === null) throw new SubagentError('invalid_state', 'The finalizing Job has no history record.');
@@ -619,9 +708,9 @@ export class RootService implements ManagedWriteHost {
   }
 
   #resultPath(jobId: string): string | null {
-    const file = this.#store.durable ? jobViewPaths(this.#historyDir, jobId).result
-      : this.#temporaryResults === null ? null : path.join(this.#temporaryResults, `${jobId}.txt`);
-    return file !== null && existsSync(file) ? file : null;
+    if (!this.#store.durable) return null;
+    const file = jobViewPaths(this.#historyDir, jobId).result;
+    return existsSync(file) ? file : null;
   }
 
   #historyPaths(jobId: string): JobHistoryPaths | null {
@@ -643,17 +732,6 @@ export class RootService implements ManagedWriteHost {
     }
     const paths = jobViewPaths(this.#historyDir, jobId);
     return { summary: paths.summary, cleanJsonl: paths.transcript, result: paths.result };
-  }
-
-  async #appendNotice(agentId: string, message: NativeCustomHandoff): Promise<boolean> {
-    if (!this.#mayPersist()) return false;
-    const retained = this.actors.get(agentId);
-    if (retained === null) return false;
-    const manager = this.actors.open({ agentId, retained, seed: null, cwd: retained.cwd });
-    this.actors.restoreLeaf({ manager, agentId, retained, seed: null });
-    const anchor = manager.appendCustomMessageEntry(message.customType, message.content, message.display, message.details);
-    this.actors.checkpointAppendedAnchor({ agentId, manager, anchor });
-    return true;
   }
 
   /**
@@ -729,4 +807,14 @@ export class RootService implements ManagedWriteHost {
   #report(error: Error): void {
     try { this.#options.context.ui?.notify(error.message, 'error'); } catch { /* error remains on the owning operation */ }
   }
+}
+
+/**
+ * Expand one CLI convenience selector to a full address in this session.
+ * `children` names the root actor's direct children; an Actor key names that
+ * Actor. Anything else is not a local selector, so the caller sees invalid_target.
+ */
+function localSignalAddress(session: string, selector: string): LogicalAddress | null {
+  if (selector === 'children') return parseAddress(formatChildrenAddress(session, MAIN_ACTOR));
+  return parseActorKey(selector) === null ? null : parseAddress(formatAddress(session, selector));
 }

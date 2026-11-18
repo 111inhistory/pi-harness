@@ -94,11 +94,11 @@ Windows 的 `.cmd`／`.bat` 目标经 `cmd.exe` 启动并转义参数，包括 `
 | 变量 | 含义 |
 | --- | --- |
 | `PI_AGENT_ID` | 当前 Actor，Main 或 Subagent ID |
-| `PI_AGENT_SOCKET` | 当前 Actor 的受管端点地址 |
+| `PI_AGENT_SOCKET` | 当前根服务的 `main.sock` 端点地址（Windows 为对应 Named Pipe） |
 | `PI_ASYNC_SHELL_TOKEN` | 当前执行代次的归属标识 |
 | `PI_ASYNC_SHELL_ROOT` | 宿主分配的任务根目录，供 CLI 和后代进程一致定位 |
 
-wrapper 从环境读取回调地址。注册与完成事件进入同一个 Actor 端点，由宿主按异步 Shell 协议接收。结果不伪装成 Agent 消息，不授予消息工具权限，也不转发给父节点代为处理。
+wrapper 从环境读取回调地址。注册与完成帧通过同一个根端点送入，携带 `agentId` 与该轮执行的 `token`；根服务验证 Actor 和租约后路由给所属执行。结果不伪装成 Agent 消息，不授予消息工具权限，也不转发给父节点代为处理。
 
 当受管回调宿主无法初始化时，原生 Bash 与 PowerShell 执行仍然可用。wrapper 会清除继承的回调租约并将回调宿主标记为不可用。在此状态下，`pi-job create` 会在分配任务或启动命令前报告失败；普通 Shell 执行以及对既有任务的查询仍可正常使用。Harness 之外的独立 CLI 用法保持原有行为。
 
@@ -112,7 +112,7 @@ IPC 投递失败或超时不证明结果未入队，因此不会自动重发未�
 
 ## 验证范围
 
-Linux 与原生 Windows 已通过真实 Pi SDK、离线模拟模型和真实终端后端的回归。Windows 验证了 Bash／PowerShell 两个宿主入口、Main／Subagent 完成回调、取消清理、Unicode 参数、大块输入和增量输出。版本基线、完整结果及未归因现象见[平台验收记录](reviews/async-shell-platform-acceptance.md)。真实提供方多轮行为与长时压力仍未验收。
+Linux 回归使用真实 Pi SDK、离线模拟模型与真实 tmux 后端。当前根端点回调和归属清理的 Windows／macOS 验证限于交叉构建与测试编译，尚未完成对应平台实机运行。较早版本的 Windows Bash／PowerShell、ConPTY、Unicode 和增量输出验收见[平台验收记录](reviews/async-shell-platform-acceptance.md)，不替代当前实现的实机验收。真实提供方多轮行为与长时压力仍未验收。
 
 ## 当前限制
 

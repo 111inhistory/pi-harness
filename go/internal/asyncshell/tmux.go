@@ -67,10 +67,13 @@ type TaskPaths struct {
 	ChildPid   string
 }
 
-// CallbackTarget is TS interface CallbackTarget.
+// CallbackTarget is TS interface CallbackTarget. AgentID names the owning
+// Actor: callbacks reach the root's single main endpoint, so the frame itself
+// must say which execution lease it belongs to.
 type CallbackTarget struct {
-	Socket string
-	Token  string
+	Socket  string
+	AgentID string
+	Token   string
 }
 
 // taskFile is TS interface TaskFile. Field order matches the JSON.stringify order.
@@ -495,10 +498,17 @@ func CallbackFromEnv() *CallbackTarget {
 	}
 	socket := os.Getenv("PI_AGENT_SOCKET")
 	token := os.Getenv("PI_ASYNC_SHELL_TOKEN")
-	if socket == "" || token == "" {
+	agentID := os.Getenv("PI_AGENT_ID")
+	// Callback intent comes from the endpoint/token pair. With neither set the
+	// CLI is standalone; a partial pair or a managed pair without the owning
+	// Actor is a configuration error, not a reason to run untracked.
+	if socket == "" && token == "" {
 		return nil
 	}
-	return &CallbackTarget{Socket: socket, Token: token}
+	if socket == "" || token == "" || agentID == "" {
+		panic(aserr.New("host_unavailable", "The async-shell callback environment is incomplete: PI_AGENT_SOCKET, PI_ASYNC_SHELL_TOKEN and PI_AGENT_ID are required together."))
+	}
+	return &CallbackTarget{Socket: socket, AgentID: agentID, Token: token}
 }
 
 // CreateTask is TS createTask.
@@ -546,14 +556,14 @@ func createTask(options CreateTaskOptions) ShellResult {
 	}
 
 	if options.Callback != nil {
-		r := sendFrame(*options.Callback, AsyncShellRegisterFrame{Kind: AsyncShellKind, Token: options.Callback.Token, Operation: "register", ID: id, Directory: dir, PID: os.Getpid()})
+		r := sendFrame(*options.Callback, AsyncShellRegisterFrame{Kind: AsyncShellKind, AgentID: options.Callback.AgentID, Token: options.Callback.Token, Operation: "register", ID: id, Directory: dir, PID: os.Getpid()})
 		if r != nil {
 			state := taskState{ID: id, Status: StatusFailed, ExitCode: nil, CreatedAt: createdAt, FinalizedAt: int64Ptr(nowMs())}
 			appendPrivateFile(paths.Filtered, []byte("async-shell: "+messageOf(r)+"\n"))
 			writeState(paths, state)
 			writePrivateFile(paths.Closed, nil)
 			if aserr.Code(r) != "registration_rejected" {
-				_ = sendFrame(*options.Callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, Token: options.Callback.Token, Operation: "complete", ID: id, Notify: false, Result: consumeOutput(paths, state)})
+				_ = sendFrame(*options.Callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, AgentID: options.Callback.AgentID, Token: options.Callback.Token, Operation: "complete", ID: id, Notify: false, Result: consumeOutput(paths, state)})
 			}
 			panic(aserr.New("register_failed", "The async-shell host did not accept the registration of task "+id+": "+messageOf(r)+". The task directory "+dir+" was kept and released; re-running create starts a new task."))
 		}
@@ -605,7 +615,7 @@ func createTask(options CreateTaskOptions) ShellResult {
 		}
 		result := failed(messageOf(r))
 		if options.Callback != nil {
-			if sendErr := sendFrame(*options.Callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, Token: options.Callback.Token, Operation: "complete", ID: id, Notify: false, Result: result}); sendErr != nil {
+			if sendErr := sendFrame(*options.Callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, AgentID: options.Callback.AgentID, Token: options.Callback.Token, Operation: "complete", ID: id, Notify: false, Result: result}); sendErr != nil {
 				panic(sendErr)
 			}
 		}
@@ -907,7 +917,7 @@ func MonitorMain(dir string) {
 					frameAttempted = true
 					var result ShellResult
 					if caught(func() { result = statusResult(paths, state) }) == nil {
-						_ = sendFrame(*callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, Token: callback.Token, Operation: "complete", ID: state.ID, Notify: true, Result: result})
+						_ = sendFrame(*callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, AgentID: callback.AgentID, Token: callback.Token, Operation: "complete", ID: state.ID, Notify: true, Result: result})
 					}
 				}
 			}
@@ -1051,7 +1061,7 @@ func MonitorMain(dir string) {
 				result = consumeOutput(paths, state)
 			}
 			frameAttempted = true
-			_ = sendFrame(*callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, Token: callback.Token, Operation: "complete", ID: task.ID, Notify: decision == "async", Result: result})
+			_ = sendFrame(*callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, AgentID: callback.AgentID, Token: callback.Token, Operation: "complete", ID: task.ID, Notify: decision == "async", Result: result})
 		}
 		if status != StatusInternalError {
 			writePrivateFile(paths.Closed, nil)

@@ -345,6 +345,7 @@ export const BudgetSnapshotSchema = Type.Object({
 export const JobViewSchema = Type.Object({
   jobId: Type.String({ minLength: 1 }),
   agentId: Type.String({ minLength: 1 }),
+  address: Type.String({ minLength: 1, description: 'The Agent logical address of this Job.' }),
   name: nullable(Type.String()),
   parentAgentId: nullable(Type.String()),
   depth: nullable(Type.Integer()),
@@ -361,9 +362,10 @@ export const JobViewSchema = Type.Object({
 export const JobRecordViewSchema = Type.Object({
   jobId: Type.String({ minLength: 1 }),
   agentId: Type.String({ minLength: 1 }),
+  address: Type.String({ minLength: 1 }),
   name: nullable(Type.String()),
   round: Type.Integer({ minimum: 0 }),
-  task: nullable(Type.String()),
+  goal: Type.String({ description: "The Agent's persistent goal; continuations repeat it." }),
   status: JobStatusSchema,
   error: nullable(LifecycleErrorSchema),
   result: Type.Unknown(description('Domain result value; deliberately opaque.')),
@@ -377,7 +379,6 @@ export const JobRecordViewSchema = Type.Object({
 export const AgentKindSchema = Type.Union([Type.Literal('fresh'), Type.Literal('inherited')]);
 
 export const DetailedAgentHistorySchema = Type.Object({
-  jobId: Type.String({ minLength: 1 }),
   summary: Type.String(),
   cleanJsonl: Type.String(),
   result: Type.Optional(Type.String()),
@@ -386,37 +387,50 @@ export const DetailedAgentHistorySchema = Type.Object({
   description: 'Job history paths; extra path keys may be present.',
 });
 
+/**
+ * One live activity snapshot of an Agent. `thinking`, `output` and `tool_call`
+ * are SDK-event phases; the remaining states are runtime-owned. No phase is
+ * inferred from text and nothing here is persisted per token.
+ */
+
 export const DetailedAgentItemSchema = Type.Cyclic({
   DetailedAgentItem: Type.Object({
     id: Type.String({ minLength: 1 }),
-    status: Type.String(),
-    socket: Type.String(),
+    address: Type.String({ minLength: 1, description: 'Logical address <sessionHex>:<key>; Main is <sessionHex>:main.' }),
+    name: nullable(Type.String()),
+    status: Type.String({ minLength: 1, description: 'Lifecycle status: running, idle, stopped(failed), stopped(cancelled) or stopped(unknown); a streaming run may add a phase such as running(thinking) or running(tool-12s).' }),
+    role: Type.Optional(nullable(Type.String())),
     children: Type.Array(Type.Ref('DetailedAgentItem')),
     kind: Type.Optional(AgentKindSchema),
     history: Type.Optional(DetailedAgentHistorySchema),
     historyError: Type.Optional(LifecycleErrorSchema),
-    historyDir: Type.Optional(Type.String()),
   }, { additionalProperties: false, description: 'Agent tree node; the Main node has no kind.' }),
 }, 'DetailedAgentItem');
 
 export const CreatedAgentItemSchema = Type.Object({
-  id: Type.String({ minLength: 1 }),
-  socket: Type.String(),
-  role: Type.Optional(nullable(Type.String())),
-  model: Type.Optional(nullable(Type.String())),
-  warnings: Type.Optional(stringArray()),
+  id: Type.String({ minLength: 1, description: 'Local actor key; its full address is the messaging and signal target.' }),
+  address: Type.String({ minLength: 1 }),
+  name: nullable(Type.String()),
 }, { additionalProperties: false });
 
-export const CreatedAgentsSchema = Type.Object({
+export const CreatedBatchSchema = Type.Object({
+  address: Type.String({ minLength: 1, description: 'Logical batch address <sessionHex>:batch_<n>.' }),
   items: Type.Array(CreatedAgentItemSchema),
   warnings: Type.Optional(stringArray()),
 }, { additionalProperties: false });
 
-export const StopResultSchema = Type.Object({
+export const SignalTargetSchema = Type.Object({
+  address: Type.String({ minLength: 1 }),
   ok: Type.Boolean(),
-  id: Type.String({ minLength: 1 }),
   status: Type.String(),
   reason: Type.Optional(Type.String()),
+}, { additionalProperties: false });
+
+export const SignalResultSchema = Type.Object({
+  ok: Type.Boolean(),
+  action: Type.Union([Type.Literal('interrupt'), Type.Literal('stop')]),
+  to: Type.String({ minLength: 1 }),
+  targets: Type.Array(SignalTargetSchema),
 }, { additionalProperties: false });
 
 export const MessageReceiptSchema = Type.Object({
@@ -427,7 +441,7 @@ export const MessageReceiptSchema = Type.Object({
 
 export const BroadcastReceiptSchema = Type.Object({
   ok: Type.Boolean(),
-  to: Type.Literal('all'),
+  to: Type.String({ minLength: 1, description: 'The group or children address the broadcast was sent to.' }),
   sent: Type.Array(Type.Object({
     to: Type.String({ minLength: 1 }),
     jobId: nullable(Type.String()),
@@ -442,7 +456,7 @@ export const BroadcastReceiptSchema = Type.Object({
 export const CrossSessionReceiptSchema = Type.Object({
   ok: Type.Literal(true),
   delivered: Type.Literal('session'),
-  path: Type.String({ minLength: 1 }),
+  to: Type.String({ minLength: 1 }),
 }, { additionalProperties: false });
 
 export const MessageSendResultSchema = Type.Union([
@@ -573,26 +587,27 @@ export const JobIdParamsSchema = Type.Object({
   jobId: Type.String({ minLength: 1 }),
 }, { additionalProperties: true });
 
-export const SubagentTaskSchema = Type.Object({
-  name: Type.Optional(Type.String({ minLength: 1 })),
-  task: Type.String({ minLength: 1 }),
+export const SubagentAgentSchema = Type.Object({
+  name: Type.Optional(Type.String()),
+  goal: Type.String({ minLength: 1 }),
   inheritContext: Type.Optional(Type.Boolean()),
 }, {
   additionalProperties: false,
-  description: 'The domain rejects unknown task fields; the RPC adapter passes items through.',
+  description: 'One declared batch member; the domain rejects unknown fields.',
 });
 
 export const SubagentCreateParamsSchema = Type.Object({
   context: Type.Optional(Type.String()),
-  tasks: Type.Array(SubagentTaskSchema, { minItems: 1 }),
+  agents: Type.Array(SubagentAgentSchema, { minItems: 1 }),
 }, { additionalProperties: true });
 
-export const SubagentStopParamsSchema = Type.Object({
-  id: Type.String({ minLength: 1 }),
+export const SubagentSignalParamsSchema = Type.Object({
+  target: Type.String({ minLength: 1, description: 'One full logical address; a group or children address signals every other member of it.' }),
+  action: Type.Union([Type.Literal('interrupt'), Type.Literal('stop')]),
 }, { additionalProperties: true });
 
 export const MessageSendParamsSchema = Type.Object({
-  path: Type.String({ minLength: 1, description: 'Managed IPC address (Unix socket or Windows Named Pipe); not a bare Actor ID.' }),
+  to: Type.String({ minLength: 1, description: 'One logical Agent address: <sessionHex>:main, <sessionHex>:sub_<batch>[-<member>], <sessionHex>:batch_<batch>, or <sessionHex>:<agent>/children. Never a socket path.' }),
   content: Type.String(),
 }, { additionalProperties: true });
 
@@ -1004,8 +1019,9 @@ export const SHARED_CONTRACT_DEFS = {
   DetailedAgentHistory: DetailedAgentHistorySchema,
   DetailedAgentItem: DetailedAgentItemSchema,
   CreatedAgentItem: CreatedAgentItemSchema,
-  CreatedAgents: CreatedAgentsSchema,
-  StopResult: StopResultSchema,
+  CreatedBatch: CreatedBatchSchema,
+  SignalTarget: SignalTargetSchema,
+  SignalResult: SignalResultSchema,
   MessageReceipt: MessageReceiptSchema,
   BroadcastReceipt: BroadcastReceiptSchema,
   CrossSessionReceipt: CrossSessionReceiptSchema,
@@ -1028,9 +1044,9 @@ export const SHARED_CONTRACT_DEFS = {
   TargetsParams: TargetsParamsSchema,
   JobsListParams: JobsListParamsSchema,
   JobIdParams: JobIdParamsSchema,
-  SubagentTask: SubagentTaskSchema,
+  SubagentAgent: SubagentAgentSchema,
   SubagentCreateParams: SubagentCreateParamsSchema,
-  SubagentStopParams: SubagentStopParamsSchema,
+  SubagentSignalParams: SubagentSignalParamsSchema,
   MessageSendParams: MessageSendParamsSchema,
   StreamUnsubscribeParams: StreamUnsubscribeParamsSchema,
   AgentsTreeResult: AgentsTreeResultSchema,
@@ -1183,12 +1199,12 @@ export const HARNESS_RPC_CONTRACT = {
     params: 'JobIdParams', result: 'JobRecordView', paramsRequired: true,
   }),
   [RPC_METHODS.subagentCreate]: defineMethod({
-    description: 'Create background subagents for a batch of tasks with host-bound origin.',
-    params: 'SubagentCreateParams', result: 'CreatedAgents', paramsRequired: true,
+    description: 'Start one batch of background collaborators for a shared goal with host-bound origin.',
+    params: 'SubagentCreateParams', result: 'CreatedBatch', paramsRequired: true,
   }),
-  [RPC_METHODS.subagentStop]: defineMethod({
-    description: 'Request cancellation of a subagent by ID.',
-    params: 'SubagentStopParams', result: 'StopResult', paramsRequired: true,
+  [RPC_METHODS.subagentSignal]: defineMethod({
+    description: 'Interrupt or stop the current work of an agent by local actor key.',
+    params: 'SubagentSignalParams', result: 'SignalResult', paramsRequired: true,
   }),
   [RPC_METHODS.messageSend]: defineMethod({
     description: 'Send a managed message to an agent, child broadcast endpoint or another session Main.',
@@ -1327,8 +1343,8 @@ export type ToolBlacklistListResult = DeepReadonly<Static<typeof ToolBlacklistLi
 export type DetailedAgentItem = DeepReadonly<Static<typeof DetailedAgentItemSchema>>;
 export type JobView = DeepReadonly<Static<typeof JobViewSchema>>;
 export type JobRecordView = DeepReadonly<Static<typeof JobRecordViewSchema>>;
-export type CreatedAgents = DeepReadonly<Static<typeof CreatedAgentsSchema>>;
-export type StopResult = DeepReadonly<Static<typeof StopResultSchema>>;
+export type CreatedBatch = DeepReadonly<Static<typeof CreatedBatchSchema>>;
+export type SignalResult = DeepReadonly<Static<typeof SignalResultSchema>>;
 export type MessageSendResult = DeepReadonly<Static<typeof MessageSendResultSchema>>;
 export type HistoryReadResult = DeepReadonly<Static<typeof HistoryReadResultSchema>>;
 export type StreamBoundary = DeepReadonly<Static<typeof StreamBoundarySchema>>;
@@ -1378,9 +1394,9 @@ export type ToolsDetailParams = Static<typeof ToolsDetailParamsSchema>;
 export type TargetsParams = Static<typeof TargetsParamsSchema>;
 export type JobsListParams = Static<typeof JobsListParamsSchema>;
 export type JobIdParams = Static<typeof JobIdParamsSchema>;
-export type SubagentTask = Static<typeof SubagentTaskSchema>;
+export type SubagentAgent = Static<typeof SubagentAgentSchema>;
 export type SubagentCreateParams = Static<typeof SubagentCreateParamsSchema>;
-export type SubagentStopParams = Static<typeof SubagentStopParamsSchema>;
+export type SubagentSignalParams = Static<typeof SubagentSignalParamsSchema>;
 export type MessageSendParams = Static<typeof MessageSendParamsSchema>;
 export type StreamUnsubscribeParams = Static<typeof StreamUnsubscribeParamsSchema>;
 export type PresetApplyParams = Static<typeof PresetApplyParamsSchema>;

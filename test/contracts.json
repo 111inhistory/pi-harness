@@ -621,15 +621,15 @@
       "docs": [
         {
           "path": "docs/interface-contract.md",
-          "heading": "### 本轮结果直接交付"
+          "heading": "### 结果与历史"
         },
         {
           "path": "docs/interface-contract.md",
-          "heading": "### 自动完成通知"
+          "heading": "### 显式交付与收尾提醒"
         },
         {
           "path": "docs/interface-contract.md",
-          "heading": "### 普通消息与终态通知独立投递"
+          "heading": "### 普通消息投递"
         },
         {
           "path": "docs/architecture.md",
@@ -637,8 +637,8 @@
         }
       ],
       "tests": [
-        "test/typed/subagent-result.test.ts",
         "test/typed/subagent-delivery.test.ts",
+        "test/typed/native-runner-sdk.test.ts",
         "test/typed/delivery-compaction.test.ts",
         "test/typed/native-delivery.test.ts",
         "test/typed/agent-listeners.test.ts",
@@ -673,7 +673,7 @@
         },
         {
           "path": "docs/interface-contract.md",
-          "heading": "### 自动完成通知"
+          "heading": "### 显式交付与收尾提醒"
         },
         {
           "path": "docs/interface-contract.md",
@@ -713,6 +713,10 @@
         {
           "path": "docs/subagent-storage.md",
           "heading": "## 5. 关键流程"
+        },
+        {
+          "path": "docs/subagent-storage.md",
+          "heading": "## 6. 版本边界与离线迁移"
         }
       ],
       "tests": [
@@ -752,7 +756,7 @@
         },
         {
           "path": "docs/interface-contract.md",
-          "heading": "### 本轮结果直接交付"
+          "heading": "### 结果与历史"
         },
         {
           "path": "docs/interface-contract.md",
@@ -764,11 +768,11 @@
         },
         {
           "path": "docs/interface-contract.md",
-          "heading": "### 自动完成通知"
+          "heading": "### 显式交付与收尾提醒"
         },
         {
           "path": "docs/interface-contract.md",
-          "heading": "### 普通消息与终态通知独立投递"
+          "heading": "### 普通消息投递"
         },
         {
           "path": "docs/architecture.md",
@@ -854,19 +858,6 @@
       ],
       "tests": [
         "test/typed/prompt-text.test.ts"
-      ]
-    },
-    {
-      "id": "subagent.temporary-results",
-      "kind": "design",
-      "docs": [
-        {
-          "path": "docs/interface-contract.md",
-          "heading": "### 本轮结果直接交付"
-        }
-      ],
-      "tests": [
-        "test/typed/temporary-results.test.ts"
       ]
     },
     {

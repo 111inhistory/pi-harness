@@ -1,14 +1,15 @@
 /**
- * Managed message construction for Agent endpoints.
+ * Managed message construction for the root endpoint.
  *
- * The caller supplies message text only. The host constructs the sender
- * envelope and the single NDJSON frame, so multiline text, JSON-looking text
- * and scalar-looking text can never change the sender identity or split into
- * multiple messages.
+ * The caller supplies one logical target and message text only. The host
+ * constructs the sender envelope and the single NDJSON frame, so multiline
+ * text, JSON-looking text and scalar-looking text can never change the sender
+ * or target identity, or split into multiple messages.
  */
 
 export interface ManagedMessage {
   from: string;
+  to: string;
   content: string;
 }
 
@@ -21,9 +22,10 @@ export class ManagedMessageError extends Error {
   }
 }
 
-/** A frame accepted from an external socket client. */
+/** A message frame accepted at the root's external endpoint. */
 export interface InboundFrame {
   from: string;
+  to: string;
   content: string;
 }
 
@@ -65,22 +67,26 @@ export function validateInboundFrame(input: unknown): InboundFrame {
   }
   const record = input as Record<string, unknown>;
   const from = record["from"];
+  const to = record["to"];
   const content = record["content"];
   if (typeof from !== "string" || from.trim() === "") {
     throw new InboundFrameError("An inbound frame requires an explicit non-empty sender identity.");
   }
+  if (typeof to !== "string" || to.trim() === "") {
+    throw new InboundFrameError("An inbound frame requires an explicit non-empty target address.");
+  }
   if (typeof content !== "string") {
     throw new InboundFrameError("An inbound frame requires a string content body.");
   }
-  return { from, content };
+  return { from, to, content };
 }
 
 /** Build exactly one envelope and frame; the content is never reparsed. */
-export function managedFrame({ senderId, content }: { senderId: string; content: unknown }): {
-  message: ManagedMessage;
-  frame: string;
-} {
+export function managedFrame({ senderId, targetId, content }: {
+  senderId: string; targetId: string; content: unknown;
+}): { message: ManagedMessage; frame: string } {
   assertSender(senderId);
-  const message: ManagedMessage = { from: senderId, content: messageText(content) };
+  assertSender(targetId);
+  const message: ManagedMessage = { from: senderId, to: targetId, content: messageText(content) };
   return { message, frame: `${JSON.stringify(message)}\n` };
 }

@@ -2,10 +2,10 @@
  * Address derivation and machine-readable discovery for the Harness RPC endpoint.
  *
  * The endpoint reuses the same private per-session socket directory as the
- * Agent endpoints (`<socketRoot>/<session-uid>/`). Its own name is
- * `harness-rpc.sock` on Unix and a derived Named Pipe on Windows, so it never
- * shares an address with `Main.sock`, the Agent endpoints or the broadcast
- * endpoints.
+ * Agent IPC (`<socketRoot>/<session-uid>/`). Its own name is `harness-rpc.sock`
+ * on Unix and a derived Named Pipe on Windows. It is a distinct protocol from
+ * the session's single Agent IPC endpoint `main.sock`, so it never shares that
+ * address; Agent messages and async-shell callbacks do not use this endpoint.
  *
  * Discovery is a small JSON record in the same private directory, not a Slash
  * command and never a line on Pi's native stdout. It names the endpoint, the

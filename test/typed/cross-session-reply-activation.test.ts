@@ -58,9 +58,10 @@ test("an external Main message activates msg_write for that turn only", { timeou
   try {
     // The socket root is resolved when the IPC platform module first loads, so
     // import the harness only after the test override is in place.
-    const [{ default: harnessExtension }, directory] = await Promise.all([
+    const [{ default: harnessExtension }, directory, address] = await Promise.all([
       import("../../test-support/harness-extension.ts"),
       import("../../src/subagent/session-directory.ts"),
+      import("../../src/subagent/address.ts"),
     ]);
     const runtime = await ModelRuntime.create({
       credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,
@@ -91,7 +92,7 @@ test("an external Main message activates msg_write for that turn only", { timeou
         replySent = true;
         reply = assistant([{
           type: "toolCall", id: "reply-1", name: "msg_write",
-          arguments: { path: peerMain, content: "PEER_REPLY" },
+          arguments: { to: peerMain, content: "PEER_REPLY" },
         }], "toolUse");
       }
       const stream = new AssistantMessageEventStream();
@@ -137,7 +138,7 @@ test("an external Main message activates msg_write for that turn only", { timeou
     const peerRecord = live.find((record) => record.sessionId === peer.sessionId);
     assert.ok(receiver, "the receiving session published its record");
     assert.ok(peerRecord, "the peer session published its record");
-    peerMain = directory.sessionMainAddress(peerRecord);
+    peerMain = address.formatAddress(peerRecord.uid, address.MAIN_ACTOR);
 
     // The receipt must add exactly the reply tool, whatever the session started with.
     const namespace = ["subagent_create", "subagent_list", "subagent_stop", "capability"] as const;
@@ -149,6 +150,7 @@ test("an external Main message activates msg_write for that turn only", { timeou
       await directory.sendToSessionEndpoint({
         sender: { sessionId: peerRecord.sessionId, uid: peerRecord.uid },
         target: receiver,
+        to: address.formatAddress(receiver.uid, address.MAIN_ACTOR),
         content,
       });
       await started;

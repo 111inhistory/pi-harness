@@ -386,7 +386,7 @@ test('auto-review allow resets the reviewing status, notifies info, and permits 
   assert.equal(result, undefined);
   assert.equal(faux.state.callCount, 1);
   assert.deepEqual(running.notifications, [{
-    message: 'Auto-review allowed [Main]: printf hello',
+    message: 'Auto-review allowed [main]: printf hello',
     level: 'info',
   }]);
   assert.deepEqual(running.statuses, [
@@ -414,7 +414,7 @@ test('auto-review deny resets the reviewing status, notifies warning, and blocks
   );
   assert.equal(faux.state.callCount, 1);
   assert.deepEqual(running.notifications, [{
-    message: 'Auto-review denied [Main]: printf hello',
+    message: 'Auto-review denied [main]: printf hello',
     level: 'warning',
   }]);
   assert.deepEqual(running.statuses, [
@@ -439,7 +439,7 @@ test('an undecided review falls back to manual approval and resets the status af
   });
   assert.equal(faux.state.callCount, 1);
   assert.deepEqual(running.notifications, [{
-    message: 'Auto-review could not decide; manual approval required [Main]: printf hello',
+    message: 'Auto-review could not decide; manual approval required [main]: printf hello',
     level: 'warning',
   }]);
   assert.deepEqual(running.statuses, [
@@ -468,7 +468,7 @@ test('an undecided review can still be approved through manual fallback', {
   assert.equal(result, undefined);
   assert.equal(faux.state.callCount, 1);
   assert.deepEqual(autoReviewNotifications(running.notifications), [{
-    message: 'Auto-review could not decide; manual approval required [Main]: printf hello',
+    message: 'Auto-review could not decide; manual approval required [main]: printf hello',
     level: 'warning',
   }]);
   assert.deepEqual(running.statuses, [
@@ -577,7 +577,7 @@ test('review feedback sanitizes terminal controls and truncates the command summ
   const [notification] = running.notifications;
   assert.ok(notification !== undefined);
   assert.equal(notification.level, 'info');
-  const prefix = 'Auto-review allowed [Main]: ';
+  const prefix = 'Auto-review allowed [main]: ';
   assert.ok(notification.message.startsWith(prefix), notification.message);
   const summary = notification.message.slice(prefix.length);
   assert.doesNotMatch(summary, /[\x00-\x1f\x7f-\x9f]/);
@@ -626,7 +626,7 @@ test('rule files are cached per root until the session reloads, including read f
   assert.equal(reviewed, undefined);
   assert.equal(faux.state.callCount, 1, 'a reloaded session reads the newly created rule file');
   assert.deepEqual(autoReviewNotifications(running.notifications), [{
-    message: 'Auto-review allowed [Main]: printf hello',
+    message: 'Auto-review allowed [main]: printf hello',
     level: 'info',
   }]);
 
@@ -669,7 +669,7 @@ test('displaying a manual approval posts the generic payload to the configured U
   const payload = JSON.parse(request.body) as Record<string, unknown>;
   assert.deepEqual(payload, {
     title: 'Shell approval required',
-    body: `Agent: Main\nDirectory: ${root}\nCommand: printf hello`,
+    body: `Agent: main\nDirectory: ${root}\nCommand: printf hello`,
   });
   assert.deepEqual(autoReviewNotifications(running.notifications), []);
   assert.equal(running.notifications.some(item => item.message.includes('URL notification failed')), false);

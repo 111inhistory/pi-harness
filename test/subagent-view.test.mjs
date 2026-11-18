@@ -19,7 +19,7 @@ function jobView(overrides = {}) {
     agentId: "sub_01",
     name: "ParserAudit",
     round: 1,
-    task: "Check parser errors",
+    goal: "Check parser errors",
     roleId: "reviewer",
     model: "test-model",
     status: "completed",
@@ -52,7 +52,7 @@ test("Job views are written under the supplied session views directory as newlin
 
   const summary = await fsp.readFile(paths.summary, "utf8");
   assert.match(summary, /# Subagent sub_01 \(ParserAudit\) — Job sub_01, round 1/);
-  assert.match(summary, /Check parser errors/);
+  assert.match(summary, /## Goal\n\nCheck parser errors/);
   assert.match(summary, /Original findings/);
   assert.match(summary, /5 model calls, 12s active/);
   assert.deepEqual((await fsp.readdir(path.dirname(paths.summary))).sort(), ["result.txt", "summary.md", "transcript.jsonl"]);

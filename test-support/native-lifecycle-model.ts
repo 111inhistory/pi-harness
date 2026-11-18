@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import fc, { type AsyncCommand, type Scheduler } from 'fast-check';
 import { checkProperty, commandOptions } from './pbt.ts';
 import { AgentSession, type CustomEntry, type CustomMessageEntry, type SessionManager } from '@earendil-works/pi-coding-agent';
@@ -11,7 +12,7 @@ import { isStoppingRefusal } from '../test/typed/support/subagent-sdk-fixture.ts
 import type { FixtureActor, FixtureGate, FixtureHistoryPaths } from '../test/typed/support/subagent-sdk-fixture.ts';
 
 type JobRecord = Pick<JobRequest, 'agentId' | 'jobId' | 'continuedFromJobId'>;
-interface NoticeDetails { jobId: string; status: string; sourceId: string }
+interface NoticeDetails { jobId: string; source: string }
 
 // These entries were just written by the real root in this private fixture.
 function jobRecords(manager: SessionManager) {
@@ -24,17 +25,18 @@ type TerminalNotice = CustomMessageEntry<NoticeDetails> & { content: string; det
 function terminalNotices(manager: SessionManager, jobId: string) {
   return manager.getBranch().filter((entry): entry is TerminalNotice =>
     entry.type === 'custom_message' && entry.customType === 'agent-delivery')
-    .filter(entry => entry.details.jobId === jobId);
+    .filter(entry => entry.details.jobId === jobId && entry.details.source === 'host');
 }
 
 type Phase = 'running' | 'stopping' | 'idle';
 type Result = 'text' | 'empty' | 'thinking' | 'error';
-type Action = 'write' | 'uncertain-write' | 'peer' | 'cancel' | 'finish' | 'finish-both' | 'reload';
+type Action = 'write' | 'uncertain-write' | 'peer' | 'interrupt' | 'cancel' | 'finish' | 'finish-both' | 'reload';
 interface ActorModel {
   phase: Phase;
   round: number;
   predecessor: string | null;
   history: FixtureHistoryPaths | null;
+  jobId: string | null;
   inbox: { text: string; from: string }[];
 }
 interface Model { actors: ActorModel[]; serial: number }
@@ -46,6 +48,7 @@ interface Provider {
   pending: { gate: FixtureGate; reply: AssistantMessage } | undefined;
   produced: Set<string>;
   context: string;
+  assignments: number;
 }
 interface Real {
   fx: SdkFixture;
@@ -66,7 +69,7 @@ function reply(real: Real, slot: number): AssistantMessage {
 
 function resume(actor: ActorModel, provider: Provider) {
   if (actor.phase !== 'idle') return;
-  actor.predecessor = actor.history!.jobId;
+  actor.predecessor = actor.jobId;
   actor.round++;
   actor.inbox = [];
   provider.round = actor.round;
@@ -86,20 +89,22 @@ async function terminal(model: Model, real: Real, slot: number, result: Result) 
     provider.pending.reply = reply(real, slot);
     provider.pending.gate.resolve();
   }
-  const actor = await real.fx.stopped(real.actors[slot]!.id);
+  const actor = await real.fx.settled(real.actors[slot]!.id);
   await real.fx.session.waitForIdle();
   const history = actor.history;
   assert.ok(history?.result, 'a settled durable Job exposes its artifacts');
   const status = cancelled ? 'cancelled' : result === 'error' ? 'failed' : 'completed';
+  assert.equal(actor.status, status === 'completed' ? 'idle' : `stopped(${status})`);
   const body = await fs.readFile(history.result, 'utf8');
   assert.ok(status === 'cancelled' ? body === '' || provider.produced.has(body) :
     body === (status === 'completed' && result === 'text' ? answer(slot, expected.round) : ''),
     'a Job result comes from its own provider responses');
   assert.match(await fs.readFile(history.summary, 'utf8'), new RegExp('`' + status + '`'));
-  const notices = terminalNotices(real.fx.sessionManager, history.jobId);
-  assert.equal(notices.length, 1, 'one terminal notification per Job');
-  assert.equal(notices[0]!.details.status, status);
-  const record = jobRecords(real.fx.sessionManager).find(entry => entry.data.jobId === history.jobId);
+  const jobId = real.actors[slot]!.id + (expected.round === 1 ? '' : `#r${expected.round}`);
+  assert.equal(path.basename(path.dirname(history.summary)), jobId, 'history belongs to the expected execution');
+  const notices = terminalNotices(real.fx.sessionManager, jobId);
+  assert.equal(notices.length, 0, 'terminal results remain in history rather than becoming parent messages');
+  const record = jobRecords(real.fx.sessionManager).find(entry => entry.data.jobId === jobId);
   assert.equal(record?.data.continuedFromJobId, expected.predecessor);
   const transcript = await real.fx.events(history.cleanJsonl);
   for (const input of expected.inbox) {
@@ -120,6 +125,7 @@ async function terminal(model: Model, real: Real, slot: number, result: Result) 
   }
   expected.phase = 'idle';
   expected.history = history;
+  expected.jobId = jobId;
 }
 
 /** Operations and observable outcomes define the model independently of production state. */
@@ -150,7 +156,8 @@ class Command implements AsyncCommand<Model, Real> {
       await fx.session.reload();
       for (let slot = 0; slot < model.actors.length; slot++) {
         const restored = await fx.item(real.actors[slot]!.id);
-        assert.equal(restored?.socket, real.actors[slot]!.socket);
+        assert.equal(restored?.address, real.actors[slot]!.address);
+        assert.equal(restored?.name, real.actors[slot]!.name);
         assert.deepEqual(restored?.history, model.actors[slot]!.history);
       }
     } else if (this.action === 'finish-both') {
@@ -162,8 +169,22 @@ class Command implements AsyncCommand<Model, Real> {
       await real.scheduler.waitFor(Promise.all(completions));
     } else if (this.action === 'finish') {
       await terminal(model, real, this.slot, this.result);
+    } else if (this.action === 'interrupt') {
+      const before = provider.calls;
+      const cut = provider.pending!;
+      const jobsBefore = jobRecords(fx.sessionManager).filter(entry => entry.data.agentId === target.id).length;
+      const result = await fx.call('subagent_signal', { target: target.address, action: 'interrupt' });
+      assert.notEqual(result.isError, true);
+      // This provider deliberately delays exit after abort, as cancellation
+      // histories also exercise the resource fence until the held run settles.
+      // The signal must acknowledge before we release that old run.
+      cut.gate.resolve();
+      await waitFor(() => provider.calls > before && provider.pending !== undefined && provider.pending !== cut,
+        { label: 'interrupted actor resumes the same Job' });
+      assert.equal(jobRecords(fx.sessionManager).filter(entry => entry.data.agentId === target.id).length, jobsBefore,
+        'interrupt continues the current Job rather than creating a continuation Job');
     } else if (this.action === 'cancel') {
-      await fx.call('subagent_stop', { id: target.id });
+      await fx.call('subagent_signal', { target: target.address, action: 'stop' });
       actor.phase = 'stopping';
     } else if (this.action === 'peer') {
       const receiver = 1 - this.slot;
@@ -171,15 +192,15 @@ class Command implements AsyncCommand<Model, Real> {
       const destination = model.actors[receiver]!;
       const refused = destination.phase === 'stopping';
       resume(destination, real.providers[receiver]!);
-      const response = fx.toolAnswer('msg_write', { path: real.actors[receiver]!.socket, content: marker });
+      const response = fx.toolAnswer('msg_write', { to: real.actors[receiver]!.address, content: marker });
       response.content.unshift({ type: 'text', text: `Intermediate answer ${marker}` });
       provider.pending!.reply = response;
       provider.pending!.gate.resolve();
       await waitFor(() => provider.calls > before, { label: 'native peer tool completed and the sender resumed' });
-      if (!refused) destination.inbox.push({ text: marker, from: target.id });
+      if (!refused) destination.inbox.push({ text: marker, from: target.address });
     } else {
       if (actor.phase === 'stopping') {
-        await assert.rejects(fx.call('msg_write', { path: target.socket, content: marker }),
+        await assert.rejects(fx.call('msg_write', { to: target.address, content: marker }),
           error => isStoppingRefusal(target.id, error));
       } else {
         const restoring = actor.phase === 'idle';
@@ -195,19 +216,22 @@ class Command implements AsyncCommand<Model, Real> {
               throw new Error('SDK enqueued the message before failing');
             }
           };
-          try { await assert.rejects(fx.call('msg_write', { path: target.socket, content: marker })); }
+          try { await assert.rejects(fx.call('msg_write', { to: target.address, content: marker })); }
           finally { AgentSession.prototype.sendCustomMessage = original; }
           assert.ok(enqueued, 'the unknown-handoff fault occurs after actual SDK enqueue');
-        } else await fx.call('msg_write', { path: target.socket, content: marker });
+        } else await fx.call('msg_write', { to: target.address, content: marker });
         actor.phase = 'running';
-        actor.inbox.push({ text: marker, from: 'Main' });
+        actor.inbox.push({ text: marker, from: `${target.address.split(':')[0]}:main` });
         if (restoring) await waitFor(() => provider.calls > before, { label: 'continuation reached the native provider' });
       }
     }
     for (let slot = 0; slot < model.actors.length; slot++) {
       const view = await fx.item(real.actors[slot]!.id);
-      assert.equal(view?.status, model.actors[slot]!.phase === 'idle' ? 'stopped' : model.actors[slot]!.phase);
-      assert.equal(view?.socket, real.actors[slot]!.socket);
+      assert.ok(view);
+      assert.equal('activity' in view, false);
+      if (model.actors[slot]!.phase !== 'idle') assert.match(view.status!, /^running(?:\(.*\))?$/);
+      assert.equal(view?.address, real.actors[slot]!.address);
+      assert.equal(view?.name, real.actors[slot]!.name, 'the Actor keeps its display label across Jobs');
     }
   }
   toString() { return `${this.action}(${this.slot},${this.result},${JSON.stringify(this.payload)})`; }
@@ -224,14 +248,21 @@ async function sample(commands: Iterable<AsyncCommand<Model, Real>>, scheduler: 
     const provider = real.providers[slot]!;
     provider.calls++;
     provider.context = request.text;
+    provider.assignments = request.context.messages.filter(message => message.role === 'user' &&
+      (typeof message.content === 'string' ? message.content.includes(task(slot)) :
+        message.content.some(block => block.type === 'text' && block.text.includes(task(slot))))).length;
     let message: AssistantMessage;
     if (provider.finish) message = reply(real, slot);
     else {
       const pending = { gate: fx.controlledGate(), reply: reply(real, slot) };
       provider.pending = pending;
-      await pending.gate.promise;
-      if (request.options.signal?.aborted) throw new Error('Scripted transport aborted');
-      message = pending.reply;
+      try {
+        await pending.gate.promise;
+        if (request.options.signal?.aborted) throw new Error('Scripted transport aborted');
+        message = pending.reply;
+      } finally {
+        if (provider.pending === pending) provider.pending = undefined;
+      }
     }
     provider.produced.add(message.content.filter(block => block.type === 'text').map(block => block.text).join(''));
     return message;
@@ -241,9 +272,9 @@ async function sample(commands: Iterable<AsyncCommand<Model, Real>>, scheduler: 
     fx.sessionManager.appendMessage({ role: 'user', content: 'CAPTURED_PARENT_MARKER', timestamp: Date.now() });
     for (const slot of [0, 1]) {
       real.providers.push({ round: 1, calls: 0, finish: false, result: 'text',
-        pending: undefined, produced: new Set(), context: '' });
+        pending: undefined, produced: new Set(), context: '', assignments: 0 });
       real.actors.push(await fx.create(task(slot), { inheritContext: slot === 1 }));
-      model.actors.push({ phase: 'running', round: 1, predecessor: null, history: null, inbox: [] });
+      model.actors.push({ phase: 'running', round: 1, predecessor: null, history: null, jobId: null, inbox: [] });
       await waitFor(() => real.providers[slot]!.calls > 0, { label: 'new actor reached the native provider' });
     }
     fx.sessionManager.appendMessage({ role: 'user', content: 'LATER_PARENT_MUTATION', timestamp: Date.now() });
@@ -253,9 +284,18 @@ async function sample(commands: Iterable<AsyncCommand<Model, Real>>, scheduler: 
       'later Jobs never rewrite earlier Job artifacts');
     for (const slot of [0, 1]) {
       const context = real.providers[slot]!.context;
-      assert.equal(context.split(task(slot)).length - 1, 1, 'continuations preserve the original assignment once');
+      assert.equal(real.providers[slot]!.assignments, 1, 'continuations preserve the original assignment entry once');
       assert.equal(context.includes('CAPTURED_PARENT_MARKER'), slot === 1);
       assert.equal(context.includes('LATER_PARENT_MUTATION'), false);
+    }
+    // Every generated history crosses the real durable fold, even an empty command sequence.
+    await fx.session.reload();
+    for (const slot of [0, 1]) {
+      const restored = await fx.item(real.actors[slot]!.id);
+      assert.equal(restored?.address, real.actors[slot]!.address);
+      assert.equal(restored?.name, real.actors[slot]!.name);
+      assert.equal('activity' in restored!, false);
+      assert.deepEqual(restored?.history, model.actors[slot]!.history);
     }
   } catch (error) { failed = error; throw error; }
   finally {
@@ -271,7 +311,7 @@ async function sample(commands: Iterable<AsyncCommand<Model, Real>>, scheduler: 
 
 export async function runLifecycleModel() {
   const commands = fc.commands([
-    fc.tuple(fc.constantFrom<Action>('write', 'uncertain-write', 'peer', 'cancel', 'finish'),
+    fc.tuple(fc.constantFrom<Action>('write', 'uncertain-write', 'peer', 'interrupt', 'cancel', 'finish'),
       fc.integer({ min: 0, max: 1 }), fc.constantFrom<Result>('text', 'empty', 'thinking', 'error'),
       fc.array(fc.constantFrom('hello', '中文', '\n', '"', '$()', '🙂'), { maxLength: 6 }).map(parts => parts.join('')))
       .map(([action, slot, result, payload]) => new Command(action, slot, result, payload)),

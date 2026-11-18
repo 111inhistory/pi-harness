@@ -1,59 +1,57 @@
+import { createOwnedNdjsonServer, validateInboundFrame } from '../ipc/socket.ts';
 import {
-  createOwnedNdjsonServer,
-  deriveSessionUid,
-  endpointKey,
-  getAgentSocketPath,
-  getBroadcastSocketPath,
-  validateInboundFrame,
-  type EndpointResolverResult,
-} from '../ipc/socket.ts';
-import type { OwnedServer } from '../ipc/endpoint.ts';
-import { canonicalActorId, SubagentError, type BroadcastReceipt, type ExternalSender, type MessageReceipt } from './runtime.ts';
-import { parseSessionSenderId, sessionByUid, sessionMainAddress, sessionSenderId } from './session-directory.ts';
+  inspectEndpoint,
+  releaseOwnedEmptyDirectory,
+  type EndpointIdentity,
+} from '../ipc/endpoint.ts';
+import { SubagentError, type BroadcastReceipt, type MessageReceipt } from './runtime.ts';
 
-interface ListenerActor {
-  readonly agentId: string;
-  readonly parentAgentId: string | null;
-  readonly depth: number;
-}
-
-export interface ListenerRegistryOptions {
-  readonly socketDir: string;
-  readonly baseSocketDir: string;
-  /** The root's own session id; a frame naming it is local Main traffic. */
-  readonly sessionId: string;
-  /** The root's resolved maximum nesting depth; a child at it has no broadcast endpoint. */
-  readonly maxDepth: number;
-  actors(): readonly ListenerActor[];
+export interface RootListenerOptions {
+  /** The root's only external address: `<socket root>/<session uid>/main.sock`. */
+  readonly mainAddress: string;
+  /** The shared per-user socket root; binding and ownership checks use it. */
+  readonly socketRoot: string;
+  /**
+   * The private directory that holds main.sock, or null where the transport has
+   * no filesystem directory (Windows Named Pipes). Only this exact path is
+   * considered for empty-directory cleanup.
+   */
+  readonly mainDirectory: string | null;
   isAccepting(): boolean;
-  send(command: { from: string; to: string; content: string; external?: ExternalSender }): Promise<MessageReceipt | BroadcastReceipt>;
-  receiveShell?(actorId: string, frame: unknown): Promise<void>;
+  /**
+   * Bind a declared wire sender and deliver one message to its logical target.
+   * The root owns sender binding, target classification and the domain target
+   * expansion; this listener owns transport framing only.
+   */
+  deliver(input: { readonly from: string; readonly to: string; readonly content: string }): Promise<MessageReceipt | BroadcastReceipt>;
+  /** Route one validated async-shell frame to the Actor it names. */
+  receiveShell(actorId: string, frame: unknown): Promise<void>;
   onError(error: Error): void;
 }
 
-interface Destination {
-  readonly address: string;
-  readonly owner: string;
-  readonly broadcast: boolean;
-}
-
-/** Listener lifetime follows the root registry, never the model's list window. */
-export class AgentListeners {
-  readonly #options: ListenerRegistryOptions;
-  readonly #servers = new Map<string, OwnedServer>();
+/**
+ * The root's one external listener.
+ *
+ * A session exposes exactly one managed endpoint, its Main address. Same-root
+ * traffic goes through Runtime directly, so no per-Actor or per-parent endpoint
+ * is bound and no address is derived from a filesystem path: a frame names the
+ * sender and the logical target, and the root resolves both.
+ *
+ * The lifetime follows the root generation. `sync` binds the endpoint (or
+ * reports why it cannot); `close` releases the bound endpoint only after its
+ * recorded device/inode identity still matches, then removes the now-empty
+ * session directory this root created. All cleanup is best effort with errors
+ * surfaced, never retried and never applied to a path this root did not bind.
+ */
+export class RootListener {
+  readonly #options: RootListenerOptions;
+  #server: Awaited<ReturnType<typeof createOwnedNdjsonServer>> | null = null;
   #changes: Promise<void> = Promise.resolve();
   #closed = false;
+  #directory: EndpointIdentity | null = null;
 
-  constructor(options: ListenerRegistryOptions) { this.#options = options; }
-
-  #destinations(): Destination[] {
-    const actors = [{ agentId: 'Main', parentAgentId: null, depth: 0 }, ...this.#options.actors()];
-    return actors.flatMap((actor) => {
-      const receive: Destination = { address: getAgentSocketPath(actor.agentId, this.#options.socketDir), owner: actor.agentId, broadcast: false };
-      return actor.depth < this.#options.maxDepth
-        ? [receive, { address: getBroadcastSocketPath(actor.agentId, this.#options.socketDir), owner: actor.agentId, broadcast: true }]
-        : [receive];
-    });
+  constructor(options: RootListenerOptions) {
+    this.#options = options;
   }
 
   #enqueue(operation: () => Promise<void>): Promise<void> {
@@ -62,118 +60,89 @@ export class AgentListeners {
     return run;
   }
 
-  /**
-   * Turn one claimed sending session into an external sender descriptor.
-   *
-   * The directory is the only source: an unregistered, dead or malformed
-   * session refuses the frame instead of creating an unaddressed sender. The
-   * reply address is the sender's real managed Main endpoint, never a second
-   * addressing scheme.
-   */
-  async #externalSender(uid: string): Promise<ExternalSender> {
-    const session = await sessionByUid(this.#options.baseSocketDir, uid);
-    if (session === null) {
-      throw new SubagentError('unknown_session', 'The sending session is not registered under this socket root.');
-    }
-    return { sessionId: session.sessionId, sender: sessionSenderId(uid), replyTo: sessionMainAddress(session) };
-  }
-
-  async resolve(address: string): Promise<EndpointResolverResult> {
-    const destination = this.#destinations().find((entry) => endpointKey(entry.address) === endpointKey(address));
-    if (destination !== undefined) {
-      return destination.broadcast
-        ? { isManaged: true, isBroadcast: true, parentId: destination.owner }
-        : { isManaged: true, isBroadcast: false, targetId: destination.owner };
-    }
-    return { isManaged: false };
-  }
-
+  /** Bind the single endpoint. A failed bind releases what it published and rethrows. */
   sync(): Promise<void> {
     return this.#enqueue(async () => {
-      if (this.#closed || !this.#options.isAccepting()) throw new SubagentError('runtime_closed', 'The root no longer accepts IPC listeners.');
-      const desired = this.#destinations();
-      const keys = new Set(desired.map((entry) => endpointKey(entry.address)));
-      for (const [key, server] of this.#servers) {
-        if (keys.has(key)) continue;
-        await server.close();
-        this.#servers.delete(key);
+      if (this.#closed || !this.#options.isAccepting()) {
+        throw new SubagentError('runtime_closed', 'The root no longer accepts an IPC listener.');
       }
-      for (const destination of desired) {
-        const key = endpointKey(destination.address);
-        if (this.#servers.has(key)) continue;
-        const server = createOwnedNdjsonServer({
-          address: destination.address,
-          root: this.#options.baseSocketDir,
-          onError: (error: Error) => this.#options.onError(error),
-          onMessage: async (input: unknown) => {
-            if (this.#closed) throw new SubagentError('runtime_closed', 'This IPC root is closed.');
-            if (input !== null && typeof input === 'object' && 'kind' in input && input.kind === 'async-shell') {
-              if (destination.broadcast || this.#options.receiveShell === undefined) {
-                throw new SubagentError('invalid_target', 'Async shell events require their owning Agent endpoint.');
-              }
-              await this.#options.receiveShell(destination.owner, input);
-              return;
-            }
-            if (this.#closed || !this.#options.isAccepting()) throw new SubagentError('runtime_closed', 'This IPC root is quiescing.');
-            const message = validateInboundFrame(input);
-            // One `from` field carries both identities: a plain local Actor ID,
-            // or the composite `<session-uid>:Main` that only a sending host
-            // builds for a cross-session frame.
-            const claimed = parseSessionSenderId(message.from);
-            let sender: string;
-            let external: ExternalSender | undefined;
-            if (claimed === null) {
-              const local = canonicalActorId(message.from);
-              if (local === null) throw new SubagentError('unknown_sender', 'The IPC sender is not a valid Actor ID.');
-              if (destination.broadcast && local !== destination.owner) throw new SubagentError('invalid_target', 'Only the parent may write its broadcast endpoint.');
-              sender = local;
-            } else {
-              // Only Main sends and only Main receives across sessions. A
-              // composite identity at any other endpoint is out of scope.
-              if (destination.owner !== 'Main' || destination.broadcast) {
-                throw new SubagentError('invalid_target', 'Cross-session messages are Main-to-Main only.');
-              }
-              if (claimed.uid === deriveSessionUid(this.#options.sessionId)) {
-                // The sender addressed its own Main. The runtime rejects the
-                // self-send; it is never framed as another session.
-                sender = 'Main';
-              } else {
-                sender = 'Main';
-                external = await this.#externalSender(claimed.uid);
-              }
-            }
-            // Registry membership is checked by Runtime. A supplied sender is
-            // not authenticated merely because it is a valid registered ID.
-            const result = await this.#options.send({ from: sender, to: destination.broadcast ? 'all' : destination.owner,
-              content: message.content, ...(external === undefined ? {} : { external }) });
-            if ('errors' in result && result.errors.length !== 0) {
-              const failures = result.errors.map(error => `${error.to}: ${error.message}`).join('; ');
-              throw new SubagentError('broadcast_partial_failure', `Some broadcast recipients rejected the message. ${failures}`,
-                { errors: result.errors, sent: result.sent });
-            }
-          },
-        });
-        try {
-          await server.ready;
-          this.#servers.set(key, server);
-        } catch (readyError) {
-          const outcome = await server.close();
-          if (outcome.releaseError !== null) {
-            this.#options.onError(outcome.releaseError);
-          }
-          throw readyError;
-        }
+      if (this.#server !== null) return;
+      const server = createOwnedNdjsonServer({
+        address: this.#options.mainAddress,
+        root: this.#options.socketRoot,
+        onError: (error: Error) => this.#options.onError(error),
+        onMessage: (input: unknown) => this.#receive(input),
+      });
+      try {
+        await server.ready;
+      } catch (readyError) {
+        const outcome = await server.close();
+        if (outcome.releaseError !== null) this.#options.onError(outcome.releaseError);
+        throw readyError;
       }
+      const directory = this.#options.mainDirectory === null ? null : inspectEndpoint(this.#options.mainDirectory);
+      this.#directory = directory !== null && directory.kind === 'directory' ? directory.identity : null;
+      this.#server = server;
     });
+  }
+
+  async #receive(input: unknown): Promise<void> {
+    if (this.#closed) throw new SubagentError('runtime_closed', 'This root is closed.');
+    if (this.#options.isAccepting() === false) {
+      throw new SubagentError('runtime_closed', 'This root is quiescing.');
+    }
+    if (typeof input === 'object' && input !== null && 'kind' in input && input.kind === 'async-shell') {
+      const actorId = (input as { agentId?: unknown }).agentId;
+      if (typeof actorId !== 'string' || actorId === '') {
+        throw new SubagentError('invalid_message', 'An async shell frame must name its Agent.');
+      }
+      await this.#options.receiveShell(actorId, input);
+      return;
+    }
+    const message = validateInboundFrame(input);
+    const result = await this.#options.deliver(message);
+    if ('errors' in result && result.errors.length !== 0) {
+      const failures = result.errors.map(error => `${error.to}: ${error.message}`).join('; ');
+      throw new SubagentError('broadcast_partial_failure', `Some broadcast recipients rejected the message. ${failures}`,
+        { errors: result.errors, sent: result.sent });
+    }
   }
 
   close(): Promise<void> {
     this.#closed = true;
     return this.#enqueue(async () => {
-      const results = await Promise.allSettled([...this.#servers.values()].map((server) => server.close()));
-      const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
-      if (failures.length !== 0) throw new AggregateError(failures.map((result) => result.reason), 'IPC listeners did not all close.');
-      this.#servers.clear();
+      const failures: unknown[] = [];
+      const server = this.#server;
+      this.#server = null;
+      if (server !== null) {
+        const outcome = await server.close();
+        if (outcome.startupError !== null) failures.push(outcome.startupError);
+        if (outcome.releaseError !== null) failures.push(outcome.releaseError);
+        // A replaced or foreign endpoint is left in place, but the caller must
+        // not treat this generation as released.
+        if (outcome.release !== null && !['released', 'missing', 'namespace'].includes(outcome.release.reason)) {
+          failures.push(new SubagentError('ipc_release_refused',
+            `The bound endpoint was not released: ${outcome.release.reason}.`));
+        }
+      }
+      // The session directory only ever held this endpoint. Removing it after
+      // the verified endpoint release keeps an empty owned directory from
+      // accumulating; a non-empty or foreign directory stays untouched.
+      const mainDirectory = this.#options.mainDirectory;
+      if (mainDirectory !== null && this.#directory !== null) {
+        const removed = releaseOwnedEmptyDirectory(mainDirectory, this.#directory);
+        if (removed.error !== null) failures.push(removed.error);
+        // `not_owned` means the directory was replaced or is not private; a
+        // retained RPC endpoint is `not_empty` and deliberately stays.
+        if (removed.reason === 'not_owned') {
+          failures.push(new SubagentError('ipc_directory_refused',
+            'The session directory no longer belongs to this root and was left in place.'));
+        }
+        this.#directory = null;
+      }
+      if (failures.length !== 0) {
+        throw new AggregateError(failures, 'The root main endpoint did not retire cleanly.');
+      }
     });
   }
 }

@@ -283,6 +283,7 @@ test('the host receives one register and one complete frame, quiet inside the wa
   const [register, complete] = host.frames;
   assert.equal(register?.operation, 'register');
   assert.equal(register?.token, 'token-fast');
+  assert.equal(register?.agentId, 'AsyncActor');
   assert.equal(register?.id, result.id);
   assert.equal(register?.directory, taskDirOf(result));
   assert.ok((register?.pid ?? 0) > 0);
@@ -302,7 +303,7 @@ test('a task that outlives the wait window is notified once when it completes', 
   const host = await callbackHost(t);
   const started = await job(['create', '--wait', '300ms', '--', ...nodeScript(
     'process.stdout.write("slow\\n"); setTimeout(()=>process.exit(0), 1800);',
-  )], { env: { PI_AGENT_SOCKET: host.socket, PI_ASYNC_SHELL_TOKEN: 'token-slow' } });
+  )], { env: { PI_AGENT_SOCKET: host.socket, PI_ASYNC_SHELL_TOKEN: 'token-slow', PI_AGENT_ID: 'AsyncActor' } });
   t.after(() => cleanup(taskDirOf(started)));
 
   await waitFor(() => host.frames.some((frame) => frame.operation === 'complete'), { label: 'complete frame' });
@@ -319,7 +320,7 @@ test('a running --wait 0 reply is completed by a notification, never dropped', o
   const host = await callbackHost(t);
   const started = await job(['create', '--wait', '0', '--', ...nodeScript(
     'process.stdout.write("short\\n"); setTimeout(()=>process.exit(0), 1500);',
-  )], { env: { PI_AGENT_SOCKET: host.socket, PI_ASYNC_SHELL_TOKEN: 'token-short' } });
+  )], { env: { PI_AGENT_SOCKET: host.socket, PI_ASYNC_SHELL_TOKEN: 'token-short', PI_AGENT_ID: 'AsyncActor' } });
   t.after(() => cleanup(taskDirOf(started)));
 
   assert.equal(started.status, 'running', 'the create reply precedes completion');
@@ -345,7 +346,7 @@ test('a running --wait 0 reply is completed by a notification, never dropped', o
 test('an ambiguous registration keeps the task directory and never replays it', options, async (t) => {
   const missing = path.join(await mkdtemp(path.join(tmpdir(), 'async-shell-absent-')), 'absent.sock');
   const result = await cli(['create', '--', ...nodeScript('process.stdout.write("never")')], {
-    env: { PI_AGENT_SOCKET: missing, PI_ASYNC_SHELL_TOKEN: 'token-absent' },
+    env: { PI_AGENT_SOCKET: missing, PI_ASYNC_SHELL_TOKEN: 'token-absent', PI_AGENT_ID: 'AsyncActor' },
   });
   assert.equal(result.code, 1);
   // The refusal names the task whose directory was kept for the host to release.
@@ -377,7 +378,7 @@ test('a host-owned task keeps its root when the child changes TMPDIR', options, 
     process.env.PI_ASYNC_SHELL_ROOT = root;
     shellHost = new AsyncShellHost({
       accepting: () => true,
-      address: () => host.socket,
+      mainAddress: () => host.socket,
       deliver: async () => {},
       wake: () => {},
       cancel: (directory, taskRoot) => cancelTask(directory, taskRoot),
@@ -417,7 +418,7 @@ test('a monitor internal error crosses the native callback with a cleanup remind
   await mkdir(dir, { mode: 0o700 });
   // Corrupt metadata exercises the actual recovery boundary without a test hook.
   await writeFile(path.join(dir, 'task.json'), '{}', { mode: 0o600 });
-  await cli(['__monitor', dir], { env: { PI_AGENT_SOCKET: callback.socket, PI_ASYNC_SHELL_TOKEN: 'internal-token', PATH: root } });
+  await cli(['__monitor', dir], { env: { PI_AGENT_SOCKET: callback.socket, PI_ASYNC_SHELL_TOKEN: 'internal-token', PI_AGENT_ID: 'AsyncActor', PATH: root } });
   assert.equal(callback.frames.length, 1, 'panic reporting makes one attempt');
   const complete = callback.frames[0]!;
   assert.equal(complete.operation, 'complete');
@@ -432,7 +433,7 @@ test('a monitor internal error crosses the native callback with a cleanup remind
 
 test('a completion frame cannot report a running task', () => {
   const result = { id: 'job_11111111', status: 'running', exitCode: null, output: '', cursor: 0, logPath: '/tmp/job_11111111/output.log', truncated: false };
-  const frame = { kind: 'async-shell', token: 'token', operation: 'complete', id: 'job_11111111', notify: true, result };
+  const frame = { kind: 'async-shell', agentId: 'main', token: 'token', operation: 'complete', id: 'job_11111111', notify: true, result };
   assert.throws(() => validateAsyncShellFrame(frame), /running/);
   assert.deepEqual(
     validateAsyncShellFrame({ ...frame, result: { ...result, status: 'completed' } }).operation,

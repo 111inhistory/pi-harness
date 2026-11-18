@@ -41,7 +41,6 @@ export interface FixtureClassification {
 }
 
 export interface FixtureHistoryPaths {
-  readonly jobId: string;
   readonly summary: string;
   readonly cleanJsonl: string;
   readonly result?: string;
@@ -49,7 +48,7 @@ export interface FixtureHistoryPaths {
 
 export interface FixtureActor {
   readonly id: string;
-  readonly socket: string;
+  readonly address: string;
   readonly name?: string;
   readonly status?: string;
   readonly history?: FixtureHistoryPaths;
@@ -111,9 +110,9 @@ export interface ScenarioFixture {
   readonly classifications: readonly FixtureClassification[];
   readonly controls: FixtureControls;
   call(name: string, params: JsonObject): Promise<FixtureToolResult>;
-  create(task: string, extra?: JsonObject): Promise<FixtureActor>;
+  create(goal: string, extra?: JsonObject): Promise<FixtureActor>;
   item(id: string): Promise<FixtureActor | undefined>;
-  stopped(id: string): Promise<FixtureActor>;
+  settled(id: string): Promise<FixtureActor>;
   gate(): FixtureGate;
   textAnswer(text: string): AssistantMessage;
   toolAnswer(name: string, args: JsonObject, id?: string): AssistantMessage;
@@ -134,8 +133,8 @@ const array = (value: unknown, label: string): unknown[] => {
 /** Narrow one received actor object without asserting an unvalidated shape. */
 export function actorOf(value: unknown): FixtureActor {
   const item = record(value, "Actor item");
-  if (typeof item.id !== "string" || typeof item.socket !== "string") {
-    throw new Error("An Actor item must contain string id and socket fields.");
+  if (typeof item.id !== "string" || typeof item.address !== "string") {
+    throw new Error("An Actor item must contain string id and address fields.");
   }
   const warnings = Array.isArray(item.warnings)
     ? item.warnings.filter((warning: unknown): warning is string => typeof warning === "string")
@@ -144,7 +143,7 @@ export function actorOf(value: unknown): FixtureActor {
   const historyError = historyErrorOf(item.historyError);
   return {
     id: item.id,
-    socket: item.socket,
+    address: item.address,
     ...(typeof item.name === "string" ? { name: item.name } : {}),
     ...(typeof item.status === "string" ? { status: item.status } : {}),
     ...(history === undefined ? {} : { history }),
@@ -157,14 +156,12 @@ function historyOf(value: unknown): FixtureHistoryPaths | undefined {
   if (value === undefined || value === null) return undefined;
   const history = record(value, "Actor history");
   if (
-    typeof history.jobId !== "string" ||
     typeof history.summary !== "string" ||
     typeof history.cleanJsonl !== "string"
   ) {
-    throw new Error("Actor history must contain string jobId, summary and cleanJsonl fields.");
+    throw new Error("Actor history must contain string summary and cleanJsonl fields.");
   }
   return {
-    jobId: history.jobId,
     summary: history.summary,
     cleanJsonl: history.cleanJsonl,
     ...(typeof history.result === "string" ? { result: history.result } : {}),
@@ -226,10 +223,10 @@ export function assertMessageSuccessFromMessage(message: ToolResultMessage): voi
 
 export async function deliverToActor(
   fixture: ScenarioFixture,
-  actor: Pick<FixtureActor, "id" | "socket">,
+  actor: Pick<FixtureActor, "id" | "address">,
   content: string,
 ): Promise<void> {
-  assertMessageSuccess(await fixture.call("msg_write", { path: actor.socket, content }));
+  assertMessageSuccess(await fixture.call("msg_write", { to: actor.address, content }));
 }
 
 /** A stopping write must be refused by the Runtime with its own busy state. */

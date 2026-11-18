@@ -305,7 +305,7 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
   pi.on('session_shutdown', (_event, ctx) => { cancel(); ctx.ui.setStatus('shell-permission', undefined); });
   pi.on('tool_call', async (event, ctx) => {
     if (event.toolName !== 'bash' && event.toolName !== 'powershell') return;
-    const reason = await check(event.toolName, event.input.command, ctx, 'Main');
+    const reason = await check(event.toolName, event.input.command, ctx, 'main');
     return reason === null ? undefined : { block: true, reason };
   });
   // Explicit user shell input is already authorized by the user; retain syntax checking.

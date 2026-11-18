@@ -3,7 +3,8 @@
  *
  * These exercise the production runtime directly, not a copied adapter. They
  * pin the public factory/class surface, depth topology, terminal history
- * persistence/restore, injected address formatting and broadcast receipts.
+ * persistence through the real event fold, logical addresses and broadcast
+ * receipts.
  */
 
 import assert from "node:assert/strict";
@@ -20,8 +21,11 @@ import type {
   JobRequest,
   RuntimeEvent,
 } from "../../src/subagent/runtime.ts";
-import { formatAgentSocketPath } from "../../src/subagent/address.ts";
-import { getAgentSocketPath } from "../../src/ipc/socket.ts";
+import { formatAddress, formatGroupAddress } from "../../src/subagent/address.ts";
+import { foldEvents } from "../../src/subagent/storage.ts";
+
+const SESSION = "01a1deac";
+const MAIN_ADDRESS = formatAddress(SESSION, "main");
 
 interface Handle {
   request: JobRequest;
@@ -62,18 +66,32 @@ function handleFor(started: Handle[], jobId: string): Handle {
   return handle;
 }
 
+/** Persist runtime events exactly as the root service does, then fold them. */
+function foldedRegistry(events: readonly RuntimeEvent[]) {
+  const customTypes = {
+    job: "subagent-job",
+    "job-start": "subagent-job-start",
+    "job-end": "subagent-job-end",
+  } as const;
+  const branch = events.map((event, index) => {
+    const { type, ...data } = event;
+    return { type: "custom", id: `fold-${index}`, customType: customTypes[type], data: { v: 3, ...data } };
+  });
+  return foldEvents(branch);
+}
+
 test("the configured maximum depth gates the production topology", () => {
   const maxDepth = DEFAULT_HARNESS_CONFIG.subagent.maxDepth;
   assert.equal(maxDepth, 2);
   const fake = adapter();
-  const runtime = createSubagentRuntime({ startJob: fake.startJob });
+  const runtime = createSubagentRuntime({ session: SESSION, startJob: fake.startJob });
 
-  const root = runtime.create({ tasks: [{ task: "root" }] }).items[0];
+  const root = runtime.create({ agents: [{ goal: "root" }] }).items[0];
   assert.ok(root);
-  const child = runtime.create({ tasks: [{ task: "child" }] }, { parentAgentId: root.id }).items[0];
+  const child = runtime.create({ agents: [{ goal: "child" }] }, { parentAgentId: root.id }).items[0];
   assert.ok(child);
   assert.throws(
-    () => runtime.create({ tasks: [{ task: "grandchild" }] }, { parentAgentId: child.id }),
+    () => runtime.create({ agents: [{ goal: "grandchild" }] }, { parentAgentId: child.id }),
     (error: unknown) => error instanceof SubagentError
       && error.code === "max_depth_exceeded"
       && error.detail.maxDepth === maxDepth,
@@ -82,6 +100,7 @@ test("the configured maximum depth gates the production topology", () => {
   // A deeper resolved configuration admits one more generation and still stops
   // at its own leaf.
   const deep = createSubagentRuntime({
+    session: SESSION,
     startJob: fake.startJob,
     config: resolveHarnessConfig([{ source: "test", value: { subagent: {
       maxDepth: 3,
@@ -94,14 +113,14 @@ test("the configured maximum depth gates the production topology", () => {
       },
     } } }]),
   });
-  const first = deep.create({ tasks: [{ task: "depth one" }] }).items[0];
+  const first = deep.create({ agents: [{ goal: "depth one" }] }).items[0];
   assert.ok(first);
-  const second = deep.create({ tasks: [{ task: "depth two" }] }, { parentAgentId: first.id }).items[0];
+  const second = deep.create({ agents: [{ goal: "depth two" }] }, { parentAgentId: first.id }).items[0];
   assert.ok(second);
-  const third = deep.create({ tasks: [{ task: "depth three" }] }, { parentAgentId: second.id }).items[0];
+  const third = deep.create({ agents: [{ goal: "depth three" }] }, { parentAgentId: second.id }).items[0];
   assert.ok(third);
   assert.throws(
-    () => deep.create({ tasks: [{ task: "depth four" }] }, { parentAgentId: third.id }),
+    () => deep.create({ agents: [{ goal: "depth four" }] }, { parentAgentId: third.id }),
     (error: unknown) => error instanceof SubagentError
       && error.code === "max_depth_exceeded"
       && error.detail.maxDepth === 3,
@@ -111,11 +130,12 @@ test("the configured maximum depth gates the production topology", () => {
 test("terminal history metadata is published and survives restore", async () => {
   const events: RuntimeEvent[] = [];
   const runtime = createSubagentRuntime({
+    session: SESSION,
     startJob: () => ({ done: Promise.resolve({ result: "done" }) }),
     finalizeJob: () => { throw new Error("history disk full"); },
     onEvent: (event) => { events.push(event); },
   });
-  const created = runtime.create({ tasks: [{ name: "writer", task: "write history" }] }).items[0];
+  const created = runtime.create({ agents: [{ name: "writer", goal: "write history" }] }).items[0];
   assert.ok(created);
   const terminal = await runtime.jobDone(created.id);
   assert.equal(terminal.status, "completed");
@@ -132,31 +152,14 @@ test("terminal history metadata is published and survives restore", async () => 
     message: "history disk full",
   }, "the terminal event carries the structured history failure");
 
-  const restored = createSubagentRuntime({ startJob: () => ({ done: Promise.resolve({}) }) });
-  const restore = restored.restoreState({
-    actors: [{
-      agentId: created.id,
-      name: "writer",
-      parentAgentId: null,
-      depth: 1,
-      stoppedOrder: 1,
-    }],
-    jobs: [{
-      jobId: created.id,
-      agentId: created.id,
-      createdBy: "Main",
-      spec: jobEvent.spec,
-      end: {
-        status: "completed",
-        result: "done",
-        error: null,
-        history: endEvent.history,
-        budget: endEvent.budget,
-        historyState: endEvent.historyState,
-        historyError: endEvent.historyError,
-      },
-    }],
-  });
+  // The registry description is folded from the runtime's own durable events,
+  // the same path the root service uses, so no hand-built actor/spec shape is
+  // involved.
+  const state = foldedRegistry(events);
+  assert.equal(state.actors[0]?.name, "writer");
+  assert.equal(state.actors[0]?.goal, "write history");
+  const restored = createSubagentRuntime({ session: SESSION, startJob: () => ({ done: Promise.resolve({}) }) });
+  const restore = restored.restoreState(state);
   assert.deepEqual(restore.interrupted, []);
   assert.equal(restore.jobs, 1);
 
@@ -168,42 +171,41 @@ test("terminal history metadata is published and survives restore", async () => 
   assert.equal(view?.historyError?.message, "history disk full");
 });
 
-test("address formatting is an injectable pure port and matches the transport path", () => {
-  const socketDir = "/tmp/runtime-domain-contract";
+test("logical addresses are derived from the session and canonical batch keys", () => {
   const fake = adapter();
-  const runtime = createSubagentRuntime({ startJob: fake.startJob, socketDir });
-  const created = runtime.create({ tasks: [{ task: "address" }] }).items[0];
+  const runtime = createSubagentRuntime({ session: SESSION, startJob: fake.startJob });
+  const created = runtime.create({ agents: [{ goal: "address" }] }).items[0];
   assert.ok(created);
-  assert.equal(created.socket, formatAgentSocketPath(created.id, socketDir));
-  assert.equal(created.socket, getAgentSocketPath(created.id, socketDir));
-  assert.equal(runtime.listDetailed({ id: created.id }, { callerId: "Main" })?.socket, created.socket);
+  assert.equal(created.id, "sub_1");
+  assert.equal(created.address, formatAddress(SESSION, created.id));
+  assert.equal(runtime.listDetailed({ id: created.id }, { callerId: "main" })?.address, created.address);
 
-  const custom = createSubagentRuntime({
-    startJob: fake.startJob,
-    socketDir,
-    agentSocketPath: (id, directory) => `custom://${directory ?? "unset"}/${id}`,
-  });
-  const customItem = custom.create({ tasks: [{ task: "custom address" }] }).items[0];
-  assert.ok(customItem);
-  assert.equal(customItem.socket, `custom://${socketDir}/${customItem.id}`);
+  // The address is derived from the session uid and the stable batch key, not
+  // from a socket path passed through the runtime options.
+  const second = runtime.create({ agents: [{ goal: "second" }] }).items[0];
+  assert.ok(second);
+  assert.equal(second.address, formatAddress(SESSION, second.id));
+  assert.notEqual(second.address, created.address);
 });
 
 test("broadcast keeps the existing per-recipient receipt shape", async () => {
   const fake = adapter();
   const runtime = createSubagentRuntime({
+    session: SESSION,
     startJob: fake.startJob,
     deliverMessage: fake.deliverMessage,
   });
-  const items = runtime.create({ tasks: [{ task: "one" }, { task: "two" }] }).items;
+  const items = runtime.create({ agents: [{ goal: "one" }, { goal: "two" }] }).items;
   assert.equal(items.length, 2);
+  const group = formatGroupAddress(SESSION, 1);
 
-  const receipt = await runtime.sendMessage({ from: "Main", to: "all", content: "status?" });
+  const receipt = await runtime.sendMessage({ from: MAIN_ADDRESS, to: group, content: "status?" });
   assert.equal("sent" in receipt, true);
   if (!("sent" in receipt)) assert.fail("expected a broadcast receipt");
   assert.deepEqual(receipt, {
     ok: true,
-    to: "all",
-    sent: items.map((item) => ({ to: item.id, jobId: item.id })),
+    to: group,
+    sent: items.map((item) => ({ to: item.address, jobId: item.id })),
     errors: [],
   });
   assert.deepEqual(fake.deliveries.map((entry) => [entry.agentId, entry.content]), [

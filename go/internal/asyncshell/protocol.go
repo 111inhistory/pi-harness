@@ -41,6 +41,7 @@ type ShellResult struct {
 // AsyncShellRegisterFrame is TS `interface AsyncShellRegisterFrame`.
 type AsyncShellRegisterFrame struct {
 	Kind      string `json:"kind"`
+	AgentID   string `json:"agentId"`
 	Token     string `json:"token"`
 	Operation string `json:"operation"`
 	ID        string `json:"id"`
@@ -51,6 +52,7 @@ type AsyncShellRegisterFrame struct {
 // AsyncShellCompleteFrame is TS `interface AsyncShellCompleteFrame`.
 type AsyncShellCompleteFrame struct {
 	Kind      string      `json:"kind"`
+	AgentID   string      `json:"agentId"`
 	Token     string      `json:"token"`
 	Operation string      `json:"operation"`
 	ID        string      `json:"id"`

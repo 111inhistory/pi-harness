@@ -6,25 +6,27 @@
  * fences. Queries never reuse the TUI's per-group display window: an unknown Job
  * and a not-yet-settled Job are reported distinctly from an empty result.
  *
- * Creating agents binds parent identity, root session, cwd and inherited capture
- * on the host side; the client supplies only task text. A registered batch whose
- * local preparation then fails still reports its registered items — it never
- * implies the whole batch had no effect.
+ * Creating a batch binds parent identity, root session, cwd and inherited
+ * capture on the host side; the client supplies the goal, shared context and
+ * the declared members. A registered batch whose local preparation then fails
+ * still reports its registered items — it never implies the whole batch had no
+ * effect.
  */
 
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { sendManagedMessage } from '../../subagent/managed-send.ts';
 
 import type { RootService } from '../../subagent/root-service.ts';
-import { captureContextForChild } from '../../subagent/surface.ts';
-import type { CreatedAgents, DetailedAgentItem, JobRecordView, JobView, StopResult } from '../../subagent/runtime.ts';
+import { captureContextForChild, projectCreatedBatch, type CreatedBatchView } from '../../subagent/surface.ts';
+import { MAIN_ACTOR } from '../../subagent/address.ts';
+import type { DetailedAgentItem, JobRecordView, JobView, SignalResult } from '../../subagent/runtime.ts';
 import type {
   JobIdParams,
   JobsListParams,
   MessageSendParams,
   MessageSendResult,
   SubagentCreateParams,
-  SubagentStopParams,
+  SubagentSignalParams,
 } from '../contract.ts';
 import { RPC_ERROR } from '../protocol.ts';
 import { RpcRequestError } from '../error.ts';
@@ -34,8 +36,8 @@ export interface SubagentPort {
   jobs(params: JobsListParams): { readonly jobs: readonly JobView[] };
   job(params: JobIdParams): { readonly job: JobView; readonly record: JobRecordView | null };
   result(params: JobIdParams): JobRecordView;
-  create(params: SubagentCreateParams): Promise<CreatedAgents>;
-  stop(params: SubagentStopParams): StopResult;
+  create(params: SubagentCreateParams): Promise<CreatedBatchView>;
+  signal(params: SubagentSignalParams): Promise<SignalResult>;
   send(params: MessageSendParams): Promise<MessageSendResult>;
 }
 
@@ -53,7 +55,7 @@ export function buildSubagentPort(api: ExtensionAPI, ctx: ExtensionContext, root
   return {
     tree(): Promise<DetailedAgentItem | null> {
       // `all` reads the whole tree, not the TUI's windowed sibling rows.
-      return root.list({ all: true }, 'Main');
+      return root.list({ all: true }, MAIN_ACTOR);
     },
 
     jobs(params: JobsListParams): { readonly jobs: readonly JobView[] } {
@@ -75,12 +77,10 @@ export function buildSubagentPort(api: ExtensionAPI, ctx: ExtensionContext, root
       throw new RpcRequestError(RPC_ERROR.notReady, `Job "${params.jobId}" has not settled yet.`);
     },
 
-    async create(params: SubagentCreateParams): Promise<CreatedAgents> {
-      const context = params.context === undefined ? {} : { context: params.context };
-      const batch = { ...context, tasks: params.tasks };
+    async create(params: SubagentCreateParams): Promise<CreatedBatchView> {
       // The host binds parent identity, cwd, session and inherited capture; the
       // client never supplies trusted identity or raw inherited entries.
-      return root.create(batch, {
+      const created = await root.create(params, {
         parentAgentId: null,
         allowInherited: true,
         origin: {
@@ -92,14 +92,15 @@ export function buildSubagentPort(api: ExtensionAPI, ctx: ExtensionContext, root
         },
         captureInheritedContext: () => captureContextForChild(api, ctx, 1, root.maxDepth),
       }, ctx);
+      return projectCreatedBatch(created);
     },
 
-    stop(params: SubagentStopParams): StopResult {
-      return root.stop(params.id);
+    signal(params: SubagentSignalParams): Promise<SignalResult> {
+      return root.signal(params.target, params.action, MAIN_ACTOR);
     },
 
     async send(params: MessageSendParams): Promise<MessageSendResult> {
-      return sendManagedMessage(root, { senderId: 'Main', cwd: ctx.cwd, ...params });
+      return sendManagedMessage(root, { senderId: MAIN_ACTOR, ...params });
     },
   };
 }

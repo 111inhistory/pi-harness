@@ -67,9 +67,11 @@ test('malformed event versions, duplicate registration and unknown ownership fai
   const { root, store } = fixture(t);
   store.append(EVENTS.job, job());
   assert.throws(() => foldEvents([...root, ...root]), { code: 'storage_corrupt' });
-  assert.throws(() => foldEvents([{ type: 'custom', customType: EVENTS.job, data: { v: 1 } }]), { code: 'storage_corrupt' });
+  for (const version of [1, 2]) {
+    assert.throws(() => foldEvents([{ type: 'custom', customType: EVENTS.job, data: { v: version } }]), { code: 'unsupported_version' });
+  }
   assert.deepEqual(foldEvents([{ type: 'custom', customType: 'subagent-state', data: { version: 1 } }]), { actors: [], jobs: [] });
-  assert.throws(() => foldEvents([{ type: 'custom', customType: EVENTS.actor, data: { v: 2, agentId: 'missing' } }]), { code: 'storage_corrupt' });
+  assert.throws(() => foldEvents([{ type: 'custom', customType: EVENTS.actor, data: { v: 3, agentId: 'missing' } }]), { code: 'storage_corrupt' });
 });
 
 test('inherited seed drops harness bookkeeping, relinks parents and preserves opaque native blocks', (t) => {

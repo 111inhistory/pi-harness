@@ -79,7 +79,8 @@ const budgetProfile = (soft: number, hard: number): JsonRecord => ({
 
 function harnessConfig(options: {
   maxDepth: number;
-  maxActiveChildren: number;
+  maxActiveSubagents: number;
+  maxActiveInheritedSubagents?: number;
   commonAppend: string;
   inheritedReplace: string;
   d1ModelCalls: { soft: number; hard: number };
@@ -93,7 +94,10 @@ function harnessConfig(options: {
   return {
     subagent: {
       maxDepth: options.maxDepth,
-      maxActiveChildren: options.maxActiveChildren,
+      maxActiveSubagents: options.maxActiveSubagents,
+      ...(options.maxActiveInheritedSubagents === undefined
+        ? {}
+        : { maxActiveInheritedSubagents: options.maxActiveInheritedSubagents }),
       budgetsByDepth: depths,
       prompts: {
         common: { append: options.commonAppend },
@@ -228,8 +232,10 @@ async function startScenario(options: ScenarioOptions): Promise<Scenario> {
     if (text.includes(D3_TASK)) return 'd3';
     if (text.includes(D2_TASK)) return 'd2';
     if (text.includes(D1_TASK)) return 'd1';
-    if (text.includes(HELD_B_TASK)) return 'heldB';
-    if (text.includes(HELD_C_TASK)) return 'heldC';
+    // A multi-member batch renders every member goal in its roster, so the
+    // member's own logical segment is the only unambiguous marker.
+    if (/background collaborator at [0-9a-f]{8}:sub_2-1\b/.test(text)) return 'heldB';
+    if (/background collaborator at [0-9a-f]{8}:sub_2-2\b/.test(text)) return 'heldC';
     if (text.includes(HELD_A_TASK)) return 'heldA';
     throw new Error(`Unrecognized scripted session ${String(sessionId)}`);
   }
@@ -291,7 +297,7 @@ async function startScenario(options: ScenarioOptions): Promise<Scenario> {
     const extensionErrors: unknown[] = [];
     await session.bindExtensions({ onError: (error) => extensionErrors.push(error) });
     session.setActiveToolsByName([
-      ...session.getActiveToolNames(), 'subagent_create', 'subagent_list', 'subagent_stop',
+      ...session.getActiveToolNames(), 'subagent_create', 'subagent_list', 'subagent_signal',
     ]);
 
     let toolCall = 0;
@@ -370,7 +376,7 @@ test('configured maxDepth 3 reaches a leaf with gated tools, configured Budget, 
     config: {
       global: harnessConfig({
         maxDepth: 3,
-        maxActiveChildren: 4,
+        maxActiveSubagents: 4,
         commonAppend: COMMON_GLOBAL,
         inheritedReplace: INHERITED_GLOBAL,
         d1ModelCalls: { soft: 2, hard: 8 },
@@ -386,7 +392,7 @@ test('configured maxDepth 3 reaches a leaf with gated tools, configured Budget, 
         if (text.includes(D3_RESULT)) return reply.text(D2_RESULT);
         if (turn === 1) {
           return reply.tool('subagent_create', {
-            tasks: [{ name: 'DepthThree', task: D3_TASK }],
+            agents: [{ name: 'DepthThree', goal: D3_TASK }],
           }, `create-d3-${turn}`);
         }
         return reply.text('Depth-2 child dispatched its leaf and is waiting.');
@@ -394,7 +400,7 @@ test('configured maxDepth 3 reaches a leaf with gated tools, configured Budget, 
       if (text.includes(D2_RESULT)) return reply.text(D1_RESULT);
       if (turn === 1) {
         return reply.tool('subagent_create', {
-          tasks: [{ name: 'DepthTwo', task: D2_TASK }],
+          agents: [{ name: 'DepthTwo', goal: D2_TASK }],
         }, `create-d2-${turn}`);
       }
       return reply.text('Depth-1 child dispatched its child and is waiting.');
@@ -403,20 +409,20 @@ test('configured maxDepth 3 reaches a leaf with gated tools, configured Budget, 
 
   try {
     const created = await scenario.execute('subagent_create', {
-      tasks: [{ name: 'DepthOne', task: D1_TASK }],
+      agents: [{ name: 'DepthOne', goal: D1_TASK }],
     });
     const items = asRecord(created.details)?.['items'];
     assert.ok(Array.isArray(items), 'the real create tool returns its created agent items');
     const first = asRecord(items[0]);
-    assert.equal(first?.['id'], 'sub_01');
-    assert.equal(typeof first?.['socket'], 'string');
+    assert.equal(first?.['id'], 'sub_1');
+    assert.equal(typeof first?.['address'], 'string');
 
     // Depth 3 is only reachable when the configured maximum is actually used by
     // surface registration, the runner's exclusion set and the nested create
     // guard.
     const leafEnd = await waitFor(() => {
       const branch = scenario.branchEntries();
-      return jobEntries(branch, 'subagent-job-end').find((data) => data['jobId'] === 'sub_01_01_01') ?? null;
+      return jobEntries(branch, 'subagent-job-end').find((data) => data['jobId'] === 'sub_3') ?? null;
     }, { label: 'the depth-3 leaf Job to complete', timeoutMs: 30000 });
     await scenario.session.waitForIdle();
 
@@ -431,19 +437,19 @@ test('configured maxDepth 3 reaches a leaf with gated tools, configured Budget, 
     assert.ok(leafTools.includes('subagent_list'), 'a leaf keeps subagent_list');
     assert.ok(leafTools.includes('msg_write'), 'a leaf keeps msg_write');
     assert.equal(leafTools.includes('subagent_create'), false, 'a leaf at maxDepth cannot create children');
-    assert.equal(leafTools.includes('subagent_stop'), false, 'a leaf at maxDepth cannot stop peers');
+    assert.equal(leafTools.includes('subagent_signal'), false, 'a leaf at maxDepth cannot control peers');
 
     // Depth 2 still holds create and successfully used it, so maxDepth 3 is not
     // implemented by merely disabling creation one level early.
     const d2Tools = scenario.toolsSeen.get('d2')?.[0];
     assert.ok(d2Tools, 'the depth-2 child made a scripted model request');
     assert.ok(d2Tools.includes('subagent_create'), 'a depth-2 child below maxDepth 3 keeps creation');
-    const d2LeafRegistration = jobRegistration(scenario.branchEntries(), 'sub_01_01_01');
+    const d2LeafRegistration = jobRegistration(scenario.branchEntries(), 'sub_3');
     assert.equal(asRecord(d2LeafRegistration['actor'])?.['depth'], 3);
 
     // The configured soft model-call limit is observable in the terminal Job
     // event; the default depth-1 soft limit would leave the phase normal.
-    const d1End = jobEnd(scenario.branchEntries(), 'sub_01');
+    const d1End = jobEnd(scenario.branchEntries(), 'sub_1');
     const d1Budget = asRecord(d1End['budget']);
     assert.ok(d1Budget, 'the terminal Job event carries its Budget snapshot');
     assert.equal(d1Budget['depth'], 1);
@@ -458,20 +464,20 @@ test('configured maxDepth 3 reaches a leaf with gated tools, configured Budget, 
     const d1Input = scenario.inputs.get('d1')?.[0];
     assert.ok(d1Input);
     assertPromptLayer(d1Input, 'the depth-1 child');
-    assert.match(d1Input, /You are Subagent sub_01\b/);
-    assert.match(d1Input, /Your direct parent is Main\b/);
+    assert.match(d1Input, /You are a background collaborator at [0-9a-f]{8}:sub_1\b/);
+    assert.match(d1Input, /Your creator is [0-9a-f]{8}:main\b/);
 
     const d2Input = scenario.inputs.get('d2')?.[0];
     assert.ok(d2Input);
     assertPromptLayer(d2Input, 'the depth-2 child');
-    assert.match(d2Input, /You are Subagent sub_01_01\b/);
-    assert.match(d2Input, /Your direct parent is sub_01\b/);
+    assert.match(d2Input, /You are a background collaborator at [0-9a-f]{8}:sub_2\b/);
+    assert.match(d2Input, /Your creator is [0-9a-f]{8}:sub_1\b/);
 
     const d3Input = scenario.inputs.get('d3')?.[0];
     assert.ok(d3Input);
     assertPromptLayer(d3Input, 'the depth-3 leaf');
-    assert.match(d3Input, /You are Subagent sub_01_01_01\b/);
-    assert.match(d3Input, /Your direct parent is sub_01_01\b/);
+    assert.match(d3Input, /You are a background collaborator at [0-9a-f]{8}:sub_3\b/);
+    assert.match(d3Input, /Your creator is [0-9a-f]{8}:sub_2\b/);
 
     // A fresh child must not silently receive the inherited paragraph.
     assert.equal(d1Input.includes(INHERITED_PROJECT), false);
@@ -492,14 +498,15 @@ test('a root config snapshot survives project rewrites, governs child caps, and 
     config: {
       global: harnessConfig({
         maxDepth: 3,
-        maxActiveChildren: 5,
+        maxActiveSubagents: 4,
+        maxActiveInheritedSubagents: 1,
         commonAppend: COMMON_GLOBAL,
         inheritedReplace: INHERITED_GLOBAL,
         d1ModelCalls: { soft: 2, hard: 8 },
       }),
       project: {
         subagent: {
-          maxActiveChildren: 2,
+          maxActiveSubagents: 3,
           prompts: {
             common: { append: COMMON_PROJECT },
             inherited: { replace: INHERITED_PROJECT },
@@ -525,11 +532,11 @@ test('a root config snapshot survives project rewrites, governs child caps, and 
     const projectPath = path.join(scenario.cwd, '.pi', 'harness.json');
 
     const first = await scenario.execute('subagent_create', {
-      tasks: [{ name: 'HeldFresh', task: HELD_A_TASK }],
+      agents: [{ name: 'HeldFresh', goal: HELD_A_TASK }],
     });
     const firstItems = asRecord(first.details)?.['items'];
     assert.ok(Array.isArray(firstItems));
-    assert.equal(asRecord(firstItems[0])?.['id'], 'sub_01');
+    assert.equal(asRecord(firstItems[0])?.['id'], 'sub_1');
 
     // Wait until the first child is really inside its own model request before
     // rewriting the file: the root snapshot must already be resolved.
@@ -539,7 +546,7 @@ test('a root config snapshot survives project rewrites, governs child caps, and 
 
     const rewritten = harnessConfig({
       maxDepth: 2,
-      maxActiveChildren: 1,
+      maxActiveSubagents: 1,
       commonAppend: COMMON_REWRITTEN,
       inheritedReplace: INHERITED_REWRITTEN,
       d1ModelCalls: { soft: 2, hard: 8 },
@@ -551,15 +558,15 @@ test('a root config snapshot survives project rewrites, governs child caps, and 
     // rewritten fresh cap of one would refuse it, because heldA already holds
     // one of the two fresh slots.
     const second = await scenario.execute('subagent_create', {
-      tasks: [
-        { name: 'HeldInherited', task: HELD_B_TASK, inheritContext: true },
-        { name: 'HeldAfterRewrite', task: HELD_C_TASK },
+      agents: [
+        { name: 'HeldInherited', goal: HELD_B_TASK, inheritContext: true },
+        { name: 'HeldAfterRewrite', goal: HELD_C_TASK },
       ],
     });
     const secondItems = asRecord(second.details)?.['items'];
     assert.ok(Array.isArray(secondItems));
-    assert.equal(asRecord(secondItems[0])?.['id'], 'sub_02');
-    assert.equal(asRecord(secondItems[1])?.['id'], 'sub_03', 'the mixed batch is admitted under the root snapshot');
+    assert.equal(asRecord(secondItems[0])?.['id'], 'sub_2-1');
+    assert.equal(asRecord(secondItems[1])?.['id'], 'sub_2-2', 'the mixed batch is admitted under the root snapshot');
     await waitFor(() => scenario.inputs.get('heldC')?.length === 1, {
       label: 'the batch fresh child to reach its held model request', timeoutMs: 15000,
     });
@@ -578,24 +585,23 @@ test('a root config snapshot survives project rewrites, governs child caps, and 
     assert.equal(inheritedInput.includes(COMMON_REWRITTEN), false,
       'the rewritten file does not change prompts of children created inside the active root');
     assert.equal(inheritedInput.includes(INHERITED_REWRITTEN), false);
-    assert.match(inheritedInput, /You are Subagent sub_02\b/);
-    assert.match(inheritedInput, /Your direct parent is Main\b/);
+    assert.match(inheritedInput, /You are a background collaborator at [0-9a-f]{8}:sub_2-1\b/);
+    assert.match(inheritedInput, /Your creator is [0-9a-f]{8}:main\b/);
     assert.ok(inheritedInput.includes(HELD_B_TASK), 'the inherited child receives its assigned task');
 
-    // The configured fresh cap is two, not the built-in four, and both fresh
-    // slots are held by heldA and the batch's fresh child. A third direct fresh
-    // child must be refused without touching the running pair.
+    // The root snapshot's direct-subagent cap is three, not the built-in seven,
+    // and it is already held by heldA plus the batch's two members. A fourth
+    // child must be refused without touching the running three.
     await assert.rejects(
       scenario.execute('subagent_create', {
-        tasks: [{ name: 'OverCap', task: 'CONFIG_OVER_CAP_TASK: must be refused.' }],
+        agents: [{ name: 'OverCap', goal: 'CONFIG_OVER_CAP_TASK: must be refused.' }],
       }),
       (error: unknown) => {
         const record = asRecord(error);
-        assert.equal(record?.['code'], 'child_limit_exceeded');
+        assert.equal(record?.['code'], 'subagent_limit_exceeded');
         const detail = asRecord(record?.['detail']);
-        assert.equal(detail?.['kind'], 'fresh');
-        assert.equal(detail?.['maxActiveChildren'], 2, 'the refusal reports the resolved configured cap');
-        assert.equal(detail?.['activeChildren'], 2);
+        assert.equal(detail?.['maxActiveSubagents'], 3, 'the refusal reports the resolved configured cap');
+        assert.equal(detail?.['activeChildren'], 3);
         return true;
       },
     );
@@ -603,14 +609,14 @@ test('a root config snapshot survives project rewrites, governs child caps, and 
     // Release the held children. Their second turn still observes the original
     // prompt snapshot, and the running first child is not mutated by the file.
     releaseChildren.resolve();
-    await waitFor(() => scenario.inputs.get('heldA')?.length === 2
-      && scenario.inputs.get('heldB')?.length === 2
-      && scenario.inputs.get('heldC')?.length === 2, {
+    await waitFor(() => (scenario.inputs.get('heldA')?.length ?? 0) >= 2
+      && (scenario.inputs.get('heldB')?.length ?? 0) >= 2
+      && (scenario.inputs.get('heldC')?.length ?? 0) >= 2, {
       label: 'the held children to finish their released turn', timeoutMs: 15000,
     });
     await waitFor(() => {
       const branch = scenario.branchEntries();
-      return ['sub_01', 'sub_02', 'sub_03'].every((jobId) =>
+      return ['sub_1', 'sub_2-1', 'sub_2-2'].every((jobId) =>
         jobEntries(branch, 'subagent-job-end').some((data) => data['jobId'] === jobId));
     }, { label: 'the held child Jobs to terminate', timeoutMs: 15000 });
     await scenario.session.waitForIdle();
@@ -627,14 +633,14 @@ test('a root config snapshot survives project rewrites, governs child caps, and 
     assert.equal(secondSecondTurn.includes(COMMON_REWRITTEN), false);
     assert.equal(secondSecondTurn.includes(INHERITED_REWRITTEN), false);
 
-    const heldAEnd = jobEnd(scenario.branchEntries(), 'sub_01');
-    const heldBEnd = jobEnd(scenario.branchEntries(), 'sub_02');
+    const heldAEnd = jobEnd(scenario.branchEntries(), 'sub_1');
+    const heldBEnd = jobEnd(scenario.branchEntries(), 'sub_2-1');
     assert.equal(heldAEnd['status'], 'completed');
     assert.equal(heldBEnd['status'], 'completed');
     assert.equal(asRecord(heldBEnd['budget'])?.['depth'], 1);
     assert.deepEqual(
       jobEntries(scenario.branchEntries(), 'subagent-job-end').map((data) => data['jobId']).sort(),
-      ['sub_01', 'sub_02', 'sub_03'],
+      ['sub_1', 'sub_2-1', 'sub_2-2'],
       'the rejected fourth child never allocates a Job',
     );
   } finally {
@@ -647,7 +653,7 @@ test('registers /subagent and keeps argument errors service-free through the SDK
   const scenario = await startScenario({
     config: {
       global: harnessConfig({
-        maxDepth: 2, maxActiveChildren: 4,
+        maxDepth: 2, maxActiveSubagents: 4,
         commonAppend: 'Global guidance.', inheritedReplace: 'Inherited guidance.',
         d1ModelCalls: { soft: 2, hard: 8 },
       }),
@@ -664,7 +670,7 @@ test('registers /subagent and keeps argument errors service-free through the SDK
       value: { notify: (text: string, type: string = 'info') => { notices.push({ text, type }); } },
     });
     await command.handler('stop --bogus', ctx);
-    assert.deepEqual(notices, [{ text: 'invalid_command_args: stop requires one actor id or --all.', type: 'error' }]);
+    assert.deepEqual(notices, [{ text: 'invalid_command_args: stop requires one target: an agent id, a full logical address, main or children.', type: 'error' }]);
   } finally {
     await scenario.dispose();
   }

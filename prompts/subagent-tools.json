@@ -1,50 +1,53 @@
 {
-  "namespace": "Orchestrate independent background subagents for concurrent execution.",
-  "instructions": "Background subagents are independent sessions; coordinate them through these tools.",
+  "namespace": "Start and coordinate goal-oriented background collaborators.",
+  "instructions": "Background collaborators are independent sessions; coordinate them through these tools.",
   "create": {
-    "description": "Create background subagents for concurrent execution, non-blocking. Returns agent IDs and socket addresses.",
-    "snippet": "Delegate parallel workloads to direct subagents",
-    "guideline": "Write requirements in English. subagent_create is non-blocking: after dispatching, continue non-dependent local work or conclude your turn to let the host wake you on completion. DO NOT poll.\n\nOffloading and coordination\n\nUse subagents to offload tasks that do not need to run inline in your current flow, or to advance independent workstreams in parallel. Keep tightly coupled sequential steps local, or isolate overlapping file edits in separate git worktrees for you to merge. Sequence dependent stages explicitly.\n\nFresh vs Inherited\n\nUse inheritContext: false (default) for a self-contained assignment routed to a role-matched model. Because a fresh subagent starts with a clean context, provide thorough instructions in context and task: background, constraints, scope, deliverables, and how to verify completion.\n\nUse inheritContext: true when multiple complex workstreams need to advance concurrently on top of your current session context, decisions, and active capabilities (e.g. implementing multiple features in parallel). Because the child already shares your context, DO NOT repeat extensive background—delegate the workstream goal, boundaries, and which key choices require reporting back, and expect it to drive execution autonomously.",
+    "description": "Start one batch of background collaborators, non-blocking. Every member receives the shared context; a batch with more than one member also receives the launch roster of names, goals and logical addresses. Returns the batch address and member IDs, addresses and names.",
+    "snippet": "Start background collaborators with a shared context",
+    "guideline": "Write goals in English. subagent_create is non-blocking: after dispatching, continue non-dependent local work or conclude your turn; the creator is woken by internal status, not by polling.\n\nUse a batch when work splits into independent parts that can advance concurrently. Keep tightly coupled sequential steps local, or isolate overlapping file edits in separate git worktrees for you to merge.\n\nFresh vs Inherited\n\ninheritContext: false (default) starts a member with a clean context. Give it a self-contained goal: background, constraints, scope, deliverable and how to verify completion.\n\ninheritContext: true shares this session's context and capabilities. Delegate the part's goal, boundaries and the choices to report back; do not repeat context the member already holds.\n\nHandoff\n\nMembers report to the creator with msg_write. The host does not deliver a member's final assistant message as a result.",
     "parameters": {
-      "context": "Background, constraints, and source material shared by every task in this batch.",
-      "tasks": {
-        "description": "Independent workloads. Order is preserved in the result, but it does not create execution dependencies.",
+      "context": "Shared background, constraints and source material every member needs.",
+      "agents": {
+        "description": "Batch members in roster order. The roster is fixed at launch.",
         "items": {
-          "name": "Caller-facing label; defaults to none.",
-          "task": "Self-contained assignment: scope, deliverables, and how to verify completion.",
+          "name": "Optional caller-facing label used in the roster.",
+          "goal": "This member's part of the work: scope, deliverable and how to verify it.",
           "inheritContext": "Inherit this session's conversation and capabilities. Default false: start with clean context."
         }
       }
     },
-    "capacity": "Active-children caps: at most {fresh} fresh and {inherited} inherited children per parent. A batch or revival that would exceed either cap is refused; running children are not stopped when a cap changes."
+    "capacity": "Per-parent caps: at most {batches} active batches, {subagents} active subagents and {inherited} active inherited subagents. A batch or revival that would exceed a cap is refused; running members are not stopped when a cap changes."
   },
   "list": {
-    "description": "Returns a scoped tree of related agents, non-blocking (parent, peers, and direct children; capped at 4 per group, active first). Active direct children are expanded; stopped nodes are folded. Nodes carry latest history paths, and durable roots include historyDir (<jobId>/summary.md for outcomes, transcript.jsonl for logs; inspect via read).",
-    "snippet": "Check background agent progress and history paths",
+    "description": "Returns a scoped tree of agents (creator, peers and direct children; capped at 4 per group, active first). Nodes carry IDs, logical addresses, names, one lifecycle status string, roles, kinds and available history paths. Idle nodes are folded.",
+    "snippet": "Read agent names, addresses, statuses and history paths",
     "parameters": {
       "all": "Show every agent without group limits or folding. Default false.",
       "id": "Filter to a specific agent's visible subtree. Returns null if absent."
     },
-    "guideline": "Use subagent_list to inspect status and historyDir paths."
+    "guideline": "Use subagent_list to read agent names, logical addresses, statuses and history file paths."
   },
-  "stop": {
-    "description": "Request cancellation of an agent by id, non-blocking. May return stopping or finalizing while execution or history writes finish.",
-    "snippet": "Cancel a background agent's current run",
+  "signal": {
+    "description": "Signal one agent or one agent group by its logical address. interrupt cancels its current tool and model turn but keeps its goal and running Job; stop ends its current Job and releases resources while keeping the Agent and its history.",
+    "snippet": "Interrupt or stop an agent's current work",
     "parameters": {
-      "id": "The subagent id to stop."
-    }
+      "target": "One logical address: <sessionHex>:sub_<batch>[-<member>], <sessionHex>:batch_<batch>, or <sessionHex>:<agent>/children.",
+      "action": "interrupt cancels the current tool and model turn and keeps the goal; stop ends the current Job and releases resources."
+    },
+    "guideline": "Use subagent_signal to interrupt or stop agents; subagent_list shows what each one is doing."
   },
   "msg_write": {
-    "description": "Send a plain-text message to a managed Agent IPC endpoint: Unix Socket or Windows Named Pipe. The host binds the sender and transport framing. Omit from/to, JSON or NDJSON envelopes, and trailing newlines. A path that is another live session's Main endpoint reaches that session's Main; that session sees your session identity and a reply address.",
-    "snippet": "Send plain-text messages to agents through their Socket paths",
+    "description": "Send a plain-text message to one logical Agent address. The host binds the sender and the transport framing. A target that is another live session's Main reaches that session's Main; that session sees your session identity and a reply address.",
+    "snippet": "Send plain-text messages to agents through their logical addresses",
     "guidelines": [
-      "Use msg_write to agent addresses, or your children.sock to broadcast to direct active agents without opening custom socket connections.",
+      "Address one agent by its logical address <sessionHex>:sub_<batch>[-<member>] or <sessionHex>:main from subagent_create, subagent_list or your context.",
+      "Broadcast to one batch with <sessionHex>:batch_<batch>, or to one agent's direct children with <sessionHex>:<agent>/children; broadcasts exclude the sender, and addressing yourself directly is rejected.",
       "Messaging a stopped agent revives it for a new round.",
       "A message from another session carries its full session identity in `from` and one managed reply address.",
-      "Provide the message body as plain text content; do not add from/to, JSON/NDJSON framing, a trailing newline, or a custom Socket client."
+      "Provide the target address and the message body only; do not add transport envelopes, JSON/NDJSON framing, a trailing newline, or a custom Socket client."
     ],
     "parameters": {
-      "path": "Returned Unix Socket or Windows Named Pipe address, including another live session's Main endpoint from /subagent sessions.",
+      "to": "One logical Agent address: <sessionHex>:main, <sessionHex>:sub_<batch>[-<member>], <sessionHex>:batch_<batch>, or <sessionHex>:<agent>/children. Never a socket path.",
       "content": "Plain-text message body. The host frames the transport and binds the sender."
     }
   }

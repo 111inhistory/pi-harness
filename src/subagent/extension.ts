@@ -15,9 +15,9 @@ export function installRootSubagentSurface(api: ExtensionAPI, access: Pick<Harne
     ctx.ui.addAutocompleteProvider(base => argumentCompletionProvider(base, 'subagent'));
   });
   installSubagentCommand(api, access.current, access.peers);
-  installAsyncShellSurface(api, async ctx => (await access.current(ctx)).shell, 'Main');
+  installAsyncShellSurface(api, async ctx => (await access.current(ctx)).shell, 'main');
   installSessionSurface(api, access.current, {
-    callerId: 'Main', depth: 0, allowInherited: true, cwd: process.cwd(),
+    callerId: 'main', depth: 0, allowInherited: true,
     maxDepth: DEFAULT_HARNESS_CONFIG.subagent.maxDepth,
     capacityFor: ctx => access.configFor(ctx).subagent,
   });

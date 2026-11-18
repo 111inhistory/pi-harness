@@ -53,7 +53,7 @@
 ### 2.4 顺序与并发
 
 - 普通请求在每个连接内按到达顺序串行处理，响应顺序与普通请求的受理顺序一致。
-- 控制请求旁路这条串行链：`subagent.stop`、`stream.unsubscribe`、`approvals.respond`、`main.interrupt`。它们用于在长时间操作、模型运行或 Root 换绑期间及时停止、退订或应答；控制请求可以比先前受理的普通请求先完成，响应因此可能乱序。控制请求之间也不承诺相对顺序。
+- 控制请求旁路这条串行链：`subagent.signal`、`stream.unsubscribe`、`approvals.respond`、`main.interrupt`。它们用于在长时间操作、模型运行或 Root 换绑期间及时中断、停止、退订或应答；控制请求可以比先前受理的普通请求先完成，响应因此可能乱序。控制请求之间也不承诺相对顺序。
 - 客户端必须用响应中的 `id` 关联待处理请求，不能按响应位置推断方法或因果；即使客户端只发普通请求，也不要把控制请求的到达位置当成普通队列位置。
 - 订阅事件在请求处理之外推送，可能与任意响应交错；同一连接的事件与响应不保证全局因果顺序。
 - 本端点与 Pi 原生 RPC 是两个通道，不承诺跨通道的全局消息顺序。客户端不能仅按接收先后推断操作因果。
@@ -165,7 +165,7 @@ await runRpcMode(runtime); // SDK 循环安装自己的 normal setRebindSession 
 - 客户端维护 `id → 待处理请求` 映射。普通请求的响应通常按受理顺序到达，但控制请求可能乱序；客户端必须按 `id` 关联，不按位置。
 - `id` 用字符串最稳妥。JSON 数字是 IEEE-754 双精度：超过 2^53 的整数、`-0` 等值在解析/回显时可能不精确；需要精确关联时使用字符串。
 - 请求缺少合法 `id` 或 `method`：返回 `invalid_request`；`id` 无法确定时为 `null`。`id` 合法但 `method` 未知：返回 `method_not_found` 并回显 `id`。
-- 结构有效性分两层：`RpcRequest` 只要求 `id`／`method`／可选 `params`；未知 `method` 是结构有效的通用请求，dispatch 返回 `method_not_found`。`MethodRequest` 是严格 schema，只接受 38 个已实现方法；未知方法在严格校验中失败。不要把“严格 schema 不匹配”误报为“帧结构非法”。
+- 结构有效性分两层：`RpcRequest` 只要求 `id`／`method`／可选 `params`；未知 `method` 是结构有效的通用请求，dispatch 返回 `method_not_found`。`MethodRequest` 是严格 schema，只接受 41 个已实现方法；未知方法在严格校验中失败。不要把“严格 schema 不匹配”误报为“帧结构非法”。
 - 所有方法校验对象参数；数组、字符串等返回 `invalid_request`。无参方法接受对象、缺失或 `null`，对象中的额外字段不参与操作；`params:null` 等价于缺失。
 - 协议没有请求级取消、超时或重试。客户端断开只解除观察，不取消子任务、不关闭 Pi。
 - 控制输入的结果未知时（异常、超时、断连），不得自动重发；断连不证明输入未入队。
@@ -199,9 +199,9 @@ await runRpcMode(runtime); // SDK 循环安装自己的 normal setRebindSession 
 | `jobs.list` | 否 | `JobsListResult` | Job 列表；可按 `jobIds` 过滤 |
 | `jobs.get` | 是 | `JobGetResult` | Job 视图与可空终态记录 |
 | `jobs.result` | 是 | `JobRecordView` | 已结算结果；未结算与不存在分别报错 |
-| `subagent.create` | 是 | `CreatedAgents` | 创建子任务；宿主绑定身份、cwd、会话与容量；部分注册失败见第 7 节 |
-| `subagent.stop` | 是 | `StopResult` | 请求取消；区分请求与最终退出 |
-| `message.send` | 是 | `MessageSendResult` | 按受管 IPC 地址投递、续跑或广播，返回共享发送回执 |
+| `subagent.create` | 是 | `CreatedBatch` | 创建一个目标导向的协作批次；宿主绑定身份、cwd、会话与容量；部分注册失败见第 7 节 |
+| `subagent.signal` | 是 | `SignalResult` | 对完整逻辑目标执行 `interrupt` 或 `stop`，返回逐目标结果 |
+| `message.send` | 是 | `MessageSendResult` | 按完整逻辑地址投递、续跑或广播，返回共享发送回执 |
 | `history.read` | 是 | `HistoryReadResult` | 原生历史区间；running Job 返回已产生区间 |
 | `stream.subscribe` | 是 | `StreamSubscribeResult` | 订阅子会话执行流并返回读取边界 |
 | `stream.unsubscribe` | 是 | `StreamUnsubscribeResult` | 从当前连接移除一个订阅；不依赖 Root 绑定 |
@@ -424,7 +424,7 @@ on_event(frame):
 on_unsubscribe_ok(subscription): subscriptions.remove(subscription)
 ```
 
-`pending` 必须按响应 `id` 匹配；`subagent.stop`、`stream.unsubscribe`、`approvals.respond`、`main.interrupt` 的响应可能早于先前普通请求，不能按响应位置推断请求。`seq` 是每连接序号；每订阅 `lastSeq` 只用于排序，不能检测该订阅的缺口。
+`pending` 必须按响应 `id` 匹配；`subagent.signal`、`stream.unsubscribe`、`approvals.respond`、`main.interrupt` 的响应可能早于先前普通请求，不能按响应位置推断请求。`seq` 是每连接序号；每订阅 `lastSeq` 只用于排序，不能检测该订阅的缺口。
 
 纯解析器（无业务状态）必须能完成：
 
@@ -520,7 +520,7 @@ on_unsubscribe_ok(subscription): subscriptions.remove(subscription)
 
 - 实现没有输入行长度上限；服务器未发送积压默认 4 MiB，超限断开。不要把它当作可靠的大帧传输。
 - 非法 UTF-8 可能被解码器替换为 U+FFFD，协议不做修复。
-- `message.send` 的跨会话回执 `{ok:true, delivered:"session", path}` 在实现中存在，接口契约方法表未逐字命名。
+- `message.send` 的跨会话回执 `{ok:true, delivered:"session", to}` 在实现中存在，接口契约方法表未逐字命名。
 - extension-only 装配没有 SDK runtime：`main.input` 只能返回 `submitted`，`main.state` 的部分运行时字段为 `null`，`navigateTree`、`reload`、`newSession`、`switchSession`、`fork` 不可用。客户端必须先读取 `main.state.session.capabilities`。
 - Root 换绑会移动 `harness-rpc.json` 到新 Root 的 session 目录；端点地址不变，但旧记录的 `sessionId` 不再表示当前 Root。重新连接前应重新发现。
 - `seq` 是每连接而非每订阅；没有每订阅缺口检测。控制请求响应可能乱序，按 `id` 关联。

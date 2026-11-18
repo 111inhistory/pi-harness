@@ -91,7 +91,7 @@ export function createRouter(deps: RouterDeps, main?: MainPort): RpcHandler {
     [RPC_METHODS.jobsGet]: (params) => deps.subagent.job(params),
     [RPC_METHODS.jobsResult]: (params) => deps.subagent.result(params),
     [RPC_METHODS.subagentCreate]: (params) => deps.subagent.create(params),
-    [RPC_METHODS.subagentStop]: (params) => deps.subagent.stop(params),
+    [RPC_METHODS.subagentSignal]: (params) => deps.subagent.signal(params),
     [RPC_METHODS.messageSend]: (params) => deps.subagent.send(params),
 
     [RPC_METHODS.historyRead]: (params) => deps.history.read(params),

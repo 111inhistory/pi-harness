@@ -1,39 +1,43 @@
+/**
+ * Contract tests for the one peer-message envelope.
+ *
+ * Terminal Job state is no longer a model-visible delivery: it stays an
+ * internal runtime wake. These cases pin the remaining semantics of
+ * `sendDelivery` — independent sends, preserved metadata, generation refusal
+ * and failure containment without retry.
+ */
+
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { sendDelivery, DELIVERY_CUSTOM_TYPE, type DeliveryCustomMessage } from "../../src/subagent/delivery.ts";
 
 const progress = { sourceId: "sub_01", round: 1, content: "progress" };
 
-test("ordinary messages and terminal notices are independent native sends", async () => {
+test("peer messages are independent native sends", async () => {
   const sent: DeliveryCustomMessage[] = [];
   const options = { send: (message: DeliveryCustomMessage) => { sent.push(message); } };
   sendDelivery(progress, options);
   const first = structuredClone(sent[0]);
   sendDelivery({ ...progress, content: "more progress" }, options);
-  const terminal = sendDelivery({ ...progress, content: "done", terminal: { status: "completed", details: { jobId: "sub_01" } } }, options);
-  assert.equal(sent.length, 3);
+  assert.equal(sent.length, 2);
   assert.deepEqual(sent[0], first, "later delivery never edits an earlier payload");
   assert.equal(sent[0]!.content, "progress");
   assert.equal(sent[1]!.content, "more progress");
-  assert.equal(sent[2]!.details.source, "host");
-  assert.equal(sent[2]!.details.status, "completed");
-  assert.match(sent[2]!.content, /Subagent sub_01 completed/);
-  assert.equal(sent[2]!.content.includes("progress"), false);
-  assert.equal("batchId" in sent[2]!.details, false);
-  assert.deepEqual(await terminal.completion, { ok: true });
+  assert.equal(sent[0]!.details.source, "agent");
+  assert.equal("status" in sent[0]!.details, false);
+  assert.equal("terminal" in sent[0]!.details, false);
 });
 
-test("clearing the caller's native queue cannot absorb a later terminal send", () => {
+test("clearing the caller's native queue cannot absorb a later send", () => {
   const queue: DeliveryCustomMessage[] = [];
   const options = { send: (message: DeliveryCustomMessage) => { queue.push(message); } };
   sendDelivery(progress, options);
   queue.length = 0; // Native ownership: the sender has no shadow queue.
-  sendDelivery({ ...progress, content: "done", terminal: { status: "completed" } }, options);
+  sendDelivery({ ...progress, content: "next" }, options);
   assert.equal(queue.length, 1);
-  assert.equal(queue[0]!.details.status, "completed");
-  assert.equal(queue[0]!.content.includes("progress"), false);
+  assert.equal(queue[0]!.content, "next");
   queue.length = 0;
-  assert.equal(queue.length, 0, "clearing the terminal does not trigger a resend");
+  assert.equal(queue.length, 0, "clearing the queue does not trigger a resend");
 });
 
 test("source and round metadata are preserved without grouping or deduplication", () => {
@@ -83,12 +87,4 @@ for (const asynchronous of [false, true]) test(`failed handoff is contained with
   assert.deepEqual(await result.completion, { ok: false, error: failure });
   await Promise.resolve();
   assert.equal(attempts, 1);
-});
-
-for (const status of ["cancelled", "failed"]) test(`${status} remains a host-owned terminal event`, () => {
-  const sent: DeliveryCustomMessage[] = [];
-  sendDelivery({ ...progress, content: "", terminal: { status, details: { error: "reason" } } }, { send: (message) => { sent.push(message); } });
-  assert.equal(sent[0]!.details.source, "host");
-  assert.equal(sent[0]!.details.status, status);
-  assert.match(sent[0]!.content, new RegExp(status));
 });

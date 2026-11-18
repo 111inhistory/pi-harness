@@ -21,12 +21,13 @@ export function startRunningJob(start: string | null = "e1"): RunningJob {
   let resolveDone!: (outcome: unknown) => void;
   const done = new Promise<unknown>((resolve) => { resolveDone = resolve; });
   const runtime = createSubagentRuntime({
+    session: "01a1deac",
     startJob: (request: JobRequest) => {
       request.recordStart(start);
       return { done, cancel() {} };
     },
   });
-  const item = runtime.create({ tasks: [{ task: "do work" }] }).items[0];
+  const item = runtime.create({ agents: [{ goal: "do work" }] }).items[0];
   assert.ok(item);
   return {
     runtime,

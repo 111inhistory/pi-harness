@@ -14,15 +14,15 @@
 | --- | --- | --- |
 | `harness-tools.ts` | 共享 Harness 工具身份；权限模块与子任务策略共同读取 | 子任务深度、工具继承与授权决定 |
 | `harness-config.ts` | 外部配置读取、合成与校验；根配置快照和指定提示词段落 | 路由角色、Pi 原生设置、运行中 Job 变更 |
-| `runtime.ts` | Actor 拓扑、Job 状态机、活跃名额控制（Fresh 与 Inherited 独立父节点名额池）、停止原因、续跑准入、中断恢复、终态事件与单一 Budget 监控（监控 lifetime 与 active hard 截止时间，`startActive` 时重置，`stop`/`finalize`/`end` 时清理） | SDK Session、Socket、原生文件解析 |
-| `native-runner.ts` | Session 执行句柄生命周期、输入准入、在途 steer 协调、原生输入缓冲、本地就绪（local readiness）判定、资源清理，以及按 Job 提供原生事件观察与实时快照 | 裁定 Job 状态、决定空闲唤醒、写根终态 |
+| `runtime.ts` | Actor 拓扑（持久目标、共享批次上下文、启动名册）、逻辑地址与选择器展开、Job 状态机、三个父节点直接子节点名额（批次／全部子节点／Inherited 子集）、`interrupt`／`stop` 语义、续跑准入、中断恢复、终态事件、精简列表投影与单一 Budget 监控（监控 lifetime 与 active hard 截止时间，`startActive` 时重置，`stop`/`finalize`/`end` 时清理） | SDK Session、Socket、原生文件解析 |
+| `native-runner.ts` | Session 执行句柄生命周期、输入准入、在途 steer 协调、原生输入缓冲与排空、本地就绪（local readiness）判定、资源清理、原生事件观察与实时阶段、`interrupt` 的原生中止与续跑、收尾前的单次 `msg_write` 自提醒 | 裁定 Job 状态、决定空闲唤醒、写根终态 |
 | `actor-sessions.ts` | Actor 角色／模型身份记录、原生 manager 引用与已记录锚点、身份补丁 | Job 状态和停止排序 |
 | `native-session.ts` | Settings、ResourceLoader、子扩展装配及 SDK 会话创建（Fresh／Inherited 均独立加载扩展与 MCP 后端，Inherited 恢复捕获白名单并对异步 MCP 提供有界等待，默认 10 秒） | 路由、任务结果裁决 |
-| `root-service.ts` | 组装上述模块，根事件写入、历史视图、内存超限临时文件管理（进程正常退出清理）、故障锁存，以及把当前根有效黑名单过滤后的作用域交给子会话 | 第二套 Job 状态机 |
+| `root-service.ts` | 组装上述模块，根事件写入、历史视图、`main.sock` 生命周期与归属、单一 `signal` 入口的调用方绑定、列表投影的 role 补全、故障锁存，以及把当前根有效黑名单过滤后的作用域交给子会话 | 第二套 Job 状态机 |
 | `session/execution.ts`、`session/model-runtime.ts` | 跨领域 SDK 执行句柄、取消与清理，父模型运行时桥及物理模型解析 | Actor／Job 状态、路由、权限决定 |
 | `session/application.ts`、`session/host.ts`、`session/service-lifecycle.ts` | SDK 根生命周期、领域组合、RPC 连接与代次、退役期限及资源隔离；显式绑定借用的 SDK runtime | 领域状态、伪造物理退出、重跑已结束任务 |
-| `surface.ts`、`message-write.ts`、`managed-send.ts` | 工具声明、调用方绑定、输入捕获；模型工具与 RPC 共用受管消息发送 | 全局注册表、第二套广播或交接状态 |
-| `command.ts`、`status-view.ts` | `/subagent` 命令注册、参数解析、错误呈现与列表文本渲染 | Job 状态、准入或消息投递 |
+| `surface.ts`、`message-write.ts`、`managed-send.ts` | 目标导向的批次工具、`signal` 工具、调用方绑定与输入捕获；模型工具与 RPC 共用受管消息发送，逻辑地址原样交给领域解析 | 全局注册表、第二套广播、自过滤算法或交接状态 |
+| `command.ts`、`status-view.ts` | `/subagent` 命令注册、参数解析、`signal` 目标选择、错误呈现与同一列表投影的文本渲染 | Job 状态、准入或消息投递 |
 | `capability/command.ts`、`capability/catalog.ts`、`capability/activation.ts` | 五组用户命令、实时目录与 SDK 激活／调用路径判定 | 检索会话、路由、Subagent 状态 |
 | `capability/admission.ts` | 单次操作的工具准入视图，分别判断声明、执行和 MCP 资源读取；组合当前工具管理事实与作用域 | 跨请求缓存、第二套集合状态 |
 | `capability/tool-access-replay.ts` | 基线、按需激活、黑名单记录解析与顺序重放 | 注册表读取、SDK 效果或第二份持久状态 |
@@ -31,9 +31,9 @@
 | `harness-rpc/*` | 协议契约、校验、传输、发现与领域适配；Root 与宿主订阅寿命 | Main 执行状态、审批决定、第二套 Job 或权限状态机 |
 | `capability/lazy-schemas.ts`、`capability/codemode-mode.ts` | lazySchemas ref 解析与组归属、生效 Codemode 模式（预设记录在分支上的覆盖，回退到 Pi 设置） | 改变启用集合、授权或工具 exposure；写入 Pi 原生设置 |
 | `src/preset/*`、`extensions/preset.ts` | 模型 Preset 配置加载与合并、解析、模型／thinking／工具应用、分支快照与 instructions 段落、`/preset` 与 `--preset` | Capability 检索、Subagent 路由、Pi 原生设置写入 |
-| `listeners.ts`、`ipc/` | 端点目录、监听、NDJSON 分帧、平台资源归属校验，以及“端点属于哪个 session 命名空间”的地址分类（Unix 为目录包含，Windows 为管道名前缀） | 用显示窗口决定可达性、另写广播状态机、用文件系统路径推断管道归属 |
-| `session-peers.ts`、`session-directory.ts` | 根持有的跨 session 操作对象、连接与目录名称同步；目录发布、存活校验与归属删除，受管 `Main` 寻址、复合发送者身份与单帧写入 | 根代次、压缩闸门、Runtime、认证协议或跨主机调度 |
-| `native-delivery.ts`、`delivery.ts` | 独立通知封装、检查原生交接结果、明确拒收后的保留会话追加 | 模型已读回执、自动重发或消息合并 |
+| `listeners.ts`、`ipc/` | 每个根唯一的 Agent IPC `main.sock` 绑定、NDJSON 分帧、`agentId`／`token` 异步回调路由、端点 dev／ino 与有效 UID 校验，以及只在最后一个端点释放后清理本根创建且已空的目录 | 用显示窗口决定可达性、另写广播状态机、按文件路径推断 Actor 归属 |
+| `session-peers.ts`、`session-directory.ts` | 根持有的跨 session 操作对象、连接与目录名称同步；目录发布、存活校验与归属删除，逻辑 `:main` 寻址与单帧写入 | 根代次、压缩闸门、Runtime、认证协议或跨主机调度 |
+| `native-delivery.ts`、`delivery.ts` | 显式消息封装与原生交接结果检查；只有 peer 消息进入模型可见历史，明确拒收后才追加保留会话 | 模型已读回执、自动重发或消息合并；Job 终态结果消息 |
 | `btw/command.ts`、`btw/session.ts` | `/btw` 命令、内存继承会话、工具阻断；关闭与根生命周期清理 | UI 布局、Actor／Job、持久化问答或主会话消息写入 |
 | `tui/btw-panel.ts`、`tui/btw-transcript.ts`、`tui/capability-picker.ts`、`tui/terminal-layout.ts` | 问答面板、树形多选器、终端尺寸和可用高度预算；显示数据与输入状态 | 会话运行、工具准入与持久化；不构造通用 UI 框架 |
 | `inherited-context.ts` | 共享分支捕获，在清理未决工具前锁定物理模型，并捕获独立的出站缓存标识 | 伪造身份或跨分支泄漏 |
@@ -44,11 +44,11 @@
 | `async-shell/{host,surface}.ts`、`async-shell/{task-path,executable,cancel,create-args}.ts` | 每次 Shell 的调用者环境、执行代次归属、未完成任务登记与取消；TS 侧只保留路径/可执行文件/取消/审批参数桥 | tmux 状态机、消息工具授予或跨主机调度 |
 | `request-instructions.ts`、`tool-guidance.ts`、`capability/tool-instructions.ts` | 向 SDK 原生 sections 写入当前动态指令，格式化必要边界的 user 状态同步 | 历史放置重放、改写既有 SDK 历史、执行授权 |
 
-`subagent_create` 在本批 Runner 本地就绪后返回。本地就绪包括路由完成、会话创建、扩展与工具配置完成、初始输入就绪和 IPC 监听就绪。返回项包含 `id`、`socket`、`role` 与 `model`。它不等待首次模型流分发，也不以 `running` 代替启动就绪。注册后的启动失败不会撤销同批其他节点，也不自动重试。运行时 Job 注册和执行状态仍由 Runtime 独立管理。
+`subagent_create` 在本批 Runner 本地就绪后返回。本地就绪包括路由完成、会话创建、扩展与工具配置完成、初始输入就绪和 IPC 监听就绪。返回项包含批次 `address`、启动 `roster` 与各成员的 `id`、`address`、`role` 与 `model`。它不等待首次模型流分发，也不以 `running` 代替启动就绪。注册后的启动失败不会撤销同批其他成员，也不自动重试。运行时 Job 注册和执行状态仍由 Runtime 独立管理。
 
 Runtime 的 `job.status` 是领域事实。Runner 的输入准入栅栏表示原生句柄是否还能接收消息，不表示 Job 已停止。取消后，Job 仍占用 Actor 与名额，直到原生执行退出并完成收尾。
 
-配置由 `harness-config.ts` 统一解析，按默认、全局、受信项目顺序合成。Root 使用配置快照并传给子会话；Subagent 深度、Fresh 与 Inherited 独立父节点活跃名额、各层 Budget、重试和提示词段落，以及 Capability 检索与 Codemode 参数均从该快照读取。已有 Job 保留原 Budget。边界和字段见[Harness 参数配置](harness-configuration.md)。
+配置由 `harness-config.ts` 统一解析，按默认、全局、受信项目顺序合成。Root 使用配置快照并传给子会话；Subagent 深度、三个相互独立的父节点直接子节点名额（活跃批次、全部子节点、Inherited 子集）、各层 Budget、重试和提示词段落，以及 Capability 检索与 Codemode 参数均从该快照读取。已有 Job 保留原 Budget。边界和字段见[Harness 参数配置](harness-configuration.md)。
 
 ## 创建、执行与恢复
 
@@ -60,13 +60,13 @@ Inherited 捕获每个批次只读取一次父分支，Fresh-only 批次不捕�
 
 Runner 通过 `openSessionExecution` 获得 SDK Session。共享执行句柄负责 abort 和 cleanup；Root 不用超时竞争强制 dispose 一个仍在执行的 Session。
 
-父 Subagent 回复结束后，若直接子节点仍处于 `running`、`stopping` 或 `finalizing`，或当前执行仍持有未完成的异步 Shell 任务，Runner 保留会话并等待事件，不结束当前 Job。Runtime 暂停活跃时间并重排到 lifetime 截止时间；消息、子节点通知或最后一项工作结束会唤醒原循环，恢复活跃时间后重排 deadline。队列和所属工作均为空才正常收尾，期间不分配新 Job 或 Budget。取消会释放等待；失败或取消后的晚到子节点通知只追加保留历史。
+父 Subagent 回复结束后，若直接子节点仍处于 `running`、`stopping` 或 `finalizing`，或当前执行仍持有未完成的异步 Shell 任务，Runner 保留会话并等待事件，不结束当前 Job。Runtime 暂停活跃时间并重排到 lifetime 截止时间；消息、子节点终结或最后一项工作结束会唤醒原循环，恢复活跃时间后重排 deadline。队列和所属工作均为空才进入正常收尾：先排空在途交接与停放输入，再检查最近工具轮次是否有 `msg_write`，必要时在同一 Job／Budget 内追加一次自提醒并再次排空。期间不分配新 Job 或 Budget。取消会释放等待；失败或取消后的晚到子节点状态只追加保留历史。
 
-异步 Shell 的注册与完成走所属 Actor 的受管端点，通过执行代次标识与普通 Agent 消息区分。完成结果先进入原生输入队列，再撤销未完成登记并唤醒 Runner；不伪造发送者，不创建续跑 Job。子会话关闭与 Root 退役取消所持任务，底层资源未退出时不释放归属围栏。命令接口见[异步 Shell](async-shell.md)。
+异步 Shell 的注册与完成写回会话唯一的 Agent IPC 端点 `main.sock`，帧中携带 `agentId` 与该执行租约的 `token`，由根路由到所属 Actor；身份与租约不匹配即拒绝，不伪装成普通 Agent 消息。完成结果先进入原生输入队列，再撤销未完成登记并唤醒 Runner；不伪造发送者，不创建续跑 Job。子会话关闭与 Root 退役取消所持任务，底层资源未退出时不释放归属围栏。命令接口见[异步 Shell](async-shell.md)。
 
-Runtime 先尝试投递子节点终态，再发最后子节点结束的唤醒信号。信号不创建执行轮次，模型不需要轮询或调用等待工具。显式消息仍可将停止节点唤醒为新轮次。
+最后一个直接子节点终结时，Runtime 只发出内部唤醒，不向创建者模型投递结果消息。该唤醒不创建执行轮次，模型不需要轮询或调用等待工具。显式消息仍可将停止节点唤醒为新 Job。
 
-恢复分两部分：Actor 层读取原生文件、解析身份和历史区间；Runtime 校验完整拓扑与 Job 关系，再统一裁定未结束 Job 为 `job_interrupted`。适配层不预先改写终态或另算停止排序。恢复不会自动重跑或重发旧通知。
+恢复分两部分：Actor 层读取原生文件、解析身份和历史区间；Runtime 校验完整拓扑、批次身份与 Job 关系，再统一裁定未结束 Job 为 `job_interrupted`。适配层不预先改写终态或另算停止排序。恢复不会自动重跑、重发消息或推断旧版本存储。
 
 持久化 Actor 在结束后解除 manager 引用，下次按需打开。纯内存 Actor 保留唯一的原生对话，不能套用文件型 Actor 的释放规则。
 
@@ -76,19 +76,19 @@ Runtime 先尝试投递子节点终态，再发最后子节点结束的唤醒信
 
 ```text
 msg_write
-  → 当前调用方的受管端点解析
-  → Runtime.sendMessage
+  → 完整逻辑地址校验与本地/跨 session 分类
+  → Runtime 展开 Actor、批次组或子节点选择，并排除发送者
   → 检查单点交接或广播结果
   → 成功返回纯文本提示，或抛出工具错误
 ```
 
 `write` 是 SDK 原生文件工具，完全保持原生行为，不被 harness 拦截或覆写；IPC 消息发送由专用工具 `msg_write` 承担。
 
-Main 默认不激活 `msg_write`（`defaultActive: false`）。收到跨 session 消息时，宿主在触发模型轮次前自动激活 `msg_write`，让 Main 能直接回复；这只加载回复工具，不写能力记录，其余 `subagent` 工具仍由 Capability 选中命名空间后激活。所有子会话依据深度分配工具集，显式保持激活 `msg_write`。非叶子深度子节点拥有 `subagent_create`、`subagent_list`、`subagent_stop`、`capability` 与 `msg_write`；叶子深度子节点仅保留 `subagent_list` 与 `msg_write`。
+Main 默认不激活 `msg_write`（`defaultActive: false`）。收到跨 session 消息时，宿主在触发模型轮次前自动激活 `msg_write`，让 Main 能直接回复；这只加载回复工具，不写能力记录，其余 `subagent` 工具仍由 Capability 选中命名空间后激活。所有子会话依据深度分配工具集，显式保持激活 `msg_write`。非叶子深度子节点拥有 `subagent_create`、`subagent_list`、`subagent_signal`、`capability` 与 `msg_write`；叶子深度子节点仅保留 `subagent_list` 与 `msg_write`。
 
-`msg_write` 仅限 IPC 地址（Unix Socket / Windows Named Pipe），非 IPC 目标直接报错拒绝。宿主消息不再绕本进程 Socket 回环；Runtime 交接结果只在内部检查，不作为工具回执返回。消息成功返回纯文本（`Successfully sent message to ...`），`details: undefined`，不增加 ACK、`to` 或 `jobId`。拒收、超时或广播部分失败使工具抛错，不自动重发；失败不保证消息尚未送达。
+`msg_write` 只接受完整逻辑地址（`<sessionHex>:main`、`sub_<batch>[-<member>]`、`batch_<batch>` 或 `<segment>/children`），不接受 Socket 路径或裸 Actor key。同根目标直接进入领域路由，不再绕本进程 Socket 回环；Runtime 交接结果只在内部检查，不作为工具回执返回。消息成功返回纯文本（`Successfully sent message to ...`），`details: undefined`，不增加 ACK、`to` 或 `jobId`。拒收、超时或广播部分失败使工具抛错，不自动重发；失败不保证消息尚未送达。
 
-广播只面向发送者的全部直接子节点。每个接收者沿用普通发送的准入和续跑规则。任一接收者失败，工具即报错并指出失败接收者，不返回成功的写入结果，也不重发已成功的接收者。
+广播面向批次组或某个 Actor 的直接子节点，排除发送者自身；过滤后没有接收者时返回空接收者列表而不是错误。每个接收者沿用普通发送的准入和续跑规则。任一接收者失败，工具即报错并指出失败接收者，不返回只含成功项的结果，也不重发已成功的接收者。
 
 ### 外部 Socket
 
@@ -96,15 +96,15 @@ Main 默认不激活 `msg_write`（`defaultActive: false`）。收到跨 session
 外部进程 → 自有端点 → NDJSON 结构检查 → Runtime.sendMessage
 ```
 
-报文应显式提供非空 `from` 和字符串 `content`，不回退为 Main。广播端点还检查声明的发送者是否为该端点的父节点。本项目信任同用户本机进程，不另建认证协议。
+报文应显式提供完整逻辑 `from`、`to` 与字符串 `content`，不回退为 Main；`to` 只能指向本 session。异步 Shell 回调是同一端点上 `kind: "async-shell"` 的独立帧，必须携带 `agentId` 与执行租约 `token`。本项目信任同用户本机进程，不另建认证协议。
 
 每个 NDJSON 请求处理结束后，成功返回空行，失败只返回错误的 `code`（如有）和 `message`；外部 IPC 广播失败在响应中保留失败接收者列表及原因，普通 IPC 错误不向调用方泄漏内部任意状态细节。`writeSocket` 等待结果再返回；超时或断连表示结果未知，不自动重发。正常返回只表示请求已处理。
 
-跨 session 消息走同一条接收路径，且只做 Main 之间的交互。发送侧由 `session-directory.ts` 解析目标 session 的 Socket 目录并写入一帧 `{from: "<session-uid>:Main", content}`；接收侧 `listeners.ts` 只在该根的 `Main` 端点接受此类帧，在 IPC 边界解析 `from` 的复合身份，用共享目录核对 uid 是否为存活 session，按该记录推导回复地址后交给 Runtime。Runtime 只接受宿主解析出的外部发送者描述，不自行读目录；外部发送者只能是 Main，接收者也只能是 Main。
+跨 session 消息走同一条接收路径，且只做 Main 之间的交互。发送侧由 `session-directory.ts` 定位目标 session 的 `main.sock`，写入一帧 `{from: "<sender-uid>:main", to: "<target-uid>:main", content}`；接收侧 `listeners.ts` 只在该根的 `main.sock` 接受此类帧，在 IPC 边界要求两端都是完整逻辑地址，用共享目录核对发送者 uid 是否为存活 session，按该记录推导回复地址后交给 Runtime。Runtime 只接受宿主解析出的外部发送者描述，不自行读目录；外部发送者只能是 Main，接收者也只能是 Main。
 
-发现由同一目录提供：`RootService.initialize` 在监听就绪后发布记录（含原生 session name），`retire` 按记录归属删除。跨 session 没有独立地址协议：目标就是对方 `Main` 的受管端点地址（Unix Socket 文件或 Windows Named Pipe），接收端在 IPC 边界解析 `<uid>:Main` 复合身份。地址是否属于某个 session 的端点命名空间由 `ipc/` 平台适配层判定（`belongsToNamespace`），`RootService.sessionEndpoint` 只保留 Main-to-Main 的业务准入；分类不构成端点归属或授权。目录缺失视为空目录，其他目录读取错误向调用方如实抛出并在命令与寻址中报错，不伪装为无 session。
+发现由同一目录提供：`RootService.initialize` 在监听就绪后发布记录（含原生 session name），`retire` 按记录归属删除。跨 session 没有独立地址协议：目标是对方 `:main` 逻辑地址，`socketDir` 只用于定位 `<socketDir>/main.sock`（Unix Socket 或 Windows Named Pipe）。`ipc/` 平台适配层负责端点归属与单帧写入；`RootService` 只保留 Main-to-Main 的业务准入，分类不构成授权。目录缺失视为空目录，其他目录读取错误向调用方如实抛出并在命令与寻址中报错，不伪装为无 session。
 
-`subagent_list` 将筛选后的拓扑投影为 `children` 树，省去 `parentId` 和外层 `items`；窗口和展开规则见[接口契约](interface-contract.md#subagent-调用形态)。监听由当前根注册表决定，覆盖已停止但可续跑的 Actor，不复用 `subagent_list` 的每组四项显示窗口。大量累计 Actor 会增加监听资源占用；系统资源不足会报告错误，不把它解释成 Actor 不存在。
+`subagent_list` 与 `/subagent` 共用同一份筛选拓扑：`children` 树省去 `parentId` 和外层 `items`，节点携带逻辑地址、名称、单一状态字符串、角色与 `kind`，不携带目标、模型或活动对象；`/subagent` 的文本视图另外从 Actor 身份显示模型名。窗口和展开规则见[接口契约](interface-contract.md#subagent-调用形态)。列表不保留独立端点；持久化 Actor/Job 历史保留。
 
 ### 原生交接
 
@@ -112,9 +112,9 @@ Main 默认不激活 `msg_write`（`defaultActive: false`）。收到跨 session
 
 Main 压缩期间，Root 持有待投递队列，入队后应答，摘要生成不占用 Socket 应答窗口。闸门放行后顺序尝试 SDK 交接，退役等待生产者结束和队列排空；交接失败报告一次且不重放。丢失代次所有权后不再向 SDK 写入。
 
-直接交接和向子会话的通知路径检查实际交接结果，不把同步 `accepted` 标志当作成功。只有明确尚未交出的拒收，才能追加到保留会话。任意 SDK 异常不能证明未入队；这类错误可见，但不会盲目重发。
+直接交接和向子会话的消息路径检查实际交接结果，不把同步 `accepted` 标志当作成功。只有明确尚未交出的拒收，才能追加到保留会话。任意 SDK 异常不能证明未入队；这类错误可见，但不会盲目重发。
 
-普通消息和终态是独立原生事件。一次模型请求可消费多个原生事件，不要求每个事件单独请求一次模型。
+普通消息是唯一进入模型可见历史的 peer 事件；Job 终态只作为内部状态与唤醒。一次模型请求可消费多个原生消息，不要求每条消息单独请求一次模型。
 
 ## 退役、树切换与写入权限
 
@@ -134,15 +134,15 @@ Shutdown 不能取消。退出或替换上下文后，代次失效使旧回调�
 
 ## 存储与历史视图
 
-根分支用 v2 增量事件保存拓扑、身份补丁、Job 起点与终态；对话在原生子文件中。模块由 `src/subagent/storage.ts` 与 `src/subagent/view.ts` 实现。模型只记录 provider 和 model id，不记录运行时对象或凭据。
+根分支用 v3 增量事件保存拓扑、批次身份（目标、共享上下文、启动名册）、身份补丁、Job 起点与终态；对话在原生子文件中。模块由 `src/subagent/storage.ts` 与 `src/subagent/view.ts` 实现。模型只记录 provider 和 model id，不记录运行时对象或凭据。字段与版本边界见[存储说明](subagent-storage.md)。
 
-终态的模型结果与历史写入状态分开。历史视图失败不改写模型结果，但 `historyState` 与 `historyError` 进入同一份最终事件。视图不参与状态恢复。`result.ts` 沿用 SDK 截断规则，将本轮最终文本直接放入通知；`delivery.ts` 不在终态元数据中重复正文。Root 在终态发布前写入原始 `result.txt`；内存会话（非持久化模式）仅为超限结果写系统临时文件。临时文件由 `temporary-results.ts` 统一管理，在根服务退役或 `/reload` 时保持存活供父节点补读，在 Node.js 进程正常退出时清理。Runtime 通过只读路径端口读取已存在的文件，不负责文件写入。
+终态的模型结果与历史写入状态分开。历史视图失败不改写模型结果，但 `historyState` 与 `historyError` 进入同一份最终事件。视图不参与状态恢复。宿主不再向创建者模型投递自动结果正文；`result.txt` 保存该轮原始结果，`summary.md` 与 `transcript.jsonl` 供按需回顾，RPC `jobs.result` 与 `history.read` 是读取入口。内存会话不生成持久化视图，也不写临时结果文件，其结果只保留在进程内 Job 记录。
 
-Runtime 的列表投影没有历史文件写入。Root 列表层可重建缺失视图；每项分别捕获失败，单个损坏文件不阻断其余 Actor 状态。通知只投影路径，不在终态发布过程中重建视图。
+Runtime 的列表投影没有历史文件写入。Root 列表层可重建缺失视图；每项分别捕获失败，单个损坏文件不阻断其余 Actor 状态。列表只投影路径，不在终态发布过程中重建视图。
 
-Fork 读取记录中的绝对 `sessionFile`，首次写外部文件时复制到自有目录。原生条目 ID 与签名保留，父文件不被改写。Rewind 只改变当前可见分支，分配 ID 仍避开全部分支和已有文件。
+Fork 读取记录中的绝对 `sessionFile`，首次写外部文件时复制到自有目录。原生条目 ID 与签名保留，父文件不被改写。Rewind 只改变当前可见分支，分配 Actor key、批次编号与 Job id 仍避开全部分支和已有文件。
 
-v1 转换只存在于独立离线脚本。生产运行时不转换、不恢复旧快照。
+运行时只解释 v3 事件；其他版本以 `unsupported_version` 失败，不猜测、不删除、不改写旧文件，也不停止原生 Main 会话加载。`scripts/convert-subagent-storage-v2.mjs` 是历史 v1 → v2 离线工具，不能生成 v3；当前没有受支持的 v2 → v3 运行时迁移路径。
 
 ## Capability
 
@@ -208,6 +208,6 @@ Preset 快照建立当前基线并提供有期限的显式减项黑名单；切�
 
 `src/` 与 `extensions/` 生产代码为严格 TypeScript（`storage.ts`、`view.ts`、`routing.ts`、`job-budget.ts`、`pi-job-budget.ts` 位于 `src/subagent/`，`inherited-context.ts` 负责原生继承捕获，`prompt-text.ts` 提供缓存 getter，`skills.ts` 位于 `src/capability/`，`shell-preflight.ts` 位于 `src/` 与 `extensions/`）；`scripts/` 与历史测试用例（`test/*.test.mjs`）保持 MJS。
 
-提示词正文存放在 `prompts/`；代码保留参数结构、动态装配、权限和生命周期判断。运行时只读取原命名的 `subagent-tools.json` 与 `subagent-turns.json`。共同 namespace 指引随工具提供，`create.guideline` 仅挂到 create；所有子会话注入 turns 的 `context`，Fresh 添加路由角色，Fresh 和 Inherited 均添加非空的 common，Inherited 另添加解析后的非空 inherited；后两段可在 `harness.json` 中逐层替换或追加。`native-runner.ts` 按已保留的路由身份识别模式，续跑不因当前 Job 是 continuation 而丢失 Inherited 定位。`prompt.ts` 负责原样拼装，参数说明按工具及数组项嵌套读取。字段与状态见[提示词装配](interface-contract.md#subagent-提示词装配)。正文在模块初始化时读取，修改后应重启 Pi，`/reload` 不保证刷新全部 ESM 依赖。
+提示词正文存放在 `prompts/`；代码保留参数结构、动态装配、权限和生命周期判断。运行时只读取原命名的 `subagent-tools.json` 与 `subagent-turns.json`。共同 namespace 指引随工具提供，`create.guideline`／`list.guideline`／`signal.guideline` 与 `msg_write.guidelines` 只挂到各自工具；所有子会话注入 turns 的 `context`（自身与创建者的完整逻辑地址），Fresh 添加路由角色，Fresh 和 Inherited 均添加非空的 common，Inherited 另添加解析后的非空 inherited；后两段可在 `harness.json` 中逐层替换或追加。执行侧按 Job 渲染批次上下文（单成员只有共享 context，多成员附名册与协作提示），并使用 `msgWriteReminder` 与 `interruptionNotice` 作为内部收尾和中断说明。`native-runner.ts` 按已保留的路由身份识别模式，续跑不因当前 Job 是 continuation 而丢失 Inherited 定位。`prompt.ts` 负责原样拼装，参数说明按工具及数组项嵌套读取。字段与状态见[提示词装配](interface-contract.md#subagent-提示词装配)。正文在模块初始化时读取，修改后应重启 Pi，`/reload` 不保证刷新全部 ESM 依赖。
 
 未交付的功能与待验收边界见[已知问题](known-issues.md)。

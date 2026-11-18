@@ -110,8 +110,9 @@ test('absent config files resolve to the built-in defaults', async (t) => {
   const config = loadHarnessConfig({ cwd, agentDir, projectTrusted: true });
   assert.deepEqual(config, DEFAULT_HARNESS_CONFIG);
   assert.equal(config.subagent.maxDepth, 2);
-  assert.equal(config.subagent.maxActiveChildren, 4);
-  assert.equal(config.subagent.maxActiveInheritedChildren, 3);
+  assert.equal(config.subagent.maxActiveBatches, 4);
+  assert.equal(config.subagent.maxActiveSubagents, 7);
+  assert.equal(config.subagent.maxActiveInheritedSubagents, 3);
   assert.deepEqual(config.subagent.budgetsByDepth[1]?.modelCalls, { soft: 160, hard: 200 });
   assert.deepEqual(config.subagent.budgetsByDepth[2]?.modelCalls, { soft: 80, hard: 100 });
   assert.deepEqual(config.capability.search.bm25, { k: 0.9, b: 0.9, d: 0 });
@@ -133,7 +134,7 @@ test('global overrides merge field by field and retain untouched defaults', asyn
   await writeJson(path.join(agentDir, 'harness.json'), {
     subagent: {
       maxDepth: 3,
-      maxActiveChildren: 2,
+      maxActiveSubagents: 2,
       budgetsByDepth: { 3: budget(10, 20) },
       inheritedToolWaitMs: 5_000,
       routingRetry: { maxAttempts: 2, baseDelayMs: 100, maxDelayMs: 200, jitterRatio: 0.5 },
@@ -144,7 +145,9 @@ test('global overrides merge field by field and retain untouched defaults', asyn
   });
   const config = loadHarnessConfig({ cwd, agentDir, projectTrusted: false });
   assert.equal(config.subagent.maxDepth, 3);
-  assert.equal(config.subagent.maxActiveChildren, 2);
+  assert.equal(config.subagent.maxActiveSubagents, 2);
+  assert.equal(config.subagent.maxActiveInheritedSubagents, DEFAULT_HARNESS_CONFIG.subagent.maxActiveInheritedSubagents,
+    'the inherited cap remains an independent declaration above the lowered total');
   assert.deepEqual(config.subagent.budgetsByDepth[3], budget(10, 20));
   assert.deepEqual(config.subagent.budgetsByDepth[1], DEFAULT_HARNESS_CONFIG.subagent.budgetsByDepth[1]);
   assert.equal(config.subagent.inheritedToolWaitMs, 5_000);
@@ -161,16 +164,18 @@ test('global overrides merge field by field and retain untouched defaults', asyn
 test('a trusted project composes with the global layer and wins per field', async (t) => {
   const { agentDir, cwd } = await tempRoots(t);
   await writeJson(path.join(agentDir, 'harness.json'), {
-    subagent: { maxDepth: 3, maxActiveChildren: 3, prompts: { common: { replace: 'global common' } } },
+    subagent: { maxDepth: 3, maxActiveSubagents: 3, prompts: { common: { replace: 'global common' } } },
     capability: { budget: { modelCalls: { soft: 300 } } },
   });
   await writeJson(path.join(cwd, '.pi', 'harness.json'), {
-    subagent: { maxActiveChildren: 2, budgetsByDepth: { 3: budget(10, 20) } },
+    subagent: { maxActiveSubagents: 2, budgetsByDepth: { 3: budget(10, 20) } },
     capability: { budget: { modelCalls: { hard: 400 } } },
   });
   const config = loadHarnessConfig({ cwd, agentDir, projectTrusted: true });
   assert.equal(config.subagent.maxDepth, 3);
-  assert.equal(config.subagent.maxActiveChildren, 2);
+  assert.equal(config.subagent.maxActiveSubagents, 2);
+  assert.equal(config.subagent.maxActiveInheritedSubagents, DEFAULT_HARNESS_CONFIG.subagent.maxActiveInheritedSubagents,
+    'the inherited cap remains an independent declaration above the lowered total');
   assert.deepEqual(config.subagent.budgetsByDepth[3], budget(10, 20));
   assert.deepEqual(config.capability.budget.modelCalls, { soft: 300, hard: 400 });
   assert.equal(config.subagent.prompts.common, 'global common');
@@ -178,9 +183,9 @@ test('a trusted project composes with the global layer and wins per field', asyn
 
 test('an untrusted project file is ignored even when it is invalid', async (t) => {
   const { agentDir, cwd } = await tempRoots(t);
-  await writeJson(path.join(cwd, '.pi', 'harness.json'), { subagent: { maxActiveChildren: 1, surprise: true } });
+  await writeJson(path.join(cwd, '.pi', 'harness.json'), { subagent: { surprise: true } });
   const ignored = loadHarnessConfig({ cwd, agentDir, projectTrusted: false });
-  assert.equal(ignored.subagent.maxActiveChildren, DEFAULT_HARNESS_CONFIG.subagent.maxActiveChildren);
+  assert.equal(ignored.subagent.maxActiveSubagents, DEFAULT_HARNESS_CONFIG.subagent.maxActiveSubagents);
   assert.throws(
     () => loadHarnessConfig({ cwd, agentDir, projectTrusted: true }),
     (error: unknown) => error instanceof HarnessConfigError
@@ -201,6 +206,10 @@ test('unknown fields, wrong types and unreadable top-level values name source an
   const nested = resolveError([{ source: 'global', value: { subagent: { budget: {} } } }]);
   expectError(nested, 'global', 'subagent.budget');
   assert.match(nested.message, /is unknown\./);
+
+  const retiredCap = resolveError([{ source: 'global', value: { subagent: { maxActiveChildren: 1 } } }]);
+  expectError(retiredCap, 'global', 'subagent.maxActiveChildren');
+  assert.match(retiredCap.message, /is unknown\./);
 
   const promptKey = resolveError([{ source: 'global', value: { subagent: { prompts: { common: { pre: 'x' } } } } }]);
   expectError(promptKey, 'global', 'subagent.prompts.common.pre');
@@ -254,8 +263,9 @@ test('BM25 and retry bounds accept their documented ranges and reject the rest',
 
 test('positive integer limits reject zero, fractions and non-finite values', () => {
   for (const [field, value] of [
-    ['maxActiveChildren', 0],
-    ['maxActiveInheritedChildren', 0],
+    ['maxActiveBatches', 0],
+    ['maxActiveSubagents', 0],
+    ['maxActiveInheritedSubagents', 0],
     ['maxDepth', 0],
     ['maxDepth', 2.5],
     ['inheritedToolWaitMs', -1],
@@ -286,6 +296,23 @@ test('positive integer limits reject zero, fractions and non-finite values', () 
     resolveError([{ source: 'global', value: { btw: { panelHeight: 10 } } }]),
     'global', 'btw.panelHeight',
   );
+});
+
+test('the three per-parent caps are independent declarations, including inherited above the total', () => {
+  const caps = resolveHarnessConfig([{ source: 'global', value: { subagent: {
+    maxActiveBatches: 5, maxActiveSubagents: 2,
+  } } }]);
+  assert.equal(caps.subagent.maxActiveBatches, 5);
+  assert.equal(caps.subagent.maxActiveSubagents, 2);
+  assert.equal(caps.subagent.maxActiveInheritedSubagents, 3,
+    'a lowered total does not rewrite the inherited declaration');
+
+  const explicit = resolveHarnessConfig([{ source: 'global', value: { subagent: {
+    maxActiveSubagents: 2, maxActiveInheritedSubagents: 3,
+  } } }]);
+  assert.equal(explicit.subagent.maxActiveSubagents, 2);
+  assert.equal(explicit.subagent.maxActiveInheritedSubagents, 3,
+    'an inherited declaration above the total is accepted; the runtime bounds it by the total');
 });
 
 test('budget relations allow soft == hard and reject soft > hard at the layer that made it invalid', () => {
@@ -411,72 +438,72 @@ test('one provider caches its snapshot until the session lifecycle invalidates i
   const { agentDir, cwd } = await tempRoots(t);
   useAgentDir(t, agentDir);
   const globalFile = path.join(agentDir, 'harness.json');
-  await writeJson(globalFile, { subagent: { maxActiveChildren: 1 } });
+  await writeJson(globalFile, { subagent: { maxActiveBatches: 1 } });
   const { api, emit } = fakePi();
   const provider = harnessConfigFor(api);
   assert.equal(harnessConfigFor(api), provider);
 
   const first = provider(context(cwd, true));
-  assert.equal(first.subagent.maxActiveChildren, 1);
+  assert.equal(first.subagent.maxActiveBatches, 1);
 
-  await writeJson(globalFile, { subagent: { maxActiveChildren: 3 } });
+  await writeJson(globalFile, { subagent: { maxActiveBatches: 3 } });
   assert.equal(provider(context(cwd, true)), first);
-  assert.equal(provider(context(cwd, true)).subagent.maxActiveChildren, 1);
+  assert.equal(provider(context(cwd, true)).subagent.maxActiveBatches, 1);
 
   emit('session_start');
   const reloaded = provider(context(cwd, true));
   assert.notEqual(reloaded, first);
-  assert.equal(reloaded.subagent.maxActiveChildren, 3);
+  assert.equal(reloaded.subagent.maxActiveBatches, 3);
 
-  await writeJson(globalFile, { subagent: { maxActiveChildren: 2 } });
+  await writeJson(globalFile, { subagent: { maxActiveBatches: 2 } });
   emit('session_tree');
-  assert.equal(provider(context(cwd, true)).subagent.maxActiveChildren, 2);
+  assert.equal(provider(context(cwd, true)).subagent.maxActiveBatches, 2);
 
-  await writeJson(globalFile, { subagent: { maxActiveChildren: 4 } });
+  await writeJson(globalFile, { subagent: { maxActiveBatches: 4 } });
   emit('session_shutdown');
-  assert.equal(provider(context(cwd, true)).subagent.maxActiveChildren, 4);
+  assert.equal(provider(context(cwd, true)).subagent.maxActiveBatches, 4);
 });
 
 test('providers use the context trust flag and project file of each session', async (t) => {
   const { agentDir, cwd } = await tempRoots(t);
   useAgentDir(t, agentDir);
-  await writeJson(path.join(agentDir, 'harness.json'), { subagent: { maxActiveChildren: 3 } });
-  await writeJson(path.join(cwd, '.pi', 'harness.json'), { subagent: { maxActiveChildren: 2 } });
+  await writeJson(path.join(agentDir, 'harness.json'), { subagent: { maxActiveBatches: 3 } });
+  await writeJson(path.join(cwd, '.pi', 'harness.json'), { subagent: { maxActiveBatches: 2 } });
   const { api, emit } = fakePi();
   const provider = harnessConfigFor(api);
 
-  assert.equal(provider(context(cwd, false)).subagent.maxActiveChildren, 3);
+  assert.equal(provider(context(cwd, false)).subagent.maxActiveBatches, 3);
   emit('session_start');
-  assert.equal(provider(context(cwd, true)).subagent.maxActiveChildren, 2);
+  assert.equal(provider(context(cwd, true)).subagent.maxActiveBatches, 2);
   emit('session_start');
-  assert.equal(provider(context(cwd, false)).subagent.maxActiveChildren, 3);
+  assert.equal(provider(context(cwd, false)).subagent.maxActiveBatches, 3);
 });
 
 test('each SDK surface keeps its own snapshot', async (t) => {
   const { agentDir, cwd } = await tempRoots(t);
   useAgentDir(t, agentDir);
   const globalFile = path.join(agentDir, 'harness.json');
-  await writeJson(globalFile, { subagent: { maxActiveChildren: 1 } });
+  await writeJson(globalFile, { subagent: { maxActiveBatches: 1 } });
   const first = fakePi();
   const second = fakePi();
   const firstConfig = harnessConfigFor(first.api)(context(cwd, true));
-  assert.equal(firstConfig.subagent.maxActiveChildren, 1);
+  assert.equal(firstConfig.subagent.maxActiveBatches, 1);
 
-  await writeJson(globalFile, { subagent: { maxActiveChildren: 2 } });
+  await writeJson(globalFile, { subagent: { maxActiveBatches: 2 } });
   first.emit('session_start');
-  assert.equal(harnessConfigFor(first.api)(context(cwd, true)).subagent.maxActiveChildren, 2);
-  assert.equal(harnessConfigFor(second.api)(context(cwd, true)).subagent.maxActiveChildren, 2);
+  assert.equal(harnessConfigFor(first.api)(context(cwd, true)).subagent.maxActiveBatches, 2);
+  assert.equal(harnessConfigFor(second.api)(context(cwd, true)).subagent.maxActiveBatches, 2);
 
-  await writeJson(globalFile, { subagent: { maxActiveChildren: 3 } });
+  await writeJson(globalFile, { subagent: { maxActiveBatches: 3 } });
   first.emit('session_start');
-  assert.equal(harnessConfigFor(first.api)(context(cwd, true)).subagent.maxActiveChildren, 3);
-  assert.equal(harnessConfigFor(second.api)(context(cwd, true)).subagent.maxActiveChildren, 2);
+  assert.equal(harnessConfigFor(first.api)(context(cwd, true)).subagent.maxActiveBatches, 3);
+  assert.equal(harnessConfigFor(second.api)(context(cwd, true)).subagent.maxActiveBatches, 2);
 });
 
 test('a fixed child config is the root snapshot and never reads child files', async (t) => {
   const { agentDir, cwd } = await tempRoots(t);
   useAgentDir(t, agentDir);
-  await writeJson(path.join(agentDir, 'harness.json'), { subagent: { maxActiveChildren: 2 } });
+  await writeJson(path.join(agentDir, 'harness.json'), { subagent: { maxActiveBatches: 2 } });
   const root = fakePi();
   const rootConfig = harnessConfigFor(root.api)(context(cwd, true));
   const child = fakePi();
@@ -484,13 +511,13 @@ test('a fixed child config is the root snapshot and never reads child files', as
   assert.equal(harnessConfigFor(child.api, rootConfig), childProvider);
   assert.equal(childProvider(context(cwd, false)), rootConfig);
 
-  await writeJson(path.join(cwd, '.pi', 'harness.json'), { subagent: { maxActiveChildren: 4 } });
+  await writeJson(path.join(cwd, '.pi', 'harness.json'), { subagent: { maxActiveBatches: 4 } });
   await writeFile(path.join(agentDir, 'harness.json'), 'not json', 'utf8');
   child.emit('session_start');
   child.emit('session_tree');
   child.emit('session_shutdown');
   assert.equal(childProvider(context(cwd, true)), rootConfig);
-  assert.equal(rootConfig.subagent.maxActiveChildren, 2);
+  assert.equal(rootConfig.subagent.maxActiveBatches, 2);
   assert.equal(JSON.stringify(rootConfig), JSON.stringify(harnessConfigFor(root.api)(context(cwd, true))));
 });
 

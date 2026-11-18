@@ -1,15 +1,17 @@
-# Subagent 存储 v2 与离线迁移
+# Subagent 存储 v3 与离线迁移
 
-Subagent 会话存储使用增量生命周期事件与独立子会话文件。根分支保存 Actor 拓扑与恢复所需的元数据；子会话文件保存原生对话历史。运行时只折叠并解释 v2 事件，不识别或恢复旧版检查点。未完成项与验收缺口见[已知问题](known-issues.md)。
+Subagent 存储使用增量生命周期事件与独立子会话文件。根分支保存 Actor 拓扑、批次目标与恢复所需的元数据；子会话文件保存原生对话历史。运行时只解释 v3 事件，不识别、推断或恢复旧版本事件。未完成项与验收缺口见[已知问题](known-issues.md)。
 
 ## 1. 目标与问题边界
 
-存储 v2 使用增量生命周期事件替代全量注册表快照：
+存储 v3 使用增量生命周期事件替代全量注册表快照：
 
-- 根分支写入量随 Job 注册与身份变化增长，不随每条子会话消息重写整个注册表。
-- 根事件保存拓扑、身份补丁、起点与终态元数据，不保存继承对话数组或完整模型定义。
+- 根分支写入量随 Job 注册、身份变化与批次拓扑增长，不随每条子会话消息重写整个注册表。
+- 根事件保存拓扑、批次名册、身份补丁、起点与终态元数据，不保存继承对话数组或完整模型定义。
 - 子会话文件使用 Pi 原生格式，独立保存每个 Actor 的完整对话。
 - 运行时依赖原生 `SessionManager` 解析历史，不重写 Pi 的历史加载器，也不承诺压缩后释放 Pi 原生根历史。
+
+v3 的破坏性变化集中在 Actor 身份与 Job 组成：Actor 持有持久目标、共享批次上下文与启动名册，Job 只表示一次执行。v2 及更早事件不被解释，见[第 6 节](#6-版本边界与离线迁移)。
 
 ## 2. Pi 原生语义
 
@@ -20,29 +22,37 @@ Subagent 会话存储使用增量生命周期事件与独立子会话文件。�
 
 ## 3. 系统不变量
 
-1. 每个 Actor 保留独立的原生对话与分支锚点。
-2. 根写入量随 Job 和身份变化增长，不随每条子对话重写整个注册表。
+1. 每个 Actor 保留独立的原生对话、持久目标、批次上下文与分支锚点。
+2. 根写入量随 Job、批次和身份变化增长，不随每条子对话重写整个注册表。
 3. 已封存 Job 的结果和历史区间不被续跑覆盖。
 4. 读取或续跑 Fork 的旧 Actor 不写父会话文件（写时复制）。
 5. 历史视图可重建，不作为状态恢复来源。
-6. 运行时只解释 v2 事件，不识别、转换或恢复 v1 检查点。
+6. 运行时只解释 v3 事件；其他版本整体报告 `unsupported_version`，不猜测、不改写、不删除。
 7. 不支持多个进程同时写同一根会话。IPC 端点排他不是跨进程会话数据库锁。
 
 ## 4. 架构
 
 ### 4.1 A 层：根分支事件
 
-`src/subagent/storage.ts` 定义事件名称并校验磁盘事件，适配层使用 `pi.appendEntry(customType, data)` 写入；`data.v = 2`。
+`src/subagent/storage.ts` 定义事件名称并校验磁盘事件，适配层使用 `pi.appendEntry(customType, data)` 写入；每条 `data.v` 均为 `3`。
 
 | `customType` | 写入时机 | 字段 |
 | --- | --- | --- |
-| `subagent-job` | 注册一个 Job | `jobId`、`agentId`、`index`、`createdBy`、`continuedFromJobId`、`spec`、`origin`；首次 Job 另带 `actor: {name, parentAgentId, depth}`，建立 Actor 拓扑 |
+| `subagent-job` | 注册一个 Job | `jobId`、`agentId`、`index`、`createdBy`、`continuedFromJobId`、`spec`、`origin`；Actor 的首个 Job 另带 `actor: {name, parentAgentId, depth, batch, member, goal, context, roster, kind}`，建立拓扑与批次身份 |
 | `subagent-actor` | 身份建立或变化 | `agentId` 与身份补丁：`sessionFile`、`cwd`、`trusted`、`allowInherited`、`systemPrompt`、`roleId`、`roleInstructions`、`preset`、`model`、`thinkingLevel`、`tools`、`excludedTools`、`assignment`、`routed`；可带 `anchor` |
 | `subagent-job-start` | 原生 Job 起点建立后 | `jobId`、`startEntryId` |
 | `subagent-job-end` | 视图收尾后统一发布一次 | `jobId`、`status`、`result`、`error`、`history: {startEntryId, endEntryId}`、`budget`；可带 `historyState`、`historyError`，不改写模型结果 |
 | `subagent-anchor` | Job 终态以外的锚点移动 | `agentId`、`anchor` |
 
-`subagent-actor` 不单独创建拓扑。写时复制通过身份补丁记录新 `sessionFile`，不另设重定向事件。身份未变化的字段不重复写入；模型仅保存 provider 和 model id。`preset` 固定所选名称与命名或临时 Preset 的配置正文，不保存目录、认证或运行句柄；原生子分支的 `preset-state` 固定实际应用的工具基线、Codemode 和指引。续跑使用已有身份与分支快照，不重新读取配置文件。
+`subagent-actor` 不单独创建拓扑。身份补丁只写变化字段：`goal`、`context`、`roster` 属于 Actor 拓扑，只在首个 `subagent-job` 写入一次，不随后续 Job 或续跑重复。`preset` 固定所选名称与命名或临时 Preset 的配置正文，不保存目录、认证或运行句柄；原生子分支的 `preset-state` 固定实际应用的工具基线、Codemode 和指引。续跑使用已有身份与分支快照，不重新读取配置文件。
+
+`spec` 只保存执行组成：`{kind: "initial"|"continuation"}`，以及存在继承时的 `inheritedContext`。持久化的 `inheritedContext` 仅含模型身份、思考强度、提示词、工具白名单与种子引用等元数据，不含对话条目数组；目标、共享上下文与名册由 Actor 持有，不重复写入 Job。
+
+Actor 身份由本地 key（`sub_<batch>` 或 `sub_<batch>-<member>`）、`batch`、`member`、`parentAgentId`、`depth`、`goal`、`context`、`roster` 与 `kind`（`fresh`／`inherited`）组成。恢复时校验这些字段与 key 的编码一致；不一致报告 `storage_corrupt`，不按名称猜测。完整逻辑地址由根会话 uid 与本地 key 在读取时派生，不单独持久化，因此不随端点或路径变化。
+
+持久化名册成员为 `{id, name, goal}`，其中 `id` 是 session 内的 Actor key；公开 `CreatedBatch.roster`、`JobRequest.roster` 与提示词名册仍使用 `{address, name, goal}`。Fork 恢复时按新根身份生成完整地址，不沿用父 session 的前缀。
+
+`batch` 是会话范围单调递增的编号，分配时取「全部分支与本目录已有文件」的最大值加一；Rewind、Fork 或放弃的分支都不会让编号被复用。
 
 恢复按当前分支顺序折叠事件，再由 Runtime 统一校验拓扑、Job 所有者、续跑关系和中断裁决。Actor 层只提供原生文件与区间信息，不预先发布终态。默认流程不写周期快照，也不在每次模型回复后写用量事件。
 
@@ -52,9 +62,10 @@ Subagent 会话存储使用增量生命周期事件与独立子会话文件。�
 
 子文件位于 `$PI_CODING_AGENT_DIR/subagent-sessions/<rootId>/<agentId>.jsonl`，使用原生 Pi 格式。
 
-- Job 开始时，根分支的 `subagent-job-start` v2 事件以 `startEntryId` 记录子会话当时已有的叶条目 ID，建立可恢复起点。子文件不写入 `subagent-*` 标记；读取该轮历史时，从起点条目之后开始切片。
+- Job 开始时，根分支的 `subagent-job-start` v3 事件以 `startEntryId` 记录子会话当时已有的叶条目 ID，建立可恢复起点。子文件不写入 `subagent-*` 标记；读取该轮历史时，从起点条目之后开始切片。
 - 根 Job 没有终态事件时，重启将其恢复为 `failed`，错误为 `job_interrupted`。结束位置从对应原生分支求取，之后追加恢复终态。
-- 文件或起点尚未落盘时，不视为已执行，保留任务文本供后续重述。
+- continuation 已登记但尚未写入起点时，恢复区间从 Actor 已封存的 checkpoint 之后开始；没有后续原生条目则起止相同，历史为空，不重放前一轮对话。
+- 文件或起点尚未落盘时，不视为已执行，保留 Actor 的目标供后续重述。
 - Inherited 种子在创建时过滤 `subagent-*` 条目，再写入子文件。捕获时不额外裁剪压缩前的原生对话；末尾未完成的工具调用按快照规则过滤。持久化 Job 只保留 `seedFile`、`seedLeafId` 等元数据，不常驻 `entries` 数组。
 - 原生条目中的签名和扩展字段原样保留。
 
@@ -80,11 +91,11 @@ Subagent 会话存储使用增量生命周期事件与独立子会话文件。�
 
 已有的自有副本只有在来源和锚点一致时才可复用。父会话文件被删除后，尚未复制的外部历史返回明确错误，不返回空数据。
 
-### 4.4 Rewind
+### 4.4 Rewind 与身份分配
 
 Rewind 后，注册表由目标根分支重新折叠。续跑使用目标 `anchor`；旧子分支和孤儿文件不因 Rewind 删除。
 
-ID 占用扫描覆盖根文件全部分支的 Actor 与 Job 事件、自有子文件和 Job 视图目录。分配新 ID 时不复用被放弃分支已占用的身份。
+ID 占用扫描覆盖根文件全部分支的 Actor 与 Job 事件、自有子文件和 Job 视图目录。分配新 Actor key、批次编号或 Job id 时都不复用被放弃分支已占用的身份。Actor 地址在其生命周期内稳定，续跑不重新编号。
 
 ### 4.5 内存模型
 
@@ -97,6 +108,8 @@ ID 占用扫描覆盖根文件全部分支的 Actor 与 Job 事件、自有子�
 
 临时打开的 manager 不跨操作缓存。已有 live manager 时优先复用。纯内存 Actor 不能套用持久化文件的释放规则。
 
+实时执行阶段（thinking／output／tool_call）与父节点等待状态只在读取列表时计算，不写入根事件，也不逐 token 落盘。
+
 ### 4.6 可读历史视图
 
 `src/subagent/view.ts` 从 Job 元数据和原生区间派生文件：
@@ -107,49 +120,31 @@ subagent-sessions/<rootId>/views/<jobId>/transcript.jsonl
 subagent-sessions/<rootId>/views/<jobId>/result.txt
 ```
 
-一个 Job 对应一份视图，不按 Actor 跨轮追加。`summary.md` 保存任务、状态、用量、结果和续跑关系；`transcript.jsonl` 保存该 Job 的清洗区间；`result.txt` 原样保存该轮最终回复文本，供截断通知补读。
+一个 Job 对应一份视图，不按 Actor 跨轮追加。`summary.md` 保存共享目标、状态、用量、结果和续跑关系；`transcript.jsonl` 保存该 Job 的清洗区间；`result.txt` 原样保存该轮最终回复文本，供按需补读。
 
-视图不参与状态恢复。文件缺失时由 Root 列表层在当前根目录重建，再通过 `history.summary`、`history.cleanJsonl`、`history.result` 返回路径。原始结果取自 Job 保存的结果字段，不从累计对话重新推断。每份视图独立捕获错误，损坏历史不阻断其余 Actor 状态。Runtime 的列表投影和终态通知本身不执行视图写入。Fork 不为生成视图写父目录。当前分支不可见的 Job 不进入列表。
+视图不参与状态恢复。文件缺失时由 Root 列表层在当前根目录重建，再通过 `history.summary`、`history.cleanJsonl`、`history.result` 返回路径。原始结果取自 Job 保存的结果字段，不从累计对话重新推断。每份视图独立捕获错误，损坏历史不阻断其余 Actor 状态。Runtime 的列表投影本身不执行视图写入。Fork 不为生成视图写父目录。当前分支不可见的 Job 不进入列表。
+
+Job 终态不再向创建者模型投递自动结果消息；视图与 Job 记录是该结果的唯一持久来源。内存会话不生成持久化视图，也不使用临时结果文件；其结果只存在于进程内 Job 记录。
 
 ## 5. 关键流程
 
-- Fresh：注册 Job 及首次拓扑 → 路由并保存身份 → 打开子会话 → 写起点 → 原生执行。
+- Fresh：注册 Job 及首次拓扑（含目标、共享上下文与名册）→ 路由并保存身份 → 打开子会话 → 写起点 → 原生执行。
 - Inherited：捕获并过滤父分支 → 写种子 → 注册 Job 并保存身份 → 写起点 → 原生执行。
-- 结束：原生退出与清理 → 冻结候选终态 → 生成视图并记录历史写入状态 → Runtime 统一发布一次根终态 → 通知父节点。
-- 等待子任务（parent-hold）：保留当前 Job 与会话，不写终态；暂停活跃时间计费，消息或子任务终结后在同一轮内继续。取消或失败按正常终态路径收尾。
-- 续跑：显式消息向停止节点注册新的 continuation Job → 必要时写时复制 → 定位锚点 → 写新起点 → 原生执行。子节点终态通知不注册 continuation Job。
+- 结束：原生退出与清理 → 冻结候选终态 → 生成视图并记录历史写入状态 → Runtime 统一发布一次根终态 → 内部唤醒创建者；不生成结果消息。
+- 等待子任务（parent-hold）：保留当前 Job 与会话，不写终态；暂停活跃时间计费，消息、子任务终结或异步 Shell 完成后在同一轮内继续。取消或失败按正常终态路径收尾。
+- 续跑：显式消息向停止节点注册新的 continuation Job → 必要时写时复制 → 定位锚点 → 写新起点 → 原生执行。子节点终结不注册 continuation Job。
+- 恢复：折叠当前分支 v3 事件 → 校验拓扑与身份 → 未结束 Job 以 `job_interrupted` 失败收尾。恢复不自动重跑、重发消息或推断旧版本状态。
 
-内存模式（非持久化模式）不生成持久化历史视图。结果超过通知上限时，Root 写入系统临时文件。临时文件由 `src/subagent/temporary-results.ts` 统一管理，在根服务退役与 `/reload` 时保持存活。Node.js 进程正常退出时清理临时文件，通知携带该临时文件路径。
-
-每轮由 Runtime 独立通知父节点，通知直接携带有界的本轮结果。普通消息和终态不合并，不自动重发。迁移或恢复不自动重跑已结束的任务。
-
-## 6. 兼容性与转换
+## 6. 版本边界与离线迁移
 
 ### 6.1 运行时边界
 
-运行时只折叠已知 v2 事件。含旧检查点的分支不会因为存在旧条目被拒绝，但旧条目不恢复注册表。分配 ID 时仍避开已经存在的自有文件。
+运行时只折叠 v3 事件。遇到其他版本时：
 
-生产代码不包含 v1 检查点转换、回退或自动升级逻辑。
-
-### 6.2 独立离线迁移脚本
-
-`scripts/convert-subagent-storage-v2.mjs` 只依赖 Node.js 内置模块，直接读写 JSONL，不导入生产模块或使用 `SessionManager`。
-
-警告：不要在 Pi 仍使用目标根会话或共享子文件时原地转换。内存中的旧状态可能写回文件。先备份，并确认目标未在使用。
-
-转换只保留当前位置的注册表，不保留每个 v1 历史位置的注册表。Rewind 到合成事件之前时，旧 Subagent 状态为空；原生对话条目仍保留。
-
-- `--dry-run` 只报告转换前后大小、Actor 与 Job 数，不写文件。
-- `--apply --offline` 在完整预检后保留 `<file>.v1.bak`，再原子替换。已有不同内容的备份不覆盖。
-- `--session FILE` 限定一个根会话及其自有子文件的写入。已清理的外部文件仅供读取；仍含旧检查点的共享文件要求先处理其所有者。
-- 根文件只选择当前路径上的最后一份 v1 状态，删除旧检查点并修复父链接，再合成当前 v2 事件。
-- 每个 Job 注册一次并写终态；转换时未结束的 Job 记为 `job_interrupted`。未启动的继承任务从原种子前缀换算 `seedLeafId`。
-- 子文件去除旧检查点；锚点和原生结构引用随之调整。工具正文、签名及不透明原生字段不重新格式化。
-- 删除末尾检查点可能改变原生默认 leaf 时，仅追加空元数据标记保留原分支。
-- 跳过无旧条目的文件。文件被多个根引用时不重复改写；子文件先转换后中断时，可借原始备份继续。
-
-历史转换审计与迁移复核见归档文档（如 [archive/subagent-migration-batch.md](archive/subagent-migration-batch.md)）。
+- 报告 `unsupported_version`（字节完整、版本不受支持），而不是 `storage_corrupt`。
+- Subagent 服务以可操作的错误失败：提示启动新根会话或在离线环境显式转换；不停止原生 Main 对话加载，不删除或改写旧文件。
+- 不提供运行时回退、自动升级、猜测字段或兼容别名。
 
 ## 7. 验证范围
 
-默认回归覆盖事件折叠、分支隔离、身份补丁、写时复制、Job 视图、停止和恢复。Linux 与 Windows 的完整离线套件已运行；长期压力、多用户切换与管道权限隔离等未验证场景见[已知问题](known-issues.md)。
+默认回归覆盖事件折叠、分支隔离、批次与 Actor 身份校验、身份补丁、写时复制、Job 视图、停止与恢复。Linux 上以真实 Pi SDK 与本地模拟模型运行；Windows 侧目前以交叉构建与平台适配测试验证，完整离线实机套件尚未作为当前声明。长期压力、多用户切换与管道权限隔离等未验证场景见[已知问题](known-issues.md)。

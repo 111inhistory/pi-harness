@@ -1,5 +1,5 @@
 /**
- * Native persistence for the subagent harness (storage version 2).
+ * Native persistence for the subagent harness (storage version 3).
  *
  * Two storage surfaces, both native Pi sessions:
  *
@@ -29,7 +29,17 @@ import type { FileEntry, SessionEntry, SessionManager } from '@earendil-works/pi
 export interface TreeEntry { readonly id?: string; readonly parentId?: string | null; readonly type?: string }
 interface HarnessEntry extends TreeEntry { readonly type: 'custom'; readonly customType: string; readonly data?: unknown }
 export interface StoredActor {
-  agentId: string; name: unknown; parentAgentId: unknown; depth: unknown;
+  agentId: string; name: unknown; parentAgentId: unknown; depth: unknown; kind: unknown;
+  /** Session-wide batch number of this Actor's batch. */
+  batch: unknown;
+  /** Declared member position inside a multi-member batch; null otherwise. */
+  member: unknown;
+  /** The Actor's persistent goal. */
+  goal: unknown;
+  /** The batch's shared context, recorded once at topology time. */
+  context: unknown;
+  /** The launch roster of the batch: session-local {id,name,goal} refs, recorded once. */
+  roster: unknown;
   record: Record<string, unknown> | null; anchor: unknown; stoppedOrder: number;
 }
 export interface StoredJob {
@@ -47,17 +57,17 @@ export interface SubagentStoreOptions<T extends StoreSession = StoreSession> {
   readonly openSession?: (file: string, cwd?: string) => T;
 }
 
-export const STORAGE_VERSION = 2;
+export const STORAGE_VERSION = 3;
 
 /** Every harness-owned root entry starts with this prefix. */
 export const EVENT_PREFIX = "subagent-";
 
 export const EVENTS = {
-  /** Full identity record of one actor; written when it changes. */
+  /** Runtime identity patch of one actor (host-owned fields); written when it changes. */
   actor: "subagent-actor",
   /** Native leaf an idle actor's conversation moved to. */
   anchor: "subagent-anchor",
-  /** One Job registered: topology, spec and origin. */
+  /** One Job registered: composition, spec and origin. */
   job: "subagent-job",
   /** The native entry a Job's transcript starts after. */
   jobStart: "subagent-job-start",
@@ -150,9 +160,9 @@ function writeSessionFile(file: string, header: unknown, entries: Iterable<unkno
 /**
  * Fold the harness events of one root branch into a registry description.
  *
- * Jobs keep event order (the global creation chronology). Only known v2 event
- * types are interpreted; unrelated/legacy entries remain untouched. Malformed
- * v2 events are reported, never guessed at.
+ * Jobs keep event order (the global creation chronology). Only known version-3
+ * event types are interpreted; unrelated entries remain untouched. Malformed or
+ * older-version events are reported, never guessed at.
  */
 export function foldEvents(branch: readonly unknown[]): StoredRegistry {
   const actors = new Map<string, StoredActor>();
@@ -163,9 +173,16 @@ export function foldEvents(branch: readonly unknown[]): StoredRegistry {
     if (!EVENT_TYPES.has(entry.customType)) continue;
     const data = entry.data;
     if (!isPlainObject(data) || data.v !== STORAGE_VERSION) {
-      throw new SubagentStoreError("storage_corrupt", `Subagent event ${entry.id ?? "?"} has no version-${STORAGE_VERSION} payload.`, {
-        entryId: entry.id ?? null,
-      });
+      // An unsupported draft is reported distinctly from corruption: the bytes
+      // are intact, this runtime simply does not interpret them. Nothing here
+      // rewrites or deletes such a file; converting it is an offline decision.
+      throw new SubagentStoreError(
+        "unsupported_version",
+        `Subagent event ${entry.id ?? "?"} uses storage version ${describeVersion(isPlainObject(data) ? data.v : undefined)}; ` +
+          `this runtime reads version ${STORAGE_VERSION} only. ` +
+          "Start a new root session or convert the session offline; legacy events are never inferred or rewritten here.",
+        { entryId: entry.id ?? null, version: isPlainObject(data) ? data.v ?? null : null },
+      );
     }
     switch (entry.customType) {
       case EVENTS.job: {
@@ -177,6 +194,12 @@ export function foldEvents(branch: readonly unknown[]): StoredRegistry {
             name: data.actor.name ?? null,
             parentAgentId: data.actor.parentAgentId ?? null,
             depth: data.actor.depth,
+            kind: data.actor.kind,
+            batch: data.actor.batch,
+            member: data.actor.member,
+            goal: data.actor.goal,
+            context: data.actor.context,
+            roster: data.actor.roster,
             record: null,
             anchor: null,
             stoppedOrder: 0,
@@ -224,6 +247,10 @@ export function foldEvents(branch: readonly unknown[]): StoredRegistry {
     }
   }
   return { actors: [...actors.values()], jobs: [...jobs.values()] };
+}
+
+function describeVersion(value: unknown): string {
+  return typeof value === "number" ? String(value) : "none";
 }
 
 function eventText(data: Record<string, unknown>, field: string, entry: HarnessEntry): string {

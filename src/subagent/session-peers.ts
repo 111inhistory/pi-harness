@@ -1,15 +1,14 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 
 import { addBaseTools } from '../capability/tool-access.ts';
-import { ipc } from '../ipc/platform.ts';
-import { deriveSessionUid, endpointKey, getAgentSocketPath } from '../ipc/socket.ts';
-import type { SessionEndpoint } from './managed-send.ts';
+import { deriveSessionUid } from '../ipc/socket.ts';
+import { formatAddress, MAIN_ACTOR, parseAddress } from './address.ts';
+import type { ResolvedTarget } from './managed-send.ts';
 import { SubagentError } from './runtime.ts';
 import {
   liveSessions,
   registerSession,
   sendToSessionEndpoint,
-  sessionMainAddress,
   unregisterSession,
   updateSessionName,
   type LiveSession,
@@ -21,7 +20,7 @@ export const SESSION_CONTACT = 'subagent-session-contact';
 /** One peer session made reachable from this agent, with its grant outcome. */
 export interface SessionConnect {
   readonly session: LiveSession;
-  /** The peer's managed `Main` address, as written into the contact message. */
+  /** The peer's logical Main address, as written into the contact message. */
   readonly address: string;
   /** Tools this connect made usable by adding them to the session base. */
   readonly enabled: readonly string[];
@@ -54,9 +53,9 @@ function contactMessage(session: LiveSession, address: string): string {
     `- session: ${session.sessionId}`,
     `- name: ${name}`,
     `- cwd: ${session.cwd}`,
-    `- Main address: ${address}`,
+    `- address: ${address}`,
     '',
-    'Use msg_write with that address to message this session. Nothing has been sent to it yet.',
+    'Use msg_write with that address to message this session Main. Nothing has been sent to it yet.',
   ].join('\n');
 }
 
@@ -85,28 +84,22 @@ export class SessionPeers {
   }
 
   /**
-   * Classify a managed address against this root and the shared directory.
+   * Classify one logical address against this root and the shared directory.
    *
-   * This is the one place that decides whether an address is local, another
-   * live session's Main, or another session's non-Main endpoint. This session's
-   * own addresses are local: its Main is managed by this root, so the caller
-   * never reaches the cross-session path for it. Whether an address belongs to
-   * a session's endpoint namespace is the IPC platform adapter's answer, not a
-   * filesystem assumption made here.
+   * This session's addresses are local: Runtime owns actor, batch and children
+   * routing, so the caller never reaches the cross-session path for them.
+   * Another live session is reachable only at its Main; anything else under a
+   * foreign session hex is refused instead of being guessed at.
    */
-  async endpoint(address: string): Promise<SessionEndpoint> {
-    const live = await liveSessions(this.#options.root);
-    for (const session of live) {
-      if (session.sessionId === this.#options.sessionId) continue;
-      if (endpointKey(address) === endpointKey(getAgentSocketPath('Main', session.socketDir))) {
-        return { kind: 'session', session };
-      }
-    }
-    for (const session of live) {
-      if (session.sessionId === this.#options.sessionId) continue;
-      if (ipc.belongsToNamespace(address, session.socketDir)) return { kind: 'foreign' };
-    }
-    return { kind: 'local' };
+  async target(address: string): Promise<ResolvedTarget> {
+    const parsed = parseAddress(address);
+    if (parsed === null) return { kind: 'foreign' };
+    if (parsed.session === deriveSessionUid(this.#options.sessionId)) return { kind: 'local' };
+    const session = (await liveSessions(this.#options.root)).find((candidate) => candidate.uid === parsed.session);
+    if (session === undefined) return { kind: 'unknown' };
+    return parsed.kind === 'actor' && parsed.key === MAIN_ACTOR
+      ? { kind: 'session', session }
+      : { kind: 'foreign' };
   }
 
   /**
@@ -154,7 +147,7 @@ export class SessionPeers {
           ?? (activation.unresolved.includes('msg_write') ? 'not_registered' : 'not_activated');
       throw new SubagentError('msg_write_unavailable', `msg_write cannot be made available for this session: ${reason}.`);
     }
-    const address = sessionMainAddress(session);
+    const address = formatAddress(session.uid, MAIN_ACTOR);
     this.#options.api.sendMessage({
       customType: SESSION_CONTACT,
       content: contactMessage(session, address),
@@ -193,6 +186,7 @@ export class SessionPeers {
    */
   async send(command: {
     readonly target: LiveSession;
+    readonly to: string;
     readonly content: string;
     readonly signal?: AbortSignal | undefined;
   }): Promise<void> {

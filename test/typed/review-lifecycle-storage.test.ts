@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createSubagentRuntime, SubagentError, type DeliverMessageRequest } from "../../src/subagent/runtime.ts";
+import { createSubagentRuntime } from "../../src/subagent/runtime.ts";
+import { foldEvents } from "../../src/subagent/storage.ts";
 import { ServiceLifecycle } from "../../src/session/service-lifecycle.ts";
+
+const SESSION = "01a1deac";
 
 interface StartedJobHandle {
   done: Promise<{ result?: unknown; status?: string }>;
@@ -17,9 +20,8 @@ interface BatchCreationResult {
 
 interface DetailedListItem {
   id: string;
-  status: string;
-  socket: string;
-  history?: { jobId: string; summary: string; cleanJsonl: string };
+  address: string;
+  history?: { summary: string; cleanJsonl: string };
   historyError?: { code: string; message: string };
 }
 
@@ -62,37 +64,38 @@ function deferredJob(): StartedJobHandle {
 test("A7 regression: listDetailed isolates history lookup failure to its own item", async () => {
   // Exercising SubagentRuntime directly: historyPaths throws on one broken child file.
   const runtime = createSubagentRuntime({
+    session: SESSION,
     startJob: () => ({
       done: Promise.resolve({ result: "done" }),
       cancel() {},
     }),
     historyPaths: (jobId: string) => {
-      if (jobId.includes("sub_02")) {
+      if (jobId === "sub_2") {
         throw new Error("EACCES: permission denied, open '/subagent-sessions/sub_02.jsonl'");
       }
       return { summary: "/tmp/sum.md", cleanJsonl: "/tmp/clean.jsonl" };
     },
   });
 
-  const b1 = runtime.create({ tasks: [{ name: "healthy", task: "ok" }] }) as BatchCreationResult;
-  const b2 = runtime.create({ tasks: [{ name: "corrupt", task: "bad" }] }) as BatchCreationResult;
+  const b1 = runtime.create({ agents: [{ name: "healthy", goal: "ok" }] }) as BatchCreationResult;
+  const b2 = runtime.create({ agents: [{ name: "corrupt", goal: "bad" }] }) as BatchCreationResult;
   const id1 = b1.items[0]?.id;
   const id2 = b2.items[0]?.id;
   assert.ok(id1 && id2);
 
   await Promise.all([runtime.jobDone(id1), runtime.jobDone(id2)]);
 
-  const detailed = runtime.listDetailed({}, { callerId: "Main" });
+  const detailed = runtime.listDetailed({}, { callerId: "main" });
   assert.ok(detailed);
   const healthy = detailed.children.find((item) => item.id === id1);
   const broken = detailed.children.find((item) => item.id === id2);
   assert.ok(healthy, "Healthy item is returned even when a sibling history lookup fails");
   assert.ok(broken, "Broken item remains visible instead of collapsing the list");
   assert.deepEqual(healthy.history, {
-    jobId: id1,
     summary: "/tmp/sum.md",
     cleanJsonl: "/tmp/clean.jsonl",
   });
+  assert.equal("jobId" in healthy.history, false, "the list node never repeats the Job id");
   assert.equal("history" in broken, false);
   assert.deepEqual(broken.historyError, {
     code: "history_unavailable",
@@ -109,65 +112,75 @@ test("A7 regression: listDetailed isolates history lookup failure to its own ite
 // A4: Domain state protection vs adapter admission barrier
 // ---------------------------------------------------------------------------
 
-test("A4 regression: a late child notice never starts a continuation for a stopping parent", async () => {
-  // Exercising SubagentRuntime directly:
-  // once cancelJob(parentId) moves the parent Job to 'stopping', a late child
-  // notice has no live handoff target. Runtime delivers it with a null Job id,
-  // which the delivery router retains instead of allocating a continuation.
+test("A4 regression: a stopping parent is fenced from a late child settlement", async () => {
+  // Exercising SubagentRuntime directly: cancelling the parent Job keeps its
+  // slot in `stopping`, and a child that settles afterwards must not allocate a
+  // continuation or synthesize a collaborator result message. The parent wake,
+  // when configured, stays internal.
   const parentHandle = deferredJob();
-  const deliveries: DeliverMessageRequest[] = [];
+  const settled: string[] = [];
+  const deliveries: unknown[] = [];
 
   const runtime = createSubagentRuntime({
+    session: SESSION,
     startJob: (request) => request.parentAgentId === null
       ? { done: parentHandle.done, cancel() {} }
       : { done: Promise.resolve({ result: "child done" }), cancel() {} },
     deliverMessage: (request) => { deliveries.push(request); return { accepted: true }; },
+    onChildrenSettled: (parentId) => { settled.push(parentId); },
   });
 
-  const parent = runtime.create({ tasks: [{ name: "stop-test", task: "work" }] }).items[0] as { id: string };
-  const child = runtime.create({ tasks: [{ name: "child", task: "report" }] }, { parentAgentId: parent.id }).items[0] as { id: string };
+  const parent = runtime.create({ agents: [{ name: "stop-test", goal: "work" }] }).items[0]!;
+  const child = runtime.create({ agents: [{ name: "child", goal: "report" }] }, { parentAgentId: parent.id }).items[0]!;
 
-  // Transition to domain stopping
   runtime.cancelJob(parent.id);
   const jobsView = runtime.jobs({ jobIds: [parent.id] }) as JobsQueryResult;
   assert.equal(jobsView.jobs[0]?.status, "stopping", "Domain status is stopping");
 
   await runtime.jobDone(child.id);
-  assert.equal(deliveries.length, 1);
-  assert.equal(deliveries[0]?.agentId, parent.id);
-  assert.equal(deliveries[0]?.jobId, null, "a stopping parent offers no live Job for a terminal notice");
-  assert.equal(runtime.jobs().jobs.length, 2, "the notice allocates no continuation Job");
+  assert.deepEqual(deliveries, [], "a child result is never auto-delivered as a collaborator message");
+  assert.equal(runtime.jobs().jobs.length, 2, "settling the child allocates no continuation Job");
+  assert.ok(settled.every((parentId) => parentId === parent.id),
+    "the internal parent wake never invents another target");
 
   parentHandle.resolve({ status: "cancelled" });
   await runtime.jobDone(parent.id);
 });
 
 test("A4 regression: Runtime restoreState repairs unended jobs to job_interrupted", () => {
-  // Exercising SubagentRuntime directly:
-  // Runtime's native planRestore/restoreState owns the repair decision and the
-  // persisted/operator error code, without replaying or re-notifying the Job.
+  // Exercising SubagentRuntime directly: persist the real event sequence of an
+  // unended Job, fold it through the storage path, and restore into a fresh
+  // runtime. The repair decision belongs to runtime, not to a hand-built
+  // legacy spec or to replayed notifications.
+  const events: unknown[] = [];
+  const source = createSubagentRuntime({
+    session: SESSION,
+    startJob: () => ({ done: new Promise(() => {}), cancel() {} }),
+    onEvent: (event) => { events.push(event); },
+  });
+  const created = source.create({ agents: [{ name: "test", goal: "unended task" }] }).items[0]!;
+
+  const customTypes: Record<string, string> = {
+    job: "subagent-job",
+    "job-start": "subagent-job-start",
+    "job-end": "subagent-job-end",
+  };
+  const folded = foldEvents(events.map((raw, index) => {
+    const event = raw as { type: string } & Record<string, unknown>;
+    const { type, ...data } = event;
+    return { type: "custom", id: `review-${index}`, customType: customTypes[type], data: { v: 3, ...data } };
+  }));
+
   const runtime = createSubagentRuntime({
+    session: SESSION,
     startJob: () => ({ done: Promise.resolve(), cancel() {} }),
   });
+  const restoreResult = runtime.restoreState(folded) as { actors: number; jobs: number; interrupted: string[] };
+  assert.deepEqual(restoreResult.interrupted, [created.id], "Runtime records interrupted job");
 
-  const rawState = {
-    actors: [{ agentId: "sub_01", name: "test", parentAgentId: null, depth: 1, stoppedOrder: 0 }],
-    jobs: [
-      {
-        jobId: "sub_01",
-        agentId: "sub_01",
-        spec: { name: "test", task: "unended task" },
-        end: null,
-      },
-    ],
-  };
-
-  const restoreResult = runtime.restoreState(rawState) as { actors: number; jobs: number; interrupted: string[] };
-  assert.deepEqual(restoreResult.interrupted, ["sub_01"], "Runtime records interrupted job");
-
-  const jobsView = runtime.jobs({ jobIds: ["sub_01"] }) as JobsQueryResult;
+  const jobsView = runtime.jobs({ jobIds: [created.id] }) as JobsQueryResult;
   assert.equal(jobsView.jobs[0]?.error?.code, "job_interrupted", "Runtime uses the persisted job_interrupted contract");
-  const record = runtime.jobRecord("sub_01");
+  const record = runtime.jobRecord(created.id);
   assert.equal(record?.status, "failed");
   assert.equal(record?.error?.code, "job_interrupted", "The repaired terminal decision is readable for persistence");
 });

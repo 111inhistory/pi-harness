@@ -24,14 +24,15 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 | 字段 | 默认值 | 含义 |
 | --- | --- | --- |
 | `subagent.maxDepth` | 2 | 新工作允许的最大深度；Main 为 0，直接子节点为 1 |
-| `subagent.maxActiveChildren` | 4 | 每个父节点的活跃 Fresh 直接子节点上限 |
-| `subagent.maxActiveInheritedChildren` | 3 | 每个父节点的活跃 Inherited 直接子节点上限 |
+| `subagent.maxActiveBatches` | 4 | 每个父节点的活跃直接子 batch 上限；同批任一成员仍在执行时占用一个名额 |
+| `subagent.maxActiveSubagents` | 7 | 每个父节点的活跃直接子 Agent 总上限，包含 Fresh 与 Inherited |
+| `subagent.maxActiveInheritedSubagents` | 3 | 总上限内 Inherited 直接子 Agent 的子上限 |
 | `subagent.budgetsByDepth` | Depth 1、Depth 2 | 每层的模型调用次数、活跃时长和总存活时间 |
 | `subagent.inheritedToolWaitMs` | 10,000 | Harness 等待捕获的 Inherited 工具完成注册的时长，单位为毫秒 |
 
-`running`、`stopping` 和 `finalizing` 都占用所属名额池的活跃名额；Job 完全终结后才释放名额。列表默认每组显示 4 项，显示窗口独立于活跃上限；使用 `subagent_list({all:true})` 查看完整树。
+`running`、`stopping` 和 `finalizing` 都占用活跃名额；Job 完全终结后才释放名额。所有 batch 成员均已空闲后，释放活跃 batch 名额，但保留 batch 身份与成员关系。列表默认每组显示 4 项，显示窗口独立于活跃上限；使用 `subagent_list({all:true})` 查看完整树。
 
-Fresh 与 Inherited 直接子节点在同一 Subagent 树内使用独立的父节点名额池，两处名额互不借用：一个父节点可同时持有最多 4 个活跃 Fresh 直接子节点与最多 3 个活跃 Inherited 直接子节点。Inherited 的独立默认限额低于 Fresh，因为 Inherited 子节点需要复制父会话上下文并独立加载扩展与 MCP 栈。深度语义、`subagent.maxDepth`、工具策略与列表显示窗口保持不变。降低名额上限不会停止已在运行的子节点；新批次与复活在占用超过上限时被拒绝，直到占用降到上限以下。
+三项限额独立配置，并同时约束每个父节点的直接子节点。例如，同批 6 个 Fresh Agent 占用 1 个 batch 和 6 个 Agent 名额；Inherited 还占用子上限，不另获额外容量。batch 编号在 session 内统一分配，不改变按父节点计数的准入范围。降低上限不会停止已在运行的子节点；创建与显式消息唤醒空闲 Agent 都重新检查准入，不因既有身份绕过限额。
 
 最大深度同时控制工具派生资格、叶节点工具和 Budget。新增深度应提供完整的 `modelCalls`、`activeTimeMs` 和 `lifetimeMs`，不能隐式复用最后一层。已有层的部分字段可以覆盖。
 

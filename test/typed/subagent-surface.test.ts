@@ -8,7 +8,6 @@
  */
 
 import assert from "node:assert/strict";
-import path from "node:path";
 import test from "node:test";
 
 import type {
@@ -21,13 +20,13 @@ import type {
 import { promptText } from "../../src/prompt-text.ts";
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { fauxProvider } from '@earendil-works/pi-ai';
-import { getAgentSocketPath, type EndpointResolverResult } from "../../src/ipc/socket.ts";
 import {
   createSurfaceTools,
   installSessionSurface,
 } from "../../src/subagent/surface.ts";
 import { inheritedToolsWarning } from "../../src/subagent/tool-policy.ts";
 import type {
+  CreatedBatchView,
   SubagentSurfaceApi,
   SubagentSurfaceCreateOptions,
   SubagentSurfaceHost,
@@ -36,22 +35,21 @@ import type {
 } from "../../src/subagent/surface.ts";
 import type {
   BroadcastReceipt,
-  CreatedAgents,
+  CreatedBatch,
   DetailedAgentItem,
   MessageReceipt,
-  StopResult,
+  SignalResult,
 } from "../../src/subagent/runtime.ts";
-import type { SessionEndpoint } from "../../src/subagent/managed-send.ts";
+import type { ResolvedTarget } from "../../src/subagent/managed-send.ts";
 
 const MAX_DEPTH = 2;
 
 const ROOT_SCOPE: SubagentSurfaceScope = {
-  callerId: "Main",
+  callerId: "main",
   depth: 0,
   allowInherited: true,
-  cwd: "/tmp/project",
   maxDepth: MAX_DEPTH,
-  capacityFor: () => ({ maxActiveChildren: 4, maxActiveInheritedChildren: 2 }),
+  capacityFor: () => ({ maxActiveBatches: 3, maxActiveSubagents: 8, maxActiveInheritedSubagents: 3 }),
 };
 
 /** Derived from the exported context type: the SDK entry point does not export it. */
@@ -119,28 +117,51 @@ interface RecordedCreate {
   readonly ctx: ExtensionContext;
 }
 
-/** A real managed endpoint address for this platform: a socket file or a pipe. */
-const agentAddress = (id: string): string => getAgentSocketPath(id, path.join("/tmp/project", ".pi"));
+/** One logical actor address for this root, as the model would read it. */
+const agentAddress = (key: string): string => `01a1deac:${key}`;
+
+const createdBatch: CreatedBatch = {
+  batch: 1,
+  address: "01a1deac:batch_1",
+  roster: [{ address: agentAddress("sub_1-1"), name: "parser", goal: "fix it" }],
+  items: [{
+    id: "sub_1-1", address: agentAddress("sub_1-1"), name: "parser", goal: "fix it",
+    role: "executor", model: "fake-model",
+  }],
+  warnings: ["one inherited tool was dropped"],
+};
+
+/** The public projection both the tool and RPC return: identity and diagnostics. */
+const createdView: CreatedBatchView = {
+  address: "01a1deac:batch_1",
+  items: [{ id: "sub_1-1", address: agentAddress("sub_1-1"), name: "parser" }],
+  warnings: ["one inherited tool was dropped"],
+};
+
+const signalResult: SignalResult = {
+  ok: true,
+  action: "interrupt",
+  to: agentAddress("sub_1-1"),
+  targets: [{ address: agentAddress("sub_1-1"), ok: true, status: "running" }],
+};
 
 class RecordingHost implements SubagentSurfaceHost {
   maxDepth = MAX_DEPTH;
   readonly creates: RecordedCreate[] = [];
   readonly lists: Array<{ filter: unknown; callerId: string }> = [];
-  readonly stops: unknown[] = [];
+  readonly signals: Array<{ target: string; action: string; callerId: string }> = [];
   readonly sends: unknown[] = [];
   readonly receipts: MessageReceipt[] = [];
-  endpoint: EndpointResolverResult = { isManaged: true, targetId: "sub_02" };
+  target: ResolvedTarget = { kind: "local" };
+  created: CreatedBatch = createdBatch;
+  signalResult: SignalResult = signalResult;
 
-  async resolveEndpoint(): Promise<EndpointResolverResult> {
-    return this.endpoint;
+  async resolveTarget(): Promise<ResolvedTarget> {
+    return this.target;
   }
 
   async sendCrossSession(command: Parameters<SubagentSurfaceHost["sendCrossSession"]>[0]): Promise<void> {
     this.crossSessions.push(command);
-  }
-
-  async sessionEndpoint(): Promise<SessionEndpoint> {
-    return { kind: "local" };
   }
 
   readonly crossSessions: unknown[] = [];
@@ -152,9 +173,9 @@ class RecordingHost implements SubagentSurfaceHost {
     return receipt;
   }
 
-  async create(batch: unknown, options: SubagentSurfaceCreateOptions, ctx: ExtensionContext): Promise<CreatedAgents> {
+  async create(batch: unknown, options: SubagentSurfaceCreateOptions, ctx: ExtensionContext): Promise<CreatedBatch> {
     this.creates.push({ batch, options, ctx });
-    return { items: [{ id: "sub_02", socket: "/tmp/project/.pi/sub_02.sock" }] };
+    return this.created;
   }
 
   async list(filter: unknown, callerId: string): Promise<DetailedAgentItem | null> {
@@ -162,9 +183,9 @@ class RecordingHost implements SubagentSurfaceHost {
     return null;
   }
 
-  stop(target: unknown): StopResult {
-    this.stops.push(target);
-    return { ok: true, id: String(target), status: "stopping" };
+  signal(target: string, action: "interrupt" | "stop", callerId: string): Promise<SignalResult> {
+    this.signals.push({ target, action, callerId });
+    return Promise.resolve(this.signalResult);
   }
 }
 
@@ -208,7 +229,7 @@ test("the capacity section follows the resolved caps without rewriting tool text
     getAllTools: () => [],
     getActiveTools: () => [],
   };
-  let limits = { maxActiveChildren: 4, maxActiveInheritedChildren: 2 };
+  let limits = { maxActiveBatches: 3, maxActiveSubagents: 8, maxActiveInheritedSubagents: 3 };
   installSessionSurface(api as unknown as ExtensionAPI, async () => new RecordingHost(), {
     ...ROOT_SCOPE,
     capacityFor: () => limits,
@@ -222,7 +243,7 @@ test("the capacity section follows the resolved caps without rewriting tool text
 
   await handler(event as never, ctx as never);
   const first = options.sections["subagent_capacity"];
-  assert.match(first ?? "", /at most 4 fresh and 2 inherited children per parent/);
+  assert.match(first ?? "", /at most 3 active batches, 8 active subagents and 3 active inherited subagents/);
   assert.equal(
     registered.find((tool) => tool.name === "subagent_create")?.description,
     JSON.parse(promptText("subagent-tools.json")).create.description,
@@ -232,9 +253,9 @@ test("the capacity section follows the resolved caps without rewriting tool text
   await handler(event as never, ctx as never);
   assert.equal(options.sections["subagent_capacity"], first, "an unchanged snapshot produces identical text");
 
-  limits = { maxActiveChildren: 1, maxActiveInheritedChildren: 3 };
+  limits = { maxActiveBatches: 1, maxActiveSubagents: 4, maxActiveInheritedSubagents: 2 };
   await handler(event as never, ctx as never);
-  assert.match(options.sections["subagent_capacity"] ?? "", /at most 1 fresh and 3 inherited children per parent/);
+  assert.match(options.sections["subagent_capacity"] ?? "", /at most 1 active batches, 4 active subagents and 2 active inherited subagents/);
 });
 
 test("the root surface registers controls and messaging without overriding write", () => {
@@ -258,7 +279,7 @@ test("the root surface registers controls and messaging without overriding write
   assert.deepEqual(registered.map((tool) => tool.name), [
     "subagent_create",
     "subagent_list",
-    "subagent_stop",
+    "subagent_signal",
     "msg_write",
   ]);
   const asset = JSON.parse(promptText("subagent-tools.json"));
@@ -275,11 +296,11 @@ test("the root surface registers controls and messaging without overriding write
   }
   assert.deepEqual(registered[0]!.promptGuidelines, [asset.instructions, asset.create.guideline]);
   assert.deepEqual(registered[1]!.promptGuidelines, [asset.instructions, asset.list.guideline]);
-  assert.deepEqual(registered[2]!.promptGuidelines, [asset.instructions]);
+  assert.deepEqual(registered[2]!.promptGuidelines, [asset.instructions, asset.signal.guideline]);
   assert.deepEqual(registered[3]!.promptGuidelines, [asset.instructions, ...asset.msg_write.guidelines]);
 
   // The shared namespace text is only what applies to every member tool.
-  for (const specific of ['children.sock', 'messaging', 'msg_write', 'subagent_list', 'subagent_create', 'inheritContext']) {
+  for (const specific of ['children', 'msg_write', 'subagent_list', 'subagent_create', 'inheritContext']) {
     assert.ok(!asset.instructions.toLowerCase().includes(specific.toLowerCase()),
       `shared namespace instructions must not carry tool-specific text: ${specific}`);
   }
@@ -301,33 +322,39 @@ test("the root surface registers controls and messaging without overriding write
         'messaging rules must not attach to a non-messaging Subagent tool');
     }
   }
-  assert.ok(asset.msg_write.guidelines.some((rule: string) => rule.includes('children.sock')),
+  assert.ok(asset.msg_write.guidelines.some((rule: string) => rule.includes('batch_<batch>')),
     'broadcast messaging guidance lives on msg_write');
   assert.ok(asset.msg_write.guidelines.some((rule: string) => rule.includes('revives')),
     'revive semantics live on msg_write');
   assert.ok(!registered.some(tool => tool.name === "write"));
   for (const text of [asset.instructions, asset.create.snippet, asset.create.guideline, asset.list.guideline,
-    asset.list.snippet, asset.stop.snippet, asset.msg_write.snippet, ...asset.msg_write.guidelines]) {
+    asset.list.snippet, asset.signal.snippet, asset.msg_write.snippet, ...asset.msg_write.guidelines]) {
     assert.ok(!registered.some((tool) => tool.description.includes(text)),
       "guidance is projected natively via promptGuidelines, not folded into a tool description");
   }
 
   const create = schemaOf(registered[0] as ToolDefinition);
-  assert.deepEqual(create["required"], ["tasks"]);
+  assert.deepEqual(create["required"], ["agents"]);
   assert.equal(create["additionalProperties"], false);
-  const tasks = propertyOf(create, "tasks");
-  assert.equal(tasks["minItems"], 1);
-  const taskItem = tasks["items"] as Record<string, unknown>;
-  assert.deepEqual(taskItem["required"], ["task"]);
-  assert.equal(taskItem["additionalProperties"], false);
+  const agents = propertyOf(create, "agents");
+  assert.equal(agents["minItems"], 1);
+  const agentItem = agents["items"] as Record<string, unknown>;
+  assert.deepEqual(agentItem["required"], ["goal"], "a member declares a goal; its label is optional");
+  assert.equal(agentItem["additionalProperties"], false);
+  assert.ok(propertyOf(agentItem, "name"));
+  assert.ok(propertyOf(agentItem, "inheritContext"));
 
   const list = schemaOf(registered[1] as ToolDefinition);
   assert.equal(list["required"], undefined);
   assert.ok(propertyOf(list, "all"));
   assert.ok(propertyOf(list, "id"));
 
-  const stop = schemaOf(registered[2] as ToolDefinition);
-  assert.deepEqual(stop["required"], ["id"]);
+  const signal = schemaOf(registered[2] as ToolDefinition);
+  assert.deepEqual(signal["required"], ["target", "action"]);
+  assert.equal(signal["additionalProperties"], false);
+
+  const msgWrite = schemaOf(registered[3] as ToolDefinition);
+  assert.deepEqual(msgWrite["required"], ["to", "content"]);
 });
 
 test("the configured maximum depth moves the surface leaf", () => {
@@ -338,14 +365,14 @@ test("the configured maximum depth moves the surface leaf", () => {
     scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: 1, maxDepth: 3 },
   });
   assert.ok(deep.create);
-  assert.ok(deep.stop);
+  assert.ok(deep.signal);
   const shallow = createSurfaceTools({
     api,
     resolveHost: async () => new RecordingHost(),
     scope: { ...ROOT_SCOPE, callerId: "sub_01", depth: 1, maxDepth: 1 },
   });
   assert.equal(shallow.create, null);
-  assert.equal(shallow.stop, null);
+  assert.equal(shallow.signal, null);
 });
 
 test("the root create tool maps Main to no parent and passes origin and lazy capture", async () => {
@@ -357,18 +384,16 @@ test("the root create tool maps Main to no parent and passes origin and lazy cap
   const tools = createSurfaceTools({ api, resolveHost: resolveWith(host, seen), scope: ROOT_SCOPE });
   assert.ok(tools.create !== null);
   const ctx = sdkContext({ cwd: "/tmp/project", sessionId: "session-7", trusted: true, mode: "tui" });
+  const batch = { context: "shared context", agents: [{ name: "parser", goal: "fix the parser" }] };
 
-  const result = await tools.create.execute("call-1", {
-    context: "batch context",
-    tasks: [{ task: "do the task" }],
-  }, undefined, undefined, ctx);
+  const result = await tools.create.execute("call-1", batch, undefined, undefined, ctx);
 
   assert.deepEqual(seen, [ctx]);
   assert.equal(host.creates.length, 1);
   const call = host.creates[0];
   assert.ok(call !== undefined);
   assert.equal(call.ctx, ctx);
-  assert.deepEqual(call.batch, { context: "batch context", tasks: [{ task: "do the task" }] });
+  assert.deepEqual(call.batch, batch, "the declared batch is passed through unchanged");
   assert.equal(call.options.parentAgentId, null);
   assert.equal(call.options.allowInherited, true);
   assert.deepEqual(call.options.origin, {
@@ -378,10 +403,13 @@ test("the root create tool maps Main to no parent and passes origin and lazy cap
     agentId: null,
     mode: "tui",
   });
-  assert.deepEqual(result.details, {
-    items: [{ id: "sub_02", socket: "/tmp/project/.pi/sub_02.sock" }],
-  });
-  assert.match(JSON.stringify(result.content), /sub_02/);
+  assert.deepEqual(result.details, createdView, "the tool returns the shared public projection");
+  const batchFields = result.details as unknown as Record<string, unknown>;
+  for (const field of ["batch", "roster"]) assert.equal(field in batchFields, false, field);
+  const member = (result.details.items[0] ?? {}) as Record<string, unknown>;
+  for (const field of ["goal", "role", "model", "warnings"]) assert.equal(field in member, false, field);
+  assert.match(JSON.stringify(result.content), /01a1deac:sub_1-1/);
+  assert.doesNotMatch(JSON.stringify(result.content), /fix it|fake-model|executor|roster/);
 
   // The capture is lazy and validated when the runtime asks for it.
   const snapshot = call.options.captureInheritedContext();
@@ -399,14 +427,14 @@ test("a child surface reports its own actor id as the parent, never its parent's
     api,
     resolveHost: async () => host,
     scope: {
-      callerId: "sub_01", depth: 1, allowInherited: false, cwd: "/tmp/project", maxDepth: MAX_DEPTH,
-      capacityFor: () => ({ maxActiveChildren: 4, maxActiveInheritedChildren: 2 }),
+      callerId: "sub_01", depth: 1, allowInherited: false, maxDepth: MAX_DEPTH,
+      capacityFor: () => ({ maxActiveBatches: 3, maxActiveSubagents: 8, maxActiveInheritedSubagents: 3 }),
     },
   });
   assert.ok(tools.create !== null);
   const ctx = sdkContext({ cwd: "/tmp/child" });
 
-  await tools.create.execute("call-2", { tasks: [{ task: "nested" }] }, undefined, undefined, ctx);
+  await tools.create.execute("call-2", { agents: [{ goal: "nested" }] }, undefined, undefined, ctx);
   const call = host.creates[0];
   assert.ok(call !== undefined);
   assert.equal(call.options.parentAgentId, "sub_01");
@@ -417,7 +445,7 @@ test("a child surface reports its own actor id as the parent, never its parent's
   assert.deepEqual(host.lists, [{ filter: {}, callerId: "sub_01" }]);
 });
 
-test("list and stop resolve the host with the current execute context", async () => {
+test("list and signal resolve the host with the current execute context", async () => {
   const api = new FakeSurfaceApi();
   const first = new RecordingHost();
   const second = new RecordingHost();
@@ -436,35 +464,39 @@ test("list and stop resolve the host with the current execute context", async ()
   await tools.list.execute("l1", { all: true }, undefined, undefined, ctxA);
   await tools.list.execute("l2", { id: "sub_02" }, undefined, undefined, ctxB);
   assert.deepEqual(seen, [ctxA, ctxB]);
-  assert.deepEqual(first.lists, [{ filter: { all: true }, callerId: "Main" }]);
-  assert.deepEqual(second.lists, [{ filter: { id: "sub_02" }, callerId: "Main" }]);
+  assert.deepEqual(first.lists, [{ filter: { all: true }, callerId: "main" }]);
+  assert.deepEqual(second.lists, [{ filter: { id: "sub_02" }, callerId: "main" }]);
 
-  assert.ok(tools.stop !== null);
-  await tools.stop.execute("s1", { id: "sub_02" }, undefined, undefined, ctxA);
-  assert.deepEqual(first.stops, ["sub_02"]);
+  assert.ok(tools.signal !== null);
+  const result = await tools.signal.execute(
+    "s1", { target: agentAddress("sub_1-1"), action: "interrupt" }, undefined, undefined, ctxA);
+  assert.deepEqual(first.signals, [{ target: agentAddress("sub_1-1"), action: "interrupt", callerId: "main" }]);
+  assert.deepEqual(result.details, signalResult);
 });
 
-test("msg_write still rejects a non-IPC path without resolving the host", async () => {
+test("msg_write rejects a non-logical target without resolving the host", async () => {
   const api = new FakeSurfaceApi();
   const seen: ExtensionContext[] = [];
   const tools = createSurfaceTools({
     api,
     resolveHost: async (ctx) => {
       seen.push(ctx);
-      throw new Error("the host must not be resolved for a non-IPC path");
+      throw new Error("the host must not be resolved for an invalid address");
     },
     scope: ROOT_SCOPE,
   });
   const ctx = sdkContext({ cwd: "/tmp/project" });
 
-  await assert.rejects(
-    tools.msg_write.execute("m2", { path: "notes.txt", content: "x" }, undefined, undefined, ctx),
-    /requires a managed endpoint address/,
-  );
+  for (const target of ["notes.txt", "/tmp/project/.pi/sub_02.sock"]) {
+    await assert.rejects(
+      () => tools.msg_write.execute("m2", { to: target, content: "x" }, undefined, undefined, ctx),
+      /requires a full logical Agent address/,
+    );
+  }
   assert.deepEqual(seen, []);
 });
 
-test("endpoint ownership and send share one cached resolution per execute", async () => {
+test("one execute resolves the host once and sends the raw logical target", async () => {
   const api = new FakeSurfaceApi();
   const first = new RecordingHost();
   const second = new RecordingHost();
@@ -482,14 +514,14 @@ test("endpoint ownership and send share one cached resolution per execute", asyn
 
   const result = await tools.msg_write.execute(
     "m3",
-    { path: agentAddress("sub_02"), content: "once" },
+    { to: agentAddress("sub_1-1"), content: "once" },
     undefined,
     undefined,
     ctx,
   );
 
   assert.equal(resolutions, 1);
-  assert.deepEqual(first.sends, [{ from: "Main", to: "sub_02", content: "once" }]);
+  assert.deepEqual(first.sends, [{ from: "main", to: agentAddress("sub_1-1"), content: "once" }]);
   assert.deepEqual(second.sends, []);
   assert.equal(result.details, undefined);
 });
@@ -497,9 +529,7 @@ test("endpoint ownership and send share one cached resolution per execute", asyn
 test("concurrent managed sends keep per-execution hosts isolated", async () => {
   const api = new FakeSurfaceApi();
   const first = new RecordingHost();
-  first.endpoint = { isManaged: true, targetId: "sub_02" };
   const second = new RecordingHost();
-  second.endpoint = { isManaged: true, targetId: "sub_03" };
   const ctxA = sdkContext({ cwd: "/tmp/project" });
   const ctxB = sdkContext({ cwd: "/tmp/project" });
   const tools = createSurfaceTools({
@@ -509,19 +539,19 @@ test("concurrent managed sends keep per-execution hosts isolated", async () => {
   });
 
   const [a, b] = await Promise.all([
-    tools.msg_write.execute("c1", { path: agentAddress("sub_02"), content: "first" }, undefined, undefined, ctxA),
-    tools.msg_write.execute("c2", { path: agentAddress("sub_03"), content: "second" }, undefined, undefined, ctxB),
+    tools.msg_write.execute("c1", { to: agentAddress("sub_1-1"), content: "first" }, undefined, undefined, ctxA),
+    tools.msg_write.execute("c2", { to: agentAddress("sub_1-2"), content: "second" }, undefined, undefined, ctxB),
   ]);
 
-  assert.deepEqual(first.sends, [{ from: "Main", to: "sub_02", content: "first" }]);
-  assert.deepEqual(second.sends, [{ from: "Main", to: "sub_03", content: "second" }]);
+  assert.deepEqual(first.sends, [{ from: "main", to: agentAddress("sub_1-1"), content: "first" }]);
+  assert.deepEqual(second.sends, [{ from: "main", to: agentAddress("sub_1-2"), content: "second" }]);
   assert.equal(a.details, undefined);
   assert.equal(b.details, undefined);
 });
 
 test('create forwards its tool call id to physical model capture before pending-call removal', async () => {
   const physical = fauxProvider().getModel();
-  const manager = SessionManager.inMemory(ROOT_SCOPE.cwd);
+  const manager = SessionManager.inMemory("/tmp/project");
   manager.appendMessage({
     role: 'assistant', api: physical.api, provider: physical.provider, model: physical.id,
     content: [{ type: 'toolCall', id: 'spawn-physical-call', name: 'subagent_create', arguments: {} }],
@@ -530,7 +560,7 @@ test('create forwards its tool call id to physical model capture before pending-
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
   });
   const ctx = {
-    ...sdkContext({ cwd: ROOT_SCOPE.cwd }),
+    ...sdkContext({ cwd: "/tmp/project" }),
     model: { ...physical, api: 'pi-virtual' },
     modelRegistry: { runtime: {
       streamSimple() {}, getAuth() {}, getRegisteredProviderIds() {},
@@ -545,7 +575,7 @@ test('create forwards its tool call id to physical model capture before pending-
   const host = new RecordingHost();
   const tools = createSurfaceTools({ api: new FakeSurfaceApi(), resolveHost: async () => host, scope: ROOT_SCOPE });
   assert.ok(tools.create);
-  await tools.create.execute('spawn-physical-call', { tasks: [{ task: 'inherit', inheritContext: true }] }, undefined, undefined, ctx);
+  await tools.create.execute('spawn-physical-call', { agents: [{ goal: 'inherit', inheritContext: true }] }, undefined, undefined, ctx);
   const recorded = host.creates[0];
   assert.ok(recorded);
   const snapshot = recorded.options.captureInheritedContext();
@@ -570,7 +600,7 @@ test("inherited capture warns about non-transplantable parent tools", async () =
   assert.ok(tools.create !== null);
   const ctx = sdkContext({ cwd: "/tmp/project", systemPrompt: "PARENT PROMPT" });
 
-  await tools.create.execute("c1", { tasks: [{ task: "inherit me" }] }, undefined, undefined, ctx);
+  await tools.create.execute("c1", { agents: [{ goal: "inherit me" }] }, undefined, undefined, ctx);
   const call = host.creates[0];
   assert.ok(call !== undefined);
   const snapshot = call.options.captureInheritedContext();
@@ -601,7 +631,7 @@ test("inherited capture uses the resolved host maximum depth", async () => {
   assert.ok(tools.create);
   const ctx = sdkContext({ cwd: "/tmp/project" });
 
-  await tools.create.execute("c1", { tasks: [{ task: "inherit" }] }, undefined, undefined, ctx);
+  await tools.create.execute("c1", { agents: [{ goal: "inherit" }] }, undefined, undefined, ctx);
   const call = host.creates[0];
   assert.ok(call);
   const snapshot = call.options.captureInheritedContext();

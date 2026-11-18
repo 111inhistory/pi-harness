@@ -114,7 +114,8 @@ test('connect appends the peer contact and grants msg_write once', async (t) => 
   const { cwd, socketRoot, service, recorded, harness } = await fixture(t);
   const peer = await harness.registerSession(socketRoot, { sessionId: 'peer-session', cwd, name: 'peer work' });
   t.after(() => harness.unregisterSession(socketRoot, peer.sessionId));
-  const address = harness.sessionMainAddress(peer);
+  const address = harness.sessionSenderId(peer.uid);
+  const endpoint = harness.sessionMainAddress(peer);
 
   const result = await service.connectSession(peer.uid);
   assert.equal(result.session.uid, peer.uid);
@@ -132,7 +133,7 @@ test('connect appends the peer contact and grants msg_write once', async (t) => 
   assert.match(text, new RegExp(`session: ${peer.sessionId}`));
   assert.match(text, /name: peer work/);
   assert.match(text, new RegExp(`cwd: ${cwd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
-  assert.ok(text.includes(`Main address: ${address}`));
+  assert.ok(text.includes(`address: ${address}`));
   assert.match(text, /Use msg_write/);
 
   const record = recorded.entries.filter((entry) => entry.customType === 'capability-tool-base');
@@ -148,7 +149,7 @@ test('connect appends the peer contact and grants msg_write once', async (t) => 
   assert.equal(recorded.messages.length, 2);
   assert.equal(recorded.entries.filter((entry) => entry.customType === 'capability-tool-base').length, 1);
 
-  assert.equal(existsSync(address), false, 'connect writes no frame to the peer');
+  assert.equal(existsSync(endpoint), false, 'connect writes no frame to the peer');
 });
 
 test('connect records its explicit grant even when msg_write was already discovered', async (t) => {
@@ -334,7 +335,8 @@ async function sdkFixture(t: TestContext, options: { blacklist?: boolean } = {})
   const entries = () => session.sessionManager.getEntries();
   return {
     cwd, session, model, requests, declared, errors, notices, peer, held, command, directory,
-    address: directory.sessionMainAddress(peer),
+    address: directory.sessionSenderId(peer.uid),
+    endpoint: directory.sessionMainAddress(peer),
     contacts: () => entries().filter((entry) => entry.type === 'custom_message' && entry.customType === root.SESSION_CONTACT).length,
     grants: () => entries().filter((entry) => {
       const record = entry as { type?: string; customType?: string; data?: { add?: unknown[] } };
@@ -487,7 +489,7 @@ test('connect delivers contacts and preserves the native conversation', { timeou
   assert.match(f.notices.at(-1)!.text, /session_not_found/);
   assert.equal(f.contacts(), 2);
 
-  assert.equal(existsSync(f.address), false, 'no frame was written to the peer endpoint');
+  assert.equal(existsSync(f.endpoint), false, 'no frame was written to the peer endpoint');
   assert.deepEqual(f.errors, []);
 });
 

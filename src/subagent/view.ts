@@ -19,7 +19,8 @@ export interface JobView {
   readonly agentId: string;
   readonly name: string | null;
   readonly round: number;
-  readonly task: string | null;
+  /** The Actor's persistent goal; continuations repeat it. */
+  readonly goal: string;
   readonly roleId: string | null;
   readonly model: string | null;
   readonly status: string;
@@ -46,7 +47,7 @@ export function hasJobView(viewsDir: string, jobId: string): boolean {
  * @param {string} viewsDir
  * @param {{
  *   jobId: string, agentId: string, name: string | null, round: number,
- *   task: string | null, roleId: string | null, model: string | null,
+ *   goal: string, roleId: string | null, model: string | null,
  *   status: string, error: { code?: string, message?: string } | null,
  *   result: string | null, budget: object | null,
  *   previousJobId: string | null, transcript: object[],
@@ -70,7 +71,7 @@ function renderSummary(viewsDir: string, view: JobView): string {
     lines.push(`- **Budget usage**: ${view.budget.modelCalls ?? 0} model calls, ${seconds}s active`);
   }
   if (view.previousJobId) lines.push(`- **Previous round**: ${jobViewPaths(viewsDir, view.previousJobId).summary}`);
-  if (view.task) lines.push("", "## Task", "", view.task.trim());
+  if (view.goal.trim() !== "") lines.push("", "## Goal", "", view.goal.trim());
   if (view.error) lines.push("", "## Error", "", "```", `[${view.error.code ?? "error"}] ${view.error.message ?? ""}`, "```");
   lines.push("", "## Result", "", view.result?.trim() || "(No output recorded)");
   return `${lines.join("\n")}\n`;

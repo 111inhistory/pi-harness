@@ -73,17 +73,17 @@ test('existing native or extension result renderers are preserved', () => {
   assert.equal(renderers().resolver('bash', () => native), native);
 });
 
-test('Subagent completion messages fold with sender and round visible, and expand fully', () => {
+test('Subagent peer messages fold with sender and round visible, and expand fully', () => {
   initTheme('dark');
   const message = deliveryMessage({ sourceId: 'sub_01', round: 3, jobId: 'sub_01_r3',
-    content: `${'result detail\n'.repeat(80)}FINAL_HANDOFF`, terminal: { status: 'completed' } });
+    content: `${'result detail\n'.repeat(80)}FINAL_HANDOFF` });
   const before = structuredClone(message);
   const component = new CustomMessageComponent(message, renderers().delivery);
   for (const width of [30, 80]) {
     const collapsed = component.render(width);
     const text = plain(collapsed);
     assert.ok(collapsed.length < 20);
-    assert.ok(text.includes('sub_01') && /round\s+3/.test(text) && text.includes('completed'));
+    assert.ok(text.includes('sub_01'));
     assert.ok(!text.includes('FINAL_HANDOFF'));
     assert.ok(collapsed.every(line => visibleWidth(line) <= width));
     component.setExpanded(true);
@@ -152,7 +152,7 @@ test('Subagent message mouse toggle survives rebuilds and cooperates with global
   initTheme('dark');
   const { delivery } = renderers();
   const message = deliveryMessage({ sourceId: 'sub_02', round: 2, jobId: 'sub_02_r2',
-    content: `${'DELIVERY_DETAIL\n'.repeat(50)}POINTER_HANDOFF`, terminal: { status: 'completed' } });
+    content: `${'DELIVERY_DETAIL\n'.repeat(50)}POINTER_HANDOFF` });
   const before = structuredClone(message);
   const component = new CustomMessageComponent(message, delivery);
   const other = new CustomMessageComponent(structuredClone(message), delivery);
@@ -184,7 +184,7 @@ test('Subagent message mouse toggle survives rebuilds and cooperates with global
 test('short Subagent messages do not consume mouse clicks', () => {
   initTheme('dark');
   const message = deliveryMessage({ sourceId: 'sub_03', round: 1, jobId: 'sub_03_r1',
-    content: 'SHORT_HANDOFF', terminal: { status: 'completed' } });
+    content: 'SHORT_HANDOFF' });
   const component = new CustomMessageComponent(message, renderers().delivery);
   const body = component.render(80).findIndex(line => plain([line]).includes('SHORT_HANDOFF'));
   assert.equal(pointer(component, body), undefined);

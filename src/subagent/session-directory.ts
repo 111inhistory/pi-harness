@@ -8,14 +8,12 @@
  * directory lists what is running, each session's name, and the managed socket
  * address of its Main.
  *
- * There is one address space: the same managed Unix Socket / Windows Named
- * Pipe address `msg_write` already uses. The directory only maps a path to the
- * live session that owns it.
- * Cross-session frames carry the same `from` field as local ones, with the
- * sender expressed as `<stable-session-uid>:Main`; the receiving managed
- * endpoint parses that composite identity and hands Runtime a typed external
- * descriptor. Only Main talks across sessions, so a subagent endpoint of another
- * session is never a valid cross-session target.
+ * A session publishes the one managed endpoint it binds, its Main address, and
+ * the directory maps a logical session hex to the live session that owns it.
+ * Cross-session frames name both ends with logical addresses, the sender as
+ * `<session-hex>:main`; the receiving main endpoint parses that identity and
+ * hands Runtime a typed external descriptor. Only Main talks across sessions,
+ * so another session's subagent address is never a valid cross-session target.
  *
  * Platform scope: the address space is the platform's managed endpoint space —
  * Unix socket files below the session's socket directory, or Windows Named
@@ -36,7 +34,8 @@ import path from 'node:path';
 
 import { samePath } from '../fs-path.ts';
 import { managedFrame } from '../ipc/message.ts';
-import { deriveSessionUid, getAgentSocketPath, writeSocket } from '../ipc/socket.ts';
+import { deriveSessionUid, writeSocket } from '../ipc/socket.ts';
+import { formatAddress, formatMainEndpointPath, MAIN_ACTOR, parseAddress } from './address.ts';
 import { SubagentError } from './runtime.ts';
 
 export const SESSION_DIRECTORY = 'sessions';
@@ -44,7 +43,6 @@ export const SESSION_DIRECTORY = 'sessions';
 const RECORD_VERSION = 1;
 /** Session uids are exactly the lowercase 8-hex fold `deriveSessionUid` writes. */
 const UID_PATTERN = /^[0-9a-f]{8}$/;
-const SENDER_PATTERN = /^([0-9a-f]{8}):Main$/;
 
 /** One live session as published in the shared socket root. */
 export interface LiveSession {
@@ -60,21 +58,12 @@ export interface LiveSession {
 
 /** The managed Main endpoint of one live session: the cross-session address. */
 export function sessionMainAddress(session: LiveSession): string {
-  return getAgentSocketPath('Main', session.socketDir);
+  return formatMainEndpointPath(session.socketDir);
 }
 
-/** The composite wire identity of a session's Main: `<uid>:Main`. */
+/** The logical wire identity of a session's Main: `<uid>:main`. */
 export function sessionSenderId(uid: string): string {
-  return `${uid}:Main`;
-}
-
-/**
- * Parse a composite cross-session identity. A plain local actor id never
- * contains `:`, so this only matches a host-built session identity.
- */
-export function parseSessionSenderId(from: string): { readonly uid: string } | null {
-  const match = SENDER_PATTERN.exec(from);
-  return match === null ? null : { uid: match[1]! };
+  return formatAddress(uid, MAIN_ACTOR);
 }
 
 function directory(root: string): string {
@@ -237,6 +226,8 @@ export async function sendToSessionEndpoint(
   command: {
     readonly sender: { readonly sessionId: string; readonly uid: string };
     readonly target: LiveSession;
+    /** The target's logical address on the receiving root. */
+    readonly to: string;
     readonly content: string;
     readonly signal?: AbortSignal | undefined;
   },
@@ -248,7 +239,7 @@ export async function sendToSessionEndpoint(
     throw new SubagentError('invalid_target', 'A session cannot send a cross-session message to itself.');
   }
   if (command.signal?.aborted) throw new SubagentError('cancelled', 'Message send was cancelled.');
-  const { frame } = managedFrame({ senderId: sessionSenderId(command.sender.uid), content: command.content });
+  const { frame } = managedFrame({ senderId: sessionSenderId(command.sender.uid), targetId: command.to, content: command.content });
   try {
     await writeSocket(sessionMainAddress(command.target), frame);
   } catch (error) {

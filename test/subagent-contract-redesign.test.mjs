@@ -7,10 +7,14 @@ import { deriveSessionUid } from "../src/ipc/socket.ts";
 import { deferred } from "../test-support/async.ts";
 import { treeNodes } from "./typed/support/agent-tree.ts";
 
+const SESSION = "abcdef01";
+const MAIN = "main";
+
 function harness(t, options = {}) {
   const started = [];
   const events = [];
   const runtime = createSubagentRuntime({
+    session: SESSION,
     deliverMessage: async () => ({ accepted: true }),
     ...options,
     onEvent(event) { events.push(event); options.onEvent?.(event); },
@@ -30,54 +34,66 @@ function harness(t, options = {}) {
   });
   t.after(async () => {
     // Request cancellation before resolving native handles; retirement waits for actual exits.
-    for (const actor of runtime.list().agents) runtime.stop(actor.agentId);
+    for (const job of runtime.jobs().jobs) runtime.cancelJob(job.jobId);
     for (const handle of started) handle.finish();
     await Promise.all(runtime.jobs().jobs.map((job) => runtime.jobDone(job.jobId)));
   });
-  return { runtime, started, state: () => foldEvents(events.map(({ type, ...data }) => ({
-    type: "custom", customType: `subagent-${type}`, data: { v: 2, ...data },
-  }))) };
+  return {
+    runtime, started,
+    state: () => foldEvents(events.map(({ type, ...data }) => ({
+      type: "custom", customType: `subagent-${type}`, data: { v: 3, ...data },
+    }))),
+  };
 }
 
-const task = (name) => ({ name, task: `do ${name}` });
+const member = (name, goal = `do ${name}`) => ({ name, goal });
+const batch = (...agents) => ({ agents });
 const errorCode = (code) => (err) => err instanceof SubagentError && err.code === code;
+const stop = (runtime, actor) => runtime.signal({ from: MAIN, to: actor.address, action: "stop" });
+const resume = (runtime, actor, content = "Resume") =>
+  runtime.sendMessage({ from: MAIN, to: actor.address, content });
 
 test("public list filters actors without exposing Budget or redundant identity fields", async (t) => {
   const { runtime, started } = harness(t);
-  const [first, second] = runtime.create({ tasks: [task("running"), task("sibling")] }).items;
-  const before = runtime.listDetailed({}, { callerId: "Main" });
-  assert.deepEqual(treeNodes(before).map((item) => item.status), ["running", "running", "running"]);
-  assert.equal(before.id, "Main");
+  const [first, second] = runtime.create(batch(member("running"), member("sibling"))).items;
+  const before = runtime.listDetailed({}, { callerId: MAIN });
+  assert.equal(before.id, MAIN);
+  assert.deepEqual(before.children.map((child) => child.id), [first.id, second.id]);
   const item = before.children[0];
   assert.equal("depth" in item, false);
-  assert.equal("name" in item, false);
   assert.equal("parentSocket" in item, false);
+  assert.equal("socket" in item, false);
   assert.equal("budget" in item, false);
   assert.equal("parentId" in item, false);
+  for (const field of ["goal", "activity", "model"]) {
+    assert.equal(field in item, false, `the list node must not carry ${field}`);
+  }
   assert.equal(started[0].request.budget.snapshot().modelCalls, 0);
-  const filtered = runtime.listDetailed({ id: first.id }, { callerId: "Main" });
+  const filtered = runtime.listDetailed({ id: first.id }, { callerId: MAIN });
   assert.equal(filtered.id, first.id);
-  assert.equal(filtered.socket, item.socket);
+  assert.equal(filtered.address, item.address);
   assert.deepEqual(filtered.history, item.history);
   assert.equal("budget" in filtered, false);
-  assert.deepEqual(runtime.listDetailed({ id: "missing" }, { callerId: "Main" }), null);
-  assert.equal(runtime.stop(second.id).status, "stopping");
+  assert.deepEqual(runtime.listDetailed({ id: "missing" }, { callerId: MAIN }), null);
+  assert.equal((await stop(runtime, second)).targets[0].status, "stopping");
   started[1].finish();
   await runtime.jobDone(second.id);
-  assert.equal(runtime.stop(first.id).status, "stopping");
-  assert.equal(runtime.listDetailed({ id: first.id }, { callerId: "Main" }).status, "stopping");
+  assert.equal((await stop(runtime, first)).targets[0].status, "stopping");
+  assert.equal(runtime.listDetailed({ id: first.id }, { callerId: MAIN }).address, first.address,
+    "a stopping actor stays visible in the list");
   started[0].finish();
   await runtime.jobDone(first.id);
-  const final = runtime.listDetailed({ id: first.id }, { callerId: "Main" });
-  assert.equal(final.status, "stopped");
-  assert.equal(final.socket, first.socket);
+  const final = runtime.listDetailed({ id: first.id }, { callerId: MAIN });
+  assert.equal(runtime.jobs({ jobIds: [first.id] }).jobs[0].status, "cancelled");
+  assert.equal(final.address, first.address);
   assert.deepEqual(final.history, first.history);
   assert.equal(started[0].request.budget.snapshot().terminal.status, "cancelled");
 });
 
 test("scoped list fills each group with recent stops and expands only active permitted branches", async (t) => {
   const { runtime, started } = harness(t);
-  const create = (count, parentAgentId = null) => runtime.create({ tasks: Array.from({ length: count }, () => ({ task: "Inspect scoped list" })) }, { parentAgentId }).items;
+  const create = (count, parentAgentId = null) => Array.from({ length: count }, (_, index) =>
+    runtime.create(batch({ goal: `Inspect scoped list ${index}` }), parentAgentId === null ? {} : { parentAgentId }).items[0]);
   const finish = async (items) => {
     for (const item of items) started.find((handle) => handle.request.agentId === item.id).finish();
     await Promise.all(items.map((item) => runtime.jobDone(item.id)));
@@ -92,16 +108,18 @@ test("scoped list fills each group with recent stops and expands only active per
     await finish(create(2, root.id));
     children.set(root.id, create(4, root.id));
   }
-  const main = runtime.listDetailed({}, { callerId: "Main" });
+  const main = runtime.listDetailed({}, { callerId: MAIN });
   assert.equal(treeNodes(main).length, 17, "Main, four roots, twelve active leaves");
   assert.deepEqual(main.children.map((item) => item.id), [...roots.map((item) => item.id), oldRoots[0].id]);
   assert.equal(treeNodes(main).some((item) => item.id === hiddenChild.id), false, "stopped root is not expanded even with an active child");
-  assert.equal(main.children.flatMap((item) => item.children).every((item) => item.status === "running"), true);
+  const activeChildIds = new Set([...children.values()].flat().map((item) => item.id));
+  assert.equal(main.children.flatMap((item) => item.children).every((item) => activeChildIds.has(item.id)), true,
+    "only active children of a stopped root are expanded");
   const local = runtime.listDetailed({}, { callerId: roots[0].id });
   assert.equal(treeNodes(local).length, 9);
   assert.deepEqual(local.children.find((item) => item.id === roots[0].id).children.map((item) => item.id), children.get(roots[0].id).map((item) => item.id));
   assert.equal(local.children.find((item) => item.id === roots[1].id).children.length > 0, false, "peer children are not expanded");
-  assert.deepEqual(runtime.listDetailed({ id: hiddenChild.id }, { callerId: "Main" }), null);
+  assert.deepEqual(runtime.listDetailed({ id: hiddenChild.id }, { callerId: MAIN }), null);
   const all = treeNodes(runtime.listDetailed({ all: true }, { callerId: roots[0].id }));
   assert.equal(all.length, 38);
   assert.equal(all.some((item) => item.id === hiddenChild.id), true);
@@ -109,51 +127,53 @@ test("scoped list fills each group with recent stops and expands only active per
   assert.deepEqual(treeNodes(runtime.listDetailed({}, { callerId: leaf.id })).map((item) => item.id), [roots[0].id, ...children.get(roots[0].id).map((item) => item.id)]);
   await finish(children.get(roots[0].id).slice(0, 2));
   const filled = runtime.listDetailed({ id: roots[0].id }, { callerId: roots[0].id }).children;
-  assert.deepEqual(filled.map((item) => item.status), ["running", "running", "stopped", "stopped"]);
-  assert.equal(filled[2].id, children.get(roots[0].id)[1].id, "last actual completion wins, not creation order");
+  const own = children.get(roots[0].id);
+  assert.deepEqual(filled.map((item) => item.id), [own[2].id, own[3].id, own[1].id, own[0].id],
+    "active children stay first, then stopped children by most recent completion");
+  assert.equal(filled[2].id, own[1].id, "last actual completion wins, not creation order");
 });
 
 test("reviving a stopped actor requires an available active-child slot", async (t) => {
   const { runtime, started } = harness(t);
-  const stopped = runtime.create({ tasks: [{ task: "Stopped before revival" }] }).items[0];
+  const stopped = runtime.create(batch({ goal: "Stopped before revival" })).items[0];
   started.find((handle) => handle.request.agentId === stopped.id).finish();
   await runtime.jobDone(stopped.id);
 
-  const active = runtime.create({ tasks: Array.from({ length: 4 }, () => ({ task: "Remain active" })) }).items;
+  const active = runtime.create(batch(...Array.from({ length: 7 }, (_, index) => ({ goal: `Remain active ${index}` })))).items;
   await assert.rejects(
-    runtime.sendMessage({ from: "Main", to: stopped.id, content: "Resume now" }),
-    errorCode("child_limit_exceeded"),
+    resume(runtime, stopped, "Resume now"),
+    errorCode("subagent_limit_exceeded"),
   );
-  runtime.stop(active[0].id);
+  await stop(runtime, active[0]);
   // A stopping Actor still holds its slot until its native run exits.
   await assert.rejects(
-    runtime.sendMessage({ from: "Main", to: stopped.id, content: "Resume now" }),
-    errorCode("child_limit_exceeded"),
+    resume(runtime, stopped, "Resume now"),
+    errorCode("subagent_limit_exceeded"),
   );
   started.find((handle) => handle.request.agentId === active[0].id).finish();
   await runtime.jobDone(active[0].id);
-  const receipt = await runtime.sendMessage({ from: "Main", to: stopped.id, content: "Resume now" });
+  const receipt = await resume(runtime, stopped, "Resume now");
   assert.equal(receipt.ok, true);
-  assert.equal(receipt.to, stopped.id);
+  assert.equal(receipt.to, stopped.address);
 });
 
 test("scoped stopped ordering survives registry restoration", async (t) => {
   const { runtime, started, state } = harness(t);
-  const first = runtime.create({ tasks: [task("first"), task("second"), task("third"), task("fourth")] }).items;
+  const first = runtime.create(batch(member("first"), member("second"), member("third"), member("fourth"))).items;
   for (const item of [...first].reverse()) {
     started.find((handle) => handle.request.agentId === item.id).finish();
     await runtime.jobDone(item.id);
   }
-  const fifth = runtime.create({ tasks: [task("fifth")] }).items[0];
+  const fifth = runtime.create(batch({ goal: "fifth" })).items[0];
   started.find((handle) => handle.request.agentId === fifth.id).finish();
   await runtime.jobDone(fifth.id);
   const { runtime: restored } = harness(t);
   restored.restoreState(state());
-  assert.deepEqual(treeNodes(restored.listDetailed({}, { callerId: "Main" })).map((item) => item.id), ["Main", fifth.id, first[0].id, first[1].id, first[2].id]);
-  await runtime.sendMessage({ from: "Main", to: first[3].id, content: "Resume before interruption" });
+  assert.deepEqual(treeNodes(restored.listDetailed({}, { callerId: MAIN })).map((item) => item.id), [MAIN, fifth.id, first[0].id, first[1].id, first[2].id]);
+  await resume(runtime, first[3], "Resume before interruption");
   const { runtime: interrupted } = harness(t);
   interrupted.restoreState(state());
-  assert.deepEqual(treeNodes(interrupted.listDetailed({}, { callerId: "Main" })).map((item) => item.id), ["Main", first[3].id, fifth.id, first[0].id, first[1].id]);
+  assert.deepEqual(treeNodes(interrupted.listDetailed({}, { callerId: MAIN })).map((item) => item.id), [MAIN, first[3].id, fifth.id, first[0].id, first[1].id]);
 });
 
 test("session namespaces remain stable on reload and distinct between sessions", () => {
@@ -168,37 +188,40 @@ test("fresh agent does not reuse actor IDs taken by earlier branches", () => {
   const rootSessionAllocated = new Set();
   // Branch A: create an actor that is immediately stopped or never checkpointed
   const runtimeA = createSubagentRuntime({
+    session: SESSION,
     isIdTaken: (id) => rootSessionAllocated.has(id),
     onIdAllocated: (id) => rootSessionAllocated.add(id),
     startJob: () => ({ request: {}, done: Promise.resolve({ result: "ok", messages: [] }), cancel() {} }),
   });
-  const resA = runtimeA.create({ tasks: [{ name: "T1", task: "Do task A" }] });
-  assert.equal(resA.items[0].id, "sub_01");
-  assert.ok(rootSessionAllocated.has("sub_01"));
+  const resA = runtimeA.create(batch(member("T1", "Do task A")));
+  assert.equal(resA.items[0].id, "sub_1");
+  assert.ok(rootSessionAllocated.has("sub_1"));
 
   // Branch switch: runtimeB starts with empty registry on the new branch, sharing root session allocated IDs
   const runtimeB = createSubagentRuntime({
+    session: SESSION,
     isIdTaken: (id) => rootSessionAllocated.has(id),
     onIdAllocated: (id) => rootSessionAllocated.add(id),
     startJob: () => ({ request: {}, done: Promise.resolve({ result: "ok", messages: [] }), cancel() {} }),
   });
-  const resB = runtimeB.create({ tasks: [{ name: "T2", task: "Do task B" }] });
-  assert.equal(resB.items[0].id, "sub_02", "Must allocate sub_02 without reusing sub_01 from unpersisted actor in branch A");
+  const resB = runtimeB.create(batch(member("T2", "Do task B")));
+  assert.equal(resB.items[0].id, "sub_2", "Must allocate sub_2 without reusing sub_1 from unpersisted actor in branch A");
 });
 test("finalization rejects reentrant stop and runs once per Job across revival", { timeout: 3000 }, async () => {
   const finalized = [];
   const runtime = createSubagentRuntime({
+    session: SESSION,
     startJob: () => ({ done: Promise.resolve({ result: "done", messages: [] }) }),
     finalizeJob({ job, outcome }) {
-      const stop = runtime.cancelJob(job.jobId);
-      assert.equal(stop.ok, false);
-      assert.equal(stop.reason, "finalizing");
+      const stopResult = runtime.cancelJob(job.jobId);
+      assert.equal(stopResult.ok, false);
+      assert.equal(stopResult.reason, "finalizing");
       finalized.push({ jobId: job.jobId, status: outcome.status, round: outcome.round });
     },
   });
-  const actor = runtime.create({ tasks: [task("reentrant")] }).items[0];
+  const actor = runtime.create(batch(member("reentrant"))).items[0];
   await runtime.jobDone(actor.id);
-  const next = await runtime.sendMessage({ from: "Main", to: actor.id, content: "continue" });
+  const next = await resume(runtime, actor, "continue");
   await runtime.jobDone(next.jobId);
   assert.deepEqual(finalized, [
     { jobId: actor.id, status: "completed", round: 1 },
@@ -221,6 +244,7 @@ test("lifecycle: finalizing state blocks new writes with agent_busy and settles 
   let finalizedOutcome = null;
 
   const runtime = createSubagentRuntime({
+    session: SESSION,
     startJob: () => ({
       request: {},
       done: jobHandlePromise,
@@ -234,11 +258,11 @@ test("lifecycle: finalizing state blocks new writes with agent_busy and settles 
     deliverMessage: async () => ({ accepted: true }),
   });
 
-  const created = runtime.create({ tasks: [{ name: "T1", task: "Do work" }] });
-  const actorId = created.items[0].id;
+  const created = runtime.create(batch(member("T1", "Do work")));
+  const actor = created.items[0];
   t.after(async () => {
     finalizeResolve();
-    await runtime.jobDone(actorId);
+    await runtime.jobDone(actor.id);
   });
 
   // 1. Native execution resolves
@@ -246,20 +270,20 @@ test("lifecycle: finalizing state blocks new writes with agent_busy and settles 
   await entered.promise;
 
   // 2. Status should be finalizing, actor is live/busy
-  const jobState = runtime.jobs({ jobIds: [actorId] }).jobs[0];
+  const jobState = runtime.jobs({ jobIds: [actor.id] }).jobs[0];
   assert.equal(jobState.status, "finalizing");
 
-  // A socket/sendMessage write during finalizing must be rejected with agent_busy
+  // A managed write during finalizing must be rejected with agent_busy
   await assert.rejects(
-    runtime.sendMessage({ from: "Main", to: actorId, content: "ping during finalizing" }),
+    resume(runtime, actor, "ping during finalizing"),
     (err) => err.code === "agent_busy",
   );
 
   // 3. Resolve finalization (I/O done)
   finalizeResolve();
-  await runtime.jobDone(actorId);
+  await runtime.jobDone(actor.id);
 
-  const finalJobState = runtime.jobs({ jobIds: [actorId] }).jobs[0];
+  const finalJobState = runtime.jobs({ jobIds: [actor.id] }).jobs[0];
   assert.equal(finalJobState.status, "completed");
   assert.equal(finalJobState.historyState, "ready");
   assert.equal(finalizedOutcome.status, "completed");
@@ -272,8 +296,9 @@ test("cancellation before adapter invocation still finalizes once without native
   const finalized = [];
   const started = [];
   const runtime = createSubagentRuntime({
+    session: SESSION,
     startJob(request) {
-      started.push(request.spec.name);
+      started.push(request.agentId);
       const sibling = runtime.jobs().jobs.find((job) => job.name === "notStarted");
       assert.equal(sibling.status, "running", "registration must not expose a separate waiting state");
       runtime.cancelJob(sibling.jobId);
@@ -284,13 +309,13 @@ test("cancellation before adapter invocation still finalizes once without native
       await history.promise;
     },
   });
-  const actors = runtime.create({ tasks: [task("first"), task("notStarted")] }).items;
+  const actors = runtime.create(batch(member("first"), member("notStarted"))).items;
   t.after(async () => {
     native.resolve({ result: "done" });
     history.resolve();
     await Promise.all(actors.map((actor) => runtime.jobDone(actor.id)));
   });
-  assert.deepEqual(started, ["first"]);
+  assert.equal(started.length, 1);
   assert.equal(runtime.jobs().jobs[1].status, "finalizing");
   assert.deepEqual(finalized, [{ name: "notStarted", status: "cancelled" }]);
   history.resolve();

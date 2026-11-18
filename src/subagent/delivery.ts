@@ -1,28 +1,23 @@
 /**
- * One independent custom message per event. Pi owns queueing and execution.
+ * One independent custom message per peer event. Pi owns queueing and execution.
  *
  * The envelope is built here once and consumed by both delivery paths:
  *
  * - `NativeDeliveryRouter` sends it to Main or hands it to the runner;
  * - the native Job runner builds the very same envelope for a peer hand-over and
- *   for startup input, so a peer event, a terminal notice and a run's buffered
- *   input all enter native history with one shape.
+ *   for startup input, so a peer event and a run's buffered input enter native
+ *   history with one shape.
  *
- * `deliveryEntryFor` is the shared RuntimeDelivery-to-entry mapping; the runner
- * uses it for startup input instead of formatting a second, text-only shape.
- * The delivery router can switch its own local mapping to it as well.
+ * Host notifications never synthesize a collaborator result: a Job's terminal
+ * state is an internal wake, not a model-visible message. `deliveryEntryFor` is
+ * therefore the one RuntimeDelivery-to-entry mapping and only peer messages
+ * reach it.
  */
 
 import { formatPeerMessage } from './prompt.ts';
-import type { TerminalNotification } from "./lifecycle.ts";
 import type { RuntimeDelivery } from "./runtime.ts";
 
 export const DELIVERY_CUSTOM_TYPE = "agent-delivery";
-
-export interface DeliveryTerminal {
-  status: string;
-  details?: unknown;
-}
 
 export interface DeliveryEntry {
   sourceId: string;
@@ -30,17 +25,13 @@ export interface DeliveryEntry {
   content: string;
   /** Sender Job id, when the runtime supplies one. */
   jobId?: string;
-  terminal?: DeliveryTerminal;
 }
 
 export interface DeliveryDetails {
   sourceId: string;
   round: string | number;
-  source: "agent" | "host";
-  /** Present for terminal notices only; a peer message has no execution state. */
-  status?: string;
+  source: "agent";
   jobId?: string;
-  terminal?: DeliveryTerminal;
 }
 
 export interface DeliveryCustomMessage {
@@ -68,31 +59,20 @@ export interface PeerDeliveryInput {
   external?: { readonly sessionId: string; readonly sender: string; readonly replyTo: string } | undefined;
 }
 
-function formatDetails(details: unknown): string {
-  if (typeof details === "string") return details;
-  try {
-    return JSON.stringify(details) ?? String(details);
-  } catch {
-    return String(details);
-  }
-}
-
 /**
- * Build the one native custom message for an event. The terminal marker is part
- * of the content exactly once; no caller re-formats or merges it.
+ * Build the one native custom message for a peer event. The sender label is
+ * part of `content` exactly once; no caller re-formats or merges it.
  */
 export function deliveryMessage(entry: DeliveryEntry): DeliveryCustomMessage {
-  let content = entry.content;
-  if (entry.terminal !== undefined) {
-    const details = entry.terminal.details === undefined ? "" : `: ${formatDetails(entry.terminal.details)}`;
-    const marker = `[Subagent ${entry.sourceId} ${entry.terminal.status} (round ${String(entry.round)})]${details}`;
-    content = content === "" ? marker : `${content}\n\n${marker}`;
-  }
   return {
-    role: "custom", customType: DELIVERY_CUSTOM_TYPE, content, display: true,
-    details: { sourceId: entry.sourceId, round: entry.round,
-      source: entry.terminal === undefined ? "agent" : "host",
-      ...(entry.terminal === undefined ? {} : { status: entry.terminal.status, terminal: entry.terminal }),
+    role: "custom",
+    customType: DELIVERY_CUSTOM_TYPE,
+    content: entry.content,
+    display: true,
+    details: {
+      sourceId: entry.sourceId,
+      round: entry.round,
+      source: "agent",
       ...(entry.jobId === undefined ? {} : { jobId: entry.jobId }),
     },
     timestamp: Date.now(),
@@ -113,29 +93,15 @@ export function peerDeliveryEntry(input: PeerDeliveryInput): DeliveryEntry {
   };
 }
 
-function noticeDetails(notice: TerminalNotification): Record<string, unknown> {
-  return { type: notice.type, from: notice.from, subagentId: notice.subagentId,
-    jobId: notice.jobId, round: notice.round, status: notice.status,
-    error: notice.error, history: notice.history };
-}
-
-/**
- * Map one runtime event to its delivery entry. A peer message keeps its sender,
- * round and Job id; a terminal notice keeps its status and details so the native
- * content carries the one marker the terminal path always used.
- */
+/** Map one peer message to its delivery entry. */
 export function deliveryEntryFor(message: RuntimeDelivery): DeliveryEntry {
-  if (message.type === "message") {
-    return peerDeliveryEntry({
-      from: message.from,
-      content: message.content,
-      ...(message.round === undefined ? {} : { round: message.round }),
-      ...(message.jobId === undefined ? {} : { jobId: message.jobId }),
-      ...(message.external === undefined ? {} : { external: message.external }),
-    });
-  }
-  return { sourceId: message.subagentId, round: message.round, jobId: message.jobId, content: message.content,
-    terminal: { status: message.status, details: noticeDetails(message) } };
+  return peerDeliveryEntry({
+    from: message.from,
+    content: message.content,
+    ...(message.round === undefined ? {} : { round: message.round }),
+    ...(message.jobId === undefined ? {} : { jobId: message.jobId }),
+    ...(message.external === undefined ? {} : { external: message.external }),
+  });
 }
 
 export function sendDelivery(

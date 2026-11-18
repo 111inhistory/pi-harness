@@ -26,12 +26,15 @@ import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-a
 import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent";
 
 import { capabilityAllowsTool, capabilityAvailableTools } from "../capability/scope.ts";
-import { getAgentSocketPath } from "../ipc/socket.ts";
 import { installModelCallBudget } from "./pi-job-budget.ts";
 import { excludedPresetTools } from '../preset/modifiers.ts';
 import { SHELL_APPROVAL_WAIT } from '../shell-approval/bridge.ts';
 import { resolveSessionCacheKey } from "../session-cache-runtime.ts";
-import { childContext, childPromptBlocks, composeAssignment, continuationControlPrompt } from './prompt.ts';
+import { formatAddress, parseAddress, MAIN_ACTOR } from './address.ts';
+import {
+  batchContextText, childContext, childPromptBlocks, composeAssignment, continuationControlPrompt,
+  interruptionNotice, msgWriteReminder,
+} from './prompt.ts';
 import { readTranscript } from "./view.ts";
 import { deliveryEntryFor, deliveryMessage, peerDeliveryEntry } from "./delivery.ts";
 import { takeQueuedMessages } from "./lifecycle.ts";
@@ -39,11 +42,9 @@ import { harnessToolsForDepth, inheritedToolNames } from "./tool-policy.ts";
 import { SubagentError } from "./runtime.ts";
 import type {
   BudgetTerminal,
-  FreshJobSpec,
   InheritedContext,
   JobBudgetPort,
   JobRequest,
-  JobSpec,
   RuntimeDelivery,
 } from "./runtime.ts";
 import type {
@@ -54,6 +55,8 @@ import type {
   NativeExecution,
   NativeHandoffResult,
   NativeJobOutcome,
+  NativeInterruptNotice,
+  NativeInterruptResult,
   NativeJobRunnerDeps,
   NativeLiveSnapshot,
   NativeModelRef,
@@ -66,7 +69,57 @@ import type {
   NativeStartedJob,
 } from "./native-types.ts";
 
-const MAIN_AGENT_ID = "Main";
+/** Maximum tool-call-bearing turns the finish guard inspects. */
+const MSG_WRITE_ROUND_WINDOW = 5;
+
+/** The custom type of the one self reminder the finish guard may append. */
+const MSG_WRITE_REMINDER_CUSTOM_TYPE = "subagent-reminder";
+
+/**
+ * Message-write presence of one live native run.
+ *
+ * The finish guard only needs to know whether this Job attempted `msg_write`
+ * in a recent tool-call-bearing turn; targets, arguments and outcomes are never
+ * retained, and the tracker is dropped together with its LiveJob.
+ */
+class RunWritePresence {
+  readonly #roundTools = new Set<string>();
+  /** Last tool-call-bearing turns: true when msg_write was attempted. */
+  readonly #rounds: boolean[] = [];
+
+  observe(event: NativeSessionEvent): void {
+    const record = event as { type?: string; toolName?: unknown };
+    switch (record.type) {
+      case "agent_start":
+      case "turn_start":
+        this.#roundTools.clear();
+        return;
+      case "tool_execution_start":
+        if (typeof record.toolName === "string") this.#roundTools.add(record.toolName);
+        return;
+      case "turn_end":
+        // One round is one assistant turn that bore at least one tool call. Only
+        // the presence of msg_write is kept; targets, arguments and outcomes are
+        // not retained.
+        if (this.#roundTools.size > 0) {
+          this.#rounds.push(this.#roundTools.has("msg_write"));
+          while (this.#rounds.length > MSG_WRITE_ROUND_WINDOW) this.#rounds.shift();
+        }
+        this.#roundTools.clear();
+        return;
+      case "agent_end":
+        this.#roundTools.clear();
+        return;
+      default:
+        return;
+    }
+  }
+
+  /** Whether msg_write was attempted in any inspected tool-call-bearing turn. */
+  hasRecentWrite(): boolean {
+    return this.#rounds.some(Boolean);
+  }
+}
 
 /**
  * One live native run. Everything here is physical and per-Job: the session,
@@ -90,6 +143,14 @@ class LiveJob {
   readonly listeners = new Set<(event: NativeSessionEvent) => void>();
   /** Latest cumulative assistant partial being streamed, for a live snapshot. */
   latestPartial: unknown | null = null;
+  /** Message-write presence of this run for the finish guard. */
+  readonly writes = new RunWritePresence();
+  /** Active SDK tool calls with their start clock; read-only status input. */
+  readonly toolStarts = new Map<string, number>();
+  /** Interrupts admitted during this Job; a turn whose mark moved was cut. */
+  interruptCount = 0;
+  /** The one finish-time msg_write reminder has been offered. */
+  reminded = false;
   /** Reads the run's current end boundary once its session exists. */
   endEntryId: (() => string | null) | null = null;
   /** Reads the run's current boundary and produced content once its session exists. */
@@ -202,8 +263,67 @@ export class NativeJobRunner {
   }
 
   /**
+   * The live execution status of one Job as a single string, or null when no
+   * phase is observable.
+   *
+   * A streaming run with active tool calls reports `running(tool-<n>s)` from
+   * the earliest still-active tool start; a streaming run without one reports
+   * `running(thinking)`. Null covers an unknown or closed Job and a session that
+   * is no longer streaming, so the caller keeps its own lifecycle status (bare
+   * `running`). Reads retain nothing and start no timer.
+   */
+  executionStatus(jobId: string): string | null {
+    const live = this.#jobs.get(jobId);
+    if (live === undefined || live.closed || live.session?.isStreaming !== true) return null;
+    if (live.toolStarts.size === 0) return "running(thinking)";
+    let earliest = Number.POSITIVE_INFINITY;
+    for (const startedAt of live.toolStarts.values()) earliest = Math.min(earliest, startedAt);
+    const seconds = Math.max(0, Math.floor((performance.now() - earliest) / 1000));
+    return `running(tool-${seconds}s)`;
+  }
+
+  /**
+   * Interrupt one live Job's current native work.
+   *
+   * The SDK exposes one run-level abort and no per-tool handle, so this cancels
+   * the executing tool together with the in-flight model turn. The admitted
+   * sender-bound notice then becomes one more turn of the SAME Job, Actor and
+   * Budget through the ordinary pending-input path; nothing is retried,
+   * rolled back or split into another Job, and a Job stop is never implied.
+   */
+  async interrupt(jobId: string, notice: NativeInterruptNotice): Promise<NativeInterruptResult> {
+    const live = this.#jobs.get(jobId);
+    if (live === undefined || live.closed || live.cancelled) {
+      return { accepted: false, reason: "job_closed" };
+    }
+    // Admit the notice before the abort: the aborted turn must not be able to
+    // outrun the entry that explains why it was cut. The increment marks this
+    // turn as deliberately interrupted so its aborted message is not read as
+    // the Job's own answer.
+    live.interruptCount += 1;
+    const entry = peerDeliveryEntry({ ...notice, content: notice.content ?? interruptionNotice(notice.from) });
+    live.pending.push({ kind: "custom", from: entry.sourceId, message: deliveryMessage(entry) });
+    live.wake?.();
+    const execution = live.execution;
+    if (execution !== null && live.session?.isStreaming === true) {
+      // Request the run-level abort without awaiting SDK idle. The SDK applies
+      // the abort synchronously before its first await, but its idle wait can
+      // include a successor run: this drain loop may immediately start the next
+      // turn (this admitted notice, or parked work) once the cut run settles.
+      // Awaiting idle here would therefore wait for that successor, not just
+      // the interrupted run, and a held successor would hang the signal call.
+      void execution.abort().catch(() => {
+        // The notice stays admitted; the drain loop still delivers it when the
+        // current turn ends. Interruption is not a Job outcome.
+      });
+    }
+    if (live.cancelled) return { accepted: false, reason: "job_closed" };
+    return { accepted: true };
+  }
+
+  /**
    * Hand one peer message to a live run. The message becomes the same
-   * agent-delivery custom entry the terminal path uses, keeping its sender
+   * agent-delivery custom entry the delivery router uses, keeping its sender
    * round and Job id. While the session streams the SDK takes it as a native
    * custom steer; otherwise it is buffered as its own event and delivered by
    * this Job's end-of-turn loop, never concatenated with another message.
@@ -296,7 +416,7 @@ export class NativeJobRunner {
 
   #run(request: JobRequest, live: LiveJob): Promise<NativeJobOutcome> {
     const deps = this.#deps;
-    const isContinuation = request.continuedFromJobId !== null;
+    const isContinuation = request.spec.kind === "continuation";
     const depth = request.depth ?? 0;
     // One resolved snapshot decides this Job's depth boundary and guidance.
     const { maxDepth, prompts } = deps.config.harness.subagent;
@@ -328,28 +448,29 @@ export class NativeJobRunner {
       }
 
       // A continuation whose actor never started rebuilds its first native
-      // session from the original seed; a retained actor ignores the seed.
-      const spec = request.spec;
-      const seed: JobSpec | null = isContinuation ? continuationSeed(spec) : spec;
+      // session from the original inherited snapshot; a retained actor ignores
+      // the seed. The Actor's goal, batch context and launch roster arrive on
+      // every JobRequest, so a revived execution never has to restate identity.
       const retained = isContinuation ? deps.actors.get(request.agentId) : null;
-      if (isContinuation && retained === null && seed === null) {
-        throw new SubagentError(
-          "continuation_unavailable",
-          `No retained session and no original seed for ${request.agentId}; this agent cannot be revived.`,
-        );
-      }
-      const configSpec: JobSpec | null = retained === null ? seed : null;
-      const fresh: FreshJobSpec | null = configSpec !== null && configSpec.kind !== "continuation" ? configSpec : null;
-      const snapshot: InheritedContext | null = fresh?.inheritedContext ?? null;
-      const inherited = fresh !== null && fresh.inheritContext === true;
+      const snapshot: InheritedContext | null = retained === null ? request.spec.inheritedContext : null;
+      // An Inherited actor keeps its captured parent identity; a Fresh actor
+      // routes. A retained descriptor is authoritative for an already-settled
+      // actor, including an Inherited one revived from disk.
+      const inherited = retained === null && snapshot !== null;
       const cwd = retained?.cwd ?? stringField(snapshot, "cwd") ?? origin.cwd ?? process.cwd();
       const trusted = retained === null ? origin.trusted : retained.trusted;
       deps.sessions.assertModelRuntime();
       throwIfBudgetFailed(request.budget);
 
+      // The launch roster is rendered once for this Job; only the Actor's
+      // persistent goal and the batch's shared context feed the assignment.
+      const assignment = composeAssignment(request.goal, batchContextText({
+        context: request.context ?? "",
+        roster: request.roster,
+      }));
       // What this Job must restate: a first Job carries its own assignment, a
       // continuation carries whatever its conversation never recorded.
-      let pendingAssignment = retained !== null ? retained.assignment : assignmentText(configSpec);
+      let pendingAssignment = retained !== null ? retained.assignment : assignment;
 
       // Identity the Job runs with. An Inherited Job keeps the captured parent
       // identity; a settled actor keeps the role/model/loadout already recorded;
@@ -391,17 +512,9 @@ export class NativeJobRunner {
         plannedTools = inheritedToolNames(deps.tools.catalog(), snapshot?.["tools"], depth, maxDepth);
         identitySettled = true;
       } else if (!identitySettled) {
-        const routingSpec = retained !== null ? seed : configSpec;
-        if (routingSpec !== null && routingSpec.kind !== "continuation" && routingSpec.inheritContext === true) {
-          throw new SubagentError(
-            "routing_unavailable",
-            `An Inherited actor ${request.agentId} has no captured identity to continue from.`,
-            { agentId: request.agentId },
-          );
-        }
         const routed = await deps.routing.route({
-          task: specTextField(routingSpec, "task"),
-          context: specTextField(routingSpec, "context"),
+          task: request.goal,
+          context: request.context ?? "",
           cwd, trusted,
           signal: live.abort.signal,
           budget: request.budget,
@@ -424,9 +537,11 @@ export class NativeJobRunner {
       boundaryEstablished = true;
       request.recordStart(boundary);
       const sessionFile = deps.actors.durable ? manager.getSessionFile() ?? null : null;
-      const allowInherited = retained === null ? fresh?.inheritContext !== true : retained.allowInherited;
+      // A Fresh actor may create Inherited children; an Inherited actor may not
+      // nest another inherited capture.
+      const allowInherited = retained === null ? !inherited : retained.allowInherited;
       const fixedExcludedTools = depth >= maxDepth
-        ? ["capability", "subagent_create", "subagent_stop"]
+        ? ["capability", "subagent_create", "subagent_signal"]
         : [];
       const executionExcludedTools = excludedTools ?? [];
 
@@ -484,8 +599,7 @@ export class NativeJobRunner {
           common: prompts.common,
           inherited: roleId === null,
           inheritedPrompt: prompts.inherited,
-          context: childContext(request.agentId, origin.agentId ?? MAIN_AGENT_ID,
-            getAgentSocketPath(origin.agentId ?? MAIN_AGENT_ID, deps.config.socketDir)),
+          context: childContext(request.address, request.parentAddress ?? formatAddress(sessionOfAddress(request.address), MAIN_ACTOR)),
         }),
         model,
         thinkingLevel,
@@ -495,7 +609,7 @@ export class NativeJobRunner {
         surface: {
           senderId: request.agentId,
           parentAgentId: request.agentId,
-          capabilityParentId: origin.agentId,
+          capabilityParentId: request.parentAgentId,
           depth,
           maxDepth,
           cwd,
@@ -578,6 +692,21 @@ export class NativeJobRunner {
         // finalized boundaries without copying history or appending per-turn
         // root state.
         unsubscribe = native.session.subscribe((event) => {
+          // Track msg_write presence before observers run; the guard must see
+          // the same turn this event belongs to.
+          live.writes.observe(event);
+          // Execution status reads the earliest active tool start. Identity is
+          // the SDK toolCallId, so parallel calls keep independent start clocks
+          // and one call ending never hides another.
+          if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
+            const { toolCallId } = event as { toolCallId?: unknown };
+            if (typeof toolCallId === "string") {
+              if (event.type === "tool_execution_start") live.toolStarts.set(toolCallId, performance.now());
+              else live.toolStarts.delete(toolCallId);
+            }
+          } else if (event.type === "agent_end") {
+            live.toolStarts.clear();
+          }
           // Full-stream observers see the raw native event; an observer failure
           // must never affect the Job's own turn accounting.
           for (const listener of live.listeners) {
@@ -629,13 +758,14 @@ export class NativeJobRunner {
           // authentication and execution now belong to the background run.
           live.sessionReady();
           try {
-            await native.prompt(prompt, { expandPromptTemplates: false });
+            await runClassifiedTurn(live, manager, async () => {
+              await native.prompt(prompt, { expandPromptTemplates: false });
+            });
           } finally {
             markAssignmentDelivered();
           }
           throwIfBudgetFailed(request.budget);
           if (!live.cancelled) {
-            assertRunCompleted(jobMessages());
             await drainLiveMessages(live, manager, request, deps.work);
             throwIfBudgetFailed(request.budget);
           }
@@ -669,6 +799,7 @@ export class NativeJobRunner {
       live.endEntryId = null;
       live.snapshot = null;
       live.latestPartial = null;
+      live.toolStarts.clear();
       this.#jobs.delete(request.jobId);
       // A revival reuses the loadout the run actually ended with — capability
       // activation can open tools mid-run — never the pre-run allowlist. The
@@ -719,6 +850,14 @@ async function drainLiveMessages(
         await waitForWork(live, request, work);
         continue;
       }
+      // Normal finish: one opportunity to send the explicit msg_write the
+      // recent tool rounds never produced. The decision is recorded before the
+      // turn is awaited, so no later loop can offer a second reminder.
+      if (!live.reminded && !live.writes.hasRecentWrite()) {
+        live.reminded = true;
+        await remindMissingMsgWrite(live, request, sessionManager);
+        continue;
+      }
       live.closed = true;
       return;
     }
@@ -734,9 +873,9 @@ async function drainLiveMessages(
       // own native entry and let ONE control prompt consume them all: no
       // per-message model loop, no concatenated body.
       for (const entry of buffered) await appendCustomMessage(session, entry.message);
-      const boundary = sessionManager.getLeafId();
-      await requireExecution(live).prompt(continuationControlPrompt(null), { expandPromptTemplates: false });
-      assertRunCompleted(messagesAfter(sessionManager, boundary));
+      await runClassifiedTurn(live, sessionManager, async () => {
+        await requireExecution(live).prompt(continuationControlPrompt(null), { expandPromptTemplates: false });
+      });
     }
   }
 }
@@ -765,7 +904,6 @@ async function replayParkedCustom(
 ): Promise<void> {
   const session = live.session;
   if (session === null) return;
-  const boundary = sessionManager.getLeafId();
   // The supported AgentSession path preserves customType/display/details and
   // runs the same ModelCall Budget hooks as any other turn.
   const operation = (async (): Promise<void> => {
@@ -778,22 +916,67 @@ async function replayParkedCustom(
   })();
   live.steers.add(operation);
   try {
-    await operation;
+    await runClassifiedTurn(live, sessionManager, async () => { await operation; });
   } finally {
     live.steers.delete(operation);
   }
-  assertRunCompleted(messagesAfter(sessionManager, boundary));
 }
 
 async function replayParkedUser(live: LiveJob, sessionManager: SessionManager, message: unknown): Promise<void> {
   const content = readParkedUser(message);
   if (content.text.trim() === "" && content.images.length === 0) return;
-  const boundary = sessionManager.getLeafId();
-  await requireExecution(live).prompt(content.text, {
-    expandPromptTemplates: false,
-    ...(content.images.length > 0 ? { images: content.images } : {}),
+  await runClassifiedTurn(live, sessionManager, async () => {
+    await requireExecution(live).prompt(content.text, {
+      expandPromptTemplates: false,
+      ...(content.images.length > 0 ? { images: content.images } : {}),
+    });
   });
+}
+
+/**
+ * Classify one prompt turn after it settles. An aborted assistant message is a
+ * real failure only when the turn was not deliberately cut: an admitted
+ * interrupt increments the Job's mark, and the aborted message is then the
+ * expected shape of the cut, never the Job's own answer.
+ */
+async function runClassifiedTurn(
+  live: LiveJob,
+  sessionManager: SessionManager,
+  operation: () => Promise<void>,
+): Promise<void> {
+  const boundary = sessionManager.getLeafId();
+  const interrupts = live.interruptCount;
+  await operation();
+  if (live.cancelled) return;
+  if (live.interruptCount !== interrupts) return;
   assertRunCompleted(messagesAfter(sessionManager, boundary));
+}
+
+/**
+ * Offer the one finish-time self reminder when the recent tool-call-bearing
+ * turns never attempted msg_write.
+ *
+ * The reminder is one self entry in the same native session and Budget. It
+ * never forces a send, never starts a second Job and is used at most once;
+ * the drain loop records that decision before awaiting this turn.
+ */
+async function remindMissingMsgWrite(
+  live: LiveJob,
+  request: JobRequest,
+  sessionManager: SessionManager,
+): Promise<void> {
+  const session = live.session;
+  if (session === null || live.cancelled) return;
+  throwIfBudgetFailed(request.budget);
+  await runClassifiedTurn(live, sessionManager, async () => {
+    await session.sendCustomMessage({
+      customType: MSG_WRITE_REMINDER_CUSTOM_TYPE,
+      content: msgWriteReminder,
+      display: false,
+      details: null,
+    }, { triggerTurn: true });
+  });
+  if (!live.cancelled) throwIfBudgetFailed(request.budget);
 }
 
 function requireExecution(live: LiveJob): NativeExecution {
@@ -915,7 +1098,7 @@ function textOf(content: unknown): string {
 /**
  * Startup input is not prose to merge: it is the very envelope the delivery
  * path would have sent, kept as one independent entry per event. The shared
- * entry mapping preserves sender, round, Job id and terminal metadata.
+ * entry mapping preserves sender, round and Job id.
  */
 function pendingInputOf(delivery: RuntimeDelivery): NativePendingCustom {
   const entry = deliveryEntryFor(delivery);
@@ -997,21 +1180,6 @@ function activeToolNames(session: NativeSession): string[] | null {
   }
 }
 
-/** The assignment text of a first Job: its batch context plus the task itself. */
-function assignmentText(spec: JobSpec | null): string {
-  return composeAssignment(specTextField(spec, "task"), specTextField(spec, "context"));
-}
-
-function specTextField(spec: JobSpec | null, field: "task" | "context"): string {
-  if (spec === null || spec.kind === "continuation") return "";
-  const value = field === "task" ? spec.task : spec.context;
-  return typeof value === "string" ? value : "";
-}
-
-function continuationSeed(spec: JobSpec): JobSpec | null {
-  return spec.kind === "continuation" ? spec.seed : null;
-}
-
 function modelRefOf(model: Model<Api> | null): NativeModelRef | null {
   if (model === null) return null;
   if (typeof model.provider !== "string" || typeof model.id !== "string") return null;
@@ -1030,13 +1198,21 @@ function throwIfBudgetFailed(budget: JobBudgetPort): void {
   if (terminal?.status === "failed") throw budgetFailure(terminal);
 }
 
-function readOrigin(origin: unknown): { cwd: string | null; trusted: boolean; agentId: string | null } {
-  if (!isRecord(origin)) return { cwd: null, trusted: false, agentId: null };
+function readOrigin(origin: unknown): { cwd: string | null; trusted: boolean } {
+  if (!isRecord(origin)) return { cwd: null, trusted: false };
   return {
     cwd: typeof origin["cwd"] === "string" ? origin["cwd"] : null,
     trusted: origin["trusted"] === true,
-    agentId: typeof origin["agentId"] === "string" ? origin["agentId"] : null,
   };
+}
+
+/** The sessionHex of one full job address; an invalid address is a bug. */
+function sessionOfAddress(address: string): string {
+  const parsed = parseAddress(address);
+  if (parsed === null) {
+    throw new SubagentError("invalid_state", `Job address "${address}" is not a logical address.`);
+  }
+  return parsed.session;
 }
 
 function stringField(value: InheritedContext | null, field: string): string | null {

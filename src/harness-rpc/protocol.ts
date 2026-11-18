@@ -77,7 +77,7 @@ export const RPC_METHODS = {
   jobsGet: 'jobs.get',
   jobsResult: 'jobs.result',
   subagentCreate: 'subagent.create',
-  subagentStop: 'subagent.stop',
+  subagentSignal: 'subagent.signal',
   messageSend: 'message.send',
   historyRead: 'history.read',
   streamSubscribe: 'stream.subscribe',

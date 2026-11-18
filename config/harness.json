@@ -1,8 +1,9 @@
 {
   "subagent": {
     "maxDepth": 2,
-    "maxActiveChildren": 4,
-    "maxActiveInheritedChildren": 3,
+    "maxActiveBatches": 4,
+    "maxActiveSubagents": 7,
+    "maxActiveInheritedSubagents": 3,
     "budgetsByDepth": {
       "1": {
         "modelCalls": { "soft": 160, "hard": 200 },

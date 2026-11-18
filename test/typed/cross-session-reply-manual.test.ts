@@ -43,10 +43,11 @@ after(async () => {
 
 // The socket root is resolved when the IPC platform module first loads, so the
 // harness import must follow the test override.
-const [{ default: harnessExtension }, { liveSessions, registerSession, sendToSessionEndpoint, unregisterSession }] =
+const [{ default: harnessExtension }, { liveSessions, registerSession, sendToSessionEndpoint, unregisterSession }, address] =
   await Promise.all([
     import("../../test-support/harness-extension.ts"),
     import("../../src/subagent/session-directory.ts"),
+    import("../../src/subagent/address.ts"),
   ]);
 
 function deferred() {
@@ -123,6 +124,7 @@ async function deliver(session: AgentSession, content: string, turn: Promise<voi
     await sendToSessionEndpoint({
       sender: { sessionId: peer.sessionId, uid: peer.uid },
       target: receiver,
+      to: address.formatAddress(receiver.uid, address.MAIN_ACTOR),
       content,
     });
     await turn;

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { formatMainEndpointPath } from '../../../src/subagent/address.ts';
 import { lastToolResult, waitForCondition, type ScenarioFixture } from './subagent-sdk-fixture.ts';
 
 const posixQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
@@ -73,15 +74,23 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
   }, 'command publishing its terminal environment');
   const environment = JSON.parse(await fsp.readFile(started, 'utf8')) as { agentId: string; socket: string; tty: boolean };
   assert.equal(environment.agentId, actor.id);
-  assert.equal(environment.socket, actor.socket);
+  assert.equal(environment.socket, formatMainEndpointPath(fixture.sessionSocketDir),
+    'the shell callback reaches the one root endpoint');
   assert.equal(environment.tty, true);
-  assert.equal((await fixture.item(actor.id))?.status, 'running');
+  assert.equal(fixture.sessionManager.getBranch().some(entry => entry.type === 'custom'
+    && entry.customType === 'subagent-job-end' && (entry.data as { jobId?: string }).jobId === actor.id), false,
+    'the owning Job must not end while its shell runs');
   assert.equal(fixture.notificationChats.length, 0, 'yielding while a shell is running must not publish Subagent completion');
   await fsp.writeFile(release, 'release');
-  const final = await fixture.stopped(actor.id);
+  const final = await fixture.settled(actor.id);
   assert.equal(final.id, actor.id);
   assert.ok(childTurns >= 3, 'completion resumes the same child after its waiting answer');
-  const shellCallbackRequests = fixture.chats.filter(request => request.options.sessionId !== fixture.sessionManager.getSessionId() && request.text.includes(marker));
+  // The marker stays in history, so a later finish-time msg_write reminder also
+  // contains it. Count only the actual callback turn, not that reminder turn.
+  const shellCallbackRequests = fixture.chats.filter(request =>
+    request.options.sessionId !== fixture.sessionManager.getSessionId()
+    && request.text.includes(marker)
+    && !request.text.includes('finishing this Job without having sent a msg_write'));
   assert.equal(shellCallbackRequests.length, 1, 'the callback is delivered once to its owning child');
 
   // Main receives its own completion, using the same environment-based route.
@@ -100,23 +109,11 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
   await fsp.rm(release);
   const second = await fixture.create('ASYNC_SHELL_CHILD cancellation while awaiting a command');
   await shellResult.promise;
-  // Observe the owning child's terminal delivery before checking its stopped
-  // state. Stop acknowledges cancellation; native terminal cleanup can outlive
-  // the fixture's generic three-second polling window (notably with psmux).
-  const cancelled = observedTurn();
-  const unsubscribe = fixture.session.subscribe(event => {
-    if (event.type !== 'message_start' || event.message.role !== 'custom') return;
-    const message = event.message;
-    if (message.customType !== 'agent-delivery' && message.customType !== 'agent-completion') return;
-    const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
-    if (content.includes(second.id)) cancelled.resolve();
-  });
-  try {
-    const stopped = await fixture.call('subagent_stop', { id: second.id });
-    assert.notEqual(stopped.isError, true, JSON.stringify(stopped.content));
-    await cancelled.promise;
-    assert.equal((await fixture.item(second.id))?.status, 'stopped');
-  } finally {
-    unsubscribe();
-  }
+  // Stop acknowledges cancellation and keeps the Actor; the Job ends only when
+  // the native resource exits, so settle through the public idle state rather
+  // than assuming a terminal completion broadcast exists.
+  const stopped = await fixture.call('subagent_signal', { target: second.address, action: 'stop' });
+  assert.notEqual(stopped.isError, true, JSON.stringify(stopped.content));
+  await fixture.settled(second.id);
+  assert.equal('activity' in (await fixture.item(second.id))!, false);
 }

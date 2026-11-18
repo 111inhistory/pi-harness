@@ -50,7 +50,8 @@ import { buildStreamPort } from '../../src/harness-rpc/ports/stream.ts';
 import { HARNESS_RPC_PROTOCOL_VERSION, RPC_ERROR, RPC_METHODS, type RpcMethod } from '../../src/harness-rpc/protocol.ts';
 import { HARNESS_RPC_METHOD_SCHEMAS, harnessRpcSchemaRef } from '../../src/harness-rpc/schema.ts';
 import { RpcRequestError } from '../../src/harness-rpc/error.ts';
-import { getAgentSocketPath, getBroadcastSocketPath } from '../../src/ipc/socket.ts';
+import { getAgentSocketPath } from '../../src/ipc/socket.ts';
+import { formatAddress, formatGroupAddress } from '../../src/subagent/address.ts';
 import { createSubagentRuntime, type JobRecordView, type JobView, type SubagentRuntime } from '../../src/subagent/runtime.ts';
 import { startRunningJob } from './support/rpc-job-fixture.ts';
 import type { RootService } from '../../src/subagent/root-service.ts';
@@ -180,10 +181,13 @@ const ctx = {
   sessionManager: { getSessionId: () => 's', getBranch: () => [] },
 } as unknown as ExtensionContext;
 
+const SESSION = '01a1deac';
+
 function jobView(jobId: string, status: JobView['status'] = 'completed'): JobView {
   return {
     jobId,
-    agentId: 'sub_01',
+    agentId: 'sub_1',
+    address: formatAddress(SESSION, 'sub_1'),
     name: null,
     parentAgentId: null,
     depth: 1,
@@ -194,11 +198,12 @@ function jobView(jobId: string, status: JobView['status'] = 'completed'): JobVie
 
 function recordWith(): JobRecordView {
   return {
-    jobId: 'sub_01',
-    agentId: 'sub_01',
+    jobId: 'job-1',
+    agentId: 'sub_1',
+    address: formatAddress(SESSION, 'sub_1'),
     name: null,
     round: 1,
-    task: 't',
+    goal: 't',
     status: 'completed',
     error: null,
     result: 'done',
@@ -213,9 +218,8 @@ interface RootShape {
   records?: Record<string, JobRecordView | null>;
   list?: unknown;
   create?: (batch: unknown, options: unknown, ctx: unknown) => Promise<unknown>;
-  stop?: (id: string) => unknown;
-  resolveEndpoint?: (address: string) => unknown;
-  sessionEndpoint?: (address: string) => unknown;
+  signal?: (target: string, action: string, callerId: string) => Promise<unknown>;
+  resolveTarget?: (address: string) => Promise<unknown>;
   sendMessage?: (command: unknown) => unknown;
   sendCrossSession?: (command: unknown) => unknown;
 }
@@ -229,20 +233,34 @@ function makeRoot(shape: RootShape): RootService {
       jobRecord: (jobId: string) => shape.records?.[jobId] ?? null,
     },
     list: async () => shape.list ?? null,
-    create: shape.create ?? (async () => ({ items: [{ id: 'sub_01', socket: '/tmp/sub_01.sock' }] })),
-    stop: shape.stop ?? ((id: string) => ({ ok: true, id, status: 'stopping' })),
-    resolveEndpoint: shape.resolveEndpoint ?? (async () => ({ isManaged: true, targetId: 'sub_01' })),
-    sessionEndpoint: shape.sessionEndpoint ?? (async () => ({ kind: 'local' })),
-    sendMessage: shape.sendMessage ?? (() => ({ ok: true, to: 'sub_01', jobId: 'sub_01' })),
+    create: shape.create ?? (async () => ({
+      batch: 1,
+      address: formatGroupAddress(SESSION, 1),
+      roster: [{ address: formatAddress(SESSION, 'sub_1'), name: null, goal: 'g' }],
+      items: [{ id: 'sub_1', address: formatAddress(SESSION, 'sub_1'), name: null, goal: 'g' }],
+    })),
+    signal: shape.signal ?? (async (target: string) => ({
+      ok: true, action: 'stop', to: target, targets: [{ address: target, ok: true, status: 'stopping' }],
+    })),
+    resolveTarget: shape.resolveTarget ?? (async () => ({ kind: 'local' })),
+    sendMessage: shape.sendMessage ?? (() => ({ ok: true, to: formatAddress(SESSION, 'sub_1'), jobId: 'job-1' })),
     sendCrossSession: shape.sendCrossSession ?? (async () => {}),
   } as unknown as RootService;
 }
 
 test('subagent, job and message method results match the schema', async () => {
-  const tree = { id: 'Main', status: 'running', socket: '/tmp/main.sock', children: [] };
+  // The list node carries identity, one lifecycle status string and topology
+  // only; goal, activity and model belong to execution and are not returned.
+  const tree = {
+    id: 'main', address: formatAddress(SESSION, 'main'), name: null, status: 'running', role: null, children: [],
+  };
+  assert.deepEqual(errorsFor('DetailedAgentItem', tree), []);
+  const { status: _omitted, ...withoutStatus } = tree;
+  assert.notDeepEqual(errorsFor('DetailedAgentItem', withoutStatus), [], 'status is required');
+  assert.notDeepEqual(errorsFor('DetailedAgentItem', { ...tree, status: 1 }), [], 'status is one string');
   const root = makeRoot({
-    jobs: [jobView('sub_01')],
-    records: { sub_01: recordWith() },
+    jobs: [jobView('job-1')],
+    records: { 'job-1': recordWith() },
     list: tree,
   });
   const router = createRouter({
@@ -256,52 +274,51 @@ test('subagent, job and message method results match the schema', async () => {
   for (const [method, params] of [
     [RPC_METHODS.agentsTree, undefined],
     [RPC_METHODS.jobsList, {}],
-    [RPC_METHODS.jobsGet, { jobId: 'sub_01' }],
-    [RPC_METHODS.jobsResult, { jobId: 'sub_01' }],
-    [RPC_METHODS.subagentCreate, { context: 'ctx', tasks: [{ name: 'one', task: 'do it' }] }],
-    [RPC_METHODS.subagentStop, { id: 'sub_01' }],
-    [RPC_METHODS.messageSend, { path: getAgentSocketPath('sub_01', '/tmp/project'), content: 'hi' }],
+    [RPC_METHODS.jobsGet, { jobId: 'job-1' }],
+    [RPC_METHODS.jobsResult, { jobId: 'job-1' }],
+    [RPC_METHODS.subagentCreate, { context: 'ctx', agents: [{ name: 'one', goal: 'do it' }] }],
+    [RPC_METHODS.subagentSignal, { target: formatAddress(SESSION, 'sub_1'), action: 'interrupt' }],
+    [RPC_METHODS.messageSend, { to: formatAddress(SESSION, 'sub_1'), content: 'hi' }],
   ] as Array<[RpcMethod, unknown]>) {
     assertResult(method, await call(router, method, params));
   }
 
   // A running Job with no settled record reports record: null.
-  const runningRoot = makeRoot({ jobs: [jobView('sub_02', 'running')], records: { sub_02: null } });
+  const runningRoot = makeRoot({ jobs: [jobView('job-2', 'running')], records: { 'job-2': null } });
   const runningRouter = createRouter({
     sessionId: 's', tool: toolStub, subagent: buildSubagentPort(api, ctx, runningRoot), history: historyStub, stream: streamStub,
   });
-  assertResult(RPC_METHODS.jobsGet, await call(runningRouter, RPC_METHODS.jobsGet, { jobId: 'sub_02' }));
+  assertResult(RPC_METHODS.jobsGet, await call(runningRouter, RPC_METHODS.jobsGet, { jobId: 'job-2' }));
 
   // Broadcast and cross-session receipts are part of message.send's result union.
+  const group = formatGroupAddress(SESSION, 2);
   const broadcastRoot = makeRoot({
-    resolveEndpoint: async () => ({ isManaged: true, isBroadcast: true, parentId: 'Main' }),
-    sendMessage: () => ({ ok: true, to: 'all', sent: [{ to: 'sub_01', jobId: null }], errors: [] }),
+    sendMessage: () => ({ ok: true, to: group, sent: [{ to: formatAddress(SESSION, 'sub_2-1'), jobId: null }], errors: [] }),
   });
   const broadcastRouter = createRouter({
     sessionId: 's', tool: toolStub, subagent: buildSubagentPort(api, ctx, broadcastRoot), history: historyStub, stream: streamStub,
   });
-  assertResult(RPC_METHODS.messageSend, await call(broadcastRouter, RPC_METHODS.messageSend, { path: getBroadcastSocketPath('Main', '/tmp/project'), content: 'hi' }));
+  assertResult(RPC_METHODS.messageSend, await call(broadcastRouter, RPC_METHODS.messageSend, { to: group, content: 'hi' }));
 
   const crossRoot = makeRoot({
-    resolveEndpoint: async () => ({ isManaged: false }),
-    sessionEndpoint: async () => ({ kind: 'session', session: {} }),
+    resolveTarget: async () => ({ kind: 'session', session: {} }),
   });
   const crossRouter = createRouter({
     sessionId: 's', tool: toolStub, subagent: buildSubagentPort(api, ctx, crossRoot), history: historyStub, stream: streamStub,
   });
-  assertResult(RPC_METHODS.messageSend, await call(crossRouter, RPC_METHODS.messageSend, { path: getAgentSocketPath('Main', '/tmp/project/other'), content: 'hi' }));
+  assertResult(RPC_METHODS.messageSend, await call(crossRouter, RPC_METHODS.messageSend, { to: `${SESSION}:main`, content: 'hi' }));
 });
 
 test('job result errors keep the structured error envelope', async () => {
   const router = createRouter({
     sessionId: 's',
     tool: toolStub,
-    subagent: buildSubagentPort(api, ctx, makeRoot({ jobs: [jobView('sub_01')], records: { sub_01: null } })),
+    subagent: buildSubagentPort(api, ctx, makeRoot({ jobs: [jobView('job-1')], records: { 'job-1': null } })),
     history: historyStub,
     stream: streamStub,
   });
   await assert.rejects(
-    () => call(router, RPC_METHODS.jobsResult, { jobId: 'sub_01' }),
+    () => call(router, RPC_METHODS.jobsResult, { jobId: 'job-1' }),
     (error: unknown) => {
       assert.ok(error instanceof RpcRequestError);
       assert.equal(error.code, 'not_ready');
@@ -406,9 +423,10 @@ test('history and stream method results and event payloads match the schema', as
 
   // A Job whose start boundary is not recorded reports history_unavailable.
   const pending = createSubagentRuntime({
+    session: '01a1deac',
     startJob: () => ({ done: new Promise(() => {}), cancel() {} }),
   });
-  const pendingJob = pending.create({ tasks: [{ task: 'pending' }] }).items[0]!;
+  const pendingJob = pending.create({ agents: [{ goal: 'pending' }] }).items[0]!;
   const unavailable = buildHistoryPort({
     sessionId: 'session-root',
     runtime: pending,
@@ -439,9 +457,9 @@ test('envelopes and all method requests validate', () => {
     [RPC_METHODS.jobsList]: { id: 'r', method: RPC_METHODS.jobsList, params: {} },
     [RPC_METHODS.jobsGet]: { id: 'r', method: RPC_METHODS.jobsGet, params: { jobId: 'j' } },
     [RPC_METHODS.jobsResult]: { id: 'r', method: RPC_METHODS.jobsResult, params: { jobId: 'j' } },
-    [RPC_METHODS.subagentCreate]: { id: 'r', method: RPC_METHODS.subagentCreate, params: { tasks: [{ task: 't' }] } },
-    [RPC_METHODS.subagentStop]: { id: 'r', method: RPC_METHODS.subagentStop, params: { id: 'a' } },
-    [RPC_METHODS.messageSend]: { id: 'r', method: RPC_METHODS.messageSend, params: { path: '/tmp/p/Main.sock', content: 'x' } },
+    [RPC_METHODS.subagentCreate]: { id: 'r', method: RPC_METHODS.subagentCreate, params: { agents: [{ goal: 't' }] } },
+    [RPC_METHODS.subagentSignal]: { id: 'r', method: RPC_METHODS.subagentSignal, params: { target: `${SESSION}:sub_1`, action: 'stop' } },
+    [RPC_METHODS.messageSend]: { id: 'r', method: RPC_METHODS.messageSend, params: { to: `${SESSION}:main`, content: 'x' } },
     [RPC_METHODS.historyRead]: { id: 'r', method: RPC_METHODS.historyRead, params: { jobId: 'j' } },
     [RPC_METHODS.streamSubscribe]: { id: 'r', method: RPC_METHODS.streamSubscribe, params: { jobId: 'j' } },
     [RPC_METHODS.streamUnsubscribe]: { id: 'r', method: RPC_METHODS.streamUnsubscribe, params: { subscription: 's' } },
@@ -517,10 +535,13 @@ test('router rejects malformed optional and required parameters and normalizes a
     { method: RPC_METHODS.toolsBaseAdd, params: {}, code: RPC_ERROR.invalidRequest },
     { method: RPC_METHODS.jobsList, params: { jobIds: 'sub_01' }, code: RPC_ERROR.invalidRequest },
     { method: RPC_METHODS.jobsList, params: { jobIds: [123] }, code: RPC_ERROR.invalidRequest },
-    { method: RPC_METHODS.subagentCreate, params: { context: 123, tasks: [{ task: 'ok' }] }, code: RPC_ERROR.invalidRequest },
-    { method: RPC_METHODS.subagentCreate, params: { tasks: [{ task: 'ok', name: '' }] }, code: RPC_ERROR.invalidRequest },
-    { method: RPC_METHODS.subagentCreate, params: { tasks: [{ task: 'ok', inheritContext: 'yes' }] }, code: RPC_ERROR.invalidRequest },
-    { method: RPC_METHODS.subagentCreate, params: { tasks: [{ task: 'ok', extra: true }] }, code: RPC_ERROR.invalidRequest },
+    { method: RPC_METHODS.subagentCreate, params: { context: 123, agents: [{ goal: 'ok' }] }, code: RPC_ERROR.invalidRequest },
+    { method: RPC_METHODS.subagentCreate, params: { agents: [{ goal: '' }] }, code: RPC_ERROR.invalidRequest },
+    { method: RPC_METHODS.subagentCreate, params: { agents: [{ goal: 'ok', inheritContext: 'yes' }] }, code: RPC_ERROR.invalidRequest },
+    { method: RPC_METHODS.subagentCreate, params: { agents: [{ goal: 'ok', extra: true }] }, code: RPC_ERROR.invalidRequest },
+    { method: RPC_METHODS.subagentCreate, params: { agents: [] }, code: RPC_ERROR.invalidRequest },
+    { method: RPC_METHODS.subagentSignal, params: { target: '', action: 'stop' }, code: RPC_ERROR.invalidRequest },
+    { method: RPC_METHODS.subagentSignal, params: { target: `${SESSION}:sub_1`, action: 'pause' }, code: RPC_ERROR.invalidRequest },
     { method: RPC_METHODS.toolsCatalog, params: [], code: RPC_ERROR.invalidRequest },
     { method: RPC_METHODS.toolsDetail, params: undefined, code: RPC_ERROR.invalidRequest },
     { method: RPC_METHODS.toolsDetail, params: null, code: RPC_ERROR.invalidRequest },
@@ -549,7 +570,9 @@ test('typed client works end-to-end over socket with events, errors and optional
   const router = createRouter({
     sessionId: 'session-client',
     tool: buildToolPort(makeToolApi(TOOLS, ['read'], branch), makeToolContext(branch)),
-    subagent: buildSubagentPort(api, ctx, makeRoot({ list: { id: 'Main', status: 'running', socket: '/tmp/main.sock', children: [] } })),
+    subagent: buildSubagentPort(api, ctx, makeRoot({ list: {
+      id: 'main', address: formatAddress(SESSION, 'main'), name: null, status: 'idle', role: null, children: [],
+    } })),
     history: historyStub,
     stream: buildStreamPort(streamHarness.root),
   });
@@ -583,7 +606,7 @@ test('typed client works end-to-end over socket with events, errors and optional
   assert.equal(detail.active, true);
 
   const tree = await client.call(RPC_METHODS.agentsTree);
-  assert.equal(tree?.id, 'Main');
+  assert.equal(tree?.id, 'main');
 
   await assert.rejects(
     () => client.call(RPC_METHODS.toolsDetail, { name: 'missing' }),

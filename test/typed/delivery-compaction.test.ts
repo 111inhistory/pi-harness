@@ -14,8 +14,9 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import subagentExtension from "../../extensions/harness.ts";
 import { RootService } from "../../src/subagent/root-service.ts";
-import { deriveSessionUid, getAgentSocketPath, writeSocket } from "../../src/ipc/socket.ts";
+import { deriveSessionUid, writeSocket } from "../../src/ipc/socket.ts";
 import { registerSession, sessionSenderId, unregisterSession } from "../../src/subagent/session-directory.ts";
+import { formatAddress, formatMainEndpointPath, MAIN_ACTOR } from "../../src/subagent/address.ts";
 import { waitFor } from "../../test-support/async.ts";
 
 interface Sent {
@@ -52,12 +53,14 @@ async function fixture(t: test.TestContext): Promise<{ cwd: string; agentDir: st
   return { cwd, agentDir, sessionDir };
 }
 
-function peerMessage(): Parameters<RootService["sendMessage"]>[0] {
+/** One host-resolved peer write: the remote Main is both sender and reply target. */
+function peerMessage(service: RootService): Parameters<RootService["sendMessage"]>[0] {
+  const own = deriveSessionUid(service.sessionId);
   return {
-    from: "Main",
-    to: "Main",
+    from: "abcd1234:main",
+    to: formatAddress(own, MAIN_ACTOR),
     content: "peer message during compaction",
-    external: { sessionId: "peer-session", sender: "peer:Main", replyTo: "/tmp/peer/Main.sock" },
+    external: { sessionId: "peer-session", sender: "abcd1234:main", replyTo: "abcd1234:main" },
   };
 }
 
@@ -69,13 +72,13 @@ test("Main acknowledges queue ownership before compaction finishes", async (t) =
   try {
     await service.initialize();
     service.beginCompaction();
-    await service.sendMessage(peerMessage());
+    await service.sendMessage(peerMessage(service));
     assert.equal(sent.length, 0, "nothing is steered while compaction is running");
 
     service.endCompaction();
     await waitFor(() => sent.length === 1, { label: "queued Main delivery" });
     assert.equal(sent.length, 1);
-    assert.match(String(sent[0]?.content), /\[Message from peer:Main\][\s\S]*peer message during compaction/);
+    assert.match(String(sent[0]?.content), /\[Message from abcd1234:main\][\s\S]*peer message during compaction/);
     assert.deepEqual(sent[0]?.options, { triggerTurn: true, deliverAs: "steer" });
   } finally {
     await service.retire();
@@ -89,7 +92,7 @@ test("retiring while compacting releases the wait instead of hanging", async (t)
   const service = new RootService({ api, context, agentDir, allocatedIds: new Set(), ownsContext: () => true });
   await service.initialize();
   service.beginCompaction();
-  const pending = service.sendMessage(peerMessage()).then(
+  const pending = service.sendMessage(peerMessage(service)).then(
     () => "delivered" as const,
     () => "refused" as const,
   );
@@ -115,8 +118,10 @@ test("socket acknowledgement does not wait for the receiver's compaction", async
   const sender = await registerSession(service.socketRoot, { sessionId: 'compaction-peer-fixture', cwd });
   try {
     service.beginCompaction();
-    const address = getAgentSocketPath('Main', path.join(service.socketRoot, deriveSessionUid(manager.getSessionId())));
-    await writeSocket(address, { from: sessionSenderId(sender.uid), content: 'queued over the socket' }, { timeoutMs: 1000 });
+    const own = deriveSessionUid(manager.getSessionId());
+    const address = formatMainEndpointPath(path.join(service.socketRoot, own));
+    await writeSocket(address, { from: sessionSenderId(sender.uid), to: formatAddress(own, MAIN_ACTOR),
+      content: 'queued over the socket' }, { timeoutMs: 1000 });
     assert.equal(sent.length, 0, 'the socket acknowledges before the SDK can receive the message');
     service.endCompaction();
     await waitFor(() => sent.length === 1, { label: 'socket message after compaction' });
@@ -141,8 +146,8 @@ test("retirement drains accepted messages in order before detaching the root", a
   await service.initialize();
   try {
     service.beginCompaction();
-    await service.sendMessage({ ...peerMessage(), content: 'first queued message' });
-    await service.sendMessage({ ...peerMessage(), content: 'second queued message' });
+    await service.sendMessage({ ...peerMessage(service), content: 'first queued message' });
+    await service.sendMessage({ ...peerMessage(service), content: 'second queued message' });
     service.endCompaction();
     await waitFor(() => sent.length === 1, { label: 'first SDK handoff' });
     let retired = false;
@@ -181,8 +186,8 @@ test("a queued SDK handoff failure is reported once and never replayed", async t
   try {
     await service.initialize();
     service.beginCompaction();
-    await service.sendMessage({ ...peerMessage(), content: 'uncertain first' });
-    await service.sendMessage({ ...peerMessage(), content: 'known second' });
+    await service.sendMessage({ ...peerMessage(service), content: 'uncertain first' });
+    await service.sendMessage({ ...peerMessage(service), content: 'known second' });
     service.endCompaction();
     await waitFor(() => sent.length === 2 && errors.length === 1, { label: 'failure reporting and next handoff' });
     service.endCompaction();
@@ -206,7 +211,7 @@ test("a queued message cannot enter the replacement root after ownership is lost
   try {
     await service.initialize();
     service.beginCompaction();
-    await service.sendMessage(peerMessage());
+    await service.sendMessage(peerMessage(service));
     owns = false;
     service.endCompaction();
     await waitFor(() => errors.length === 1, { label: 'lost-generation delivery refusal' });

@@ -22,7 +22,7 @@ test('host task lookup and retirement retain the assigned root when ambient stat
   const root = rootFixture(t);
   const canceled: string[][] = [];
   const host = new AsyncShellHost({
-    address: () => '/tmp/project/fake.sock', accepting: () => true,
+    mainAddress: () => '/tmp/project/main.sock', accepting: () => true,
     deliver: async () => {}, wake: () => {},
     cancel: async (directory, assignedRoot) => { canceled.push([directory, assignedRoot]); },
   });
@@ -32,7 +32,7 @@ test('host task lookup and retirement retain the assigned root when ambient stat
   const id = 'job_11111111';
   const directory = taskDirectory(id, env.PI_ASYNC_SHELL_ROOT);
   await host.receive('Main', {
-    kind: 'async-shell', operation: 'register', id, directory, pid: process.pid,
+    kind: 'async-shell', agentId: 'Main', operation: 'register', id, directory, pid: process.pid,
     token: env.PI_ASYNC_SHELL_TOKEN,
   });
   await host.release('Main');

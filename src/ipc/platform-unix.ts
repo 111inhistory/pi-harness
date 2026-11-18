@@ -17,17 +17,9 @@ import type { IpcPlatform } from "./platform.ts";
  */
 export const unixIpc: IpcPlatform = {
   agentPath: (id, root) => path.posix.join(root, `${id}.sock`),
-  broadcastPath: (id, root) => path.posix.join(root, id, "children.sock"),
   key: (address) => path.posix.resolve(address),
   isEndpoint: (address) => typeof address === "string" && address.endsWith(".sock"),
   isNamespace: () => false,
-  /**
-   * A session's Unix endpoints are the socket files below its directory, so
-   * membership is filesystem containment. Comparison stays case-sensitive:
-   * POSIX treats differently-cased names as different endpoints.
-   */
-  belongsToNamespace: (address, socketDir) =>
-    typeof address === "string" && address.endsWith(".sock") && endpointInsideDirectory(address, socketDir),
   /**
    * Safe preparation lives in the ownership helper. It refuses symlinks,
    * ordinary files, foreign or active endpoints instead of unlinking them.

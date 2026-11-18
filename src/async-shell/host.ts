@@ -6,13 +6,17 @@ import { validateAsyncShellFrame, type ShellResult } from './protocol.ts';
 
 interface Owner {
   readonly token: string;
-  readonly tasks: Map<string, { directory: string; status: 'running' | 'internal_error' }>;
+  readonly tasks: Map<string, { directory: string; status: 'running' | 'internal_error'; startedAt: number }>;
   retiring: boolean;
   release: Promise<void> | null;
 }
 
 export interface AsyncShellHostOptions {
-  address(actorId: string): string;
+  /**
+   * The root's single external address. Shell callbacks reach it and name their
+   * owning Actor in the frame; there is no per-Actor endpoint.
+   */
+  mainAddress(): string;
   accepting(): boolean;
   deliver(actorId: string, result: ShellResult): Promise<void>;
   wake(actorId: string): void;
@@ -38,7 +42,7 @@ export class AsyncShellHost {
     if (owner.retiring) throw new Error('The previous async shell execution is still retiring.');
     return {
       PI_AGENT_ID: actorId,
-      PI_AGENT_SOCKET: this.#options.address(actorId),
+      PI_AGENT_SOCKET: this.#options.mainAddress(),
       PI_ASYNC_SHELL_TOKEN: owner.token,
       PI_ASYNC_SHELL_ROOT: this.#root,
     };
@@ -51,8 +55,23 @@ export class AsyncShellHost {
     return false;
   }
 
+  /** Running tasks of one Actor, for the live status projection. */
+  pending(actorId: string): { readonly since: number; readonly tasks: number } | null {
+    let since: number | null = null;
+    let tasks = 0;
+    for (const task of this.#owners.get(actorId)?.tasks.values() ?? []) {
+      if (task.status !== 'running') continue;
+      tasks += 1;
+      if (since === null || task.startedAt < since) since = task.startedAt;
+    }
+    return since === null ? null : { since, tasks };
+  }
+
   async receive(actorId: string, input: unknown): Promise<void> {
     const frame = validateAsyncShellFrame(input);
+    // Routing already selected the owner; a frame naming another Actor was
+    // mis-routed and is refused instead of being applied to the wrong lease.
+    if (frame.agentId !== actorId) throw new AsyncShellError('execution_rejected', 'The async shell frame names another Agent.');
     const owner = this.#owners.get(actorId);
     function refuse(message: string): never {
       throw new AsyncShellError(frame.operation === 'register' ? 'registration_rejected' : 'execution_rejected', message);
@@ -70,7 +89,7 @@ export class AsyncShellHost {
       if (!this.#options.accepting()) refuse('The async shell host is retiring.');
       if (!samePath(frame.directory, taskDirectory(frame.id, this.#root))) refuse('The async shell task directory does not match its ID.');
       if (owner.tasks.has(frame.id)) refuse(`Async shell task ${frame.id} is already registered.`);
-      owner.tasks.set(frame.id, { directory: frame.directory, status: 'running' });
+      owner.tasks.set(frame.id, { directory: frame.directory, status: 'running', startedAt: performance.now() });
       return;
     }
     const task = owner.tasks.get(frame.id);

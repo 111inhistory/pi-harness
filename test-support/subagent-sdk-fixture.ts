@@ -18,6 +18,7 @@ import type {
 import subagentExtension from "../extensions/harness.ts";
 import { installResultRendering } from "../src/result-rendering.ts";
 import capabilityExtension from "../src/capability/extension.ts";
+import { RootService } from "../src/subagent/root-service.ts";
 import { deriveSessionUid } from "../src/ipc/socket.ts";
 import {
   actorOf, createdItems, readTranscriptEvents,
@@ -143,10 +144,18 @@ export async function createSdkFixture(options: SdkFixtureOptions): Promise<SdkF
   const socketPrototype = net.Socket.prototype as unknown as MutableSocketConnect;
   const originalConnect = socketPrototype.connect;
   const originalSessionOpen = SessionManager.open;
+  const originalInitialize = RootService.prototype.initialize;
+  let observedRoot: RootService | undefined;
+  RootService.prototype.initialize = async function () {
+    await originalInitialize.call(this);
+    observedRoot = this;
+  };
   const restoreGlobals = (): void => {
     globalThis.fetch = originalFetch;
     socketPrototype.connect = originalConnect;
     SessionManager.open = originalSessionOpen;
+    RootService.prototype.initialize = originalInitialize;
+    observedRoot = undefined;
   };
   const networkAttempts: string[] = [];
   globalThis.fetch = async (url) => {
@@ -359,7 +368,7 @@ export async function createSdkFixture(options: SdkFixtureOptions): Promise<SdkF
     const sessionSocketDir = path.join(socketDir, sessionUid);
     let toolSequence = 0;
     async function call(name: string, params: JsonObject): Promise<FixtureToolResult<Record<string, unknown>>> {
-      if (name.startsWith("subagent_")) activeSession.setActiveToolsByName([...activeSession.getActiveToolNames(), ...["subagent_create", "subagent_list", "subagent_stop"].filter((tool) => activeSession.getToolDefinition(tool))]);
+      if (name.startsWith("subagent_")) activeSession.setActiveToolsByName([...activeSession.getActiveToolNames(), ...["subagent_create", "subagent_list", "subagent_signal"].filter((tool) => activeSession.getToolDefinition(tool))]);
       const tool = activeSession.getToolDefinition(name);
       assert.ok(tool, `missing native registered tool ${name}`);
       const toolCallId = `test-call-${++toolSequence}`;
@@ -368,8 +377,8 @@ export async function createSdkFixture(options: SdkFixtureOptions): Promise<SdkF
     async function listener(socketPath: string): Promise<net.Server> {
       return waitFor(() => listeningServers().find((server) => server.address() === socketPath), { label: "host listener ready" });
     }
-    async function create(task: string, extra: JsonObject = {}): Promise<FixtureActor> {
-      const [first] = createdItems(await call("subagent_create", { tasks: [{ name: "LocalTask", task, ...extra }] }));
+    async function create(goal: string, extra: JsonObject = {}): Promise<FixtureActor> {
+      const [first] = createdItems(await call("subagent_create", { agents: [{ name: "LocalCollaborator", goal, ...extra }] }));
       assert.ok(first, "subagent_create must return one Actor");
       return first;
     }
@@ -377,10 +386,13 @@ export async function createSdkFixture(options: SdkFixtureOptions): Promise<SdkF
       const result = await call("subagent_list", { id, all: true });
       return result.details === undefined ? undefined : actorOf(result.details);
     }
-    async function stopped(id: string): Promise<FixtureActor> {
+    async function settled(id: string): Promise<FixtureActor> {
       return waitFor(async () => {
         const found = await item(id);
-        return found?.status === "stopped" ? found : undefined;
+        // Observe the real domain in both durable and memory-only fixtures;
+        // list output deliberately contains no lifecycle or activity fields.
+        const ended = observedRoot?.runtime.list({ id }).agents[0]?.status === "idle";
+        return found && ended ? found : undefined;
       }, { label: `terminal state of ${id}` });
     }
 
@@ -388,7 +400,7 @@ export async function createSdkFixture(options: SdkFixtureOptions): Promise<SdkF
       get scenario() { return scenario; },
       cwd, agentDir, socketDir, sessionSocketDir,
       session: activeSession, sessionManager, chats, notificationChats, classifications, controls,
-      call, create, item, stopped, gate: controlledGate, controlledGate, textAnswer, toolAnswer,
+      call, create, item, settled, gate: controlledGate, controlledGate, textAnswer, toolAnswer,
       model: fixtureModel, assistant, durable, childManagers, abortable, listener, events: readTranscriptEvents,
       resourceLoader, networkAttempts, uiErrors,
       releaseGates() { for (const gate of gates) gate.resolve(); },
@@ -424,6 +436,8 @@ export async function createSdkFixture(options: SdkFixtureOptions): Promise<SdkF
             throw error;
           });
           assert.equal(sockets.some((file) => file.endsWith(".sock")), false, "shutdown must remove every listener endpoint");
+          await assert.rejects(fsp.lstat(sessionSocketDir), { code: "ENOENT" },
+            "shutdown must remove the owned empty session socket directory");
         });
         await collect("checking for leaked listening servers", () => {
           assert.equal(listeningServers().length, 0, "shutdown must not leave listening servers");

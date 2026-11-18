@@ -122,7 +122,7 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
           childReady.resolve();
           await releaseChild.promise;
           message = answer([{ type: 'toolCall', id: 'grandchild-call', name: 'subagent_create',
-            arguments: { tasks: [{ task: 'NESTED_MARKER' }] } }], 'toolUse');
+            arguments: { agents: [{ goal: 'NESTED_MARKER' }] } }], 'toolUse');
         } else {
           message = answer([{ type: 'text', text: 'child completed' }], 'stop');
         }
@@ -180,7 +180,7 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
     const messageGrant = addBaseTools(rootApi, rootApi, session.sessionManager.getBranch(), ['msg_write']);
     assert.equal(messageGrant.recordError, null);
     assert.deepEqual(messageGrant.activated, ['msg_write'], 'the root base addition makes the reply tool available');
-    const created = await create.execute('create-child', { tasks: [{ task: 'CHILD_MARKER', inheritContext: true }] },
+    const created = await create.execute('create-child', { agents: [{ goal: 'CHILD_MARKER', inheritContext: true }] },
       undefined, undefined, session.extensionRunner.createToolContext('create-child', undefined));
     assert.ok((created.details as { items: unknown[] }).items[0]);
     await childReady.promise;

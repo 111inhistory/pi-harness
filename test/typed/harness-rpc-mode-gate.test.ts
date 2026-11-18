@@ -77,4 +77,21 @@ test("rpc mode binds a distinct endpoint and publishes/removes its discovery rec
     try { await once(socket, "connect"); }
     finally { socket.destroy(); }
   }, "the endpoint refuses connections after close");
+  await assert.rejects(fsp.stat(target.socketDir), (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+    "the empty session directory this endpoint published into is released on final close");
+});
+
+test("a session directory still holding another endpoint is deliberately retained on close", async (t) => {
+  const directory = await fixture(t);
+  const handle = installHarnessRpc({} as unknown as ExtensionAPI, contextWithMode("rpc"), rootAt(directory), () => {});
+  t.after(() => handle.close());
+  await handle.ready();
+  const target = harnessRpcTarget(directory, "session-xyz");
+  // The root main listener shares this directory while a session is live.
+  await fsp.writeFile(path.join(target.socketDir, "main.sock"), "another endpoint");
+
+  await handle.close();
+  assert.equal((await fsp.readFile(path.join(target.socketDir, "main.sock"), "utf8")), "another endpoint",
+    "a directory another endpoint still owns is never removed");
+  await fsp.rm(target.socketDir, { recursive: true, force: true });
 });
