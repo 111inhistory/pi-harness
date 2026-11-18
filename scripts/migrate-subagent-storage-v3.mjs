@@ -14,9 +14,10 @@ import { createReadStream } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { chmod, lstat, mkdtemp, open, rename, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-const PLANNER = new URL('./plan-subagent-storage-v3.mjs', import.meta.url);
+const PLANNER = fileURLToPath(new URL('./plan-subagent-storage-v3.mjs', import.meta.url));
 const OFFLINE_ENV = 'PI_SESSION_FILE';
 const SOCKET_ENV = 'PI_AGENT_SOCKET';
 const CAPABILITY_WARNINGS = [
@@ -71,7 +72,7 @@ async function knownLive({ socketRoot, headerId }) {
 }
 
 function freshPlan({ session, agentDir }) {
-  const child = spawnSync(process.execPath, [PLANNER.pathname, '--session', session, '--agent-dir', agentDir], {
+  const child = spawnSync(process.execPath, [PLANNER, '--session', session, '--agent-dir', agentDir], {
     encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
   });
   if (child.status !== 0) throw new Error(child.stderr || 'planner failed');

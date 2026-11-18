@@ -5,11 +5,12 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, readdirSync, lstatSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 import { foldEvents } from '../src/subagent/storage.ts';
 import { createSubagentRuntime } from '../src/subagent/runtime.ts';
 
-const SCRIPT = new URL('../scripts/migrate-subagent-storage-v3.mjs', import.meta.url).pathname;
+const SCRIPT = fileURLToPath(new URL('../scripts/migrate-subagent-storage-v3.mjs', import.meta.url));
 const ROOT = 'root0001';
 const ORIGIN = { message: 'synthetic' };
 
@@ -107,7 +108,7 @@ test('default plan and apply migrate a multi/continuation root with an exact bac
     assert.match(report.backup, /\.pre-v3$/);
     assert.equal(readFileSync(report.backup).equals(original), true);
     assert.equal(hash(readFileSync(report.backup)), hash(original));
-    assert.equal(statSync(report.backup).mode & 0o777, 0o400);
+    if (process.platform !== 'win32') assert.equal(statSync(report.backup).mode & 0o777, 0o400);
     assert.equal(report.capabilityReferencesReconciled, false);
     assert.equal(report.runtimeValidated, false);
     assert.ok(report.warnings.some((line) => line.includes('reactivate')));
@@ -223,6 +224,7 @@ test('symlink target is refused before backup creation', () => {
     const before = hash(readFileSync(file));
     const result = run(['--session', link, '--agent-dir', agentDir, '--apply', '--offline']);
     assert.equal(result.status, 1);
+    assert.match(result.stderr, /--session must be a regular \.jsonl file/);
     assert.equal(hash(readFileSync(file)), before);
     assert.equal(readdirSync(join(file, '..')).some((name) => name.endsWith('.pre-v3')), false);
     assert.equal(lstatSync(link).isSymbolicLink(), true);
