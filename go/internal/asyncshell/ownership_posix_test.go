@@ -73,9 +73,28 @@ func installFake(t *testing.T, state shellbackend.ServerState) *fakeBackend {
 	return fake
 }
 
+// taskRoot creates the private async-shell root for one test. t.TempDir embeds
+// the full test and subtest name, which pushed <root>/<id>/tmux.sock past the
+// 104-byte macOS sockaddr_un limit and made bind fail with EINVAL. A short
+// prefix under the system temp directory keeps the socket path inside the
+// limit; RemoveAll still runs deterministically at test cleanup.
+func taskRoot(t *testing.T) string {
+	t.Helper()
+	root, err := os.MkdirTemp("", "pijob-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove test root %s: %v", root, err)
+		}
+	})
+	return root
+}
+
 func taskFixture(t *testing.T) (root, dir string, record *ownershipRecord) {
 	t.Helper()
-	root = t.TempDir()
+	root = taskRoot(t)
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
