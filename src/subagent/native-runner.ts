@@ -25,7 +25,7 @@
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import type { SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent";
 
-import { capabilityAllowsTool, capabilityAvailableTools } from "../capability/scope.ts";
+import { createCapabilityScopeView } from "../capability/scope.ts";
 import { installModelCallBudget } from "./pi-job-budget.ts";
 import { excludedPresetTools } from '../preset/modifiers.ts';
 import { SHELL_APPROVAL_WAIT } from '../shell-approval/bridge.ts';
@@ -632,10 +632,10 @@ export class NativeJobRunner {
         ...(plannedTools ?? native.session.getActiveToolNames()),
         ...harnessToolsForDepth(depth, maxDepth),
       ])];
+      const scopeView = createCapabilityScopeView(opened.capabilityScope);
       native.session.setActiveToolsByName(
-        plannedTools.filter((name) => capabilityAllowsTool(opened.capabilityScope, name)),
+        plannedTools.filter((name) => scopeView.allows(name)),
       );
-      capabilityAvailableTools(opened.capabilityScope);
       // The session's own loadout and model are what a revival must reuse:
       // capability activation opens tools during the run that the pre-run seed
       // never mentioned, and a run that was stopped still keeps them.

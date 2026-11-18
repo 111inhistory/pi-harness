@@ -149,9 +149,8 @@ export interface ActorFirstJob {
   readonly startEntryId: string | null;
 }
 
-/** The readonly loadout a per-actor capability scope is rebuilt from. */
+/** The readonly role exclusions a retained capability scope is rebuilt from. */
 export interface ActorToolScope {
-  readonly tools: readonly string[] | null;
   readonly excludedTools: readonly string[];
 }
 
@@ -451,15 +450,14 @@ export class ActorSessionStore implements NativeActorStore {
   }
 
   /**
-   * The readonly loadout a capability scope is rebuilt from when the Actor has
-   * no live child Pi. Null for an unknown Actor; the caller decides how to
-   * report a missing scope.
+   * The readonly ancestor link and role exclusions a capability scope is rebuilt
+   * from when the Actor has no live child Pi. Null for an unknown Actor; the
+   * caller decides how to report a missing scope.
    */
   toolScope(agentId: string): ActorToolScope | null {
     const descriptor = this.#retained.get(agentId);
     if (descriptor === undefined) return null;
     return {
-      tools: descriptor.tools,
       excludedTools: descriptor.excludedTools ?? NO_TOOLS,
     };
   }

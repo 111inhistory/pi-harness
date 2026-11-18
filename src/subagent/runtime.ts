@@ -1510,6 +1510,11 @@ export class SubagentRuntime {
     return { jobs: jobs.map((job) => this.#jobView(job)) };
   }
 
+  /** Direct parent agent id for an Actor, or null when its parent is Main. */
+  parentAgentId(agentId: string): string | null {
+    return this.#agents.get(agentId)?.parentAgentId ?? null;
+  }
+
   /**
    * Whether an actor has any direct child whose current Job is still
    * nonterminal (`running`, `stopping` or `finalizing`).

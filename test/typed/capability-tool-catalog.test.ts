@@ -3,8 +3,8 @@
  *
  * The tests instrument `getAllTools` on both a child and its parent. A whole
  * filter/name-set/map operation must read each catalog a fixed number of times,
- * independent of how many tools it inspects; a per-tool
- * `capabilityAllowsTool` loop re-reads the parent once per tool.
+ * independent of how many tools it inspects; a shared scope view reads the
+ * child catalog at most once.
  */
 
 import assert from "node:assert/strict";
@@ -13,7 +13,7 @@ import test from "node:test";
 import capabilityExtension from "../../src/capability/extension.ts";
 import { installNativeDiscoveryBoundary } from "../../src/capability/native-discovery.ts";
 import { CAPABILITY_DISCOVERY_RECORD } from "../../src/capability/discovery-record.ts";
-import { capabilityAllowsTool, setCapabilityParent } from "../../src/capability/scope.ts";
+import { createCapabilityScopeView, setCapabilityParent } from "../../src/capability/scope.ts";
 import {
   createEligibleToolCatalog,
   retainSelectedToolMembers,
@@ -184,9 +184,8 @@ test("eligible catalog reads each catalog once per operation and keeps full meta
   child.calls.count = 0;
   root.calls.count = 0;
   const visible = createEligibleToolCatalog(child.catalog);
-  assert.equal(child.calls.count, 2, "scope view plus one full catalog read for the child");
-  assert.equal(root.calls.count, 1, "the parent chain is enumerated once");
-  assert.equal(child.calls.count + root.calls.count, 3);
+  assert.equal(child.calls.count, 1, "one full catalog read for the child without re-reading in scope view");
+  assert.equal(root.calls.count, 0, "the parent catalog is not enumerated");
   assert.deepEqual([...visible.names], ["read"]);
   assert.equal(visible.byName.get("read"), read, "the full tool record is preserved");
   assert.equal(visible.tools[0]?.description, "read full description");
@@ -208,16 +207,19 @@ test("one operation's catalog reads stay linear as the tool count grows", () => 
     root.calls.count = 0;
     const eligible = createEligibleToolCatalog(child.catalog);
     assert.equal(eligible.tools.length, count);
-    assert.equal(child.calls.count + root.calls.count, 3, `catalog size ${count} does not multiply reads`);
+    assert.equal(child.calls.count, 1, `catalog size ${count} does not multiply reads`);
+    assert.equal(root.calls.count, 0, "parent catalog is never enumerated");
 
     child.calls.count = 0;
     root.calls.count = 0;
-    for (const entry of child.catalog.getAllTools()) capabilityAllowsTool(child.catalog, entry.name);
+    const scope = createCapabilityScopeView(child.catalog);
+    for (const entry of child.catalog.getAllTools()) scope.allows(entry.name);
     assert.equal(
-      child.calls.count + root.calls.count,
-      1 + count,
-      `the single-name path repeats the parent lookup once per tool for size ${count}`,
+      child.calls.count,
+      1,
+      `the shared scope view enumerates once for size ${count}`,
     );
+    assert.equal(root.calls.count, 0);
   }
 });
 
@@ -249,7 +251,8 @@ test("selectedInterfaces supply enriches qualified metadata, preserves groups, a
   child.calls.count = 0;
   root.calls.count = 0;
   const supplied = supplySelectedToolInterfaces(result, child.catalog);
-  assert.equal(child.calls.count + root.calls.count, 3, "one view for the whole selectedInterfaces map");
+  assert.equal(child.calls.count, 1, "one catalog read for the whole selectedInterfaces map");
+  assert.equal(root.calls.count, 0);
   assert.equal(supplied.status, "ok");
   assert.deepEqual(supplied.warnings, ["keep"]);
   assert.equal(supplied.tools[0]?.parameters, OBJECT_SCHEMA);
@@ -338,9 +341,8 @@ test("the real context_with_system handler resolves one view instead of one per 
     { sessionManager: { getBranch: () => [] }, model: { api: "fixture" } },
   ) as { messages: unknown[] };
   assert.deepEqual(projected.messages, []);
-  assert.equal(child.calls.count, 2, "the handler reads the child once for the view and once for metadata");
-  assert.equal(root.calls.count, 1);
-  assert.equal(child.calls.count + root.calls.count, 3, "12 tools did not multiply the parent catalog reads");
+  assert.equal(child.calls.count, 1, "the handler reads the child once for metadata");
+  assert.equal(root.calls.count, 0, "12 tools do not enumerate the parent catalog");
 });
 
 test("the real tool_call guard re-resolves eligibility on each call", () => {
@@ -377,7 +379,6 @@ test("selectedServer resolves one scope view outside its catalog loop", () => {
     { sessionManager: { getBranch: () => branch } },
   );
   assert.equal(outcome, undefined, "the selected server is readable");
-  assert.equal(child.calls.count, 2, "the scope view and the selectedServer loop share the child catalog");
-  assert.equal(root.calls.count, 1, "the parent is enumerated once, not once per tool");
-  assert.equal(child.calls.count + root.calls.count, 3);
+  assert.equal(child.calls.count, 1, "the selectedServer loop reads the child catalog once");
+  assert.equal(root.calls.count, 0, "the parent catalog is not enumerated");
 });

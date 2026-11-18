@@ -880,14 +880,12 @@ test("toolScope rebuilds a readonly per-actor loadout snapshot", (t) => {
 
   const scope = h.store.toolScope("s1");
   assert.ok(scope !== null);
-  assert.deepEqual(scope.tools, ["read", "grep"]);
   assert.deepEqual(scope.excludedTools, ["bash"]);
 
   const previous = h.store.get("s1");
   assert.ok(previous !== null);
   h.store.retain("s1", retained({ ...previous, tools: ["write"], excludedTools: null }));
   const next = h.store.toolScope("s1");
-  assert.deepEqual(next?.tools, ["write"]);
   assert.deepEqual(next?.excludedTools, []);
-  assert.deepEqual(scope.tools, ["read", "grep"], "an earlier snapshot is detached");
+  assert.deepEqual(scope.excludedTools, ["bash"], "an earlier snapshot is detached");
 });

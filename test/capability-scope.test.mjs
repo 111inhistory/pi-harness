@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { capabilityAllowsTool, capabilityAvailableTools, setCapabilityParent } from '../src/capability/scope.ts';
+import { createCapabilityScopeView, setCapabilityParent } from '../src/capability/scope.ts';
 
 const api = (names) => ({
   names,
@@ -8,29 +8,36 @@ const api = (names) => ({
   getAllTools() { return this.names.map(name => ({ name })); },
 });
 
-test('parent additions propagate through child eligibility; role denials win', () => {
-  const root = api(['read', 'write']);
-  const child = api(['read']);
-  const leaf = api(['read']);
+const allows = (scope, name) => createCapabilityScopeView(scope).allows(name);
+
+test('children may use tools absent from parent while ancestor denials still win', () => {
+  const root = api(['read']);
+  const child = api(['read', 'child_only']);
+  const leaf = api(['read', 'child_only', 'leaf_only']);
   setCapabilityParent(child, root, ['write', 'mcp__server__danger']);
   setCapabilityParent(leaf, child);
-  assert.equal(capabilityAllowsTool(child, 'write'), false);
-  assert.equal(capabilityAllowsTool(leaf, 'write'), false);
-  assert.equal(capabilityAllowsTool(leaf, 'mcp__server__safe'), false);
-  root.names.push('mcp__server__safe', 'mcp__server__danger');
-  assert.equal(capabilityAllowsTool(leaf, 'mcp__server__safe'), true);
-  assert.equal(capabilityAllowsTool(leaf, 'mcp__server__danger'), false);
-  root.names = ['read'];
-  assert.equal(capabilityAllowsTool(leaf, 'mcp__server__safe'), true, 'availability is append-only');
-  assert.equal(capabilityAvailableTools(leaf).has('write'), false);
+
+  assert.equal(allows(child, 'write'), false);
+  assert.equal(allows(leaf, 'write'), false);
+  assert.equal(allows(leaf, 'mcp__server__danger'), false);
+  assert.equal(allows(child, 'child_only'), true);
+  assert.equal(allows(leaf, 'leaf_only'), true);
+  assert.equal(createCapabilityScopeView(leaf).root, false);
 });
 
-test('registered inactive parent tools also enter descendant eligibility', () => {
-  const root = { getActiveTools: () => [], getAllTools: () => [{ name: 'new_tool' }, { name: 'hidden_tool', exposure: 'hidden' }] };
-  const child = api([]);
+test('denial predicates apply to child-only tools and unregistered names', () => {
+  const root = api([]);
+  setCapabilityParent(root, null, [], (name) => name.startsWith('blocked_'));
+  const child = {
+    getActiveTools: () => [],
+    getAllTools: () => [{ name: 'child_tool' }, { name: 'blocked_child' }],
+  };
   setCapabilityParent(child, root);
-  assert.equal(capabilityAllowsTool(child, 'new_tool'), true);
-  assert.equal(capabilityAllowsTool(child, 'hidden_tool'), false);
+
+  const view = createCapabilityScopeView(child);
+  assert.equal(view.allows('child_tool'), true);
+  assert.equal(view.allows('blocked_child'), false);
+  assert.equal(view.allows('blocked_unregistered'), false);
 });
 
 test('a child resolves the current parent API after revival', () => {
@@ -39,8 +46,8 @@ test('a child resolves the current parent API after revival', () => {
   setCapabilityParent(parent, root, ['bash']);
   const leaf = api(['read']);
   setCapabilityParent(leaf, () => parent);
-  assert.equal(capabilityAllowsTool(leaf, 'bash'), false);
+  assert.equal(allows(leaf, 'bash'), false);
   parent = api(['read', 'bash']);
   setCapabilityParent(parent, root);
-  assert.equal(capabilityAllowsTool(leaf, 'bash'), true);
+  assert.equal(allows(leaf, 'bash'), true);
 });

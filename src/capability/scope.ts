@@ -1,31 +1,12 @@
 /**
- * Capability eligibility: qualification is separate from registration and
- * activation.
+ * Capability eligibility: ancestor negative fences (denials and startup
+ * blacklist patterns) are inherited down the subagent chain, while positive
+ * tool registration, declaration, and activation belong to each session.
  *
- * A child's eligibility is the intersection of what its parent qualified and
- * what the child itself exposes, minus the child's role denials. Qualification
- * is append-only: once a tool has entered a scope's learned set, a later parent
- * catalog change does not revoke it. Role denials always win, including a
- * denial added after a descendant already learned the name.
- *
- * The configured blacklist is not eligibility: the tool-access domain reads it
- * as the startup blacklist source, so a child excludes a blacklisted tool by
- * its denial set, not by a matcher here.
- *
- * A synchronous operation must resolve the ancestor chain once and then ask
- * {@link CapabilityScopeView.allows} for every tool. Eligibility can grow
- * mid-turn, so a view is deliberately fresh for one operation: it is never
- * reused across turns or tool calls. The learned sets below are the only
- * persistent authority state; they are monotonic and never used as a negative
- * cache. They also cannot add a name that an ancestor currently denies.
- *
- * `allows` is the exact qualification answer of `capabilityAllowsTool`,
- * including its root behavior: without a parent, every
- * non-denied name is qualified, even when it is not registered. That is why
- * `available` is not a replacement for `allows`: `available` is the registry
- * intersection snapshot for filtering, while `allows` also answers for names
- * the catalog does not contain (and callers still check `exposure === "hidden"`
- * themselves). Hidden tools never enter `available`.
+ * A child may discover and use tools that its parent does not have, as long as
+ * no ancestor denies them (via root blacklist or ancestor role/preset
+ * exclusions). `allows(name)` answers the negative fence check for any name,
+ * including unregistered names.
  *
  * The parent source may be a resolver so a revived child looks up the current
  * parent API instead of the one captured at construction. A cyclic chain fails
@@ -38,6 +19,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 export interface CapabilityScopedTool {
   readonly name: string;
   readonly exposure?: string | undefined;
+  readonly namespace?: { readonly name: string } | undefined;
 }
 
 /** Minimal structural tool catalog; an ExtensionAPI satisfies it. */
@@ -56,16 +38,14 @@ export type CapabilityParentSource =
   | null
   | undefined;
 
+/** Optional dynamic denial predicate evaluated against an ancestor's live rules. */
+export type CapabilityScopeDenialPredicate = (name: string, tool?: CapabilityScopedTool) => boolean;
+
 /**
  * Qualification for one synchronous operation.
- *
- * `allows` is O(1): the ancestor chain and every catalog were resolved before
- * the view was returned. `available` is a detached, read-only snapshot; keeping
- * or mutating the returned object cannot change authority state.
  */
 export interface CapabilityScopeView {
   readonly allows: (name: string) => boolean;
-  readonly available: ReadonlySet<string>;
   /** Whether this view's catalog is the chain root (it has no parent). */
   readonly root: boolean;
 }
@@ -73,8 +53,7 @@ export interface CapabilityScopeView {
 interface ScopeState {
   parent: CapabilityParentSource;
   denied: ReadonlySet<string>;
-  /** Append-only qualification learned by earlier operations. */
-  learned: Set<string>;
+  deniedPredicate?: CapabilityScopeDenialPredicate | undefined;
   /** Configured blacklist patterns (startup source); only the chain root sets them. */
   startupBlacklist: readonly string[];
 }
@@ -94,7 +73,7 @@ function stateFor(pi: CapabilityToolCatalog): ScopeState {
   if (state === undefined) {
     const exchange: ScopeExchange = {};
     pi.events?.emit(SCOPE_CHANNEL, exchange);
-    state = exchange.state ?? { parent: null, denied: NO_DENIALS, learned: new Set<string>(), startupBlacklist: [] };
+    state = exchange.state ?? { parent: null, denied: NO_DENIALS, startupBlacklist: [] };
     scopes.set(pi, state);
     if (exchange.state === undefined) {
       const shared = state;
@@ -129,60 +108,33 @@ function ancestorChain(pi: CapabilityToolCatalog): ScopeNode[] {
 }
 
 /**
- * Resolve this scope's whole ancestor qualification now and return a view that
- * answers every subsequent name check in O(1).
- *
- * Building the view performs the same append-only learning as
- * `capabilityAvailableTools`: every ancestor's currently effective names are
- * folded into the child's learned set, and every registered, non-hidden child
- * tool is learned when its parent qualifies it. Current denials are applied
- * cumulatively at read time, so a denial added at any level is not hidden by an
- * earlier learned grant.
+ * Resolve this scope's ancestor negative fences once and return a view for
+ * one synchronous operation.
  */
 export function createCapabilityScopeView(pi: CapabilityToolCatalog): CapabilityScopeView {
   const chain = ancestorChain(pi);
-
-  let inheritedDenied: ReadonlySet<string> = NO_DENIALS;
-  let parentEffective: ReadonlySet<string> | null = null;
-  let targetDenied: ReadonlySet<string> = NO_DENIALS;
-  let targetEffective: ReadonlySet<string> = NO_DENIALS;
-  let targetParentEffective: ReadonlySet<string> | null = null;
-
+  const denied = new Set<string>();
+  const predicates: CapabilityScopeDenialPredicate[] = [];
   for (const node of chain) {
-    const denied = new Set(inheritedDenied);
     for (const name of node.state.denied) denied.add(name);
-
-    if (parentEffective !== null) {
-      for (const name of parentEffective) {
-        if (!denied.has(name)) node.state.learned.add(name);
-      }
-    }
-    for (const tool of node.catalog.getAllTools()) {
-      if (tool.exposure === "hidden" || denied.has(tool.name)) continue;
-      if (parentEffective !== null && !parentEffective.has(tool.name)) continue;
-      node.state.learned.add(tool.name);
-    }
-
-    const effective = new Set<string>();
-    for (const name of node.state.learned) {
-      if (!denied.has(name)) effective.add(name);
-    }
-
-    targetParentEffective = parentEffective;
-    targetDenied = denied;
-    targetEffective = effective;
-    inheritedDenied = denied;
-    parentEffective = effective;
+    if (node.state.deniedPredicate !== undefined) predicates.push(node.state.deniedPredicate);
   }
+  let byName: Map<string, CapabilityScopedTool> | undefined;
+  const toolFor = (name: string): CapabilityScopedTool | undefined => {
+    if (predicates.length === 0) return undefined;
+    byName ??= new Map(pi.getAllTools().map((tool) => [tool.name, tool]));
+    return byName.get(name);
+  };
 
-  const parent = targetParentEffective;
-  const denied = targetDenied;
-  const allows =
-    parent === null
-      ? (name: string): boolean => !denied.has(name)
-      : (name: string): boolean => !denied.has(name) && parent.has(name);
-
-  return { allows, available: new Set(targetEffective), root: parent === null };
+  return {
+    allows: (name: string): boolean => {
+      if (denied.has(name)) return false;
+      if (predicates.length === 0) return true;
+      const tool = toolFor(name);
+      return !predicates.some((predicate) => predicate(name, tool));
+    },
+    root: chain.length === 1,
+  };
 }
 
 /**
@@ -208,43 +160,18 @@ export function capabilityStartupBlacklist(pi: CapabilityToolCatalog): readonly 
 }
 
 /**
- * Record a scope's parent and role denials. The denied collection is copied, so
- * a caller cannot widen or narrow authority by retaining the input array. The
- * learned set is intentionally preserved: qualification stays append-only, and
- * current denials are applied when a view is built.
+ * Record a scope's parent, role denials, and optional dynamic denial predicate.
+ * The denied collection is copied, so a caller cannot widen or narrow
+ * authority by retaining the input array.
  */
 export function setCapabilityParent(
   pi: CapabilityToolCatalog,
   parent: CapabilityParentSource = null,
   denied: readonly string[] = [],
+  deniedPredicate?: CapabilityScopeDenialPredicate,
 ): void {
   const state = stateFor(pi);
   state.parent = parent;
   state.denied = new Set(denied);
-}
-
-/**
- * Read-only snapshot of the currently effective available tools for this scope.
- *
- * The result is detached: retaining the set never exposes mutable authority
- * state.
- */
-export function capabilityAvailableTools(pi: CapabilityToolCatalog): ReadonlySet<string> {
-  return createCapabilityScopeView(pi).available;
-}
-
-/**
- * Single-name qualification check. Filter loops should create one
- * {@link createCapabilityScopeView} per operation instead of repeating this.
- *
- * A root scope answers from its own denial set without enumerating the catalog,
- * and a child asks its parent's effective qualification. An ancestor denial
- * always wins.
- */
-export function capabilityAllowsTool(pi: CapabilityToolCatalog, name: string): boolean {
-  const state = stateFor(pi);
-  if (state.denied.has(name)) return false;
-  const parent = resolvedParent(state);
-  if (parent === null) return true;
-  return createCapabilityScopeView(parent).available.has(name);
+  state.deniedPredicate = deniedPredicate;
 }

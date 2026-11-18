@@ -32,7 +32,7 @@ import type { Api, Message, Model, TranscriptContext } from "@earendil-works/pi-
 
 import { DEFAULT_HARNESS_CONFIG, resolveHarnessConfig } from "../../src/harness-config.ts";
 import type { HarnessConfig } from "../../src/harness-config.ts";
-import { capabilityAllowsTool } from "../../src/capability/scope.ts";
+import { createCapabilityScopeView } from "../../src/capability/scope.ts";
 import type { CapabilityScopedTool, CapabilityToolCatalog } from "../../src/capability/scope.ts";
 import { ModelRuntimeBridgeError } from "../../src/session/model-runtime.ts";
 import { CACHE_IDENTITY_CUSTOM_TYPE } from "../../src/session-cache-runtime.ts";
@@ -372,7 +372,7 @@ function assertNoForbiddenExecution(run: InheritedRun): void {
     assert.ok(!active.has(name), `${name} is not active`);
     assert.ok(!current.some((tool) => tool.name === name), `${name} is not declared`);
   }
-  assert.equal(capabilityAllowsTool(run.opened.capabilityScope, 'blocked_child'), false);
+  assert.equal(createCapabilityScopeView(run.opened.capabilityScope).allows('blocked_child'), false);
   assert.ok(!active.has('blocked_child'), 'blocked_child is not active');
   assert.ok(!current.some((tool) => tool.name === 'blocked_child'), 'blocked_child is not declared');
 }
@@ -424,17 +424,18 @@ test("open builds the real child Pi, resource loader and capability scope", asyn
     assert.ok(active.includes("read"));
     assert.ok(!active.includes("bash"), "the request's exclusion reaches createAgentSession");
 
-    assert.equal(capabilityAllowsTool(opened.capabilityScope, "surface_probe"), true);
-    assert.equal(capabilityAllowsTool(opened.capabilityScope, "parent_only"), true);
-    assert.equal(capabilityAllowsTool(opened.capabilityScope, "blocked_child"), false);
-    assert.equal(capabilityAllowsTool(opened.capabilityScope, "bash"), false);
+    const scope = createCapabilityScopeView(opened.capabilityScope);
+    assert.equal(scope.allows("surface_probe"), true);
+    assert.equal(scope.allows("parent_only"), true);
+    assert.equal(scope.allows("blocked_child"), false);
+    assert.equal(scope.allows("bash"), false);
     assert.ok(h.parentCalls.length > 0);
     assert.ok(h.parentCalls.every((origin) => origin === "Main"));
 
     // A revived parent is looked up again instead of freezing the catalog that
     // the first eligibility query saw.
     h.parentTools.push({ name: "late_parent" });
-    assert.equal(capabilityAllowsTool(opened.capabilityScope, "late_parent"), true);
+    assert.equal(createCapabilityScopeView(opened.capabilityScope).allows("late_parent"), true);
     assert.ok(h.parentCalls.length >= 2);
   } finally {
     await opened.execution.dispose();
@@ -549,8 +550,9 @@ test("Fresh uses default extensions minus exclusions without installing the root
       'package registration keeps rendering but does not reinstall root services');
     assert.equal(h.surfaces.length, 1);
     assert.ok(loaded.extensions.some((extension) => extension.commands.has("mcp")), "Fresh retains the MCP execution backend");
-    assert.equal(capabilityAllowsTool(opened.capabilityScope, "default_extension"), true);
-    assert.equal(capabilityAllowsTool(opened.capabilityScope, "denied_extension"), false);
+    const scope = createCapabilityScopeView(opened.capabilityScope);
+    assert.equal(scope.allows("default_extension"), true);
+    assert.equal(scope.allows("denied_extension"), false);
     assert.deepEqual(lifecycle, ["started"], "default extension session_start actually runs");
     const stored = JSON.parse(await readFile(path.join(h.root, "agent", "settings.json"), "utf8"));
     assert.deepEqual(stored.packages, [packageRoot], 'child filtering does not change package registration');
@@ -950,7 +952,7 @@ test("fixed registration exclusions stay separate from execution denials", async
   try {
     const active = opened.execution.session.getActiveToolNames();
     assert.ok(!active.includes("bash"), "the fixed registration exclusion removes bash");
-    assert.equal(capabilityAllowsTool(opened.capabilityScope, "blocked_child"), false);
+    assert.equal(createCapabilityScopeView(opened.capabilityScope).allows("blocked_child"), false);
     assert.deepEqual(h.surfaces[0]?.scope.excludedTools, ["blocked_child"],
       "the child scope carries execution denials, not the fixed registration list");
   } finally {
