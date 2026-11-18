@@ -421,7 +421,7 @@ test('nested swallowed capability calls coalesce into one persisted user sync me
   }
 });
 
-test('mid-run auto-compaction persists user boundary carrying capability-availability and survives reopen + forced prompt', { timeout: 30_000 }, async () => {
+test('mid-run auto-compaction persists user boundary carrying capabilities prune notice and survives reopen + forced prompt', { timeout: 30_000 }, async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'pi-midrun-compact-'));
   const sessionDir = path.join(dir, 'sessions');
   const runtime = await ModelRuntime.create({

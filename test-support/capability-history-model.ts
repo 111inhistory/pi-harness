@@ -69,7 +69,7 @@ function placementJournal(world: World) {
 }
 
 function isHarnessSectionKey(key: string): boolean {
-  return key === 'preset-instructions' || key === 'capabilities';
+  return key === 'capabilities';
 }
 
 function effectiveSystemSections(messages: readonly Message[]): Record<string, string> {

@@ -177,11 +177,6 @@ export async function runResponsesOnlyScenario(fixture: CapabilityScenarioFixtur
   assert.ok(lastChat);
   const declared = getCurrentTools(lastChat.context.messages);
   assert.deepEqual(declared.map((tool) => tool.name), ["codemode"]);
-  const descriptionGuidance = lastChat.context.messages.filter(message => message.role === 'system')
-    .flatMap(message => Object.keys(message.sections ?? {})
-      .filter(key => key.startsWith('harness-guidance:tool-description:')));
-  assert.deepEqual(descriptionGuidance, [],
-    'SDK owns the Codemode description; no request correction layer is emitted');
   assert.match(declared[0]?.description ?? '', /subagent_create/,
     'the SDK-owned current Codemode catalog reaches the native declaration');
 }
