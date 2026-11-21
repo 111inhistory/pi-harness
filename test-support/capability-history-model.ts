@@ -557,9 +557,13 @@ class Command implements AsyncCommand<State, World> {
         for (const name of expectedAtTurnStart) {
           assert.ok(startMemory.includes(name), `turn start: Capability memory includes ${name}`);
         }
-        for (const name of names) {
+        for (const [index, name] of names.entries()) {
           if (!expectedAtTurnStart.includes(name) && !state.pruned.includes(name)) {
-            assert.equal(startMemory.includes(name), false, `turn start: Capability memory omits ${name}`);
+            if (state.tools[index]?.blacklisted) {
+              assert.equal(startMemory.includes(`tool://${name}`), false, `turn start: Capability discovery memory omits blacklisted ${name}`);
+            } else {
+              assert.equal(startMemory.includes(name), false, `turn start: Capability memory omits ${name}`);
+            }
           }
         }
       }
