@@ -54,6 +54,7 @@ export interface AsyncShellRegisterFrame {
   readonly id: string;
   readonly directory: string;
   readonly pid: number;
+  readonly callId?: string;
 }
 
 export interface AsyncShellCompleteFrame {
@@ -119,13 +120,11 @@ function cursor(value: unknown): number {
   return value;
 }
 
-function shellResult(value: unknown, id: string): ShellResult {
+export function validateShellResult(value: unknown): ShellResult {
   if (!record(value)) throw new AsyncShellFrameError("frames carry one result object.");
-  if (value["id"] !== id) throw new AsyncShellFrameError("result.id must equal the frame id.");
+  const id = value["id"];
+  if (typeof id !== 'string' || !isTaskId(id)) throw new AsyncShellFrameError('Invalid job result ID.');
   const reported = status(value["status"]);
-  if (reported === "running") {
-    throw new AsyncShellFrameError("a completion cannot report a running task.");
-  }
   const output = value["output"];
   if (typeof output !== "string") throw new AsyncShellFrameError("result.output must be a string.");
   if (Buffer.byteLength(output, "utf8") > MAX_RESULT_BYTES) {
@@ -163,13 +162,18 @@ export function validateAsyncShellFrame(value: unknown): AsyncShellFrame {
     if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
       throw new AsyncShellFrameError("pid must be a positive integer.");
     }
-    return { kind: ASYNC_SHELL_KIND, agentId, token, operation, id, directory, pid };
+    const callId = value['callId'];
+    return { kind: ASYNC_SHELL_KIND, agentId, token, operation, id, directory, pid,
+      ...(callId === undefined ? {} : { callId: text(callId, 'callId', MAX_TOKEN_CHARS) }) };
   }
   if (operation === "complete") {
     if (typeof value["notify"] !== "boolean") throw new AsyncShellFrameError("notify must be a boolean.");
+    const result = validateShellResult(value['result']);
+    if (result.id !== id) throw new AsyncShellFrameError('result.id must equal the frame id.');
+    if (result.status === 'running') throw new AsyncShellFrameError('a completion cannot report a running task.');
     return {
       kind: ASYNC_SHELL_KIND, agentId, token, operation, id, notify: value["notify"],
-      result: shellResult(value["result"], id),
+      result,
     };
   }
   throw new AsyncShellFrameError("operation must be register or complete.");

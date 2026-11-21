@@ -56,6 +56,7 @@
     "defaultMaxOutputTokens": 10000
   },
   "shell": {
+    "autoBackgroundAfterMs": 60000,
     "preflight": true,
     "approval": {
       "enabled": false,

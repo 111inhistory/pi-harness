@@ -21,7 +21,7 @@
  * - a dropped-tool list keeps the capture's order and never repeats a name.
  */
 
-import { HARNESS_TOOLS, isHarnessTool } from "../harness-tools.ts";
+import { HARNESS_TOOLS, JOB_TOOLS, isHarnessTool } from "../harness-tools.ts";
 
 /** The only shape the transplantability filter needs from a registered tool. */
 export interface ToolPolicyTool {
@@ -29,8 +29,8 @@ export interface ToolPolicyTool {
   readonly sourceInfo?: { readonly source?: string | undefined; readonly path?: string | undefined } | undefined;
 }
 
-/** At the leaf depth a child keeps listing and messaging, without create or signal. */
-const LEAF_HARNESS_TOOLS = ["subagent_list", "msg_write"] as const;
+/** Leaf Actors can list, message and control their own Shell Jobs. */
+const LEAF_HARNESS_TOOLS = ["subagent_list", "msg_write", ...JOB_TOOLS] as const;
 
 /**
  * The harness tool names a child at `depth` may hold. `maxDepth` is the root's

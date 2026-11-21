@@ -194,7 +194,7 @@ export class RootService implements ManagedWriteHost {
         installAsyncShellSurface(api, async () => {
           this.assertOperational();
           return this.shell;
-        }, scope.senderId);
+        }, scope.senderId, options.api);
         installSessionSurface(api, async () => {
           this.assertCurrent();
           return this;

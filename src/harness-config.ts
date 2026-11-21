@@ -68,6 +68,7 @@ export interface HarnessConfig {
     readonly defaultMaxOutputTokens: number;
   };
   readonly shell: {
+    readonly autoBackgroundAfterMs: number;
     readonly preflight: boolean;
     readonly approval: {
       readonly enabled: boolean;
@@ -120,6 +121,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
   },
   codemode: { memoryLimitBytes: 256 * 1024 * 1024, defaultMaxOutputTokens: 10_000 },
   shell: {
+    autoBackgroundAfterMs: 60_000,
     preflight: true,
     approval: {
       enabled: false, mode: 'auto', command: [], ruleFiles: [], commandTimeoutMs: 10_000, manualTimeoutMs: 30_000,

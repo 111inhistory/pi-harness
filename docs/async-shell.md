@@ -1,10 +1,10 @@
 # 异步 Shell
 
-`pi-job` 在真实终端中运行命令：POSIX 使用 tmux，Windows 使用 psmux 的原生 ConPTY。CLI 返回任务 ID、状态和增量输出；任务继续运行时，调用 Agent 可以结束当前模型轮次，宿主会在完成后送入结果。
+Shell Job 支持普通子进程和终端两种执行方式。终端使用 POSIX tmux 或 Windows psmux 的原生 ConPTY。任务继续运行时，调用 Agent 可以结束当前模型轮次，由宿主送入完成结果。
 
 ## 安装
 
-需要项目要求的 Node.js 版本与 Go 1.27+ 工具链。CLI 是原生 Go 二进制；POSIX 主机使用 tmux，Windows 使用原生 ConPTY 后端 psmux 3.4.0 或更新版本，可通过 winget 安装和更新：
+构建需要项目要求的 Node.js 版本与 Go 1.27+ 工具链。普通 Job 不依赖终端复用器。PTY Job 在 POSIX 使用 tmux，在 Windows 使用 psmux 3.4.0 或更新版本，可通过 winget 安装和更新：
 
 ```powershell
 winget install --id marlocarlo.psmux --exact
@@ -20,9 +20,19 @@ npm run install:async-shell
 
 安装命令构建原生 `dist/pi-job`（Windows 为 `dist/pi-job.exe`）。POSIX 在 Pi 用户目录的 `bin/pi-job` 创建指向该二进制的链接；Windows 将 `pi-job.exe` 安装到 `bin/`，并生成 PowerShell、cmd 和 Bash 启动入口。两者都会安装 [pi-job Skill](../skills/pi-job/SKILL.md) 到用户目录的 `skills/pi-job`（Windows 使用目录联接）。Pi 用户目录遵循 `PI_CODING_AGENT_DIR`，默认是 `~/.pi/agent`。Pi 内置 Shell 会将该目录加入 PATH。更新代码后重新执行安装命令，并重启 Pi 加载新版宿主与提示词；`/reload` 不保证刷新全部依赖。
 
-加载 Harness 后，Agent 通过原有 Bash／PowerShell 工具调用 CLI；无需启用额外的模型工具。Windows 后端明确调用 `psmux.exe`。psmux 的 winget 包还提供 `tmux` 别名，与其他 tmux 发行版并存时，安装或更新可能改写 `tmux.exe` 入口；Harness 的后端选择不受该别名影响。Shell 工具指引直接提供 `PI_CODING_AGENT_DIR` 环境变量下的相对入口 `skills/pi-job/SKILL.md`，模型使用前按需读取；Shell 子进程始终提供解析后的 `PI_CODING_AGENT_DIR`，提示词不展开本机绝对路径。已提供的 Skill 入口可直接读取，无需先检索；Skill 仍可通过 Capability 发现，也可显式使用 `/skill:pi-job`。以 Pi package 安装仓库时，manifest 同样声明了 Skill 资源。普通终端也可以执行构建产物，未设置宿主回调环境时以独立模式运行。
+加载 Harness 后，Agent 通过 Bash／PowerShell 启动 Job，通过 `job_stop`、`job_send`、`job_key` 控制自己拥有的 Job。Windows PTY 后端调用 `psmux.exe`，不使用 winget 提供的 `tmux` 别名。普通终端也可使用独立的 `pi-job` CLI；`/skill:pi-job` 提供其用法。
 
 ## 创建与查询
+
+### 模型工具
+
+通过 `bash` 或 Windows 上的 `powershell` 直接运行命令。未提供 `timeout` 时，普通调用先等待 `shell.autoBackgroundAfterMs`（默认 60 秒）；仍在运行就返回 Job ID 和日志路径，原命令继续执行。`background: true` 在启动后立即返回；同时提供 `timeout` 时，超时仍限制 Job 的执行时间。只指定 `timeout` 而未请求后台时保持前台执行。
+
+`pty` 默认 `false`：普通子进程使用管道输出，stdin 为 EOF。POSIX 停止操作只针对 Job 的进程组，不能清理自行脱离该进程组的进程。`pty: true` 使用 PTY／ConPTY。用 `read` 按行查看返回的临时日志路径；`job_stop(id)` 停止当前执行拥有的 Job，成功报告同一次取消后不重复通知。`job_send(id, text, enter?)` 与 `job_key(id, key)` 仅接受该执行拥有的 PTY Job；`enter` 默认 `false`。模型无需使用 CLI 的 `poll` 或字节游标。
+
+Windows 非 PTY 后端使用 Job Object：先确认运行器已经加入，再启动命令；停止时确认 Job 内进程全部退出。系统禁止加入 Job Object 时启动失败，不退回到无管控执行。依赖 stdin 传入命令的 Shell（如旧版 WSL Bash）保留原生前台传输方式，但不能启动受管 Job。未安装 Go 后端或宿主不可用时，普通调用仍可使用 SDK 前台执行；显式后台或 PTY 请求则报错。
+
+### 独立 CLI
 
 ```sh
 pi-job create -- npm run build
@@ -47,7 +57,7 @@ pi-job cancel TASK_ID
 
 `closed` 表示正常终结路径已确认清理完成，不只是命令停止输出。无法确认清理时不写入该标记；完成回调报告 `internal_error`，保留宿主任务围栏供关闭清理入口处理，不发送正常完成结果冒充清理成功。monitor panic 沿用异常路径，不承诺写入 `closed`。这套释放不自动重试，也不回收旧任务日志。
 
-任务状态、原始 PTY 日志与过滤后的文本日志保存在任务根目录下的 `<任务ID>/`。默认根目录为 `os.tmpdir()/pi-async-shell-<uid>/`；连接宿主时，CLI 沿用宿主分配的固定根目录，子进程修改 `TMPDIR`／`TEMP` 不改变任务定位。Windows 通常使用 `%TEMP%/pi-async-shell-0/<任务ID>/`，其中 `0` 是缺少 Unix UID 时的目录后缀。每个任务使用独立 tmux server 或 psmux `-L pi-job-<任务ID>` 命名空间，不使用当前用户正在操作的会话。
+任务状态、原始日志与过滤后的文本日志保存在任务根目录下的 `<任务ID>/`。默认根目录为 `os.tmpdir()/pi-async-shell-<uid>/`；连接宿主时沿用宿主分配的固定根目录，子进程修改 `TMPDIR`／`TEMP` 不改变任务定位。Windows 通常使用 `%TEMP%/pi-async-shell-0/<任务ID>/`，其中 `0` 是缺少 Unix UID 时的目录后缀。每个 PTY 任务使用独立 tmux server 或 psmux `-L pi-job-<任务ID>` 命名空间，不使用当前用户正在操作的会话。
 
 Windows 按实际目录 ACL 验证私有性，共享临时目录中的宽泛访问授权会被拒绝，Harness 不会自动改写已有目录权限。
 
@@ -112,7 +122,7 @@ IPC 投递失败或超时不证明结果未入队，因此不会自动重发未�
 
 ## 验证范围
 
-Linux 回归使用真实 Pi SDK、离线模拟模型与真实 tmux 后端。当前根端点回调和归属清理的 Windows／macOS 验证限于交叉构建与测试编译，尚未完成对应平台实机运行。较早版本的 Windows Bash／PowerShell、ConPTY、Unicode 和增量输出验收见[平台验收记录](reviews/async-shell-platform-acceptance.md)，不替代当前实现的实机验收。真实提供方多轮行为与长时压力仍未验收。
+平台回归使用真实 Pi SDK 和离线模拟模型。Linux 覆盖 tmux 与普通进程；Windows 覆盖 Bash／PowerShell、ConPTY 与 Job Object，后端测试检查取消和超时后的子孙进程清理。macOS 本轮仅做交叉构建。较早版本验收见[平台验收记录](reviews/async-shell-platform-acceptance.md)。真实提供方多轮行为与长时压力仍未验收。
 
 ## 当前限制
 

@@ -79,6 +79,7 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 | 字段 | 默认值 | 含义 |
 | --- | --- | --- |
 | `shell.preflight` | `true` | 执行前检查 Shell 语法 |
+| `shell.autoBackgroundAfterMs` | `60000` | 未指定执行超时或显式后台时，Shell 自动转入后台前的等待时间（毫秒） |
 | `shell.approval.enabled` | `false` | 启用 Shell 权限审批 |
 | `shell.approval.mode` | `auto` | 没有分支模式记录时的默认值：`ask`、`auto` 或 `yolo` |
 | `shell.approval.command` | `[]` | 静态判断程序及参数数组；空数组表示交给后续审批 |
