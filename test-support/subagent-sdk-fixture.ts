@@ -302,6 +302,8 @@ export async function createSdkFixture(options: SdkFixtureOptions): Promise<SdkF
     }
     const settings: FixtureSettings = { retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: "off" as const,
       ...(scenario === "responses-only" ? { codemode: { mode: "only" as const } } : {}),
+      ...(scenario === 'async-shell' ? { shellCommandPrefix: 'export HARNESS_FIXTURE_PREFIX="${HARNESS_FIXTURE_PREFIX:-}once"' } : {}),
+      ...(scenario === 'async-shell-powershell' ? { shellCommandPrefix: "$env:HARNESS_FIXTURE_PREFIX += 'once'" } : {}),
     };
     let packageSkillPath: string | undefined;
     let cliSkillPath: string | undefined;

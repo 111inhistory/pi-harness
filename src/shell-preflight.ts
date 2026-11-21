@@ -78,8 +78,9 @@ export async function checkShellSyntax({
   command,
   executable,
   cwd = process.cwd(),
+  env = process.env,
   timeoutMs = DEFAULT_TIMEOUT_MS,
-}: { command: string; executable: string; cwd?: string; timeoutMs?: number }): Promise<ShellPreflightResult> {
+}: { command: string; executable: string; cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }): Promise<ShellPreflightResult> {
   if (typeof command !== "string") {
     throw new TypeError("command must be a string");
   }
@@ -103,7 +104,7 @@ export async function checkShellSyntax({
 
     const child = spawn(executable, args, {
       cwd,
-      env: process.env,
+      env,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,

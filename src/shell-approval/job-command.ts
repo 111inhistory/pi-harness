@@ -24,13 +24,15 @@ export type ExtractJobCommandsResult =
       readonly actions: readonly JobApprovalAction[];
       readonly containsPiJob: boolean;
     }
-  | { readonly kind: "original" };
+  | { readonly kind: "original" }
+  | { readonly kind: "terminal-input" };
 
 export interface ExtractJobCommandsOptions {
   readonly shell: string;
   readonly command: string;
   readonly cwd: string;
   readonly platform?: "posix" | "windows";
+  readonly rejectTerminalInput?: boolean;
 }
 
 export const PARSER_MODULE_URL = new URL(
@@ -256,6 +258,11 @@ export async function extractJobCommands(
   if (!parseResponse.ok || parseResponse.unknown || !Array.isArray(parseResponse.commands)) {
     return { kind: "original" };
   }
+
+  if (options.rejectTerminalInput && parseResponse.commands.some(argv => {
+    const invocation = parsePiJobInvocation(argv);
+    return invocation.isPiJob && (invocation.subcommand === 'send' || invocation.subcommand === 'key' || invocation.subcommand === '__host');
+  })) return { kind: 'terminal-input' };
 
   // If there are multiple commands (compound execution), check if any command
   // changes working directory or environment (e.g. cd, export, Set-Location),

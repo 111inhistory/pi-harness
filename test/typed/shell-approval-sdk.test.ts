@@ -38,6 +38,7 @@ import {
 import { DEFAULT_HARNESS_CONFIG, harnessConfigFor } from "../../src/harness-config.ts";
 import shellPreflightExtension from "../../src/shell-approval/extension.ts";
 import { PARSER_MODULE_URL } from "../../src/shell-approval/job-command.ts";
+import { installAsyncShellSurface } from "../../src/async-shell/surface.ts";
 
 const POLICY_SCRIPT = String.raw`
 const fs = require("node:fs");
@@ -103,15 +104,21 @@ async function runRecordedApproval(
   root: string,
   command: string,
   ruleContents: readonly string[],
+  managed?: { prefix: string; background?: boolean; pty?: boolean; timeout?: number },
 ): Promise<RecordedApproval> {
   const environment = stripCallbackEnvironment();
   process.env.PI_CODING_AGENT_DIR = path.join(root, "agent");
+  if (managed) {
+    await mkdir(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+    await writeFile(path.join(process.env.PI_CODING_AGENT_DIR, 'settings.json'), JSON.stringify({ shellCommandPrefix: managed.prefix }));
+  }
   const ruleFiles = await writeRuleFiles(root, ruleContents);
   let session: AgentSession | undefined;
   try {
     const config = {
       ...DEFAULT_HARNESS_CONFIG,
       shell: {
+        ...DEFAULT_HARNESS_CONFIG.shell,
         preflight: true,
         approval: {
           ...DEFAULT_HARNESS_CONFIG.shell.approval,
@@ -136,7 +143,8 @@ async function runRecordedApproval(
     });
     const model: Model<Api> = { ...faux.models[0]!, api: "openai-responses" };
     const steps: AssistantMessage[] = [
-      toolCall(model, shellTool(), { command }, "call-extracted-shell"),
+      toolCall(model, shellTool(), { command, ...(managed?.background ? { background: true } : {}),
+        ...(managed?.pty ? { pty: true } : {}), ...(managed?.timeout ? { timeout: managed.timeout } : {}) }, "call-extracted-shell"),
       done(model),
     ];
     faux.provider.streamSimple = (requestModel): AssistantMessageEventStreamType => {
@@ -172,6 +180,7 @@ async function runRecordedApproval(
           factory(api) {
             harnessConfigFor(api, config);
             shellPreflightExtension(api);
+            if (managed) installAsyncShellSurface(api, async () => { throw new Error('No Job backend in this fixture.'); }, 'main');
           },
         },
       ],
@@ -341,6 +350,7 @@ for (const scenario of scenarios) {
     const config = {
       ...DEFAULT_HARNESS_CONFIG,
       shell: {
+        ...DEFAULT_HARNESS_CONFIG.shell,
         preflight: true,
         approval: {
           ...DEFAULT_HARNESS_CONFIG.shell.approval,
@@ -531,7 +541,7 @@ test("real parser reviews every compound candidate and any denial blocks executi
   assert.equal(job.decision, "deny");
 });
 
-test("send/key-only pi-job commands are user-authorized and never call static policy", {
+test("recognized pi-job terminal input requires the managed Job tools", {
   skip: parserSkip,
   timeout: 30_000,
 }, async t => {
@@ -539,12 +549,48 @@ test("send/key-only pi-job commands are user-authorized and never call static po
   let session: AgentSession | undefined;
   t.after(async () => { session?.dispose(); await rm(root, { recursive: true, force: true }); });
   const recordPath = path.join(root, "policy-records.jsonl");
-  const command = "pi-job key job_00000000 Enter; pi-job send job_00000000 hello";
+  const command = process.platform === 'win32' ? 'pi-job key job_00000000 Enter'
+    : "cd .; pi-job key job_00000000 Enter; pi-job send job_00000000 <<'EOF'\nhello\nEOF";
 
   const result = await runRecordedApproval(root, command, ["deny", recordPath]);
   session = result.session;
 
   assert.deepEqual(result.errors, []);
-  assert.equal(existsSync(recordPath), false, "send/key-only commands must not invoke static policy");
+  assert.match(resultTexts(session).join('\n'), /use job_send or job_key/);
+  assert.equal(existsSync(recordPath), false, "terminal input is refused before calling static policy");
   assert.equal(result.records.length, 0);
 });
+
+test('managed Shell reviews and executes the configured prefix exactly once', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'pi-shell-prefix-'));
+  let session: AgentSession | undefined;
+  t.after(async () => { session?.dispose(); await rm(root, { recursive: true, force: true }); });
+  const prefix = process.platform === 'win32' ? "Write-Output 'prefix-marker'; $fromPrefix = 'configured'"
+    : "printf 'prefix-marker\\n'; from_prefix=configured";
+  const command = process.platform === 'win32' ? 'Write-Output $fromPrefix' : 'printf "%s\\n" "$from_prefix"';
+  const result = await runRecordedApproval(root, command, ['allow', path.join(root, 'records')], { prefix, timeout: 5 });
+  session = result.session;
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.records.length, 1);
+  assert.equal(result.records[0]?.command, `${prefix}\n${command}`);
+  assert.equal(result.records[0]?.cwd, root);
+  assert.ok(resultTexts(session).some(text => text.trim().replaceAll('\r', '') === 'prefix-marker\nconfigured'));
+});
+
+for (const [background, pty] of [[false, false], [true, false], [false, true], [true, true]] as const) {
+  test(`managed Shell denial precedes launch (background=${background}, pty=${pty})`, async t => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'pi-shell-deny-job-'));
+    let session: AgentSession | undefined;
+    t.after(async () => { session?.dispose(); await rm(root, { recursive: true, force: true }); });
+    const marker = path.join(root, 'executed');
+    const prefix = process.platform === 'win32' ? '$prefix = 1' : 'prefix=1';
+    const command = markerCommand(marker);
+    const result = await runRecordedApproval(root, command, ['deny', path.join(root, 'records')], { prefix, background, pty });
+    session = result.session;
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.records.length, 1);
+    assert.equal(result.records[0]?.command, `${prefix}\n${command}`);
+    assert.match(resultTexts(session).join('\n'), /fixture policy deny/);
+    assert.equal(existsSync(marker), false);
+  });
+}

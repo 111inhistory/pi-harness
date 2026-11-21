@@ -11,7 +11,7 @@ function surface() {
     on(channel: string, handler: (data: unknown) => void) { emitter.on(channel, handler); return () => emitter.off(channel, handler); },
     emit(channel: string, data: unknown) { emitter.emit(channel, data); },
   };
-  return { api: { events, on: (name: string, fn: (event: ToolCallEvent, ctx: ExtensionContext) => unknown) => handlers.set(name, fn) } as unknown as ExtensionAPI, handlers, events };
+  return { api: { events, getAllTools: () => [], on: (name: string, fn: (event: ToolCallEvent, ctx: ExtensionContext) => unknown) => handlers.set(name, fn) } as unknown as ExtensionAPI, handlers, events };
 }
 
 test('child Shell hooks consult optional root approval at call time and propagate source and wait boundaries', async () => {

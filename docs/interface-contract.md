@@ -517,7 +517,7 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 
 ## 异步 Shell
 
-主机可安装 `pi-job`，由原有 Bash／PowerShell 工具运行终端任务（POSIX tmux，Windows psmux 3.4.0+）。`create --wait` 在指定窗口内等待，否则返回任务 ID；`poll` 默认返回新增输出；`send` 从 stdin 接收多行文字，`key` 发送显式按键。运行上限由独立的 `--timeout` 控制。完整命令、输出和安装契约见[异步 Shell](async-shell.md)。
+原有 Bash／PowerShell 工具接受 `background` 和 `pty`，长时间运行的命令可返回 Job ID 和日志路径。当前执行可用 `job_stop` 停止自己的 Job；只有 PTY Job 接受 `job_send` 和 `job_key`，日志使用 `read` 查看。显式 `timeout` 与转后台等待分别控制执行期限和等待时间。独立 `pi-job` CLI、平台限制和安装契约见[异步 Shell](async-shell.md)。
 
 注册和完成事件回到会话唯一的 Agent IPC 端点 `main.sock`，帧中携带发起调用的 `agentId` 与该执行租约的 `token`，由根路由到对应 Actor。Main 和子会话在每次 Shell 启动时获得各自的 `PI_AGENT_ID`、`PI_AGENT_SOCKET`（即 `main.sock`）、`PI_ASYNC_SHELL_TOKEN` 和私有任务根；事件不占用 Agent 消息发送者身份，也不产生消息工具授权。未完成异步 Shell 与直接子节点共同保留 Subagent 当前 Job；完成事件先入队，后释放等待。
 

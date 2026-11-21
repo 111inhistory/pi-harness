@@ -21,7 +21,9 @@ describe('Async shell SDK scenarios', { concurrency: 2 }, () => {
       skip: !available, timeout: 45000,
     }, async t => {
       const cwd = await fsp.mkdtemp(path.join(os.tmpdir(), 'pi-shell-sdk-'));
-      t.after(() => fsp.rm(cwd, { recursive: true, force: true }));
+      // A detached native finalizer can still be exiting after writing its
+      // terminal state; Windows briefly keeps the test directory busy.
+      t.after(() => fsp.rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
       const cli = path.join(cwd, process.platform === 'win32' ? 'pi-job.exe' : 'pi-job');
       await execute(process.execPath, [build, cli]);
       try {

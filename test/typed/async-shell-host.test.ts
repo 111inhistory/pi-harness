@@ -98,6 +98,21 @@ test('execution tokens isolate recipients and fence revoked execution callbacks'
   await host.close();
 });
 
+test('Job input checks ownership before approval and does not carry approval across leases', async () => {
+  const { host, frame } = fixture();
+  await host.receive('sub_1', frame('sub_1'));
+  const input = { text: 'synthetic input', enter: true };
+  await assert.rejects(host.input('sub_2', id, input, os.tmpdir(), undefined,
+    async () => assert.fail('another Actor must not be asked to approve this input')), /does not own/);
+  const approval = deferred();
+  const pending = host.input('sub_1', id, input, os.tmpdir(), undefined, () => approval.promise);
+  await host.release('sub_1');
+  await host.receive('sub_1', frame('sub_1'));
+  approval.resolve();
+  await assert.rejects(pending, /not accepting terminal input/);
+  await host.close();
+});
+
 test('retiring execution retains its resource fence until task cancellation finishes', async () => {
   const gate = deferred();
   const { host, events, frame } = fixture({ cancel: () => gate.promise });
@@ -149,11 +164,13 @@ test('native shell still executes when callback IPC is unavailable and clears in
   const probe = path.join(cwd, 'probe.cjs');
   await fs.writeFile(probe, `console.log(JSON.stringify(Object.fromEntries(${JSON.stringify(keys.slice(1))}.map(key => [key, process.env[key] ?? null]))));`);
   const tools: ToolDefinition[] = [];
-  const api = { registerTool: (tool: ToolDefinition) => { tools.push(tool); }, on: () => {} } as unknown as ExtensionAPI;
+  const api = { events: { emit: () => {}, on: () => {} }, registerTool: (tool: ToolDefinition) => { tools.push(tool); }, on: () => {} } as unknown as ExtensionAPI;
   installAsyncShellSurface(api, async () => { throw new Error('fixture IPC endpoint unavailable'); }, 'Main');
   const context = { cwd, isProjectTrusted: () => true, sessionManager: SessionManager.inMemory(cwd) } as unknown as ExtensionToolContext;
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-  for (const tool of tools) {
+  assert.deepEqual(tools.filter(tool => tool.name.startsWith('job_')).map(tool => tool.name).sort(),
+    ['job_key', 'job_send', 'job_stop']);
+  for (const tool of tools.filter(tool => tool.name === 'bash' || tool.name === 'powershell')) {
     const command = tool.name === 'powershell'
       ? `& '${process.execPath.replaceAll("'", "''")}' '${probe.replaceAll("'", "''")}'`
       : `${quote(process.execPath)} ${quote(probe)}`;

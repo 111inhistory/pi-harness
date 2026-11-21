@@ -47,6 +47,7 @@ import {
   type HarnessConfig,
 } from '../../src/harness-config.ts';
 import shellPreflightExtension from '../../src/shell-approval/extension.ts';
+import { checkManagedShell } from '../../src/shell-approval/bridge.ts';
 import { AUTO_REVIEW_MIN_NODE_MAJOR } from '../../src/shell-approval/reviewer.ts';
 
 const REVIEW_API = 'openai-codex-responses';
@@ -80,7 +81,7 @@ interface Capture {
   invoke(event: string, payload: unknown, ctx: ExtensionContext): Promise<unknown>;
 }
 
-/** Minimal typed ExtensionAPI surface: only registration and event dispatch. */
+/** Minimal typed ExtensionAPI surface for the standalone approval extension. */
 function captureExtensionApi(): Capture {
   const handlers = new Map<string, ExtensionHandler[]>();
   const api = {
@@ -90,6 +91,7 @@ function captureExtensionApi(): Capture {
       return () => {};
     },
     registerCommand(): void {},
+    getAllTools: () => [],
   } as unknown as ExtensionAPI;
   return {
     api,
@@ -213,6 +215,7 @@ function approvalConfigForRules(
   return {
     ...DEFAULT_HARNESS_CONFIG,
     shell: {
+      ...DEFAULT_HARNESS_CONFIG.shell,
       preflight: false,
       approval: {
         enabled: true,
@@ -537,6 +540,21 @@ test('an explicit static allow never invokes the reviewer or emits review feedba
   assert.equal(faux.state.callCount, 0);
   assert.deepEqual(running.notifications, []);
   assert.deepEqual(running.statuses, ['Permissions: Auto Approve']);
+});
+
+test('opaque Job input requires manual approval even when static and auto policy allow Shell commands', {
+  skip: integrationSkip,
+}, async t => {
+  const root = await tempRoot(t);
+  const { registry, faux } = await reviewRuntime(allowResponse);
+  const running = await startExtension(await approvalConfig(root, 'auto', 'allow'), { cwd: root, modelRegistry: registry });
+  const { api } = running.capture;
+  const input = { id: 'job_00000000', text: 'literal\ntext', enter: false };
+  await assert.rejects(checkManagedShell(api, 'job_send', input, running.ctx, 'main', api.events, undefined), /manual approval denied \(no_ui\)/);
+  const abort = new AbortController();
+  abort.abort();
+  await assert.rejects(checkManagedShell(api, 'job_send', input, running.ctx, 'main', api.events, abort.signal), /approval cancelled/);
+  assert.equal(faux.state.callCount, 0);
 });
 
 test('Ask mode never invokes the reviewer or emits review feedback', {

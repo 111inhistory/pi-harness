@@ -30,14 +30,15 @@ import (
 var backend shellbackend.ShellBackend = shellbackend.Default()
 
 const (
-	MonitorTickMs  = 60
-	QuietFlushMs   = 150
-	DrainQuietMs   = 200
-	DrainLimitMs   = 5000
-	CancelWaitMs   = 15000
-	StartupWaitMs  = 5000
-	DecisionWaitMs = 3000
-	CaptureWaitMs  = 20000
+	MonitorTickMs     = 60
+	QuietFlushMs      = 150
+	DrainQuietMs      = 200
+	DrainLimitMs      = 5000
+	CancelWaitMs      = 15000
+	StartupWaitMs     = 5000
+	StartupGateWaitMs = 15000
+	DecisionWaitMs    = 3000
+	CaptureWaitMs     = 20000
 )
 
 // MaxSendBytes is TS MAX_SEND_BYTES: input is bounded at the stream boundary.
@@ -61,10 +62,15 @@ type TaskPaths struct {
 	Cancel     string
 	Closed     string
 	Delivery   string
+	Started    string
 	PollCursor string
 	MonitorPid string
 	RunnerPid  string
 	ChildPid   string
+	// JobRunner and JobMonitor are the handoff receipts of the platform's tree
+	// fence holders (Windows job handles); they stay absent on POSIX.
+	JobRunner  string
+	JobMonitor string
 }
 
 // CallbackTarget is TS interface CallbackTarget. AgentID names the owning
@@ -84,6 +90,8 @@ type taskFile struct {
 	CreatedAt int64    `json:"createdAt"`
 	WaitMs    int64    `json:"waitMs"`
 	TimeoutMs *int64   `json:"timeoutMs"`
+	// Pipe selects the plain-child backend. Absent means the PTY backend.
+	Pipe bool `json:"pipe,omitempty"`
 }
 
 // taskState is TS interface TaskState.
@@ -116,7 +124,14 @@ type CreateTaskOptions struct {
 	Cwd       string
 	TimeoutMs *int64
 	WaitMs    int64
-	Callback  *CallbackTarget
+	Pipe      bool
+	// Foreground ignores WaitMs and blocks until the monitor has written the
+	// terminal state. It is a host-only mode used when the caller keeps the
+	// foreground execution lease.
+	Foreground bool
+	// CallID is echoed on the register frame for host startup correlation.
+	CallID   string
+	Callback *CallbackTarget
 }
 
 // assertSupported is TS assertSupported.
@@ -171,8 +186,8 @@ func taskPaths(dir string) TaskPaths {
 		Dir: dir, Task: file("task.json"), State: file("state.json"), Raw: file("raw.log"),
 		Filtered: file("output.log"), CaptureOk: file("capture-ok"), Exit: file("exit.json"),
 		Cancel: file("cancel.requested"), Closed: file("closed"), Delivery: file("delivery.json"),
-		PollCursor: file("poll.cursor"), MonitorPid: file("monitor.pid"), RunnerPid: file("runner.pid"),
-		ChildPid: file("child.pid"),
+		Started: file("started"), PollCursor: file("poll.cursor"), MonitorPid: file("monitor.pid"), RunnerPid: file("runner.pid"),
+		ChildPid: file("child.pid"), JobRunner: file("job-runner"), JobMonitor: file("job-monitor"),
 	}
 }
 
@@ -284,7 +299,8 @@ func readTaskFile(paths TaskPaths) taskFile {
 		value := int64(number)
 		timeoutMs = &value
 	}
-	return taskFile{ID: id, Argv: argv, Cwd: cwd, CreatedAt: int64(createdAtRaw), WaitMs: int64(waitMsRaw), TimeoutMs: timeoutMs}
+	pipe, _ := m["pipe"].(bool)
+	return taskFile{ID: id, Argv: argv, Cwd: cwd, CreatedAt: int64(createdAtRaw), WaitMs: int64(waitMsRaw), TimeoutMs: timeoutMs, Pipe: pipe}
 }
 
 func safeReadTask(paths TaskPaths) taskFile {
@@ -513,7 +529,13 @@ func CallbackFromEnv() *CallbackTarget {
 
 // CreateTask is TS createTask.
 func createTask(options CreateTaskOptions) ShellResult {
-	assertSupported()
+	if options.Pipe {
+		if !pipeSupported() {
+			panic(aserr.New("pipe_unsupported", "The non-PTY shell backend is not implemented on this platform."))
+		}
+	} else {
+		assertSupported()
+	}
 	if len(options.Argv) == 0 {
 		panic(aserr.New("invalid_command_args", "create requires a command."))
 	}
@@ -545,7 +567,7 @@ func createTask(options CreateTaskOptions) ShellResult {
 	}
 	paths := taskPaths(dir)
 	createdAt := nowMs()
-	task := taskFile{ID: id, Argv: options.Argv, Cwd: options.Cwd, CreatedAt: createdAt, WaitMs: options.WaitMs, TimeoutMs: options.TimeoutMs}
+	task := taskFile{ID: id, Argv: options.Argv, Cwd: options.Cwd, CreatedAt: createdAt, WaitMs: options.WaitMs, TimeoutMs: options.TimeoutMs, Pipe: options.Pipe}
 	writeJSONAtomic(paths.Task, task)
 	writePrivateFile(paths.Raw, nil)
 	writePrivateFile(paths.Filtered, nil)
@@ -556,7 +578,7 @@ func createTask(options CreateTaskOptions) ShellResult {
 	}
 
 	if options.Callback != nil {
-		r := sendFrame(*options.Callback, AsyncShellRegisterFrame{Kind: AsyncShellKind, AgentID: options.Callback.AgentID, Token: options.Callback.Token, Operation: "register", ID: id, Directory: dir, PID: os.Getpid()})
+		r := sendFrame(*options.Callback, AsyncShellRegisterFrame{Kind: AsyncShellKind, AgentID: options.Callback.AgentID, Token: options.Callback.Token, Operation: "register", ID: id, Directory: dir, PID: os.Getpid(), CallID: options.CallID})
 		if r != nil {
 			state := taskState{ID: id, Status: StatusFailed, ExitCode: nil, CreatedAt: createdAt, FinalizedAt: int64Ptr(nowMs())}
 			appendPrivateFile(paths.Filtered, []byte("async-shell: "+messageOf(r)+"\n"))
@@ -593,7 +615,24 @@ func createTask(options CreateTaskOptions) ShellResult {
 		if err := markBindUnknown(root, id); err != nil {
 			panic(err)
 		}
-		backend.Start(dir, selfArgv, paths.Raw, func() error { return recordBoundOwnership(root, dir) })
+		if options.Pipe {
+			// The platform start records its own tree fence before the runner can
+			// exist and returns only once that fence is held by the runner.
+			started, startErr := startPipeTask(root, dir, paths, selfArgv)
+			if startErr != nil {
+				// The spawn failed before a contained process existed; record the
+				// explicit no-bind outcome so release does not wait for a runner.
+				_ = markBindNone(root, id)
+				panic(startErr)
+			}
+			writePrivateFile(paths.RunnerPid, []byte(strconv.Itoa(started.Pid)+"\n"))
+			proc.ReapDetached(started.Pid)
+			if err := recordBoundPipeOwnership(root, dir, started); err != nil {
+				panic(err)
+			}
+		} else {
+			backend.Start(dir, selfArgv, paths.Raw, func() error { return recordBoundOwnership(root, dir) })
+		}
 		// Go equivalent of node execPath + execArgv + script: the binary re-runs
 		// itself with the internal mode and the task directory.
 		monitorArgs := []string{"__monitor", dir}
@@ -608,6 +647,19 @@ func createTask(options CreateTaskOptions) ShellResult {
 		if monitorPid != nil {
 			writePrivateFile(paths.MonitorPid, []byte(strconv.Itoa(*monitorPid)+"\n"))
 		}
+		if options.Pipe {
+			// A pipe command starts only after both supervisors hold the tree
+			// fence: a fast command would otherwise outlive the handles that make
+			// its exit provable.
+			if err := awaitMonitorHandoff(paths); err != nil {
+				panic(err)
+			}
+			writePrivateFile(paths.CaptureOk, nil)
+		}
+		// The startup linearization point: backend and monitor are both live.
+		// Cancel refuses to release before this gate, so a registration-triggered
+		// abort can never finalize an unbound task and then let it start.
+		writePrivateFile(paths.Started, nil)
 	})
 	if r != nil {
 		if aserr.Code(r) == "session_failed" {
@@ -640,6 +692,20 @@ func createTask(options CreateTaskOptions) ShellResult {
 		if state.FinalizedAt != nil {
 			return decide("sync", state)
 		}
+		if options.Foreground {
+			// The monitor is the only finalizer. A dead monitor with no terminal
+			// state is unknown, not success; return an error and keep the fence.
+			if monitorExited(paths) {
+				if final := readStateFile(paths, task); final.FinalizedAt != nil {
+					return decide("sync", final)
+				}
+				panic(aserr.New("finalize_unknown", "The task monitor exited before writing a terminal state; the task fence is retained. Inspect task "+task.ID+" before taking further action."))
+			}
+			if !exists(paths.Closed) {
+				sleep(MonitorTickMs / 2)
+				continue
+			}
+		}
 		if task.WaitMs == 0 && exists(paths.ChildPid) {
 			return decide("async", state)
 		}
@@ -648,6 +714,16 @@ func createTask(options CreateTaskOptions) ShellResult {
 		}
 		sleep(MonitorTickMs / 2)
 	}
+}
+
+// monitorExited reports whether the recorded monitor process is no longer
+// running. It only answers for the foreground waiter; the fence stays untouched.
+func monitorExited(paths TaskPaths) bool {
+	pid := readPid(paths.MonitorPid)
+	if pid == nil {
+		return false
+	}
+	return proc.MonitorExited(*pid)
 }
 
 // PollTask is TS pollTask.
@@ -674,6 +750,14 @@ func readTask(dir string, cursor *int64) ShellResult {
 	return resultOf(paths, readStateFile(paths, task), from)
 }
 
+// statusTask reports the current cursor and state without returning or
+// consuming any transcript bytes.
+func statusTask(dir string) ShellResult {
+	paths := taskPaths(dir)
+	task := readTaskFile(paths)
+	return statusResult(paths, readStateFile(paths, task))
+}
+
 func requireRunning(paths TaskPaths) taskFile {
 	task := readTaskFile(paths)
 	if readStateFile(paths, task).Status != StatusRunning {
@@ -682,10 +766,16 @@ func requireRunning(paths TaskPaths) taskFile {
 	return task
 }
 
+func requireInteractive(task taskFile) {
+	if task.Pipe {
+		panic(aserr.New("input_unsupported", "Task "+task.ID+" runs without a PTY and does not accept send or key input."))
+	}
+}
+
 // SendInput is TS sendInput.
 func sendInput(dir string, input string, enter bool) {
 	paths := taskPaths(dir)
-	requireRunning(paths)
+	requireInteractive(requireRunning(paths))
 	if len([]byte(input)) > MaxSendBytes {
 		panic(aserr.New("input_too_large", "Input must not exceed "+formatInt(MaxSendBytes)+" bytes."))
 	}
@@ -700,7 +790,7 @@ var keyPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,32}$`)
 // SendKey is TS sendKey.
 func sendKey(dir string, key string) {
 	paths := taskPaths(dir)
-	requireRunning(paths)
+	requireInteractive(requireRunning(paths))
 	if !keyPattern.MatchString(key) {
 		panic(aserr.New("invalid_key", "Not a tmux key name: "+key))
 	}
@@ -740,6 +830,17 @@ func cancelTask(dir string, rootArg ...string) {
 	}
 	task := readTaskFile(paths)
 	writePrivateFile(paths.Cancel, nil)
+
+	// Registration precedes backend startup. Wait for the startup gate before
+	// releasing anything: a cancel that arrived with the register frame must not
+	// finalize the bind-none record and then let create start the task behind it.
+	if !exists(paths.Started) && !exists(paths.Closed) {
+		if monitorPid := readPid(paths.MonitorPid); monitorPid == nil || !alive(*monitorPid) {
+			if !waitForStartup(paths, StartupGateWaitMs) {
+				cleanupErr(aserr.New("startup_unknown", "the task did not finish starting; no release is attempted"))
+			}
+		}
+	}
 
 	// The monitor is the only finalizer while it is provably alive. Do not act
 	// destructively in parallel with it: wait for its closed marker first.
@@ -799,6 +900,22 @@ func cancelTask(dir string, rootArg ...string) {
 	writePrivateFile(paths.Closed, nil)
 }
 
+// waitForStartup waits until create has either recorded the post-start gate or
+// a terminal state, so cancel never releases a task that is still starting.
+func waitForStartup(paths TaskPaths, timeoutMs int) bool {
+	deadline := nowMs() + int64(timeoutMs)
+	for nowMs() < deadline {
+		if exists(paths.Started) || exists(paths.Closed) {
+			return true
+		}
+		if monitorPid := readPid(paths.MonitorPid); monitorPid != nil && alive(*monitorPid) {
+			return true
+		}
+		sleep(MonitorTickMs)
+	}
+	return exists(paths.Started) || exists(paths.Closed)
+}
+
 func waitForClose(paths TaskPaths, timeoutMs int) bool {
 	deadline := nowMs() + int64(timeoutMs)
 	for nowMs() < deadline {
@@ -831,6 +948,17 @@ func RunnerMain(dir string) (exit int) {
 	}()
 	task := readTaskFile(paths)
 	writePrivateFile(paths.RunnerPid, []byte(strconv.Itoa(os.Getpid())+"\n"))
+	if task.Pipe {
+		// A pipe command may only start inside the platform's tree fence: the
+		// runner joins that fence, proves the assignment and holds it while the
+		// command runs. A refusal starts nothing.
+		release, containErr := supervisePipeRunner(StateRoot(), dir, paths)
+		if containErr != nil {
+			writeExit(paths, exitFile{Code: nil, Signal: nil, Error: strPtr(messageOf(containErr))})
+			return 1
+		}
+		defer release()
+	}
 
 	captureDeadline := nowMs() + CaptureWaitMs
 	for !exists(paths.CaptureOk) {
@@ -838,7 +966,11 @@ func RunnerMain(dir string) (exit int) {
 			writeExit(paths, exitFile{Code: nil, Signal: nil, Error: strPtr("capture did not start")})
 			return 1
 		}
-		os.Stdout.WriteString(CaptureMarker)
+		// A PTY runner announces itself through the pane capture; a pipe runner's
+		// stdout is already the capture file, so it must not inject the marker.
+		if !task.Pipe {
+			os.Stdout.WriteString(CaptureMarker)
+		}
 		sleep(40)
 	}
 
@@ -849,7 +981,14 @@ func RunnerMain(dir string) (exit int) {
 			panic(commandErr)
 		}
 		child = exec.Command(command.File, command.Args...)
-		child.Stdin = os.Stdin
+		if task.Pipe {
+			// Non-PTY stdin is EOF: a nil Stdin is the null device, never the
+			// runner's terminal. stdout and stderr share one file description so
+			// their bytes keep write order in raw.log.
+			child.Stdin = nil
+		} else {
+			child.Stdin = os.Stdin
+		}
 		child.Stdout = os.Stdout
 		child.Stderr = os.Stderr
 		child.Dir = task.Cwd
@@ -988,9 +1127,33 @@ func MonitorMain(dir string) {
 		lastFlush = nowMs()
 	}
 
-	paneAlive := func() bool { return !backend.PaneGone(dir) }
+	// The monitor holds the platform's tree fence for its whole life: that keeps
+	// the exit proof positive after the runner is gone, and on Windows it keeps
+	// the job from killing a still-running command when the runner exits.
+	pipeAlive := func() bool { return false }
+	releasePipeFence := func() {}
+	if task.Pipe {
+		pipeAlive, releasePipeFence = pipeSupervise(paths)
+	}
+	defer releasePipeFence()
+	paneAlive := func() bool {
+		if task.Pipe {
+			return pipeAlive()
+		}
+		return !backend.PaneGone(dir)
+	}
+
+	released := false
+	var releaseErr error
 
 	finish := func() {
+		// A cancel or timeout owns the stop decision: terminate and prove the
+		// task's own process tree before draining, so drain is bounded by real
+		// exit rather than by DrainLimitMs. A release failure is reported once.
+		if task.Pipe && (cancelled || timedOut) {
+			released = true
+			releaseErr = releaseTaskBackend(dir)
+		}
 		startedAt := nowMs()
 		quietSince := nowMs()
 		nextProbe := int64(0)
@@ -1044,7 +1207,11 @@ func MonitorMain(dir string) {
 			appendPrivateFile(paths.Filtered, []byte("async-shell: the task exited without reporting a status\n"))
 		}
 
-		if releaseErr := releaseTaskBackend(dir); releaseErr != nil {
+		if !released {
+			released = true
+			releaseErr = releaseTaskBackend(dir)
+		}
+		if releaseErr != nil {
 			status = StatusInternalError
 			exitCode = nil
 			appendPrivateFile(paths.Filtered, []byte("async-shell: cleanup unknown: "+messageOf(releaseErr)+"\n"))
@@ -1184,6 +1351,14 @@ func PollTask(dir string, cursor *int64) (result ShellResult, err error) {
 func ReadTask(dir string, cursor *int64) (result ShellResult, err error) {
 	defer aserr.Recover(&err)
 	result = readTask(dir, cursor)
+	return result, nil
+}
+
+// StatusTask returns a non-consuming status result. Host acknowledgements use
+// it so a successful input call never advances the caller's output cursor.
+func StatusTask(dir string) (result ShellResult, err error) {
+	defer aserr.Recover(&err)
+	result = statusTask(dir)
 	return result, nil
 }
 

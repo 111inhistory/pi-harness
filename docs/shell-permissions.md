@@ -172,5 +172,6 @@ Subagent 的 Shell 工具调用会回到所属根会话执行同一套检查。�
 - 语法预检查只判断 Shell 语法，不判断命令是否安全、是否存在或执行后是否成功。
 - 静态命令策略由外部程序决定规则语义。Harness 不内置命令白名单，也不把空策略当作允许。
 - 自动审查是可选能力，不保证在所有平台或所有 Pi 认证状态下可用。
-- `pi-job create` 由 Harness 使用 Tree-sitter WASM 提取实际 argv 和工作目录后审批；同一条复合命令的其他执行动作也参与判断，待人工确认的内容合并为一次请求。`pi-job send`、`key`、`poll`、`read`、`cancel` 跳过权限审批。带引号 heredoc 的 `send/key` 输入正文保持不透明；外层 Shell 中的动态求值仍按原命令审查。
+- Shell 每次调用在启动前审批 SDK 展开前缀后的命令；语法检查与执行使用同一个工作目录和环境。`background` 或 `pty` 不改变审批流程。
+- `pi-job create` 由 Harness 使用 Tree-sitter WASM 提取实际 argv 和工作目录后审批；同一条复合命令的其他执行动作也参与判断。开启审批且不是 `yolo` 时，模型 Shell 中能被解析器识别的 `pi-job send`、`key` 和内部 `__host` 入口被拒绝；未能识别的 Shell 表达式（包括某些 PowerShell 调用形式）仍走原命令审批，不把解析器当成沙箱。`job_send`／`job_key` 在此模式下按原样预览输入并请求人工确认，不把输入猜成 Shell 命令。`poll`、`read`、`cancel` 不进行命令审批；模型 `job_stop` 仍须通过任务归属检查。
 - 真实模型供应商的多轮行为、长时压力和 Windows 实机审批界面仍需按实际环境验收。

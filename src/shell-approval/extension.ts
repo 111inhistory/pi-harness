@@ -10,7 +10,7 @@ import {
 import { checkShellSyntax, type ShellPreflightResult } from "../shell-preflight.ts";
 import { harnessConfigFor } from '../harness-config.ts';
 import { argumentCompletionProvider } from '../autocomplete.ts';
-import { publishShellCheck, type ShellCheck } from './bridge.ts';
+import { isManagedShell, publishShellCheck, type ShellCheck } from './bridge.ts';
 import { runShellPolicy } from './command.ts';
 import { loadShellRuleFiles } from './rule-files.ts';
 import { extractJobCommands } from './job-command.ts';
@@ -80,11 +80,13 @@ function bashConfiguration(ctx: ExtensionContext, configurationCache: Configurat
 
 function commandConfiguration(toolName: string, ctx: ExtensionContext, configurationCache: ConfigurationCache): ShellConfiguration {
   if (toolName === "powershell") {
-    const cached = configurationCache.get("powershell");
+    const key = `powershell\u0000${ctx.cwd}\u0000${ctx.isProjectTrusted()}`;
+    const cached = configurationCache.get(key);
     if (cached) return cached;
 
-    const configuration = { executable: getPowerShellConfig().shell, prefix: undefined };
-    configurationCache.set("powershell", configuration);
+    const settings = SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: ctx.isProjectTrusted() });
+    const configuration = { executable: getPowerShellConfig().shell, prefix: settings.getShellCommandPrefix() };
+    configurationCache.set(key, configuration);
     return configuration;
   }
   return bashConfiguration(ctx, configurationCache);
@@ -190,13 +192,32 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
     status(ctx);
   };
 
-  const check: ShellCheck = async (tool, command, ctx, source, waiting) => {
+  const check: ShellCheck = async (tool, command, ctx, source, waiting, callerSignal, plan) => {
     const root = rootContext ?? ctx;
     const ownerLifetime = lifetime;
-    const signal = ctx.signal === undefined ? ownerLifetime.signal : AbortSignal.any([ownerLifetime.signal, ctx.signal]);
+    const signal = AbortSignal.any([ownerLifetime.signal, ...(ctx.signal ? [ctx.signal] : []), ...(callerSignal ? [callerSignal] : [])]);
     const shell = configFor(root).shell;
+    if (tool === 'job_send' || tool === 'job_key') {
+      if (signal.aborted) return 'Input not sent: approval cancelled.';
+      const approval = shell.approval;
+      if (!approval.enabled || (mode ?? approval.mode) === 'yolo') return null;
+      // Terminal input has no reliable shell syntax; review the exact payload,
+      // including the separate Enter action, without interpreting it as argv.
+      const preview = JSON.stringify(command).replace(/[\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu,
+        c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+      waiting?.(true);
+      try {
+        const result = await manualController.request({
+          sourceAgent: source, shell: 'PTY', cwd: ctx.cwd, command: `${tool} ${preview}`,
+          reason: 'Terminal input can submit commands to the running program.',
+          timeoutSeconds: approval.manualTimeoutMs / 1000, signal,
+        });
+        if (signal.aborted) return 'Input not sent: approval cancelled.';
+        return result.approved ? null : `Input not sent: manual approval denied (${result.reason}).`;
+      } finally { waiting?.(false); }
+    }
     if (shell.preflight) {
-      const result = await preflight(tool, command, ctx, configurationCache);
+      const result = plan === undefined ? await preflight(tool, command, ctx, configurationCache) : await checkShellSyntax(plan);
       if (!result.ok) return failureReason(result);
     }
     if (signal.aborted) return 'Command not executed: approval cancelled.';
@@ -204,16 +225,20 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
     const selected = mode ?? approval.mode;
     if (!approval.enabled || selected === 'yolo') return null;
     if (typeof command !== 'string') return 'Command not executed: command must be a string.';
-    const configuration = commandConfiguration(tool, ctx, configurationCache);
+    const target = plan ?? (() => {
+      const { executable, prefix } = commandConfiguration(tool, ctx, configurationCache);
+      return { executable, command: combineCommand(prefix, command), cwd: ctx.cwd };
+    })();
     const action: ShellApprovalAction = {
-      version: 1, shell: configuration.executable,
-      command: combineCommand(configuration.prefix, command), cwd: ctx.cwd,
+      version: 1, shell: target.executable, command: target.command, cwd: target.cwd,
       platform: process.platform === 'win32' ? 'windows' : 'posix', source,
     };
     const extracted = await extractJobCommands({
       shell: action.shell, command: action.command, cwd: action.cwd, platform: action.platform,
+      rejectTerminalInput: true,
     });
     if (signal.aborted) return 'Command not executed: approval cancelled.';
+    if (extracted.kind === 'terminal-input') return 'Command not executed: use job_send or job_key for terminal input.';
     // Ordinary shell commands retain their original syntax. Only pi-job calls
     // replace the wrapper with actual argv; every sibling remains represented.
     const hasJob = extracted.kind === 'extracted' && extracted.containsPiJob;
@@ -305,6 +330,7 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
   pi.on('session_shutdown', (_event, ctx) => { cancel(); ctx.ui.setStatus('shell-permission', undefined); });
   pi.on('tool_call', async (event, ctx) => {
     if (event.toolName !== 'bash' && event.toolName !== 'powershell') return;
+    if (isManagedShell(pi, event.toolName)) return;
     const reason = await check(event.toolName, event.input.command, ctx, 'main');
     return reason === null ? undefined : { block: true, reason };
   });

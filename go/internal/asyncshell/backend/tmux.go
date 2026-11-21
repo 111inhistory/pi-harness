@@ -159,33 +159,11 @@ func (PosixBackend) PaneGone(dir string) bool {
 }
 
 func (PosixBackend) OwnsProcessWithin(pid int, marker string, dir string, timeoutMs int) bool {
-	if timeoutMs <= 0 {
-		panic(aserr.New("process_inspection_failed", "No time remains to inspect pid "+strconv.Itoa(pid)+"."))
-	}
-	probe := proc.Run("ps", []string{"-o", "command=", "-p", strconv.Itoa(pid)}, proc.Options{TimeoutMs: &timeoutMs})
-	if probe.Error != nil {
-		panic(aserr.New("process_inspection_failed", "Could not inspect pid "+strconv.Itoa(pid)+": "+describePosix(probe.Error)))
-	}
-	command := strings.TrimSpace(probe.Stdout)
-	if probe.Code == nil || *probe.Code != 0 {
-		// POSIX ps exits 1 with no output for a pid that does not exist.
-		if probe.Code != nil && *probe.Code == 1 && command == "" && strings.TrimSpace(probe.Stderr) == "" {
-			return false
-		}
-		statusText := "unknown"
-		if probe.Code != nil {
-			statusText = strconv.Itoa(*probe.Code)
-		}
-		panic(aserr.New("process_inspection_failed", "Could not inspect pid "+strconv.Itoa(pid)+": ps exited "+statusText+" "+strings.TrimSpace(probe.Stderr)))
-	}
-	if command == "" {
-		panic(aserr.New("process_inspection_failed", "Could not read the command line of pid "+strconv.Itoa(pid)+"."))
-	}
-	return strings.Contains(command, marker) && strings.Contains(command, dir)
+	return proc.OwnsCommandWithin(pid, marker, dir, timeoutMs)
 }
 
 func (PosixBackend) OwnsProcess(pid int, marker string, dir string) bool {
-	return PosixBackend{}.OwnsProcessWithin(pid, marker, dir, ControlTimeoutMs)
+	return proc.OwnsCommand(pid, marker, dir)
 }
 
 func codeOrUnknown(code *int) string {

@@ -25,7 +25,7 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
   const executable = process.env.PI_ASYNC_SHELL_CLI;
   assert.ok(executable);
   const quote = shellName === 'powershell' ? powerShellQuote : posixQuote;
-  const command = (args: string[]) => `${shellName === 'powershell' ? '& ' : ''}${[executable, ...args].map(quote).join(' ')}`;
+  const command = (args: string[]) => `${shellName === 'powershell' ? '& ' : ''}${args.map(quote).join(' ')}`;
   const started = path.join(fixture.cwd, 'async-started.json');
   const release = path.join(fixture.cwd, 'async-release');
   const marker = 'ASYNC_PTY_RESULT';
@@ -33,7 +33,7 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
   await fsp.writeFile(probe, [
     "import fs from 'node:fs';",
     'const [started, release, marker] = process.argv.slice(2);',
-    'fs.writeFileSync(started + ".tmp", JSON.stringify({agentId:process.env.PI_AGENT_ID,socket:process.env.PI_AGENT_SOCKET,tty:process.stdout.isTTY,pid:process.pid}));',
+    'fs.writeFileSync(started + ".tmp", JSON.stringify({agentId:process.env.PI_AGENT_ID,socket:process.env.PI_AGENT_SOCKET,sessionId:process.env.PI_SESSION_ID,tty:process.stdout.isTTY === true,pid:process.pid}));',
     'fs.renameSync(started + ".tmp", started);',
     'const timer = setInterval(() => { if (fs.existsSync(release)) { console.log(marker); clearInterval(timer); } }, 10);',
   ].join('\n'));
@@ -44,8 +44,7 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
   const mainCompletion = observedTurn();
   fixture.controls.chat = request => {
     if (request.context.tools?.some(tool => tool.name === shellName)) {
-      assert.ok(request.text.includes('PI_CODING_AGENT_DIR'), 'Shell guidance names the Skill root environment variable');
-      assert.ok(request.text.includes('skills/pi-job/SKILL.md'), 'Shell guidance provides the relative Skill entry');
+      assert.ok(request.text.includes('background: true'), 'Shell guidance describes direct background execution');
     }
     if (request.options.sessionId === fixture.sessionManager.getSessionId()) {
       if (request.text.includes('MAIN_SHELL_RESULT')) mainCompletion.resolve();
@@ -54,7 +53,7 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
     childTurns++;
     const shell = lastToolResult(request.context.messages, shellName);
     if (shell === undefined) return fixture.toolAnswer(shellName, {
-      command: command(['create', '--wait', '0s', '--timeout', '20s', '--', ...childCommand, marker]),
+      command: command([...childCommand, marker]), background: true, pty: true, timeout: 20,
     });
     if (shell.isError) {
       shellFailure = JSON.stringify(shell.content);
@@ -98,11 +97,64 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
   const mainStarted = path.join(fixture.cwd, 'main-started.json').replaceAll('\\', '/');
   const mainRelease = path.join(fixture.cwd, 'main-release').replaceAll('\\', '/');
   const mainResult = await fixture.call(shellName, {
-    command: command(['create', '--wait', '0s', '--timeout', '20s', '--', ...[process.execPath, probe].map(value => value.replaceAll('\\', '/')), mainStarted, mainRelease, 'MAIN_SHELL_RESULT']),
+    command: command([...[process.execPath, probe].map(value => value.replaceAll('\\', '/')), mainStarted, mainRelease, 'MAIN_SHELL_RESULT']),
+    background: true, pty: true, timeout: 20,
   });
   assert.notEqual(mainResult.isError, true, JSON.stringify(mainResult.content));
   await fsp.writeFile(mainRelease, 'release');
   await mainCompletion.promise;
+
+  const inputJob = await fixture.call(shellName, {
+    command: command([process.execPath.replaceAll('\\', '/'), '-e',
+      'require("node:readline").createInterface({input:process.stdin}).once("line", line => { console.log("INPUT:" + line); process.exit(0); });']),
+    background: true, pty: true, timeout: 20,
+  });
+  const inputItem = inputJob.content[0];
+  assert.ok(inputItem?.type === 'text' && typeof inputItem.text === 'string');
+  const inputJobRef = JSON.parse(inputItem.text);
+  assert.equal(inputJobRef.status, 'running');
+  await fixture.call('job_send', { id: inputJobRef.id, text: 'literal job input' });
+  assert.doesNotMatch(await fsp.readFile(inputJobRef.logPath, 'utf8'), /INPUT:literal job input/);
+  await fixture.call('job_key', { id: inputJobRef.id, key: 'Enter' });
+  await waitForCondition(async () => /INPUT:literal job input/.test(await fsp.readFile(inputJobRef.logPath, 'utf8')), 'PTY input reaches the process');
+
+  {
+    const quick = await fixture.call(shellName, {
+      command: shellName === 'powershell' ? 'Write-Output $env:HARNESS_FIXTURE_PREFIX' : 'printf "%s\\n" "$HARNESS_FIXTURE_PREFIX"',
+      background: true,
+    });
+    const quickItem = quick.content[0];
+    assert.ok(quickItem?.type === 'text' && typeof quickItem.text === 'string');
+    const quickJob = JSON.parse(quickItem.text);
+    assert.match(quickJob.id, /^job_[0-9a-f]{8}$/);
+    assert.ok(quickJob.status === 'running' || quickJob.status === 'completed', quickItem.text);
+    await waitForCondition(async () => (await fsp.readFile(quickJob.logPath, 'utf8')).trim().length > 0, `quick Job output (${quickJob.id})`);
+    const log = await fixture.call('read', { path: quickJob.logPath });
+    assert.notEqual(log.isError, true);
+    assert.ok(log.content.some(item => item.type === 'text' && item.text?.trim() === 'once'));
+    const nonTty = path.join(fixture.cwd, 'pipe-started.json');
+    const pipeRelease = path.join(fixture.cwd, 'pipe-release');
+    const reply = await fixture.call(shellName, {
+      command: command([process.execPath, probe, nonTty, pipeRelease, 'PIPE_RESULT'].map(value => value.replaceAll('\\', '/'))),
+    });
+    assert.notEqual(reply.isError, true, JSON.stringify(reply.content));
+    const item = reply.content[0];
+    assert.ok(item?.type === 'text' && typeof item.text === 'string');
+    const job = JSON.parse(item.text);
+    assert.equal(job.status, 'running', 'without timeout, the wait window returns the original job');
+    assert.match(job.id, /^job_[0-9a-f]{8}$/);
+    await waitForCondition(async () => { try { await fsp.access(nonTty); return true; } catch { return false; } }, 'pipe startup');
+    const pipeEnvironment = JSON.parse(await fsp.readFile(nonTty, 'utf8'));
+    assert.equal(pipeEnvironment.tty, false);
+    assert.equal(pipeEnvironment.sessionId, fixture.sessionManager.getSessionId());
+    await assert.rejects(fixture.call('job_send', { id: job.id, text: 'not delivered', enter: true }), /not accepting terminal input/);
+    const stopped = await fixture.call('job_stop', { id: job.id });
+    const stopText = stopped.content[0];
+    assert.ok(stopText?.type === 'text' && typeof stopText.text === 'string');
+    assert.equal(JSON.parse(stopText.text).status, 'cancelled');
+    assert.equal(fixture.sessionManager.getBranch().some(entry => entry.type === 'custom_message'
+      && JSON.stringify(entry.content).includes(job.id)), false, 'stop reports cancellation instead of duplicating it in Main history');
+  }
 
   // Cancellation of a held Subagent also stops its outstanding shell resources.
   shellResult = observedTurn();

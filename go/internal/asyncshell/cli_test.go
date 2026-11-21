@@ -60,6 +60,17 @@ func TestParseCreateArgs(t *testing.T) {
 	if !reflect.DeepEqual(def.Argv, []string{"true"}) {
 		t.Fatalf("default argv = %#v, want [true]", def.Argv)
 	}
+	if def.Pipe || def.Foreground {
+		t.Fatalf("default backend flags = pipe:%v foreground:%v, want false", def.Pipe, def.Foreground)
+	}
+
+	host, err := ParseCreateArgs([]string{"--pipe", "--foreground", "--wait", "0", "--", "true"})
+	if err != nil {
+		t.Fatalf("ParseCreateArgs(host flags) error = %v", err)
+	}
+	if !host.Pipe || !host.Foreground || host.WaitMs != 0 {
+		t.Fatalf("host flags = pipe:%v foreground:%v wait:%d", host.Pipe, host.Foreground, host.WaitMs)
+	}
 
 	for _, test := range []struct {
 		name   string
