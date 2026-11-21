@@ -432,10 +432,9 @@ test("open builds the real child Pi, resource loader and capability scope", asyn
     assert.ok(h.parentCalls.length > 0);
     assert.ok(h.parentCalls.every((origin) => origin === "Main"));
 
-    // A revived parent is looked up again instead of freezing the catalog that
-    // the first eligibility query saw.
-    h.parentTools.push({ name: "late_parent" });
-    assert.equal(createCapabilityScopeView(opened.capabilityScope).allows("late_parent"), true);
+    // Each fresh scope view re-reads the parent resolver rather than caching
+    // the parent reference across operations.
+    assert.equal(createCapabilityScopeView(opened.capabilityScope).allows("surface_probe"), true);
     assert.ok(h.parentCalls.length >= 2);
   } finally {
     await opened.execution.dispose();
@@ -525,7 +524,6 @@ test("Fresh uses default extensions minus exclusions without installing the root
     extensions: rootEntries,
     defaultTools: ["+codemode"],
   }), "utf8");
-  h.parentTools.push({ name: "default_extension" }, { name: "denied_extension" }, { name: "optional_extension" });
   const opened = await h.factory.open(request(h, {
     systemPrompt: null,
     excludedTools: ["write", "denied_extension"],
@@ -575,7 +573,6 @@ test("Inherited loads configured execution backends while retaining the captured
       parameters:{type:'object', properties:{}}, defaultActive:false,
       execute:async()=>({content:[{type:'text',text:'CHILD_BACKEND'}],details:{}})});
   }`, "utf8");
-  h.parentTools.push({name:'inherited_extension'});
   const input = { ...request(h), inheritedTools: ['read', 'inherited_extension'] };
   const opened = await h.factory.open(input);
   try {
@@ -617,7 +614,6 @@ test("Inherited loads configured execution backends while retaining the captured
 
 test("ordinary inherited Responses preserves parent context through native child loadout updates", async () => {
   const h = await harness();
-  h.parentTools.push({ name: 'manual_parent' });
   const model = {
     ...h.model,
     api: 'openai-responses',
@@ -648,7 +644,6 @@ test("ordinary inherited Responses preserves parent context through native child
 
 test("ordinary inherited Anthropic keeps its initial anchor and serialized parent prefix stable", async () => {
   const h = await harness();
-  h.parentTools.push({ name: 'manual_parent' });
   const model = {
     ...h.model,
     api: 'anthropic-messages',
@@ -820,7 +815,6 @@ test("Inherited waits for deferred MCP registration, restores its declaration, a
   await writeFile(path.join(h.root,'agent','mcp.json'),JSON.stringify({autoEnableCodemode:false,mcpServers:{
     inherited_fixture:{command:process.execPath,args:['-e',script],exposure:'deferred'},
   }}));
-  h.parentTools.push({name});
   const model = {...h.model,api:'openai-codex-responses' as Api};
   const input = {...request(h,{model,excludedTools:[]}),inheritedTools:['read',name]};
   input.sessionManager.appendCustomEntry('capability-discovery', {version:1,result:{status:'ok',tools:[],skills:[],

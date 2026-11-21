@@ -90,8 +90,9 @@ test("denials and dynamic predicates apply immediately on fresh views", () => {
   setCapabilityParent(middle, root);
   assert.equal(createCapabilityScopeView(leaf).allows("alpha"), true);
 
-  setCapabilityParent(root, null, [], (name) => name === "child_ns_tool");
+  setCapabilityParent(root, null, [], (name) => name === "child_ns_tool" || name.startsWith("blocked_"));
   assert.equal(createCapabilityScopeView(leaf).allows("child_ns_tool"), false);
+  assert.equal(createCapabilityScopeView(leaf).allows("blocked_unregistered"), false);
 });
 
 test("parent resolver is re-read per operation and retained views stay isolated", () => {

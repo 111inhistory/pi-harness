@@ -154,8 +154,7 @@
         "test/typed/capability-scope-view.test.ts",
         "test/typed/capability-tool-catalog.test.ts",
         "test/typed/capability-nested.test.ts",
-        "test/typed/capability-session-sdk.test.ts",
-        "test/capability-scope.test.mjs"
+        "test/typed/capability-session-sdk.test.ts"
       ]
     },
     {
