@@ -1,6 +1,7 @@
 package asyncshell
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"pijob/internal/asyncshell/aserr"
@@ -15,12 +16,13 @@ import (
 
 // Usage is TS USAGE.
 var Usage = strings.Join([]string{
-	"pi-job create [--wait <duration>] [--timeout <duration>] [--cwd <dir>] -- <command> [args...]",
+	"pi-job create [--wait <duration>] [--timeout <duration>] [--cwd <dir>] [--pipe] -- <command> [args...]",
 	"pi-job poll <id> [--cursor <bytes>]",
 	"pi-job read <id> [--cursor <bytes>]",
 	"pi-job send <id> [--enter]   (literal stdin bytes; --enter adds one Enter key)",
 	"pi-job key <id> <key>",
 	"pi-job cancel <id>",
+	"pi-job __host <create|cancel|send|key> ...   (host protocol; one JSON result on stdout)",
 }, "\n")
 
 // usageErrors is TS USAGE_ERRORS.
@@ -77,16 +79,20 @@ func parseCursor(value *string) (*int64, error) {
 
 // CreateArgs is TS CreateArgs.
 type CreateArgs struct {
-	Argv      []string
-	Cwd       string
-	WaitMs    int64
-	TimeoutMs *int64
+	Argv       []string
+	Cwd        string
+	WaitMs     int64
+	TimeoutMs  *int64
+	Pipe       bool
+	Foreground bool
 }
 
 // ParseCreateArgs is TS parseCreateArgs.
 func ParseCreateArgs(tokens []string) (CreateArgs, error) {
 	waitMs := int64(DefaultWaitMs)
 	var timeoutMs *int64
+	pipe := false
+	foreground := false
 	cwd, err := os.Getwd()
 	if err != nil {
 		return CreateArgs{}, err
@@ -133,6 +139,10 @@ func ParseCreateArgs(tokens []string) (CreateArgs, error) {
 			}
 			cwd = value
 			index++
+		case "--pipe":
+			pipe = true
+		case "--foreground":
+			foreground = true
 		default:
 			return CreateArgs{}, aserr.New("invalid_command_args", "Unknown create option: "+token)
 		}
@@ -141,7 +151,7 @@ func ParseCreateArgs(tokens []string) (CreateArgs, error) {
 	if len(argv) == 0 {
 		return CreateArgs{}, aserr.New("invalid_command_args", "create requires a command after --.")
 	}
-	return CreateArgs{Argv: argv, Cwd: cwd, WaitMs: waitMs, TimeoutMs: timeoutMs}, nil
+	return CreateArgs{Argv: argv, Cwd: cwd, WaitMs: waitMs, TimeoutMs: timeoutMs, Pipe: pipe, Foreground: foreground}, nil
 }
 
 // readStdin is TS readStdin: all of stdin, byte for byte, bounded while reading.
@@ -156,14 +166,22 @@ func readStdin(maxBytes int) (string, error) {
 	return string(data), nil
 }
 
-func report(result ShellResult) error {
-	_, err := os.Stdout.WriteString(FormatResult(result))
+func report(result ShellResult, machine bool) error {
+	text := FormatResult(result)
+	if machine {
+		data, err := json.Marshal(result)
+		if err != nil {
+			return err
+		}
+		text = string(data) + "\n"
+	}
+	_, err := os.Stdout.WriteString(text)
 	return err
 }
 
 // run is TS run(): dispatch one verb. Handle-able failures return an error; an
 // escaped engine panic is converted at this single boundary.
-func run(argv []string) (err error) {
+func run(argv []string, machine bool) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = aserr.AsError(recovered)
@@ -175,21 +193,39 @@ func run(argv []string) (err error) {
 		verb = argv[0]
 		rest = argv[1:]
 	}
+	if machine {
+		switch verb {
+		case "create", "send", "key", "cancel":
+		default:
+			return aserr.New("invalid_command_args", "__host supports create, send, key and cancel.")
+		}
+	}
 	switch verb {
 	case "create":
 		parsed, parseErr := ParseCreateArgs(rest)
 		if parseErr != nil {
 			return parseErr
 		}
+		if parsed.Foreground && !machine {
+			return aserr.New("invalid_command_args", "create does not accept --foreground.")
+		}
+		// callId is a host-only startup correlation. It is read here and removed
+		// before any backend or monitor spawn so it never reaches the child shell.
+		callID := ""
+		if machine {
+			callID = os.Getenv("PI_ASYNC_SHELL_CALL_ID")
+		}
+		_ = os.Unsetenv("PI_ASYNC_SHELL_CALL_ID")
 		options := CreateTaskOptions{
 			Argv: parsed.Argv, Cwd: parsed.Cwd, TimeoutMs: parsed.TimeoutMs, WaitMs: parsed.WaitMs,
+			Pipe: parsed.Pipe, Foreground: parsed.Foreground, CallID: callID,
 			Callback: CallbackFromEnv(),
 		}
 		result, taskErr := CreateTask(options)
 		if taskErr != nil {
 			return taskErr
 		}
-		return report(result)
+		return report(result, machine)
 	case "poll":
 		id := ""
 		if len(rest) > 0 {
@@ -211,7 +247,7 @@ func run(argv []string) (err error) {
 		if taskErr != nil {
 			return taskErr
 		}
-		return report(result)
+		return report(result, machine)
 	case "read":
 		id := ""
 		if len(rest) > 0 {
@@ -233,7 +269,7 @@ func run(argv []string) (err error) {
 		if taskErr != nil {
 			return taskErr
 		}
-		return report(result)
+		return report(result, machine)
 	case "send":
 		enter := false
 		var positional []string
@@ -267,11 +303,20 @@ func run(argv []string) (err error) {
 		if err := SendInput(dir, input, enter); err != nil {
 			return err
 		}
+		if machine {
+			// The host treats send as an acknowledgement, not a read. Report
+			// state without consuming the shared output cursor.
+			result, taskErr := StatusTask(dir)
+			if taskErr != nil {
+				return taskErr
+			}
+			return report(result, machine)
+		}
 		result, taskErr := PollTask(dir, nil)
 		if taskErr != nil {
 			return taskErr
 		}
-		return report(result)
+		return report(result, machine)
 	case "key":
 		var id, key string
 		var extra []string
@@ -301,11 +346,18 @@ func run(argv []string) (err error) {
 		if err := SendKey(dir, key); err != nil {
 			return err
 		}
+		if machine {
+			result, taskErr := StatusTask(dir)
+			if taskErr != nil {
+				return taskErr
+			}
+			return report(result, machine)
+		}
 		result, taskErr := PollTask(dir, nil)
 		if taskErr != nil {
 			return taskErr
 		}
-		return report(result)
+		return report(result, machine)
 	case "cancel":
 		var id string
 		var extra []string
@@ -333,7 +385,7 @@ func run(argv []string) (err error) {
 		if taskErr != nil {
 			return taskErr
 		}
-		return report(result)
+		return report(result, machine)
 	case "__run":
 		directory, dirErr := requireDirectory(rest)
 		if dirErr != nil {
@@ -395,6 +447,10 @@ func Main(fullArgv []string) (exitCode int) {
 	if len(fullArgv) > 1 {
 		argv = fullArgv[1:]
 	}
+	machine := len(argv) > 0 && argv[0] == "__host"
+	if machine {
+		argv = argv[1:]
+	}
 	internal := len(argv) > 0 && (argv[0] == "__run" || argv[0] == "__monitor")
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -402,7 +458,7 @@ func Main(fullArgv []string) (exitCode int) {
 			exitCode = 1
 		}
 	}()
-	if err := run(argv); err != nil {
+	if err := run(argv, machine); err != nil {
 		writeMainError(internal, err)
 		return 1
 	}

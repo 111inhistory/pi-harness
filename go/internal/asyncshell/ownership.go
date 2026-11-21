@@ -40,9 +40,20 @@ type ownershipRecord struct {
 	Socket    *ownershipID `json:"socket,omitempty"`
 	ServerPid int          `json:"serverPid,omitempty"`
 	// Bind records the backend bind outcome: none (explicit no-bind), bound
-	// (new-session succeeded), or unknown (outcome not proven).
-	Bind    string `json:"bind,omitempty"`
-	Cleaned bool   `json:"cleaned,omitempty"`
+	// (new-session or runner spawn succeeded), or unknown (outcome not proven).
+	Bind string `json:"bind,omitempty"`
+	// Pipe marks the non-PTY backend and RunnerPid is its detached runner
+	// process, captured at spawn. Both are absent for PTY tasks.
+	Pipe      bool `json:"pipe,omitempty"`
+	RunnerPid int  `json:"runnerPid,omitempty"`
+	// Job is the Windows job object that fences the pipe tree. It is recorded
+	// before the runner exists and is the only authority any later kill may use.
+	Job string `json:"job,omitempty"`
+	// JobExited is the exit proof taken from an open job handle that reported a
+	// zero assigned process count. It outlives the job object so a release can
+	// finish without treating a missing job as proof of exit.
+	JobExited bool `json:"jobExited,omitempty"`
+	Cleaned   bool `json:"cleaned,omitempty"`
 }
 
 const (
@@ -166,6 +177,23 @@ func recordBoundOwnership(root string, dir string) error {
 	if pidErr == nil {
 		record.ServerPid = pid
 	}
+	record.Bind = bindBound
+	return writeOwnership(root, *record)
+}
+
+// recordBoundPipeOwnership records the pipe runner as the task's bound backend.
+// There is no filesystem socket; the runner pid, the tree fence name plus the
+// persisted task directory identity are what authorize later termination.
+func recordBoundPipeOwnership(root string, dir string, started pipeStart) error {
+	id := taskIDOfDirectory(dir)
+	record, err := readOwnership(root, id)
+	if err != nil {
+		return err
+	}
+	record.Pipe = true
+	record.RunnerPid = started.Pid
+	record.Job = started.Job
+	record.Socket = nil
 	record.Bind = bindBound
 	return writeOwnership(root, *record)
 }

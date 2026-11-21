@@ -109,6 +109,8 @@ func taskFixture(t *testing.T) (root, dir string, record *ownershipRecord) {
 	if err := recordDirectoryOwnership(root, created, identity); err != nil {
 		t.Fatal(err)
 	}
+	// These fixtures represent a task whose startup gate has completed.
+	writePrivateFile(paths.Started, nil)
 	record, err = readOwnership(root, id)
 	if err != nil {
 		t.Fatal(err)

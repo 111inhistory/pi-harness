@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"pijob/internal/asyncshell/aserr"
 	"strings"
@@ -71,6 +72,25 @@ func Run(command string, args []string, options Options) Result {
 	}
 	result.Error = aserr.Coded(err, "ENOENT")
 	return result
+}
+
+// StartDetachedOutput starts a detached process whose stdout and stderr are one
+// shared file. Passing the same *os.File for both keeps their write order, which
+// the pipe backend relies on for its raw transcript.
+func StartDetachedOutput(command string, args []string, env map[string]string, output *os.File) (*int, error) {
+	cmd := exec.Command(command, args...)
+	if env != nil {
+		cmd.Env = envSlice(env)
+	}
+	cmd.Stdout = output
+	cmd.Stderr = output
+	applyDetached(cmd)
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	pid := cmd.Process.Pid
+	_ = cmd.Process.Release()
+	return &pid, nil
 }
 
 // StartDetached starts the per-task monitor in its own session/process group.

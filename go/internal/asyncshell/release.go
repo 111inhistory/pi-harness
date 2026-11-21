@@ -16,11 +16,11 @@ const CancelControlTimeoutMs = 5_000
 // PostKillWaitMs bounds the cumulative confirmation window after kill-server.
 const PostKillWaitMs = 2_000
 
-// CancelBudgetMs is the static upper bound for cancel: release <= 13.5s
-// (including one dial begun just before the post-kill deadline), monitor
-// ownership 5s, monitor wait 15s, SIGKILL wait 2s and final wait 0.2s
-// (35.7s total). All stages are individually bounded; there is no wall-clock
-// watchdog or retry authority.
+// CancelBudgetMs is the static upper bound for cancel: startup gate <= 15s,
+// PTY release <= 13.5s (including one dial begun just before the post-kill
+// deadline) or pipe release <= 4s, monitor ownership 5s, monitor wait 15s,
+// SIGKILL wait 2s and final wait 0.2s. All stages are individually bounded;
+// there is no wall-clock watchdog or retry authority.
 const CancelBudgetMs = 40_000
 
 type processState int
@@ -50,9 +50,10 @@ func serverProcessState(pid int, dir string) (state processState) {
 }
 
 // releaseTaskBackend is the single terminal release path. It verifies persisted
-// creation/bind identity before any kill or unlink, proves the server stopped,
-// removes only the recorded socket inode, and writes the cleaned sidecar fact
-// last. Unknown always propagates: the caller must not write closed.
+// creation/bind identity before any kill or unlink, proves the backend stopped,
+// removes only the recorded socket inode (PTY) or terminates only the recorded
+// runner's process tree (pipe), and writes the cleaned sidecar fact last.
+// Unknown always propagates: the caller must not write closed.
 func releaseTaskBackend(dir string) error {
 	root := StateRoot()
 	record, err := verifyTaskOwnership(root, dir)
@@ -60,8 +61,12 @@ func releaseTaskBackend(dir string) error {
 		return err
 	}
 	if record.Cleaned {
-		// The cleaned fact never substitutes for identity. A replacement entry is
-		// left in place and reported; only a verified absent entry is idempotent.
+		// A pipe task owns no filesystem socket; idempotence is only the cleaned
+		// fact. For PTY, a replacement entry is left in place and reported; only
+		// a verified absent entry is idempotent.
+		if record.Pipe {
+			return nil
+		}
 		if socketEntryExists(dir) {
 			return aserr.New("socket_unknown", "The task is marked cleaned but a socket entry is present; it is left in place.")
 		}
@@ -69,6 +74,15 @@ func releaseTaskBackend(dir string) error {
 	}
 	if record.Bind == bindUnknown {
 		return aserr.New("socket_unknown", "The backend bind outcome is unknown; no kill or unlink is attempted.")
+	}
+	if record.Pipe {
+		if err := releasePipeTask(root, dir, record); err != nil {
+			return err
+		}
+		if err := markOwnershipCleaned(root, *record); err != nil {
+			return aserr.New("ownership_unknown", "The task backend stopped but the cleaned fact could not be recorded: "+messageOf(err))
+		}
+		return nil
 	}
 	if record.Bind == bindNone {
 		if socketEntryExists(dir) {

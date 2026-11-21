@@ -47,6 +47,9 @@ type AsyncShellRegisterFrame struct {
 	ID        string `json:"id"`
 	Directory string `json:"directory"`
 	PID       int    `json:"pid"`
+	// CallID is the host-only invocation correlation for startup abort. It is
+	// optional; standalone creates and monitors never set it.
+	CallID string `json:"callId,omitempty"`
 }
 
 // AsyncShellCompleteFrame is TS `interface AsyncShellCompleteFrame`.
