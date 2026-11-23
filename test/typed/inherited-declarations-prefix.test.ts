@@ -16,7 +16,7 @@ async function wire(messages: Message[], api: 'openai-responses' | 'anthropic-me
   } as Model<typeof api>;
   if (api === 'openai-responses') {
     return convertResponsesMessages(model, normalizeContext({ messages }), new Set([model.provider]), {
-      includeSystemPrompt: true, supportsMidConvoSystemMessages: true, supportsAdditionalTools: true,
+      supportsMidConvoSystemMessages: true, supportsAdditionalTools: true,
     }) as unknown as readonly unknown[];
   }
   let payload: unknown;

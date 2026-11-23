@@ -449,21 +449,21 @@ on_unsubscribe_ok(subscription): subscriptions.remove(subscription)
 
 ## 11. 上游 Pi 定义与不透明载荷
 
-协议不复制上游模型；下表是已测试的安装版本与类型定义位置（包内相对路径，行号对应安装的 1.5.0 产物）：
+协议不复制上游模型；下表是已测试的安装版本与类型定义位置（包内相对路径，行号对应安装的 1.6.0 产物）：
 
 | 线上定义 | 上游类型 | 包与版本 | 定义位置 |
 | --- | --- | --- | --- |
-| `NativeSessionEvent` | `AgentSessionEvent` | `@earendil-works/pi-coding-agent@1.5.0` | `dist/core/agent-session.d.ts:49`（`dist/index.d.ts:3` 再导出） |
-| `NativeMessage` | `AgentMessage` | `@earendil-works/pi-agent-core@1.5.0` | `dist/types.d.ts:322` |
-| `NativeMessage` 的 assistant 形态 | `AssistantMessage` | `@earendil-works/pi-ai@1.5.0` | `dist/types.d.ts:375` |
-| `NativePartial` | `AssistantMessage` | `@earendil-works/pi-ai@1.5.0` | `dist/types.d.ts:375` |
-| `message_update.assistantMessageEvent` | `AssistantMessageEvent` | `@earendil-works/pi-ai@1.5.0` | `dist/types.d.ts:585` |
-| `usage` | `Usage` | `@earendil-works/pi-ai@1.5.0` | `dist/types.d.ts:285` |
-| `ToolDetail.parameters` | `ToolInfo["parameters"]` | `@earendil-works/pi-coding-agent@1.5.0` | `dist/core/extensions/types.d.ts:1600`（`dist/index.d.ts:8` 再导出） |
-| `NativeEntry` | `FileEntry` | `@earendil-works/pi-coding-agent@1.5.0` | `dist/core/session-manager.d.ts:130`（`dist/index.d.ts:21` 再导出） |
+| `NativeSessionEvent` | `AgentSessionEvent` | `@earendil-works/pi-coding-agent@1.6.0` | `dist/core/agent-session.d.ts:49`（`dist/index.d.ts:3` 再导出） |
+| `NativeMessage` | `AgentMessage` | `@earendil-works/pi-agent-core@1.6.0` | `dist/types.d.ts:322` |
+| `NativeMessage` 的 assistant 形态 | `AssistantMessage` | `@earendil-works/pi-ai@1.6.0` | `dist/types.d.ts:382` |
+| `NativePartial` | `AssistantMessage` | `@earendil-works/pi-ai@1.6.0` | `dist/types.d.ts:382` |
+| `message_update.assistantMessageEvent` | `AssistantMessageEvent` | `@earendil-works/pi-ai@1.6.0` | `dist/types.d.ts:592` |
+| `usage` | `Usage` | `@earendil-works/pi-ai@1.6.0` | `dist/types.d.ts:292` |
+| `ToolDetail.parameters` | `ToolInfo["parameters"]` | `@earendil-works/pi-coding-agent@1.6.0` | `dist/core/extensions/types.d.ts:1622`（`dist/index.d.ts:8` 再导出） |
+| `NativeEntry` | `FileEntry` | `@earendil-works/pi-coding-agent@1.6.0` | `dist/core/session-manager.d.ts:130`（`dist/index.d.ts:21` 再导出） |
 | `JobRecordView.result` | Runtime 领域结果 | — | 类型不固定；保留原始 JSON |
-| `MainEventPayload.event` | Pi `AgentSessionEvent` 或 Main `input_error` | `@earendil-works/pi-coding-agent@1.5.0` | 事件类型不固定；保留原始 JSON |
-| `MainCompactResult.result` | Pi SDK compaction result | `@earendil-works/pi-coding-agent@1.5.0` | SDK 对象；保留原始 JSON |
+| `MainEventPayload.event` | Pi `AgentSessionEvent` 或 Main `input_error` | `@earendil-works/pi-coding-agent@1.6.0` | 事件类型不固定；保留原始 JSON |
+| `MainCompactResult.result` | Pi SDK compaction result | `@earendil-works/pi-coding-agent@1.6.0` | SDK 对象；保留原始 JSON |
 
 `MainEventPayload.event` 与 `MainCompactResult.result` 都保留 SDK 原始字段；`MainOutcomeResult` 也保留 SDK 返回的额外字段。协议不复制这些 SDK 定义，也不要求解析器理解所有事件类型。
 

@@ -14,7 +14,7 @@ interface FoldedComponent extends Component {
 function fold(component: Component, expanded: boolean, theme: Theme, onToggle?: (expanded: boolean) => void): FoldedComponent {
   let canFold = false;
   let cachedWidth: number | undefined;
-  let cachedLines: string[] | undefined;
+  let cachedLines: readonly string[] | undefined;
   const clearCache = (): void => { cachedWidth = undefined; cachedLines = undefined; };
   return {
     render(width) {

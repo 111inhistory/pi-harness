@@ -6,7 +6,7 @@
 
 ### 严格工具 allowlist 下的激活记忆不一致
 
-Pi SDK `1.5.0` 可能保留 MCP 注册，却拒绝激活不匹配 allowlist 的成员。例如 allowlist 只列出 `read`、`write`、`capability`，既不匹配目标 `mcp__*` 工具，也不保留隐藏的 `tool_search`。SDK 没有公开的激活资格预检接口，激活调用可以静默省略成员。
+Pi SDK 可能保留 MCP 注册，却拒绝激活不匹配 allowlist 的成员。例如 allowlist 只列出 `read`、`write`、`capability`，既不匹配目标 `mcp__*` 工具，也不保留隐藏的 `tool_search`。SDK 没有公开的激活资格预检接口，激活调用可以静默省略成员。
 
 Capability 按实际激活集筛选公开结果，返回失败或部分成功。但先写入的 `capability-discovery` 规范记录仍可能包含未激活成员。激活调用抛出异常时也可能出现这类差异。该记录不授予执行权限，却可能让请求记忆提示一个未启用工具。
 
@@ -62,7 +62,7 @@ Preset 应用先通过 SDK 设置模型和 thinking，再记录 Preset 快照。
 
 即使序列化后的消息前缀与缓存标识未变，修改生效的 thinking 配置仍可能使提供方的提示词缓存失效。这包括预算变更、thinking 启用/禁用切换，以及自适应 thinking 下的顶层 effort 变更。其可见代价是重新触发缓存写入或未命中缓存的输入计费。Anthropic 在 [thinking 与缓存](https://platform.claude.com/docs/en/build-with-claude/thinking-steering-and-cost#prompt-caching) 与 [提示词缓存](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#what-invalidates-the-cache) 中记录了这些影响以及受支持的逐消息 effort 替代方案。这是特定提供方的行为，并不意味着每次 thinking 级别变化都会使所有提供方的缓存失效。
 
-适配必须遵循精确的 provider API 与显式的模型 `compat` 选项（包括 `supportsMidConvoEffort`）；仅凭自适应 thinking 本身不能作为能力判定依据。Pi SDK 1.5.0 已在多条传输路径上支持对话中 effort：其 Responses 适配器在开启对应 compat 选项且通过适用性检查（包括认证路径限制）后使用 `configuration_update` 条目；Anthropic 在其受支持路径且 thinking 保持开启时使用历史逐消息 effort 标记与固定的顶层 effort，禁用 thinking 时走另一条路径；Codex WebSocket 适配器在非输入请求参数不同时则会单独放弃增量 `previous_response_id` 复用。该延续性检查不保证提示词缓存复用。Harness 必须复用原生编码及其限制，不得根据 provider 名称、自适应模式或工具追加兼容位推断支持，也不得安装竞争编码器或在每次级别变更时轮换缓存 key。
+适配必须遵循精确的 provider API 与显式的模型 `compat` 选项（包括 `supportsMidConvoEffort`）；仅凭自适应 thinking 本身不能作为能力判定依据。当前 Pi SDK 在多条传输路径上支持对话中 effort：其 Responses 适配器在开启对应 compat 选项且通过适用性检查（包括认证路径限制）后使用 `configuration_update` 条目；Anthropic 在其受支持路径且 thinking 保持开启时使用历史逐消息 effort 标记与固定的顶层 effort，禁用 thinking 时走另一条路径；Codex WebSocket 适配器在非输入请求参数不同时则会单独放弃增量 `previous_response_id` 复用。该延续性检查不保证提示词缓存复用。Harness 必须复用原生编码及其限制，不得根据 provider 名称、自适应模式或工具追加兼容位推断支持，也不得安装竞争编码器或在每次级别变更时轮换缓存 key。
 
 尚未解决的设计缺口是 Harness 完整 provider 请求/缓存契约（包括跨 provider 路径的有效 thinking 配置）的所有权与验证。修复具体的 Capability 声明投影反例并未解决这一更广泛的架构问题；其[已解决证据](archive/capability-history-pbt.md)已单独归档。Capability 历史模型仅在固定 thinking 设置下检查转换后的 Responses 消息，并未观察完整出站 payload、自适应/关闭切换或在线缓存使用情况。请求投影由 Capability 扩展装配，而原生编码归属 provider 适配器。Provider 边界审查必须使用 SDK 钳位（clamped）后的有效值，区分普通预算、自适应 effort、关闭切换、原生增量 effort 支持与不支持路径。仅验证消息前缀稳定性不足以覆盖上述路径。
 

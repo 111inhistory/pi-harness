@@ -38,7 +38,6 @@ export async function serializedRequest(
     normalizeContext({ messages: [...messages] }),
     new Set([model.provider]),
     {
-      includeSystemPrompt: true,
       supportsMidConvoSystemMessages: true,
       supportsAdditionalTools: true,
     },

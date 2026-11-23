@@ -338,7 +338,7 @@ export async function runResponsesPrefixScenario(fixture: CapabilityScenarioFixt
     model,
     addedContext as unknown as TranscriptContext,
     new Set([model.provider]),
-    { includeSystemPrompt: false, ...model.compat } as ConvertResponsesMessagesOptions,
+    model.compat as ConvertResponsesMessagesOptions,
   );
   const declaredInterfaces = (wire as Array<{ type: string; tools?: Array<{ name: string; parameters?: object }> }>)
     .filter((item) => item.type === "additional_tools")

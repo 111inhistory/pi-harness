@@ -26,7 +26,7 @@ Harness 为 Pi 增加按需工具发现、并行委派和独立问答能力。�
 
 ## 开始使用
 
-需要 Node.js **22.19.0 或更新版本**。当前适配 Pi **1.5.0**。跨会话协作支持 Linux 和原生 Windows；异步 Shell 在 POSIX 上使用 tmux，在 Windows 上使用 psmux。
+需要 Node.js **22.19.0 或更新版本**。当前适配 Pi **1.6.0**。跨会话协作支持 Linux 和原生 Windows；异步 Shell 在 POSIX 上使用 tmux，在 Windows 上使用 psmux。
 
 ### 安装与启动
 

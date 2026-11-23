@@ -120,17 +120,17 @@ schema 与实现使用同一套集合模型，不把成员关系压成单一状�
 
 | 定义 | 上游／语义 |
 | --- | --- |
-| `NativeSessionEvent` | `@earendil-works/pi-coding-agent@1.5.0` 的 `AgentSessionEvent`（`dist/core/agent-session.d.ts:49`，`dist/index.d.ts:3` 再导出）。除 `message_update` 外原样透传；assistant `message_update` 移除顶层 `message` 与 `assistantMessageEvent.partial`，保留 `usage`，`toolcall_start` 在可解析时增加 `id`/`toolName` |
-| `NativeMessage` | `@earendil-works/pi-agent-core@1.5.0` 的 `AgentMessage`（`dist/types.d.ts:322`）；assistant 形态为 `@earendil-works/pi-ai@1.5.0` 的 `AssistantMessage`（`dist/types.d.ts:375`） |
-| `NativePartial` | `@earendil-works/pi-ai@1.5.0` 的 `AssistantMessage`（`dist/types.d.ts:375`）；订阅边界中的累计 partial，或 `null` |
-| `NativeEntry` | `@earendil-works/pi-coding-agent@1.5.0` 的 `FileEntry`（`dist/core/session-manager.d.ts:130`，`dist/index.d.ts:21` 再导出）；`history.read.entries` |
-| `ToolDetail.parameters` | `@earendil-works/pi-coding-agent@1.5.0` 的 `ToolInfo["parameters"]`（`dist/core/extensions/types.d.ts:1600`，`dist/index.d.ts:8` 再导出）；TypeBox／JSON Schema 对象，或 `null` |
+| `NativeSessionEvent` | `@earendil-works/pi-coding-agent@1.6.0` 的 `AgentSessionEvent`（`dist/core/agent-session.d.ts:49`，`dist/index.d.ts:3` 再导出）。除 `message_update` 外原样透传；assistant `message_update` 移除顶层 `message` 与 `assistantMessageEvent.partial`，保留 `usage`，`toolcall_start` 在可解析时增加 `id`/`toolName` |
+| `NativeMessage` | `@earendil-works/pi-agent-core@1.6.0` 的 `AgentMessage`（`dist/types.d.ts:322`）；assistant 形态为 `@earendil-works/pi-ai@1.6.0` 的 `AssistantMessage`（`dist/types.d.ts:382`） |
+| `NativePartial` | `@earendil-works/pi-ai@1.6.0` 的 `AssistantMessage`（`dist/types.d.ts:382`）；订阅边界中的累计 partial，或 `null` |
+| `NativeEntry` | `@earendil-works/pi-coding-agent@1.6.0` 的 `FileEntry`（`dist/core/session-manager.d.ts:130`，`dist/index.d.ts:21` 再导出）；`history.read.entries` |
+| `ToolDetail.parameters` | `@earendil-works/pi-coding-agent@1.6.0` 的 `ToolInfo["parameters"]`（`dist/core/extensions/types.d.ts:1622`，`dist/index.d.ts:8` 再导出）；TypeBox／JSON Schema 对象，或 `null` |
 | `JobRecordView.result` | Runtime 记录的领域结果值，类型不固定 |
 | `MainEventPayload.event` | Pi `AgentSessionEvent` 或 Main `input_error`，类型不固定；保留原始 JSON |
 | `MainCompactResult.result` | Pi SDK compaction result；保留原始 JSON |
 | `DetailedAgentHistory` | Job 历史文件路径；`summary`、`cleanJsonl` 必有，其他路径键可扩展 |
 
-`message_update` 的 `assistantMessageEvent` 为 `@earendil-works/pi-ai@1.5.0` 的 `AssistantMessageEvent`（`dist/types.d.ts:585`），`usage` 为 `Usage`（`dist/types.d.ts:285`）。投影后的逐类型字段表见 [线协议规范第 11 节](harness-rpc-wire-spec.md#11-上游-pi-定义与不透明载荷)；本页不重复上游模型。
+`message_update` 的 `assistantMessageEvent` 为 `@earendil-works/pi-ai@1.6.0` 的 `AssistantMessageEvent`（`dist/types.d.ts:592`），`usage` 为 `Usage`（`dist/types.d.ts:292`）。投影后的逐类型字段表见 [线协议规范第 11 节](harness-rpc-wire-spec.md#11-上游-pi-定义与不透明载荷)；本页不重复上游模型。
 
 `stream` 的 `messages`、`partial` 与 `entries` 使用上述不透明定义，避免把 Pi 的原生消息模型复制进本协议。
 

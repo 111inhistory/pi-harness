@@ -105,7 +105,7 @@ function harness(
 }
 
 const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
-const plain = (lines: string[]): string => lines.map((line) => stripTerminalSequences(line)).join('\n');
+const plain = (lines: readonly string[]): string => lines.map((line) => stripTerminalSequences(line)).join('\n');
 const renderPlain = (panel: BtwPanel, width = 60): string => plain(panel.render(width));
 
 function typeText(panel: BtwPanel, text: string): void {
@@ -411,7 +411,7 @@ test('unchanged overflow frames reuse both widths instead of reflowing twice', a
   // its calls counts layouts without adding a production counter.
   const originalRender = Markdown.prototype.render;
   let layouts = 0;
-  Markdown.prototype.render = function counted(this: Markdown, width: number): string[] {
+  Markdown.prototype.render = function counted(this: Markdown, width: number): readonly string[] {
     layouts++;
     return originalRender.call(this, width);
   };

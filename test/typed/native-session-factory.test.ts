@@ -256,7 +256,6 @@ function responsesInput(model: Model<Api>, messages: readonly unknown[]): readon
     normalizeContext({ messages: messages as Message[] }),
     new Set([model.provider]),
     {
-      includeSystemPrompt: true,
       supportsMidConvoSystemMessages: true,
       supportsAdditionalTools: true,
     },

@@ -28,8 +28,8 @@ function tool(definition: ToolRenderers, result: { content: Array<{ type: 'text'
   component.updateResult({ ...result, isError });
   return component;
 }
-const plain = (lines: string[]) => lines.map(stripVTControlCharacters).join('\n');
-const compact = (lines: string[]) => plain(lines).replace(/\s/g, '');
+const plain = (lines: readonly string[]) => lines.map(stripVTControlCharacters).join('\n');
+const compact = (lines: readonly string[]) => plain(lines).replace(/\s/g, '');
 
 for (const name of ['capability', 'subagent_list', 'mcp__example__lookup']) {
   test(`${name}: long single-line results fold by visual rows and expand fully`, () => {

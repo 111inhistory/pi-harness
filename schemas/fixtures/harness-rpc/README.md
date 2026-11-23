@@ -44,7 +44,7 @@
 
 `stateful/subscribe-partial-then-deltas.expected.json` 给出 `ordering.bufferedSeq`、边界文本、组装后的 `text`、工具调用与终态。实现应把 `boundary.partial` 与缓冲的 `seq:1` delta 一起应用，得到 `"Hello world"`；不要丢弃先到的事件，也不要假设响应先到。
 
-该对话的 assistant 消息与 `Usage` 按 `@earendil-works/pi-ai@1.5.0` 的必填字段构造（`api`/`provider`/`model`/`usage`/`stopReason`/`timestamp`，`Usage` 含 `cacheRead`/`cacheWrite`/`totalTokens`/`cost`，`toolCall` 含 `type:"toolCall"`）。其他 `nativeValidity:illustrative` 的 envelope 夹具只用于帧形状，不冒充完整原生消息。
+该对话的 assistant 消息与 `Usage` 按 `@earendil-works/pi-ai@1.6.0` 的必填字段构造（`api`/`provider`/`model`/`usage`/`stopReason`/`timestamp`，`Usage` 含 `cacheRead`/`cacheWrite`/`totalTokens`/`cost`，`toolCall` 含 `type:"toolCall"`）。其他 `nativeValidity:illustrative` 的 envelope 夹具只用于帧形状，不冒充完整原生消息。
 
 限定：CI 的 `assertUsage`/`assertAssistant` 是选定必填字段检查，不是完整上游 union 校验；本 strict 对话是按 pinned 类型构造的合成 trace，不是完整 SDK 事件捕获。
 

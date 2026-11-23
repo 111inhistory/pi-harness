@@ -47,7 +47,7 @@ OpenAI 的隐式缓存要求保留可复用前缀和合法的消息结束位置�
 | `openai-responses` | `supportsMidConvoEffort`、有效非 `off` level、解析后的请求 URL 不是官方 OpenAI sign-in | 追加 `configuration_update`；请求级 `reasoning.effort` 保持固定 |
 | 官方 OpenAI Responses sign-in | `provider=openai`、解析后的 `baseUrl` 为官方 URL、实际 `apiKey` 不以 `sk-` 开头 | 抑制 `configuration_update`，改为改变请求级 effort |
 | `azure-openai-responses` | 即使 compat 为 true | 没有 `configuration_update` 编码器，改变请求级 effort |
-| `openai-codex-responses` | 即使 compat 为 true | 没有 `configuration_update` 编码器，改变请求级 effort；其 WebSocket continuation 重置是另一项行为 |
+| `openai-codex-responses` | `supportsMidConvoEffort` 且可解析出原生 effort | 追加 `configuration_update`，请求级 `reasoning.effort` 固定为 `medium`；未开启 compat 时仍改变请求级 effort。WebSocket continuation 重置是独立行为 |
 | `anthropic-messages` | `supportsMidConvoEffort` 且 thinking enabled | 历史/尾部 effort marker，请求级 `output_config.effort` 保持固定 |
 | `anthropic-messages` off | thinking disabled | 发送 disabled，不发送 effort marker |
 | `openai-completions` | 任意 | 没有 `supportsMidConvoEffort` 编码器 |

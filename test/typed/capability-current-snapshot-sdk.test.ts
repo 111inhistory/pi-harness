@@ -169,7 +169,7 @@ test('same-run tool results refresh one current snapshot as a persisted user bou
       model,
       { messages: requests[2] as never } as never,
       new Set([model.provider]),
-      { includeSystemPrompt: true, supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+      { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
     ) as Array<{ role?: string; type?: string }>;
     assert.equal(wire2.at(-1)?.role, 'user');
     assert.equal(wire2.some((item, index) => index > 0 && item.role === 'developer'), false);
@@ -202,7 +202,7 @@ function responsesWire(model: Model<Api>, messages: readonly ProjectionMessage[]
     model,
     { messages: messages as never } as never,
     new Set([model.provider]),
-    { includeSystemPrompt: true, supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+    { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
   ) as Array<{ role?: string; type?: string }>;
 }
 
