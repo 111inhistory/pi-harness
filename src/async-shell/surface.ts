@@ -102,10 +102,18 @@ export function installAsyncShellSurface(
           },
         }).execute(id, { command, ...(timeout === undefined ? {} : { timeout }) }, signal, onUpdate, context);
         if (jobResult === undefined) return result;
-        const { id: job, status, exitCode, output, logPath, message } = jobResult;
+        const { id: job, status, exitCode, output, logPath, message, truncated } = jobResult;
+        // Return a Job reference only when the caller requested one or the wait
+        // window actually moved the command into the background.
+        const text = background || status === 'running'
+          ? JSON.stringify({ id: job, status, exitCode, output, logPath, message })
+          : [output || '(no output)',
+            exitCode !== null && exitCode !== 0 ? `Command exited with code ${exitCode}`
+              : status !== 'completed' ? message ?? `Command ${status.replaceAll('_', ' ')}.` : undefined,
+            truncated || status === 'internal_error' ? `Full output: ${logPath}` : undefined,
+          ].filter(part => part !== undefined).join('\n\n');
         return {
-          content: [{ type: 'text', text: !background && status === 'completed' && !jobResult.truncated ? output || '(no output)'
-            : JSON.stringify({ id: job, status, exitCode, output, logPath, message }) }],
+          content: [{ type: 'text', text }],
           details: undefined,
           isError: status !== 'running' && status !== 'completed',
         };

@@ -104,6 +104,17 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
   await fsp.writeFile(mainRelease, 'release');
   await mainCompletion.promise;
 
+  for (const pty of [false, true]) {
+    const failed = await fixture.call(shellName, {
+      command: shellName === 'powershell' ? "Write-Output 'foreground failure'; exit 7" : 'printf "foreground failure\\n"; exit 7',
+      ...(pty ? { pty: true, timeout: 10 } : {}),
+    });
+    assert.equal(failed.isError, true);
+    const item = failed.content[0];
+    assert.ok(item?.type === 'text' && typeof item.text === 'string');
+    assert.match(item.text.replaceAll('\r', ''), /^foreground failure\n+Command exited with code 7$/);
+  }
+
   const inputJob = await fixture.call(shellName, {
     command: command([process.execPath.replaceAll('\\', '/'), '-e',
       'require("node:readline").createInterface({input:process.stdin}).once("line", line => { console.log("INPUT:" + line); process.exit(0); });']),

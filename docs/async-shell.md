@@ -26,7 +26,7 @@ npm run install:async-shell
 
 ### 模型工具
 
-通过 `bash` 或 Windows 上的 `powershell` 直接运行命令。未提供 `timeout` 时，普通调用先等待 `shell.autoBackgroundAfterMs`（默认 60 秒）；仍在运行就返回 Job ID 和日志路径，原命令继续执行。`background: true` 在启动后立即返回；同时提供 `timeout` 时，超时仍限制 Job 的执行时间。只指定 `timeout` 而未请求后台时保持前台执行。
+通过 `bash` 或 Windows 上的 `powershell` 直接运行命令。未提供 `timeout` 时，普通调用先等待 `shell.autoBackgroundAfterMs`（默认 60 秒）；仍在运行就返回 Job ID 和日志路径，原命令继续执行。`background: true` 在启动后立即返回 Job；同时提供 `timeout` 时，超时仍限制 Job 的执行时间。只指定 `timeout` 而未请求后台时保持前台执行。前台结束时直接返回文本；退出码非零时保留输出，并附上退出码说明。
 
 `pty` 默认 `false`：普通子进程使用管道输出，stdin 为 EOF。POSIX 停止操作只针对 Job 的进程组，不能清理自行脱离该进程组的进程。`pty: true` 使用 PTY／ConPTY。用 `read` 按行查看返回的临时日志路径；`job_stop(id)` 停止当前执行拥有的 Job，成功报告同一次取消后不重复通知。`job_send(id, text, enter?)` 与 `job_key(id, key)` 仅接受该执行拥有的 PTY Job；`enter` 默认 `false`。模型无需使用 CLI 的 `poll` 或字节游标。
 
