@@ -429,11 +429,12 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
   {
     const big = await invoke(shellName, {
       command: emit({ lines: 3000, tail: 'RUNNING_TAIL_MARKER', holdMs: 15000, prefix: 'RUN' }),
+      timeout: 12,
     });
     const runningText = textOf(big.content);
     const structured = big.structuredContent as ProgrammaticShellResult;
     assertProseResult(runningText);
-    assert.match(runningText, /^Job job_[0-9a-f]{8} backgrounded after 1s wait\.\nSet timeout to limit runtime, or use background: true to return immediately\./, runningText);
+    assert.match(runningText, /^Job job_[0-9a-f]{8} backgrounded after 3s wait\. The original 12s timeout still applies\./, runningText);
     const runningId = jobIdOf(runningText);
     const runningLog = logPathOf(runningText);
     const footer = RUNNING_TRUNCATION.exec(runningText);
@@ -451,12 +452,15 @@ export async function runAsyncShellScenario(fixture: ScenarioFixture, shellName:
     assert.equal(Number(readNext), Number(total), 'the running reply points at the last shown tail line');
     assert.ok(Number(headEnd) < Number(tailStart));
     assert.equal(Number(tailEnd), Number(total));
-    const lines = fileLines(await fsp.readFile(runningLog, 'utf8'));
-    assert.ok(lines.length >= Number(total), 'the footer coordinates are global log lines');
-    assert.equal(lines[Number(tailEnd) - 1], 'RUNNING_TAIL_MARKER');
+    const snapshot = String(structured.output);
+    const lines = fileLines(snapshot);
+    assert.equal(lines.length, Number(total), 'the footer counts lines at handoff');
+    assert.ok((await fsp.readFile(runningLog, 'utf8')).startsWith(snapshot), 'the running log can grow after handoff');
+    assert.equal(runningText.slice(0, footer.index).trimEnd().split('\n').at(-1), lines[Number(tailEnd) - 1]);
     assert.ok(runningText.includes('... [omitted lines '));
     const continued = textOf((await fixture.call('read', { path: runningLog, offset: Number(readFrom), limit: 2 })).content);
     assert.ok(continued.startsWith(`${lines[Number(readFrom) - 1]!}\n`));
+    await waitForCondition(async () => (await fsp.readFile(runningLog, 'utf8')).includes('RUNNING_TAIL_MARKER'), 'the running Job finishes writing its tail');
     await fixture.call('job_stop', { id: runningId });
   }
 
