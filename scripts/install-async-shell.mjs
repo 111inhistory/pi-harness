@@ -8,11 +8,9 @@ const marker = 'pi-harness: pi-job';
 const agentDir = getAgentDir();
 const binaryName = process.platform === 'win32' ? 'pi-job.exe' : 'pi-job';
 const source = fileURLToPath(new URL(`../dist/${binaryName}`, import.meta.url));
-const skill = fileURLToPath(new URL('../skills/pi-job', import.meta.url));
 const bin = path.join(agentDir, 'bin');
 await mkdir(bin, { recursive: true });
 await lstat(source);
-await lstat(skill);
 
 async function linkResource(source, destination, kind) {
   const directory = path.dirname(destination);
@@ -84,9 +82,6 @@ if (process.platform === 'win32') {
     '#!/bin/sh', `# ${marker} Bash launcher`,
     'basedir=$(dirname "$0")', 'exec "$basedir/pi-job.exe" "$@"', '',
   ].join('\n'));
-  // Directory junctions require no symlink privilege on Windows.
-  await linkResource(skill, path.join(agentDir, 'skills', 'pi-job'), 'junction');
 } else {
   await linkResource(source, path.join(bin, 'pi-job'), 'file');
-  await linkResource(skill, path.join(agentDir, 'skills', 'pi-job'), 'dir');
 }

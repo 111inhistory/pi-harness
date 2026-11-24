@@ -15,9 +15,6 @@
       "./extensions/capability.ts",
       "./extensions/btw.ts",
       "./extensions/preset.ts"
-    ],
-    "skills": [
-      "./skills"
     ]
   },
   "scripts": {

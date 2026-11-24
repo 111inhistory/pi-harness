@@ -11,16 +11,16 @@ winget install --id marlocarlo.psmux --exact
 winget upgrade --id marlocarlo.psmux --exact
 ```
 
-从 Harness 仓库安装 CLI 和 Skill：
+从 Harness 仓库安装 CLI：
 
 ```sh
 npm ci
 npm run install:async-shell
 ```
 
-安装命令构建原生 `dist/pi-job`（Windows 为 `dist/pi-job.exe`）。POSIX 在 Pi 用户目录的 `bin/pi-job` 创建指向该二进制的链接；Windows 将 `pi-job.exe` 安装到 `bin/`，并生成 PowerShell、cmd 和 Bash 启动入口。两者都会安装 [pi-job Skill](../skills/pi-job/SKILL.md) 到用户目录的 `skills/pi-job`（Windows 使用目录联接）。Pi 用户目录遵循 `PI_CODING_AGENT_DIR`，默认是 `~/.pi/agent`。Pi 内置 Shell 会将该目录加入 PATH。更新代码后重新执行安装命令，并重启 Pi 加载新版宿主与提示词；`/reload` 不保证刷新全部依赖。
+安装命令构建原生 `dist/pi-job`（Windows 为 `dist/pi-job.exe`）。POSIX 在 Pi 用户目录的 `bin/pi-job` 创建指向该二进制的链接；Windows 将 `pi-job.exe` 安装到 `bin/`，并生成 PowerShell、cmd 和 Bash 启动入口。Pi 用户目录遵循 `PI_CODING_AGENT_DIR`，默认是 `~/.pi/agent`。Pi 内置 Shell 会将该目录加入 PATH。更新代码后重新执行安装命令，并重启 Pi 加载新版宿主与提示词；`/reload` 不保证刷新全部依赖。
 
-加载 Harness 后，Agent 通过 Bash／PowerShell 启动 Job，通过 `job_stop`、`job_send`、`job_key` 控制自己拥有的 Job。Windows PTY 后端调用 `psmux.exe`，不使用 winget 提供的 `tmux` 别名。普通终端也可使用独立的 `pi-job` CLI；`/skill:pi-job` 提供其用法。
+加载 Harness 后，Agent 通过 Bash／PowerShell 启动 Job，通过 `job_stop`、`job_send`、`job_key` 控制自己拥有的 Job。Windows PTY 后端调用 `psmux.exe`，不使用 winget 提供的 `tmux` 别名。普通终端也可使用独立的 `pi-job` CLI。
 
 ## 创建与查询
 
