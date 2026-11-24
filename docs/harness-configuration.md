@@ -229,7 +229,7 @@ node --import tsx scripts/migrate-subagent-routing.mjs subagent-routing.json sub
 | `codemode.memoryLimitBytes` | 268,435,456 | Harness 沙箱内存上限，单位为字节 |
 | `codemode.defaultMaxOutputTokens` | 10,000 | 未显式指定时的输出 token 上限 |
 
-脚本显式提供的 `max_output_tokens` 优先于插件默认值。宿主沿用每 token 4 字符的输出估算，超限时保存完整文件并返回路径。Pi 原生 `codemode.mode` 和 `inlineBudget` 的基准仍来自 Pi 设置，不在这里重复配置；模型 Preset 可在本会话分支上记录一个生效模式覆盖（见下节），只改变声明的 `on`／`only` 投影，不改写 Pi 设置或工具 exposure。
+脚本显式提供的 `max_output_tokens` 优先于插件默认值。宿主按每 token 4 个 UTF-8 字节估算输出大小，并同时限制为最多 2,000 行。超出任一上限时保留头尾，保存完整输出并返回文件路径。Pi 原生 `codemode.mode` 和 `inlineBudget` 的基准仍来自 Pi 设置，不在这里重复配置；模型 Preset 可在本会话分支上记录一个生效模式覆盖（见下节），只改变声明的 `on`／`only` 投影，不改写 Pi 设置或工具 exposure。
 
 ## 模型 Preset
 

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFile } from 'node:fs/promises';
 import { createCodemodeExtension, type ExtensionAPI, type ExtensionContext, type ExtensionToolContext, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AgentTool } from '@earendil-works/pi-agent-core';
 import type { Message } from '@earendil-works/pi-ai';
@@ -161,7 +162,7 @@ test('capabilityExtension forwards its fixed config to the installed Codemode ex
   } as unknown as ExtensionToolContext;
   const result = await definitions.get('codemode')!.execute('fixed-config',
     { code: 'return "0123456789ABCDEF";' }, undefined, undefined, ctx);
-  assert.match(scriptOutput(result), /…output truncated…/);
+  assert.match(scriptOutput(result), /omitted middle of line 1/);
   assert.doesNotMatch(scriptOutput(result), /0123456789ABCDEF/);
 });
 
@@ -177,7 +178,7 @@ test('configured Codemode memory and output defaults apply per call while script
 
   const bounded = await definition.execute('bounded-output', { code: 'return "0123456789ABCDEF";' }, undefined, undefined, ctx);
   const text = scriptOutput(bounded);
-  assert.match(text, /…output truncated…/);
+  assert.match(text, /omitted middle of line 1/);
   assert.doesNotMatch(text, /0123456789ABCDEF/);
   assert.equal(typeof (bounded as { details?: { fullOutputPath?: unknown } }).details?.fullOutputPath, 'string');
 
@@ -189,6 +190,25 @@ test('configured Codemode memory and output defaults apply per call while script
     { code: '// @options: {"max_output_tokens": 10000}\nreturn "x".repeat(16 * 1024 * 1024).length;' }, undefined, undefined, ctx);
   assert.equal((exhausted as { isError?: boolean }).isError, true);
   assert.match(scriptOutput(exhausted), /out of memory/i);
+});
+
+test('Codemode keeps both ends by line budget and saves the complete text', { timeout: 20000 }, async () => {
+  const { pi, definitions } = registrationFixture();
+  installCapabilityCodemode(pi, () => () => true, () => () => true);
+  const ctx = {
+    tools: [], sessionManager: { getBranch: () => [] }, modelRegistry: {},
+  } as unknown as ExtensionToolContext;
+  const rows = Array.from({ length: 2500 }, (_, index) => `row ${index + 1}`).join('\n');
+  const result = await definitions.get('codemode')!.execute('line-output',
+    { code: `// @options: {"max_output_tokens": ${Number.MAX_SAFE_INTEGER}}\nreturn ${JSON.stringify(rows)};` }, undefined, undefined, ctx);
+  const output = scriptOutput(result).slice(scriptOutput(result).indexOf('\nOutput:\n') + '\nOutput:\n'.length);
+  assert.match(output, /^row 1\n/);
+  assert.match(output, /\nrow 2500\n\n\[Full output: /);
+  assert.match(output, /\n\.\.\. \[omitted lines 1001-1500\] \.\.\.\n/);
+  assert.doesNotMatch(output, /\nrow 1001\n/);
+  const fullOutputPath = (result as { details?: { fullOutputPath?: unknown } }).details?.fullOutputPath;
+  assert.equal(typeof fullOutputPath, 'string');
+  assert.equal(await readFile(fullOutputPath as string, 'utf8'), rows, 'the full text is saved before clipping');
 });
 
 test('Codemode owns accumulated model usage without mutating the producer', { timeout: 20000 }, async () => {

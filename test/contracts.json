@@ -32,6 +32,20 @@
       ]
     },
     {
+      "id": "codemode.output-limits",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/harness-configuration.md",
+          "heading": "## Codemode"
+        }
+      ],
+      "tests": [
+        "test/typed/capability-codemode-boundary.test.ts",
+        "test/typed/text-output.test.ts"
+      ]
+    },
+    {
       "id": "capability.activation-reachability",
       "kind": "design",
       "docs": [

@@ -1,7 +1,7 @@
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createCodemodeExtension, type ExtensionAPI, type ExtensionContext, type ExtensionToolContext, type ToolDefinition } from '@earendil-works/pi-coding-agent';
+import { DEFAULT_MAX_LINES, createCodemodeExtension, type ExtensionAPI, type ExtensionContext, type ExtensionToolContext, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { CodemodeSandbox, parseCodemodeSource, renderToolSample, type CodemodeTool, type CodemodeJsonSchema, toCodemodeIdentifier } from '@earendil-works/pi-codemode';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { ClassifierContext, ImagesContext, ModelType, Usage } from '@earendil-works/pi-ai';
@@ -10,6 +10,7 @@ import { promptString } from '../prompt-text.ts';
 import { planNoSchema } from './lazy-schemas.ts';
 import { effectiveCodemodeMode } from './codemode-mode.ts';
 import { createToolAccessView } from './tool-access-view.ts';
+import { clipText } from '../text-output.ts';
 
 const codemodeScope = promptString('native-discovery.json', 'codemodeScope');
 
@@ -386,12 +387,16 @@ export function installCapabilityCodemode(
             if (result.ok && result.value !== undefined) output.push(typeof result.value === 'string' ? result.value : JSON.stringify(result.value));
             if (!result.ok) output.push(`Script error: ${result.error.message}`);
             let text = output.join('\n');
-            const limit = (parsed.options.maxOutputTokens ?? config.codemode.defaultMaxOutputTokens) * 4;
+            // Keep the historical four-bytes-per-token estimate, but apply it as a
+            // UTF-8 byte budget together with Pi's line budget.
+            const maxOutputTokens = parsed.options.maxOutputTokens ?? config.codemode.defaultMaxOutputTokens;
+            const maxBytes = Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, maxOutputTokens * 4));
+            const clipped = clipText(text, { maxLines: DEFAULT_MAX_LINES, maxBytes }, 'head-tail');
             let fullOutputPath: string | undefined;
-            if (text.length > limit) {
+            if (clipped.truncated) {
               fullOutputPath = path.join(await mkdtemp(path.join(tmpdir(), 'pi-codemode-')), 'output.txt');
               await writeFile(fullOutputPath, text, { mode: 0o600 });
-              text = `${text.slice(0, Math.floor(limit / 2))}\n…output truncated…\n${text.slice(-Math.floor(limit / 2))}\n[Full output: ${fullOutputPath}]`;
+              text = `${clipped.text}\n\n[Full output: ${fullOutputPath}]`;
             }
             return {
               content: [
