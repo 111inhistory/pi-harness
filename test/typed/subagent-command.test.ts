@@ -60,7 +60,7 @@ function install(service: RootService | (() => Promise<RootService>)): { handler
     },
   } as unknown as ExtensionAPI;
   const resolve = typeof service === "function" ? service : async () => service;
-  installSubagentCommand(api, resolve, async () => []);
+  installSubagentCommand(api, resolve, async () => [], () => null);
   const registered = command;
   assert.ok(registered);
   return { handler: async (raw, ctx) => { await registered.handler(raw, ctx); } };
@@ -294,7 +294,9 @@ test("completions offer verbs, session connect targets and target sugar without 
     registerCommand: (_name: string, value: Options) => { options = value; },
   } as unknown as ExtensionAPI;
   let sessions = [{ sessionId: "peer-native-id", uid: "bbbbbb", socketDir: "/tmp/sockets/bbbbbb", pid: 22, cwd: "/tmp/project", name: "parser work", startedAt: 1 }];
-  installSubagentCommand(api, async () => { throw new Error("completion must not activate a service"); }, async () => sessions);
+  const root = { runtime: { list: (filter: { status: string } | null) => ({ agents: filter?.status === 'running'
+    ? [{ agentId: 'sub_1' }] : [{ agentId: 'sub_1' }, { agentId: 'sub_2' }] }) } } as unknown as RootService;
+  installSubagentCommand(api, async () => { throw new Error("completion must not activate a service"); }, async () => sessions, () => root);
   const complete = options?.getArgumentCompletions;
   assert.ok(complete);
   const values = async (raw: string): Promise<string[] | null> => {
@@ -315,10 +317,13 @@ test("completions offer verbs, session connect targets and target sugar without 
   assert.equal(await values("sessions unknown "), null);
   assert.deepEqual(await values("int"), ["interrupt"]);
   assert.deepEqual(await values("sto"), ["stop"]);
-  assert.deepEqual(await values("interrupt "), ["interrupt children", "interrupt main"]);
+  assert.deepEqual(await values("interrupt "), ["interrupt children", "interrupt sub_1"]);
   assert.deepEqual(await values("stop chi"), ["stop children"]);
-  assert.equal(await values("stop sub_1"), null);
+  assert.deepEqual(await values("stop sub_1"), ["stop sub_1"]);
+  assert.equal(await values("stop sub_2"), null);
   assert.deepEqual(await values("list --a"), ["list --all"]);
+  assert.deepEqual(await values("list --i"), ["list --id "]);
+  assert.deepEqual(await values("list --id sub_"), ["list --id sub_1", "list --id sub_2"]);
 });
 
 test("the harness extension registers the subagent command", () => {

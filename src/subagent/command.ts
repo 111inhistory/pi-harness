@@ -214,16 +214,34 @@ export function installSubagentCommand(
   api: ExtensionAPI,
   current: (ctx: ExtensionContext) => Promise<RootService>,
   sessionCandidates: () => Promise<readonly LiveSession[]>,
+  activeRoot: () => RootService | null,
 ): void {
   api.registerCommand("subagent", {
     description: "Inspect agent activity, interrupt or stop agents, list live sessions, and connect one",
     getArgumentCompletions: async (prefix) => {
       const text = prefix.trimStart();
+      const listTarget = /^list\s+--id\s+(\S*)$/.exec(text);
+      const signalTarget = /^(interrupt|stop)\s+(\S*)$/.exec(text);
+      if (listTarget || signalTarget) {
+        const fragment = (listTarget?.[1] ?? signalTarget?.[2] ?? '').toLowerCase();
+        const command = signalTarget?.[1] ?? 'list --id';
+        const root = activeRoot();
+        const actors = root?.runtime.list(signalTarget ? { status: 'running' } : null).agents ?? [];
+        const items = actors.filter(actor => actor.agentId.startsWith(fragment)).map(actor => ({
+          value: `${command} ${actor.agentId}`, label: actor.agentId,
+        }));
+        if (signalTarget && 'children'.startsWith(fragment)) {
+          items.unshift({ value: `${command} children`, label: 'children' });
+        }
+        return items.length > 0 ? items : null;
+      }
       const flag = /^list\s+(--\S*)$/.exec(text);
       if (flag !== null) {
-        return "--all".startsWith(flag[1]!)
-          ? [{ value: "list --all", label: "--all", description: "Expand the whole tree" }]
-          : null;
+        const items = [
+          { value: 'list --all', label: '--all', description: 'Expand the whole tree' },
+          { value: 'list --id ', label: '--id', description: 'Show one Agent and its children' },
+        ].filter(item => item.label.startsWith(flag[1]!));
+        return items.length > 0 ? items : null;
       }
       const action = /^sessions\s+(\S*)$/.exec(text);
       if (action !== null) {
@@ -243,18 +261,6 @@ export function installSubagentCommand(
             value: `sessions connect ${session.uid}`,
             label: session.name === null ? session.uid : `${session.uid} · ${session.name}`,
             description: `${session.cwd} · ${session.sessionId}`,
-          }));
-        return items.length === 0 ? null : items;
-      }
-      const targetPrefix = /^(interrupt|stop)\s+(\S*)$/.exec(text);
-      if (targetPrefix !== null) {
-        const fragment = targetPrefix[2]!.toLowerCase();
-        const items = ["children", "main"]
-          .filter((value) => value.startsWith(fragment))
-          .map((value) => ({
-            value: `${targetPrefix[1]} ${value}`,
-            label: value,
-            description: value === "children" ? "Every direct child of Main" : "Main itself (has no controllable Job)",
           }));
         return items.length === 0 ? null : items;
       }

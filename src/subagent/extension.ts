@@ -7,14 +7,14 @@ import { installSubagentCommand } from './command.ts';
 import { installSessionSurface } from './surface.ts';
 import type { HarnessSessionApplication } from '../session/application.ts';
 
-export function installRootSubagentSurface(api: ExtensionAPI, access: Pick<HarnessSessionApplication, 'current' | 'peers' | 'configFor'>): void {
+export function installRootSubagentSurface(api: ExtensionAPI, access: Pick<HarnessSessionApplication, 'current' | 'activeRoot' | 'peers' | 'configFor'>): void {
   let autocompleteInstalled = false;
   api.on('session_start', (_event, ctx) => {
     if (autocompleteInstalled) return;
     autocompleteInstalled = true;
     ctx.ui.addAutocompleteProvider(base => argumentCompletionProvider(base, 'subagent'));
   });
-  installSubagentCommand(api, access.current, access.peers);
+  installSubagentCommand(api, access.current, access.peers, access.activeRoot);
   installAsyncShellSurface(api, async ctx => (await access.current(ctx)).shell, 'main');
   installSessionSurface(api, access.current, {
     callerId: 'main', depth: 0, allowInherited: true,

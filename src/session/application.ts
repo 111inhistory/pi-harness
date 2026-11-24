@@ -9,6 +9,7 @@ import type { HarnessRpcStatus } from '../harness-rpc/assembly.ts';
 
 export interface HarnessSessionApplication {
   current(ctx: ExtensionContext): Promise<RootService>;
+  activeRoot(): RootService | null;
   peers(): Promise<LiveSession[]>;
   readonly configFor: HarnessConfigProvider;
   rpcStatus(): HarnessRpcStatus;
@@ -146,6 +147,7 @@ export function installHarnessSession(api: ExtensionAPI): HarnessSessionApplicat
   });
   return {
     current,
+    activeRoot: () => transitionPending || lifecycle.retiring ? null : lifecycle.service,
     configFor,
     rpcStatus: () => host?.status() ?? { enabled: false, available: false, address: null },
     async peers() {
