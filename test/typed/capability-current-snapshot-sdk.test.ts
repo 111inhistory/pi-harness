@@ -29,7 +29,7 @@ import { DEFAULT_HARNESS_CONFIG, resolveHarnessConfig } from '../../src/harness-
 import { installCapabilityCodemode } from '../../src/capability/codemode.ts';
 import { installSessionSurface } from '../../src/subagent/surface.ts';
 import { installPresetInstruction } from '../../src/preset/instruction.ts';
-import { appendPresetState } from '../../src/preset/state.ts';
+import { appendPresetState, buildPresetSnapshot, PRESET_STATE_VERSION } from '../../src/preset/state.ts';
 import {
   CAPABILITY_DISCOVERY_RECORD,
   appendDiscoveryRecord,
@@ -303,7 +303,7 @@ test('unchanged tool loop ends on function_call_output; mid-run static tool acti
     })).session;
     const errors: unknown[] = [];
     await session.bindExtensions({ onError: (error) => errors.push(error) });
-    appendPresetState(extApi, { version: 1, snapshot: { name: 'fast', instructions: 'INITIAL_PRESET_BODY' } });
+    appendPresetState(extApi, { version: PRESET_STATE_VERSION, snapshot: buildPresetSnapshot({ name: 'fast', instructions: 'INITIAL_PRESET_BODY' }) });
     await session.prompt('Run loop');
 
     assert.equal(requests.length, 4);
@@ -507,7 +507,7 @@ test('mid-run auto-compaction persists user boundary carrying capabilities prune
 
   try {
     session = await openSession(SessionManager.create(dir, sessionDir));
-    appendPresetState(extApi, { version: 1, snapshot: { name: 'compact', instructions: 'PRESET_SURVIVES_REOPEN' } });
+    appendPresetState(extApi, { version: PRESET_STATE_VERSION, snapshot: buildPresetSnapshot({ name: 'compact', instructions: 'PRESET_SURVIVES_REOPEN' }) });
     appendDiscoveryRecord(extApi as never, 'seed-discovery', {
       status: 'ok',
       tools: [{ ref: 'tool://prunable_tool', name: 'prunable_tool', kind: 'tool', exposure: 'direct' }],
@@ -867,7 +867,7 @@ test('subagent_create capacity reaches physical request under customPrompt and c
         settingsManager: settings, resourceLoader: loader, sessionManager: SessionManager.inMemory(process.cwd()),
       })).session;
       await session.bindExtensions({});
-      appendPresetState(extApi, { version: 1, snapshot: { name: 'fast', instructions: 'CUSTOM_PRESET_BODY' } });
+      appendPresetState(extApi, { version: PRESET_STATE_VERSION, snapshot: buildPresetSnapshot({ name: 'fast', instructions: 'CUSTOM_PRESET_BODY' }) });
       extApi.setActiveTools(mode === 'codemodeOnly' ? ['read', 'codemode', 'subagent_create'] : ['read', 'subagent_create']);
       await session.prompt('Check capacity');
 

@@ -14,10 +14,8 @@
  * across layers, so a project preset cannot inherit a surprising half of a
  * global one.
  *
- * Validation is total but lenient per entry: one malformed preset is skipped
- * with a warning and the rest still load, because a typo in one preset must not
- * make every other preset unusable. A malformed top-level document (not an
- * object) is a hard error because there is nothing left to salvage.
+ * Malformed entries are tracked separately from missing names so an applied
+ * snapshot can keep running and report why it cannot be updated.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -55,6 +53,8 @@ export type PresetCatalog = ReadonlyMap<string, PresetConfig>;
 export interface LoadedPresets {
   readonly presets: PresetCatalog;
   readonly warnings: readonly string[];
+  readonly invalidNames: ReadonlySet<string>;
+  readonly invalidDocument: boolean;
 }
 
 /** Read one config file, returning `undefined` when it does not exist. */
@@ -174,7 +174,9 @@ export function validatePreset(raw: unknown): { preset: PresetConfig } | { error
 }
 
 /** Parse and validate one presets document into a name-keyed map plus warnings. */
-function parseDocument(source: string, text: string): { catalog: Map<string, PresetConfig>; warnings: string[] } {
+function parseDocument(source: string, text: string): {
+  catalog: Map<string, PresetConfig>; warnings: string[]; invalidNames: Set<string>;
+} {
   let document: unknown;
   try {
     document = JSON.parse(text);
@@ -183,6 +185,7 @@ function parseDocument(source: string, text: string): { catalog: Map<string, Pre
   }
   if (!isRecord(document)) throw new PresetConfigError(source, 'top level must be an object');
   const catalog = new Map<string, PresetConfig>();
+  const invalidNames = new Set<string>();
   const warnings: string[] = [];
   for (const [name, raw] of Object.entries(document)) {
     if (!nonEmptyString(name)) {
@@ -191,12 +194,13 @@ function parseDocument(source: string, text: string): { catalog: Map<string, Pre
     }
     const result = validatePreset(raw);
     if ('errors' in result) {
+      invalidNames.add(name);
       warnings.push(`${source}: preset "${name}" skipped: ${result.errors.join('; ')}`);
       continue;
     }
     catalog.set(name, result.preset);
   }
-  return { catalog, warnings };
+  return { catalog, warnings, invalidNames };
 }
 
 /**
@@ -208,29 +212,36 @@ function parseDocument(source: string, text: string): { catalog: Map<string, Pre
  */
 export function loadPresets(options: LoadPresetsOptions): LoadedPresets {
   const read = options.read ?? defaultReader;
+  const presets = new Map<string, PresetConfig>();
+  const invalidNames = new Set<string>();
   const warnings: string[] = [];
-  const load = (filePath: string): Map<string, PresetConfig> => {
-    const text = read(filePath);
-    if (text === undefined) return new Map();
+  let invalidDocument = false;
+  const load = (filePath: string): void => {
     try {
+      const text = read(filePath);
+      if (text === undefined) return;
       const parsed = parseDocument(filePath, text);
       warnings.push(...parsed.warnings);
-      return parsed.catalog;
-    } catch (error) {
-      if (error instanceof PresetConfigError) {
-        warnings.push(error.message);
-        return new Map();
+      for (const name of parsed.invalidNames) {
+        presets.delete(name);
+        invalidNames.add(name);
       }
-      throw error;
+      for (const [name, preset] of parsed.catalog) {
+        invalidNames.delete(name);
+        presets.set(name, preset);
+      }
+    } catch (error) {
+      invalidDocument = true;
+      // An unreadable higher-priority document may shadow any lower name.
+      presets.clear();
+      invalidNames.clear();
+      warnings.push(error instanceof Error ? error.message : String(error));
     }
   };
 
   const globalPath = path.join(options.agentDir, 'presets.json');
-  const globalCatalog = load(globalPath);
+  load(globalPath);
   const projectPath = path.join(options.cwd, '.pi', 'presets.json');
-  const projectCatalog = options.projectTrusted ? load(projectPath) : new Map<string, PresetConfig>();
-
-  const merged = new Map<string, PresetConfig>(globalCatalog);
-  for (const [name, preset] of projectCatalog) merged.set(name, preset);
-  return { presets: merged, warnings };
+  if (options.projectTrusted) load(projectPath);
+  return { presets, warnings, invalidNames, invalidDocument };
 }

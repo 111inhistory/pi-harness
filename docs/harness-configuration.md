@@ -239,11 +239,11 @@ node --import tsx scripts/migrate-subagent-routing.mjs subagent-routing.json sub
 | --- | --- |
 | `model` | `{ provider, id }`，必须存在于当前模型目录，否则整体不应用并报错 |
 | `thinkingLevel` | 思考级别名称，交由 `setThinkingLevel` 应用 |
-| `tools` | 原生 `+name`／`-name`／裸名数组；始终基于会话首次启动捕获的初始工具集（含默认启用扩展工具）计算，跨 reload 不被前一个 Preset 污染，先 A 后 B 与直接应用 B 一致 |
+| `tools` | `+name`／`-name` 叠加有效启动基线；裸名数组替换该层。用户手动 base 选择优先 |
 | `codemode` | `{ mode: "on" | "only" }`；在会话分支记录生效模式，只改变声明投影，不写 Pi 设置 |
 | `instructions` | 模型专属指引正文，作为独立 system 段落经段落日志增量投影与回放 |
 
-`/preset NAME`、`--preset NAME` 应用，`/preset clear` 停止管理（不回滚 model／thinking／tools），`/preset` 打开选择器。Preset 只作用于当前 Main 会话，不改 Fresh／Inherited Subagent 路由。分支快照与应用语义见[接口契约](interface-contract.md#模型-preset)。
+`/preset NAME`、`--preset NAME` 应用，`/preset clear` 撤回 Preset 的分支贡献并保留 model／thinking，`/preset` 打开选择器。命令作用于当前 Main 会话。分支快照与应用语义见[接口契约](interface-contract.md#模型-preset)。
 
 Worker 等待时间、Worker 数量环境变量、预览行数、`ALL_TOOLS` 的短描述格式和诊断正文上限保持现有行为，不作为本轮配置项。
 

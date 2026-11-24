@@ -779,27 +779,43 @@ test('preset, approval and session peer contracts match exact domain types and v
     model: { provider: 'fake-provider', id: 'fast' },
     thinkingLevel: 'medium',
     tools: ['read'],
+    disabledTools: ['write'],
     codemode: { mode: 'on' },
     instructions: 'Be concise.',
+    contentHash: 'sha256:fast-v2',
+    toolSelection: { kind: 'modifiers', add: ['read'], remove: ['write'] },
+  };
+  const replaceSnapshot: DomainPresetSnapshot = {
+    name: 'replace-only',
+    tools: ['read', 'edit'],
+    instructions: null,
+    contentHash: 'sha256:replace-v2',
+    toolSelection: { kind: 'replace', names: ['read', 'edit'] },
+  };
+  const noneSnapshot: DomainPresetSnapshot = {
+    name: 'instructions-only',
+    instructions: 'Be concise.',
+    contentHash: 'sha256:none-v2',
+    toolSelection: { kind: 'none' },
   };
   const applySuccess: DomainPresetApplyOutcome = {
     applied: true,
+    unchanged: false,
     snapshot: presetSnapshot,
     issues: [{ severity: 'warning', kind: 'unknown_tool', detail: 'unknown tool "foo" not added' }],
     problems: [
-      { severity: 'warning', kind: 'codemode_not_applied', codemode: { mode: 'on' }, detail: 'recorded only' },
       { severity: 'warning', kind: 'tool_sync_failed', detail: 'tool loadout sync failed' },
+      { severity: 'warning', kind: 'tool_retained_by_branch', retainedTools: ['write'], detail: 'write stayed available' },
     ],
-    codemodeNotApplied: true,
   };
   const applyFail: DomainPresetApplyOutcome = {
     applied: false,
+    unchanged: false,
     snapshot: null,
     issues: [],
     problems: [{ severity: 'error', kind: 'model_unauthenticated', model: { provider: 'p', id: 'm' }, detail: 'unauth' }],
-    codemodeNotApplied: false,
   };
-  const clearOutcome: DomainPresetClearOutcome = { cleared: true, snapshot: null, codemodeCleared: true, toolSyncError: null };
+  const clearOutcome: DomainPresetClearOutcome = { cleared: true, snapshot: null, toolSyncError: null };
 
   const pendingItem: DomainShellApprovalPending = {
     id: 'apr-1',
@@ -837,10 +853,43 @@ test('preset, approval and session peer contracts match exact domain types and v
     presets: [{ name: 'fast', config: presetConfig }],
     warnings: [],
   };
-  const currentResult: MethodResult<'presets.current'> = { preset: presetSnapshot };
-  const currentNull: MethodResult<'presets.current'> = { preset: null };
-  const applyResultOk: MethodResult<'presets.apply'> = applySuccess;
-  const applyResultFail: MethodResult<'presets.apply'> = applyFail;
+  const currentResult: MethodResult<'presets.current'> = {
+    preset: presetSnapshot,
+    status: 'outdated',
+    currentVersion: 'sha256:candidate-v2',
+    changes: ['instructions: changed', 'tools: +job_stop -edit'],
+  };
+  const currentNull: MethodResult<'presets.current'> = {
+    preset: null,
+    status: null,
+    currentVersion: null,
+    changes: [],
+  };
+  const currentMissing: MethodResult<'presets.current'> = {
+    preset: noneSnapshot,
+    status: 'missing',
+    currentVersion: null,
+    changes: [],
+  };
+  const applyResultOk: MethodResult<'presets.apply'> = {
+    ...applySuccess,
+    problems: [
+      { severity: 'warning', kind: 'tool_sync_failed', detail: 'tool loadout sync failed' },
+      { severity: 'warning', kind: 'tool_retained_by_branch', retainedTools: ['write'], detail: 'write stayed available' },
+    ],
+    contentHash: presetSnapshot.contentHash,
+  };
+  const applyResultUnchanged: MethodResult<'presets.apply'> = {
+    ...applySuccess,
+    unchanged: true,
+    problems: [],
+    contentHash: presetSnapshot.contentHash,
+  };
+  const applyResultFail: MethodResult<'presets.apply'> = {
+    ...applyFail,
+    problems: [{ severity: 'error', kind: 'model_unauthenticated', model: { provider: 'p', id: 'm' }, detail: 'unauth' }],
+    contentHash: null,
+  };
   const clearResult: MethodResult<'presets.clear'> = clearOutcome;
   const approvalsList: MethodResult<'approvals.list'> = { items: [pendingItem] };
   const approvalsGet: MethodResult<'approvals.get'> = { item: pendingItem };
@@ -855,8 +904,22 @@ test('preset, approval and session peer contracts match exact domain types and v
   assertResult(RPC_METHODS.presetsCatalog, catalogResult);
   assertResult(RPC_METHODS.presetsCurrent, currentResult);
   assertResult(RPC_METHODS.presetsCurrent, currentNull);
+  assertResult(RPC_METHODS.presetsCurrent, currentMissing);
   assertResult(RPC_METHODS.presetsApply, applyResultOk);
+  assertResult(RPC_METHODS.presetsApply, applyResultUnchanged);
   assertResult(RPC_METHODS.presetsApply, applyResultFail);
+
+  // Snapshot v2: every normalized selection kind and the version fields validate.
+  assert.deepEqual(errorsFor('PresetSnapshot', replaceSnapshot), []);
+  assert.deepEqual(errorsFor('PresetSnapshot', noneSnapshot), []);
+  assert.notDeepEqual(errorsFor('PresetSnapshot', { ...presetSnapshot, contentHash: undefined }), [], 'contentHash is required');
+  assert.notDeepEqual(errorsFor('PresetSnapshot', { ...presetSnapshot, toolSelection: { kind: 'modifiers', add: ['x'], remove: ['y'], extra: true } }), []);
+  assert.notDeepEqual(errorsFor('PresetApplyOutcome', { ...applyResultOk, contentHash: undefined }), [], 'contentHash is required');
+  // Refusals are RPC errors, not successful-outcome problems.
+  assert.notDeepEqual(errorsFor('PresetApplyProblem', {
+    severity: 'error', kind: 'version_mismatch', expected: 'a', actual: 'b', detail: 'stale',
+  }), []);
+  assert.notDeepEqual(errorsFor('PresetApplyProblem', { severity: 'error', kind: 'context_changed', detail: 'changed' }), []);
   assertResult(RPC_METHODS.presetsClear, clearResult);
   assertResult(RPC_METHODS.approvalsList, approvalsList);
   assertResult(RPC_METHODS.approvalsGet, approvalsGet);
@@ -877,6 +940,8 @@ test('preset, approval and session peer contracts match exact domain types and v
   assert.equal(validateMethodParams(RPC_METHODS.sessionsList, undefined).ok, true);
 
   assert.equal(validateMethodParams(RPC_METHODS.presetsApply, { name: 'fast' }).ok, true);
+  assert.equal(validateMethodParams(RPC_METHODS.presetsApply, { name: 'fast', expectedVersion: 'sha256:fast-v2' }).ok, true);
+  assert.equal(validateMethodParams(RPC_METHODS.presetsApply, { name: 'fast', expectedVersion: '' }).ok, false);
   assert.equal(validateMethodParams(RPC_METHODS.presetsApply, { name: '' }).ok, false);
   assert.equal(validateMethodParams(RPC_METHODS.presetsApply, undefined).ok, false);
   assert.equal(validateMethodParams(RPC_METHODS.approvalsGet, { id: 'apr-1' }).ok, true);

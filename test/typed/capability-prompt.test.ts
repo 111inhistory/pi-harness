@@ -557,20 +557,17 @@ test("real loaded-container replay keeps one namespace guide and its alias refs 
   // text source; it must not invent metadata.
   assert.deepEqual(registeredToolGuidance([], [], inactive, inactive, containers), []);
 
-  // A local container ban is stored but an explicit base member overrides it:
-  // the namespace guide remains for that member, while the banned peer never
-  // enters the guide's tool list.
+  // A guide remains for the allowed base member and omits its banned peer.
   const localBanBranch = [
     {
       type: "custom",
       customType: "capability-tool-base",
       data: { version: 1, baseline: [], load: ["mcp://git"], add: ["mcp__git__status"] },
     },
-    { type: "custom", customType: "capability-tool-blacklist", data: { version: 1, add: ["mcp://git"] } },
+    { type: "custom", customType: "capability-tool-blacklist", data: { version: 1, add: ["mcp__git__log"] } },
   ];
   const localView = createToolAccessView(host, localBanBranch);
-  assert.equal(localView.blacklisted("mcp__git__status"), true, "the raw ban stays stored");
-  assert.equal(localView.banOverridden("mcp__git__status"), true, "base overrides the local ban");
+  assert.equal(localView.blacklisted("mcp__git__log"), true, "the peer remains banned");
   const localCatalog = createEligibleToolCatalog(host, { blocked: (tool) => localView.blocked(tool.name) });
   const localContainers = localView.loadedContainers;
   assert.equal(localContainers[0]?.blocked, false, "an allowed base member keeps the container unblocked");
@@ -582,7 +579,7 @@ test("real loaded-container replay keeps one namespace guide and its alias refs 
 
   // Without any allowed member the same container ban hides the guide.
   const blockedBranch = [
-    ...load("mcp://git"),
+    ...localBanBranch,
     { type: "custom", customType: "capability-tool-blacklist", data: { version: 1, add: ["mcp://git"] } },
   ];
   const blockedContainers = listLoadedContainers(host, blockedBranch);

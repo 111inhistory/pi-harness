@@ -24,17 +24,21 @@ import {
   applyPresetToSession,
   clearPresetFromSession,
   currentPreset,
+  currentPresetView,
   ensureSessionToolBase,
   loadPresets,
   type PresetConfig,
 } from '../src/preset/application.ts';
 import { parsePresetCommand } from '../src/preset/command.ts';
 import { installPresetInstruction } from '../src/preset/instruction.ts';
+import { appendSkippedVersion, PRESET_VERSION_SKIPPED_VERSION, readSkippedVersion } from '../src/preset/state.ts';
+import { argumentCompletionProvider } from '../src/autocomplete.ts';
 
 export default function presetExtension(pi: ExtensionAPI): void {
   pi.registerFlag('preset', { description: 'Preset configuration to apply at startup', type: 'string' });
 
-  let currentName: string | undefined;
+  let completionContext: ExtensionContext | undefined;
+  let autocompleteInstalled = false;
 
   const sessionHost = (ctx: ExtensionContext) => ({
     pi,
@@ -42,35 +46,36 @@ export default function presetExtension(pi: ExtensionAPI): void {
     modelRegistry: ctx.modelRegistry,
   });
 
-  const renderStatus = (ctx: ExtensionContext): void => {
-    ctx.ui.setStatus('preset', currentName === undefined ? undefined : `preset:${currentName}`);
+  const renderStatus = (ctx: ExtensionContext, view: ReturnType<typeof currentPresetView>, warn = false): void => {
+    const name = view.preset?.name;
+    const marker = view.status === 'missing' ? 'missing' : view.status === 'unresolvable' ? 'invalid'
+      : view.status === 'outdated' ? 'update available' : undefined;
+    ctx.ui.setStatus('preset', name === undefined ? undefined : `preset:${name}${marker === undefined ? '' : ` (${marker})`}`);
+    if (warn && name !== undefined && (view.status === 'missing' || view.status === 'unresolvable')) {
+      ctx.ui.notify(`Preset "${name}" is ${marker}; keeping its recorded version.`, 'warning');
+    }
   };
 
   const clear = (ctx: ExtensionContext): void => {
     const outcome = clearPresetFromSession(sessionHost(ctx));
-    currentName = undefined;
-    renderStatus(ctx);
-    // Clearing ends the preset's blacklist lifetime without rolling the base,
-    // model or thinking level back. The records are already withdrawn, so never
-    // claim the live loadout was synchronized when that effect failed.
+    ctx.ui.setStatus('preset', undefined);
     if (outcome.toolSyncError !== null) {
       ctx.ui.notify(
-        `Preset cleared; its tool blacklist was withdrawn, but the tool loadout could not be synchronized: ${outcome.toolSyncError}. `
-        + 'Model, thinking and the tool baseline are unchanged.',
+        `Preset cleared; its tool contributions were withdrawn. The live tool loadout could not be synchronized: ${outcome.toolSyncError}.`,
         'warning',
       );
       return;
     }
     ctx.ui.notify(
-      'Preset cleared; its tool blacklist was withdrawn. Model, thinking and the tool baseline are unchanged.',
+      'Preset cleared; tools now follow the branch baseline and manual choices. Model and thinking are unchanged.',
       'info',
     );
   };
 
-  const apply = async (ctx: ExtensionContext, name: string, preset: PresetConfig): Promise<void> => {
+  const apply = async (ctx: ExtensionContext, name: string, preset: PresetConfig, expectedVersion?: string): Promise<void> => {
     let outcome: Awaited<ReturnType<typeof applyPresetToSession>>;
     try {
-      outcome = await applyPresetToSession(sessionHost(ctx), name, preset);
+      outcome = await applyPresetToSession(sessionHost(ctx), name, preset, expectedVersion === undefined ? {} : { expectedVersion });
     } catch (error) {
       // A record write can fail before any outcome exists. Report it instead of
       // escaping the event/command handler; there is no rollback or retry.
@@ -84,31 +89,35 @@ export default function presetExtension(pi: ExtensionAPI): void {
     for (const problem of outcome.problems) {
       ctx.ui.notify(`Preset "${name}": ${problem.detail}`, problem.severity);
     }
-    if (outcome.applied) {
+    if (outcome.unchanged) {
+      ctx.ui.notify(`Preset "${name}" is already current.`, 'info');
+    } else if (outcome.applied) {
       if (outcome.problems.some((problem) => problem.kind === 'tool_sync_failed')) {
         ctx.ui.notify(`Preset "${name}" applied; the tool loadout could not be synchronized.`, 'warning');
       } else {
-        ctx.ui.notify(
-          outcome.codemodeNotApplied
-            ? `Preset "${name}" applied; codemode mode was recorded but not switched.`
-            : `Preset "${name}" applied.`,
-          outcome.codemodeNotApplied ? 'warning' : 'info',
-        );
+        ctx.ui.notify(`Preset "${name}" applied.`, 'info');
       }
-      currentName = name;
-      renderStatus(ctx);
     } else if (outcome.issues.length === 0 && outcome.problems.length === 0) {
       ctx.ui.notify(`Preset "${name}" was not applied.`, 'error');
     }
+    renderStatus(ctx, compare(ctx, catalog(ctx)));
   };
 
+  const catalog = (ctx: ExtensionContext) => loadPresets({ cwd: ctx.cwd, agentDir: getAgentDir(), projectTrusted: ctx.isProjectTrusted() });
+  const compare = (ctx: ExtensionContext, config: ReturnType<typeof catalog>) =>
+    currentPresetView(sessionHost(ctx), config);
   const loaded = (ctx: ExtensionContext) => {
-    const catalog = loadPresets({ cwd: ctx.cwd, agentDir: getAgentDir(), projectTrusted: ctx.isProjectTrusted() });
-    for (const warning of catalog.warnings) ctx.ui.notify(warning, 'warning');
-    return catalog.presets;
+    const config = catalog(ctx);
+    for (const warning of config.warnings) ctx.ui.notify(warning, 'warning');
+    return config;
   };
 
   pi.on('session_start', async (_event, ctx) => {
+    completionContext = ctx;
+    if (!autocompleteInstalled && ctx.hasUI && ctx.mode === 'tui') {
+      ctx.ui.addAutocompleteProvider(base => argumentCompletionProvider(base, 'preset'));
+      autocompleteInstalled = true;
+    }
     // Shared session tool baseline: the true initial active set — native
     // defaults, CLI initial-selection modifiers and default-active extension
     // tools such as `capability`. Captured once before any `--preset` applies, so
@@ -125,29 +134,59 @@ export default function presetExtension(pi: ExtensionAPI): void {
         'error',
       );
     }
-    currentName = currentPreset(sessionHost(ctx))?.name;
-    const presets = loaded(ctx);
+    const config = loaded(ctx);
     const flag = pi.getFlag('preset');
     if (typeof flag === 'string' && flag !== '') {
-      const preset = presets.get(flag);
+      const preset = config.presets.get(flag);
       if (preset === undefined) ctx.ui.notify(`Unknown preset "${flag}".`, 'warning');
-      else await apply(ctx, flag, preset);
+      else {
+        await apply(ctx, flag, preset);
+        return;
+      }
     }
-    renderStatus(ctx);
+    const host = sessionHost(ctx);
+    const view = compare(ctx, config);
+    renderStatus(ctx, view, true);
+    if (!(ctx.hasUI && ctx.mode === 'tui') || view.status !== 'outdated' || view.preset === null || !view.currentVersion) return;
+    const { name, contentHash } = view.preset;
+    const branch = host.getBranch();
+    const leaf = branch.at(-1)?.id;
+    const skipped = readSkippedVersion(branch);
+    if (skipped?.name === name && skipped.fromHash === contentHash && skipped.candidateHash === view.currentVersion) return;
+    const update = 'Switch to the current version';
+    const keep = 'Keep the recorded version';
+    const choice = await ctx.ui.select(`Preset "${name}" has an update: ${view.changes.join(', ')}`, [update, keep]);
+    if (host.getBranch().at(-1)?.id !== leaf) return;
+    if (choice === update) {
+      const preset = loaded(ctx).presets.get(name);
+      if (preset !== undefined) await apply(ctx, name, preset, view.currentVersion);
+      else renderStatus(ctx, compare(ctx, catalog(ctx)), true);
+    } else if (choice === keep) {
+      appendSkippedVersion(pi, { version: PRESET_VERSION_SKIPPED_VERSION, name, fromHash: contentHash, candidateHash: view.currentVersion });
+    }
   });
+
+  pi.on('session_tree', (_event, ctx) => renderStatus(ctx, compare(ctx, catalog(ctx)), true));
 
   pi.registerCommand('preset', {
     description: 'Switch model preset',
+    getArgumentCompletions: prefix => {
+      const configured = completionContext === undefined ? [] : [...catalog(completionContext).presets.keys()];
+      const matches = [...new Set(['clear', 'show', ...configured.sort()])]
+        .filter(name => name.startsWith(prefix.trimStart()))
+        .map(name => ({ value: name, label: name }));
+      return matches.length === 0 ? null : matches;
+    },
     handler: async (args, ctx) => {
       const command = parsePresetCommand(args);
       if (command.kind === 'clear') {
         clear(ctx);
         return;
       }
-      const presets = loaded(ctx);
+      const { presets } = loaded(ctx);
       if (command.kind === 'show') {
         const names = [...presets.keys()].sort();
-        if (names.length === 0) {
+        if (names.length === 0 && currentPreset(sessionHost(ctx)) === null) {
           ctx.ui.notify('No presets configured.', 'warning');
           return;
         }

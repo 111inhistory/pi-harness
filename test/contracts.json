@@ -60,7 +60,8 @@
       ],
       "tests": [
         "test/typed/capability-reachability.test.ts",
-        "test/typed/capability-command.test.ts"
+        "test/typed/capability-command.test.ts",
+        "test/typed/capability-command-picker.test.ts"
       ]
     },
     {
@@ -238,9 +239,9 @@
       "tests": [
         "test/typed/preset-apply.test.ts",
         "test/typed/preset-branch-records.test.ts",
-        "test/typed/preset-command.test.ts",
         "test/typed/preset-extension.test.ts",
-        "test/typed/preset-sdk.test.ts"
+        "test/typed/preset-sdk.test.ts",
+        "test/typed/preset-version.test.ts"
       ]
     },
     {

@@ -100,7 +100,7 @@ MCP 配置中的 `codemode`／`deferred` exposure 不表示工具在 Capability 
 
 工具管理分别保存基线、按需激活和黑名单，不把用户管理操作当作检索成果。管理记录不进入 `<capabilities>` 资源指引；声明与执行依据当前集合、作用域及 SDK 状态，见[工具权限管理](#工具权限管理)。
 
-`capability.blacklist` 提供启动默认禁止，当前 Preset 显式减项与分支手动黑名单共同生效。本会话基线白名单优先于这些禁止，普通发现和按需激活其次；覆盖不删除黑名单记录。祖先黑名单继续约束子会话，不因子会话白名单失效。
+`capability.blacklist` 提供启动默认禁止。分支手动黑名单与祖先禁止优先于工具选择；分支手动 base add 可覆盖当前 Preset 的显式减项。普通发现和按需激活遵守有效禁止。
 
 严格工具 allowlist 可能拒绝不匹配的 MCP 成员。当前先写记录、再激活的顺序会让未激活成员残留在规范记忆中，后续投影可能再次展示它们。这是与成功获得能力才应累积的要求不一致的已知缺陷，详见[已知问题](known-issues.md#严格工具-allowlist-下的激活记忆不一致)。
 
@@ -130,11 +130,11 @@ API 协调应同时保证资源指引、工具状态与供应商接口声明一�
 
 基线添加与按需激活分别保存容器加载和具体成员选择。普通 Namespace／MCP 目标展开当前可激活成员；`namespace://<name>[ns]` 或 `mcp://<server>[ns]` 只加载容器元数据，成员须在同条命令中显式给出。多个容器和独立工具可以混用，显式成员按注册表归属匹配，不按参数位置划组。每个 `[ns]` 容器至少需要一个有效正向成员；成员全部被禁止、不可达或排除，以及默认展开后为空，均警告并拒绝整条选择，不写记录、不应用效果。
 
-`-<tool>` 是本次选择的排除项，不写黑名单，不取消已有基线或按需成员。普通容器目标产生一次成员快照，不形成持续的全员激活规则；之后注册的新成员不自动加入，deactivate 单个成员也不会被容器重新激活。再次显式激活普通容器则重新选择当前成员，包括此前主动取消的成员。基线移除或 deactivate 容器按当前成员操作，保留容器加载记录。黑名单不接受 `[ns]` 或本次选择排除语法；Namespace 与工具的禁止分别保留，任一命中形成原始黑名单事实，再由本会话基线白名单决定是否覆盖；祖先禁止不能被子会话覆盖。
+`-<tool>` 是本次选择的排除项，不写黑名单，不取消已有基线或按需成员。普通容器目标产生一次成员快照，不形成持续的全员激活规则；之后注册的新成员不自动加入，deactivate 单个成员也不会被容器重新激活。再次显式激活普通容器则重新选择当前成员，包括此前主动取消的成员。基线移除或 deactivate 容器按当前成员操作，保留容器加载记录。黑名单不接受 `[ns]` 或本次选择排除语法；Namespace 与工具的禁止分别保留，分支手动禁止和祖先禁止优先于工具选择。
 
 activate 与 base add 的目标可附加 `[lazy]` 或 `[no-lazy]`，容器可组合为 `[ns,lazy]` 或 `[ns,no-lazy]`。不带 schema 修饰符时遵守配置和既有显式覆盖；显式成员策略优先于同批容器策略。同条命令可混合不同工具的 schema 策略；冲突或非法修饰符在写入前拒绝。显式 lazy 选择必须具有可用 Codemode `only` 调用路径，否则整条选择拒绝，不自动切换模式。base remove、deactivate 与黑名单命令不接受这些加载修饰符。
 
-基线、按需激活、原始黑名单命中、实际阻断、SDK active 与当前可用性分别展示，不再合成为 enabled／disabled／active／inactive 四态。原始黑名单命中不等于实际阻断：本会话基线可覆盖它，列表仍保留禁止事实；未被覆盖的有效禁止不能通过保留声明或普通发现绕过。
+基线、按需激活、原始黑名单命中、实际阻断、SDK active 与当前可用性分别展示。手动 base add 可以覆盖当前 Preset 的显式减项，列表仍保留禁止来源。实际阻断持续约束已有声明和普通发现。
 
 操作先写分支记录，再应用 SDK 效果。写入失败不改变工具集合，不宣称成功。已接受的管理意图与 SDK 实际激活结果分别报告；SDK 拒绝不能被当作已可用。命令只操作当前会话，不唤醒其他 Agent，不改变路由或 Budget。
 
@@ -203,11 +203,11 @@ Capability 调用仍等待检索完成，再返回筛选后的资源。复用执
 
 ## 工具权限管理
 
-工具管理分别拥有基线白名单、按需激活集合和黑名单，不维护混合权限四态。当前会话优先级为「白名单 > 黑名单 > 普通发现／按需激活」；请求使用集合为「基线 ∪（按需激活集合 − 本会话黑名单）」。实际声明和调用还受注册状态、SDK 限制、父作用域、角色与深度约束，子会话白名单不能覆盖祖先禁止。
+工具管理分别拥有基线、按需激活集合和黑名单。工具选择优先级为「硬性禁止 > 分支手动 base add／remove > 当前 Preset 工具选择 > 有效启动基线」。普通发现与按需激活继续遵守有效禁止；声明和调用还受注册状态、SDK 限制、角色与深度约束。
 
 ### 状态、记录与迁移
 
-- `capability-tool-base` v1 保存初始基线及后续 add／remove；当前 Preset 工具快照可建立新的基线。
+- `capability-tool-base` v1 保存初始基线及后续手动 add／remove；`preset-state` v2 保存 Preset 工具选择与本次加入启动基线的默认工具。
 - `capability-tool-dynamic` v1 保存 activate／deactivate；发现选择也进入按需集合，`capability-prune` 移除被淘汰成员。
 - 基线与按需记录中的成员为具体工具名，容器引用独立保存在同条记录的加载信息中；一条命令不需要另建跨记录事务。容器拥有自己的描述与共同指引，成员拥有工具专属指引；两者不通过复制整组指引绑定。
 - `capability-tool-blacklist` v1 保存 add／remove。配置 `capability.blacklist` 提供启动默认黑名单，当前 Preset 的显式最终减项提供该 Preset 生命周期内的黑名单。各来源不因加入基线或激活而失效。
@@ -222,10 +222,10 @@ Capability 调用仍等待检索完成，再返回筛选后的资源。复用执
 ### 生效优先级与入口
 
 - 基线移除只改变基线；deactivate 只改变按需成员。工具仍属于另一集合时保持相应请求资格。
-- 基线白名单覆盖本会话黑名单，黑名单覆盖普通按需激活／发现；精确工具白名单也可覆盖本会话整个组的禁止。两份记录均保留，移除基线后原禁止重新生效；不自动移除黑名单。
-- 启动时尚未捕获基线的隐式默认可用性不作为白名单覆盖依据；捕获会排除当时被禁止的默认工具，避免仅因 SDK 初始 active 就取消配置禁止。之后显式 base add 或 Preset 正项可以建立覆盖。
+- 分支手动黑名单（含组和前缀）优先于基线、Preset 与按需激活；手动 base add 可覆盖当前 Preset 显式减项。覆盖不删除禁止记录。
+- SDK 初始激活或 Preset 更新加入的默认工具仍遵守有效禁止。
 - 移除手动规则不移除当前 Preset 的独立禁用，也不能解除 SDK 限制。配置默认目标可由分支上的显式移除覆盖；尚有其他禁用来源时如实报告。
-- Preset 切换替换其基线及禁用贡献，不把减项累积为永久手动黑名单；clear 结束 Preset 禁用贡献，不回滚已应用模型、thinking 或基线。
+- Preset 切换替换其工具选择及禁用贡献；clear 撤回两项贡献，保留模型、thinking、有效启动基线与手动分支选择。
 - 黑名单管理工具使用资格，不自动禁用同名扩展命令或领域控制操作。已开始的工具调用不自动取消。
 
 ### 模型提示与 compaction
@@ -246,17 +246,19 @@ RPC、用户命令、Preset 和发现发布复用工具管理领域操作。RPC 
 
 `extensions/preset.ts`（随包默认加载）提供模型切换、思考级别、模型专属指引和工具选择。
 
-**配置。** 读取全局 agent 目录的 `presets.json` 与受信项目的 `.pi/presets.json`，项目同名项整体覆盖全局。每项可含 `model`（`provider`＋`id`）、`thinkingLevel`、`tools`、`codemode`（`mode`）与 `instructions`。`tools` 支持 `+name` 启用、`-name` 禁用；纯裸名列表替换 base tool 集合，禁止与任何带 `+`／`-` 前缀的项混用，混用拒绝整个 Preset 应用。工具选择始终基于会话首次启动捕获的初始工具集（原生默认工具、CLI 修饰与默认启用扩展工具，如 `capability`）计算，并记录为 Preset 工具基线；先应用 A 再应用 B 与直接应用 B 得到同一基线，跨 reload 不被前一个 Preset 污染。Preset 始终只替换基线；独立按需集合继续保留，显式减项通过黑名单阻止使用。启动基线只捕获一次，之后注册的 default-active 工具不会被自动纳入；若要在集合同步后保留，应显式加入基线或按需激活。保留的动态工具不写入 Preset 基线，继续由压缩淘汰策略管理。前后 Preset 基线比较时，若旧集合有工具不在新集合中，则下一次成功压缩执行淘汰，即使 `capability.pruneOnCompaction` 为 `false`；首次应用与初始基线比较，仅增加工具不触发，不改变全局配置。
-
-Preset 正项建立当前基线，可覆盖本会话黑名单而不删除它；最终显式减项移除解析后的基线成员，并提供当前 Preset 生命周期内的禁止，切换或 clear 撤销该来源。后续显式 base add 可再次覆盖该禁止。祖先、角色、深度与 SDK 限制继续生效。
+**配置。** 读取全局 agent 目录的 `presets.json` 与受信项目的 `.pi/presets.json`，项目同名项整体覆盖全局。`tools` 支持 `+name`／`-name` 修饰符或纯裸名列表；两种方式混用会拒绝应用。修饰符叠加到有效启动基线，裸名列表替换该层；用户手动 base add／remove 保留。显式减项在当前 Preset 生命周期内禁止普通按需激活，可由分支手动 base add 覆盖。保留的按需工具继续由压缩淘汰策略管理。
 
 **入口。** `/preset` 打开选择器，`/preset NAME` 应用指定项，`/preset clear`（`none`／`off`）停止管理，`--preset NAME` 在启动时应用；状态栏显示当前 Preset。这些交互入口只作用于当前 Main。Fresh routing 显式选择命名或临时 Preset，复用配置解析、应用与指引投影；Inherited 保持捕获的模型与分支状态。
 
 **应用与失败。** 先校验模型存在于目录，再 `setModel`；模型不可用则整体不应用并报错，绝不报成功；thinking 与 tools 随后应用。`instructions` is rendered from the current resolved branch snapshot as a request-local system section on every model call. Resume, tree, fork and reload restore current business state, without historical placement replay. A complete forced prompt retains SDK precedence.
 
-**分支与清除。** `preset-state` 记录保存应用时解析快照（model／thinking／tools／codemode／instructions），快照用于恢复指令、状态标识及压缩保护基线，不在恢复时强制重放 model／thinking／tools；这些运行状态由 Pi 原生恢复。工具 loadout 随实际请求记录，应用 Preset 后尚未发起请求就退出，恢复时可能仍使用上一份工具集。首次启动的初始工具集由共享 `capability-tool-base` 记录捕获，供修饰符计算；`/preset clear`（及 `none`／`off`）显式清除直接分发而不加载预设配置，配置文件损坏或目录阻塞等不可读故障不阻碍退出已应用的快照、指引与 codemode 覆盖；清除写入 null 快照并停止管理，结束 Preset 黑名单贡献，不回滚已有 model／thinking／基线。
+**版本与恢复。** `preset-state` v2 保存应用时的模型、思考级别、工具操作与名称投影、Codemode 模式、指引及 `contentHash`。修饰符候选可以纳入新注册的 Harness 默认工具；确认更新时新增默认名与快照写入同一条记录，后续清除保留这些基线增量。手动分支选择、展示描述及工具 schema 不参与哈希；晚注册的 MCP 不自动进入基线。TUI 恢复时可以更新整套 Preset 或记住跳过当前候选版本。缺失或无效的配置沿用记录版本，并在状态栏标示。RPC 通过 `presets.current` 读取版本差异，通过 `presets.apply` 更新。
 
-**Codemode 模式。** 扩展无公开 `codemode.mode` 写入通道。Preset 以 `codemode-mode` 分支记录覆盖本会话的生效模式，原生 Codemode 工具与 `capability.lazySchemas` 均读取该生效模式，从下一次请求生效；它只改变声明投影，不改变启用集合、显式启用记录或工具 exposure。若宿主无法应用该覆盖，只记录并给出 warning，不把未生效报成成功。
+**分支与清除。** `/tree` 静默刷新状态栏并同步目标分支的 Harness 工具差异；Pi 管理模型和思考级别恢复。`/preset clear` 可在配置不可读时运行，撤回 Preset 工具、黑名单、指引和 Codemode 贡献，保留用户手动工具选择、有效启动基线、模型与思考级别。Codemode 模式随 Preset 快照生效，并供原生 Codemode 与 `capability.lazySchemas` 读取。
+
+**离线迁移。** 旧 `preset-state` v1 使用 `npm run migrate:preset-state -- --session FILE` 预览转换。先关闭会话并备份，再使用 `--apply --offline`。迁移只读会话 JSONL，不读取 `presets.json`。旧展平工具数组转换为裸名替换；为保持分支工具成员，离线脚本在需要修正的位置插入标准 `capability-tool-base` 条目，将直接子节点挂到该条目下。已有条目 ID 保留。转换后逐分支核对工具成员，当前的禁止规则仍按 v2 契约执行。
+
+迁移插入的增减与手动基线记录遵循相同规则；移除项也会进入声明清理流程。若在 `/tree` 直接选中修正条目之前的旧 Preset 节点，需选中后续修正条目才会应用这批增减。应用前保留的 `.pre-preset-v2` 文件是完整恢复点。
 
 ## `/btw` 独立问答
 

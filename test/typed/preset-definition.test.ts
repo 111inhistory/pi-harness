@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import test from 'node:test';
 
+import { parsePresetCommand } from '../../src/preset/command.ts';
 import { loadPresets, type PresetConfig, type PresetFileReader } from '../../src/preset/config.ts';
-import { applyToolModifiers, parseToolModifiers } from '../../src/preset/modifiers.ts';
+import { parseToolModifiers } from '../../src/preset/modifiers.ts';
 import { resolvePreset, type PresetCatalogView } from '../../src/preset/resolve.ts';
 
 // The three modules tested here form one definition pipeline: JSON config is
@@ -73,10 +74,21 @@ test('project preset is ignored when the project is not trusted', () => {
 });
 
 test('invalid JSON in one file is a warning, not a crash', () => {
-  const { presets, warnings } = load({ [globalPath]: '{ not json' });
+  const { presets, warnings, invalidDocument } = load({ [globalPath]: '{ not json' });
+  assert.equal(invalidDocument, true);
   assert.equal(presets.size, 0);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0] ?? '', /invalid JSON/);
+});
+
+test('invalid trusted project entries shadow the same global name without hiding valid neighbors', () => {
+  const { presets, invalidNames, invalidDocument } = load({
+    [globalPath]: JSON.stringify({ fast: {}, light: {} }),
+    [projectPath]: JSON.stringify({ fast: { tools: false } }),
+  });
+  assert.equal(invalidDocument, false);
+  assert.deepEqual([...invalidNames], ['fast']);
+  assert.deepEqual([...presets.keys()], ['light']);
 });
 
 test('a preset with an unknown field is skipped with a warning', () => {
@@ -102,6 +114,14 @@ test('an invalid codemode mode is rejected', () => {
 
 // ---- tool modifiers ----
 
+test('command parsing maps bare/show, clear words and preset names', () => {
+  for (const raw of ['', '   ', 'show']) assert.deepEqual(parsePresetCommand(raw), { kind: 'show' });
+  for (const word of ['clear', 'CLEAR', '(none)', 'none', 'off']) {
+    assert.deepEqual(parsePresetCommand(word), { kind: 'clear' });
+  }
+  assert.deepEqual(parsePresetCommand('  fast  '), { kind: 'apply', name: 'fast' });
+});
+
 test('parse splits ops, plain names and invalid tokens', () => {
   const { tokens, invalid } = parseToolModifiers(['+read', '-bash', 'edit', '+', '  ', '-io']);
   assert.deepEqual(tokens, [
@@ -111,27 +131,6 @@ test('parse splits ops, plain names and invalid tokens', () => {
     { op: '-', name: 'io' },
   ]);
   assert.deepEqual(invalid, ['+', '  ']);
-});
-
-test('adds and removes apply on the base', () => {
-  const { tokens } = parseToolModifiers(['+write', '-bash']);
-  assert.deepEqual(applyToolModifiers(baseTools, tokens), ['read', 'edit', 'write']);
-});
-
-test('a plain name replaces the base selection', () => {
-  const { tokens } = parseToolModifiers(['write', '+read']);
-  assert.deepEqual(applyToolModifiers(baseTools, tokens), ['write', 'read']);
-});
-
-test('later tokens win over earlier ones for the same name', () => {
-  const base = ['read'];
-  assert.deepEqual(applyToolModifiers(base, parseToolModifiers(['-read', '+read']).tokens), ['read']);
-  assert.deepEqual(applyToolModifiers(base, parseToolModifiers(['+read', '-read']).tokens), []);
-});
-
-test('base order is preserved and added names append in first-seen order', () => {
-  const { tokens } = parseToolModifiers(['+write', '+grep', '-bash']);
-  assert.deepEqual(applyToolModifiers(['read', 'bash'], tokens), ['read', 'write', 'grep']);
 });
 
 // ---- plan resolution ----
@@ -183,4 +182,52 @@ test('tool resolution is computed from the stable base, not a running set', () =
   const planB = resolvePreset('b', b, view()).plan;
   assert.deepEqual(planB?.tools, ['read', 'edit', 'codemode']);
   assert.ok(!planB?.tools?.includes('write'), 'A\'s added tool does not leak into B');
+});
+
+// ---- v2 version identity ----
+
+test('a registered Harness default joins the nominal candidate baseline', () => {
+  const registered = [...baseTools, 'write', 'job_stop', 'job_send'];
+  const { plan } = resolvePreset('upgraded', { tools: ['+write'] }, view({
+    allToolNames: () => registered,
+    baseToolSet: () => baseTools,
+  }));
+  assert.ok(plan);
+  assert.deepEqual(plan.tools, ['read', 'bash', 'edit', 'job_stop', 'job_send', 'write'],
+    'the old baseline predates the new default tools, so they join the selection');
+  assert.deepEqual(plan.baselineAdditions, ['job_stop', 'job_send'],
+    'the increments are recorded so replay and a clear keep them');
+  assert.deepEqual(plan.toolSelection, { kind: 'modifiers', add: ['write'], remove: [] });
+});
+
+test('unregistered and non-Harness defaults never join the candidate baseline', () => {
+  const { plan } = resolvePreset('p', { tools: ['+write'] }, view({
+    allToolNames: () => [...baseTools, 'job_stop', 'mcp_late_tool'],
+    baseToolSet: () => baseTools,
+  }));
+  assert.ok(plan);
+  assert.ok(plan.tools?.includes('job_stop'));
+  assert.ok(!plan.tools?.includes('mcp_late_tool'), 'a late-registered MCP tool is not a Harness default');
+  assert.ok(!plan.tools?.includes('job_send'), 'a default that was never registered cannot be selected');
+});
+
+test('an existing baseline increment is not recorded twice', () => {
+  const { plan } = resolvePreset('p', { tools: ['+write'] }, view({
+    allToolNames: () => [...baseTools, 'write', 'job_stop'],
+    baseToolSet: () => [...baseTools, 'job_stop'],
+  }));
+  assert.deepEqual(plan?.baselineAdditions, [], 'the increment is already baseline membership');
+  assert.deepEqual(plan?.tools, ['read', 'bash', 'edit', 'job_stop', 'write']);
+});
+
+test('tool selection is recorded as normalized intent', () => {
+  const selection = (tools: readonly string[]) => resolvePreset('p', { tools }, view()).plan?.toolSelection;
+  assert.deepEqual(selection(['read', 'write']), { kind: 'replace', names: ['read', 'write'] });
+  assert.deepEqual(selection([]), { kind: 'replace', names: [] }, 'an empty list is an explicit empty selection');
+  assert.deepEqual(resolvePreset('empty', { tools: [] }, view()).plan?.tools, []);
+  assert.deepEqual(selection(['+write', '-write']), { kind: 'modifiers', add: [], remove: ['write'] });
+  assert.deepEqual(selection(['-write', '+write']), { kind: 'modifiers', add: ['write'], remove: [] });
+  assert.deepEqual(selection(['-bash', '+codemode']), { kind: 'modifiers', add: ['codemode'], remove: ['bash'] });
+  assert.deepEqual(selection(['+']), { kind: 'none' }, 'unusable tokens declare nothing');
+  assert.deepEqual(selection(['write', '+grep']), undefined, 'mixing plain names and modifiers is an error');
 });

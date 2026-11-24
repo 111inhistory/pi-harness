@@ -113,5 +113,6 @@ export const RPC_ERROR = {
   notFound: 'not_found',
   notReady: 'not_ready',
   unavailable: 'unavailable',
+  presetVersionMismatch: 'preset_version_mismatch',
   internal: 'internal',
 } as const;

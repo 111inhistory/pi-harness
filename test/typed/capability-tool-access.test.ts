@@ -7,6 +7,8 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import fc from 'fast-check';
+import { checkProperty } from '../../test-support/pbt.ts';
 
 import { capabilityHost, type CapabilityTestTool } from './support/capability-host.ts';
 import {
@@ -18,8 +20,12 @@ import {
   deactivateToolTargets,
   ensureToolBase,
   removeBaseTools,
+  presetLiveToolsInSync,
+  presetRetainedByBranch,
   removeBlacklistTargets,
   sessionBaseNames,
+  syncActiveToolsForBranch,
+  toolBaselineNames,
   syncActiveToolsToCollections,
   TOOL_BASE_RECORD,
   TOOL_BLACKLIST_RECORD,
@@ -33,7 +39,7 @@ import { createEligibleToolCatalog } from '../../src/capability/tool-catalog.ts'
 import { setIndependentDeclarations } from '../../src/capability/declaration-visibility.ts';
 import { setCapabilityParent, setCapabilityStartupBlacklist } from '../../src/capability/scope.ts';
 import { CAPABILITY_DISCOVERY_RECORD, CAPABILITY_PRUNE_RECORD } from '../../src/capability/discovery-record.ts';
-import { PRESET_STATE_RECORD } from '../../src/preset/state.ts';
+import { buildPresetSnapshot, PRESET_STATE_RECORD } from '../../src/preset/state.ts';
 
 const registry: readonly CapabilityTestTool[] = [
   { name: 'read', description: 'Read a file', exposure: 'direct' },
@@ -56,8 +62,19 @@ function fixture(active: readonly string[] = ['read', 'write', 'cm_tool']): Fixt
   return { api: host.api, host, branch: () => host.branch() };
 }
 
-function presetEntry(snapshot: Record<string, unknown> | null): Record<string, unknown> {
-  return { type: 'custom', customType: PRESET_STATE_RECORD, data: { version: 1, snapshot } };
+function presetEntry(
+  snapshot: Parameters<typeof buildPresetSnapshot>[0] | null,
+  baselineAdditions?: readonly string[],
+): Record<string, unknown> {
+  return {
+    type: 'custom',
+    customType: PRESET_STATE_RECORD,
+    data: {
+      version: 2,
+      snapshot: snapshot === null ? null : buildPresetSnapshot(snapshot),
+      ...(baselineAdditions === undefined ? {} : { baselineAdditions }),
+    },
+  };
 }
 
 function discoveryEntry(names: readonly string[]): Record<string, unknown> {
@@ -94,39 +111,70 @@ test('the baseline capture records the startup loadout once and is historical', 
   assert.equal(ensureToolBase(f.api, f.api, f.branch()).length, 3, 'no second baseline entry');
 });
 
-test('base overrides a local blacklist; dynamic membership remains blocked', () => {
+test('the baseline preview reads the recorded fact or the capture rule read-only', () => {
+  const f = fixture(['read', 'write', 'cm_tool']);
+  // A raw ban is excluded from the capture rule.
+  addBlacklistTargets(f.api, f.api, f.branch(), ['write']);
+  const count = f.branch().length;
+  assert.deepEqual([...toolBaselineNames(f.api, f.branch())].sort(), ['cm_tool', 'read'],
+    'no recorded baseline: the preview applies the capture rule');
+  assert.equal(f.branch().length, count, 'the preview writes nothing');
+
+  const captured = ensureToolBase(f.api, f.api, f.branch());
+  assert.deepEqual([...captured].sort(), ['cm_tool', 'read'], 'the capture records exactly the preview');
+  assert.equal(f.branch().length, count + 1);
+  assert.deepEqual([...toolBaselineNames(f.api, f.branch())].sort(), ['cm_tool', 'read'],
+    'a recorded baseline is read back, not re-captured');
+
+  // Capturing an empty startup loadout (--no-tools) persists baseline: [] so
+  // later dynamic activations stay out of base and never trigger re-capture.
+  const empty = fixture([]);
+  assert.deepEqual([...ensureToolBase(empty.api, empty.api, empty.branch())], []);
+  activateToolTargets(empty.api, empty.api, empty.branch(), ['read']);
+  assert.equal(createToolAccessView(empty.api, empty.branch()).base('read'), false);
+  assert.deepEqual([...toolBaselineNames(empty.api, empty.branch())], []);
+  assert.deepEqual([...ensureToolBase(empty.api, empty.api, empty.branch())], [],
+    'a captured empty baseline is not re-captured');
+  assert.equal(empty.branch().filter((entry) => (entry as { customType?: string }).customType === TOOL_BASE_RECORD).length, 1);
+});
+
+test('a manual blacklist is a hard fence no base or preset selection lifts', () => {
   const f = fixture();
   ensureToolBase(f.api, f.api, f.branch());
   const added = addBaseTools(f.api, f.api, f.branch(), ['docker_ps']);
-  assert.deepEqual(added.changed.map((change) => change.target), ['docker_ps']);
   assert.deepEqual(added.activated, ['docker_ps']);
-  assert.equal(f.api.getActiveTools().includes('docker_ps'), true);
-
-  const activated = activateToolTargets(f.api, f.api, f.branch(), ['docker_run']);
-  assert.deepEqual(activated.activated, ['docker_run']);
+  activateToolTargets(f.api, f.api, f.branch(), ['docker_run']);
 
   const banned = addBlacklistTargets(f.api, f.api, f.branch(), ['docker_ps', 'docker_run']);
   assert.deepEqual(banned.changed.map((change) => change.target).sort(), ['docker_ps', 'docker_run']);
-  assert.deepEqual(banned.pendingCompaction, ['docker_run'], 'a base member keeps its declaration; the dynamic member defers');
-  assert.deepEqual(banned.removedActive, []);
+  assert.deepEqual(banned.removedActive, [], 'a deferred declaration stays until compaction');
+  assert.deepEqual([...banned.pendingCompaction].sort(), ['docker_ps', 'docker_run']);
   const view = createToolAccessView(f.api, f.branch());
-  assert.equal(view.base('docker_ps'), true, 'base membership is preserved');
+  assert.equal(view.base('docker_ps'), true, 'membership is preserved but not authorized');
   assert.equal(view.dynamic('docker_run'), true, 'the dynamic record is not deleted');
   assert.equal(view.blacklisted('docker_ps'), true, 'raw ban is retained');
-  assert.equal(view.blocked('docker_ps'), false, 'base overrides the local ban');
-  assert.equal(view.banOverridden('docker_ps'), true);
-  assert.equal(view.requested('docker_ps'), true);
+  assert.equal(view.blocked('docker_ps'), true, 'the manual ban wins over the base member');
+  assert.equal(view.banOverridden('docker_ps'), false, 'a hard fence is never reported as overridden');
+  assert.equal(view.requested('docker_ps'), false);
   assert.equal(view.blocked('docker_run'), true);
-  assert.equal(view.requested('docker_run'), false);
-  assert.equal(createToolAdmission(f.api, f.branch()).admits('docker_ps'), true);
-  assert.equal(createToolAdmission(f.api, f.branch()).admits('docker_run'), false);
-
-  // Removing base reveals the retained ban immediately.
-  removeBaseTools(f.api, f.api, f.branch(), ['docker_ps']);
-  const revealed = createToolAccessView(f.api, f.branch());
-  assert.equal(revealed.blacklisted('docker_ps'), true);
-  assert.equal(revealed.blocked('docker_ps'), true);
   assert.equal(createToolAdmission(f.api, f.branch()).admits('docker_ps'), false);
+
+  // A preset selection is equally unable to lift it, whatever the branch order.
+  f.branch().push(presetEntry({
+    name: 'p', instructions: null,
+    toolSelection: { kind: 'modifiers', add: ['docker_ps'], remove: [] }, tools: [],
+  }));
+  const withPreset = createToolAccessView(f.api, f.branch());
+  assert.equal(withPreset.base('docker_ps'), true);
+  assert.equal(withPreset.blocked('docker_ps'), true, 'the preset add does not lift a manual ban');
+  assert.equal(withPreset.requested('docker_ps'), false);
+  assert.equal(createToolAdmission(f.api, f.branch()).admits('docker_ps'), false);
+
+  // Removing base and then the ban is the only path back.
+  removeBaseTools(f.api, f.api, f.branch(), ['docker_ps']);
+  assert.equal(createToolAccessView(f.api, f.branch()).blocked('docker_ps'), true);
+  removeBlacklistTargets(f.api, f.api, f.branch(), ['docker_ps']);
+  assert.equal(createToolAccessView(f.api, f.branch()).blocked('docker_ps'), false);
 });
 
 test('a root startup blacklist is local policy: base overrides, activate does not', () => {
@@ -155,7 +203,10 @@ test('blacklist removal clears the branch and startup sources but not the curren
   const f = fixture();
   ensureToolBase(f.api, f.api, f.branch());
   setCapabilityStartupBlacklist(f.api, ['docker_ps']);
-  f.branch().push(presetEntry({ name: 'p', tools: ['read'], disabledTools: ['docker_ps'], instructions: null }));
+  f.branch().push(presetEntry({
+    name: 'p', instructions: null,
+    toolSelection: { kind: 'replace', names: ['read'] }, tools: ['read'], disabledTools: ['docker_ps'],
+  }));
   addBaseTools(f.api, f.api, f.branch(), ['docker_ps']);
 
   const removed = removeBlacklistTargets(f.api, f.api, f.branch(), ['docker_ps']);
@@ -185,23 +236,233 @@ test('blacklist removal reports notRequested when no membership is preserved', (
   assert.deepEqual(removed.activated, []);
 });
 
-test('a preset snapshot establishes base and preset blacklist chronologically', () => {
-  const f = fixture();
-  ensureToolBase(f.api, f.api, f.branch());
-  addBaseTools(f.api, f.api, f.branch(), ['docker_ps']);
-  f.branch().push(presetEntry({ name: 'p', tools: ['read', 'write'], disabledTools: ['write'], instructions: null }));
-  const view = createToolAccessView(f.api, f.branch());
-  assert.equal(view.base('read'), true);
-  assert.equal(view.base('docker_ps'), false, 'the preset selection replaces the earlier base delta');
-  assert.equal(view.blacklisted('write'), true);
-  assert.deepEqual(view.blacklistSources('write'), ['preset']);
-  assert.equal(view.blocked('write'), false, 'base (the preset +tool selection) overrides its own -tool ban');
-  assert.equal(view.banOverridden('write'), true);
-  assert.equal(view.requested('write'), true);
+test('PBT: four-layer precedence, permanent baseline additions, retention and branch sync match independent model', async () => {
+  const UNIVERSE = ['read', 'write', 'docker_ps', 'job_stop'] as const;
+  type ToolName = (typeof UNIVERSE)[number];
+  type Op =
+    | { kind: 'baseAdd'; name: ToolName }
+    | { kind: 'baseRemove'; name: ToolName }
+    | { kind: 'dynActivate'; name: ToolName }
+    | { kind: 'dynDeactivate'; name: ToolName }
+    | { kind: 'banAdd'; name: ToolName }
+    | { kind: 'banRemove'; name: ToolName }
+    | { kind: 'presetNone'; additions: readonly ToolName[] }
+    | { kind: 'presetMod'; add: readonly ToolName[]; remove: readonly ToolName[]; disabled: readonly ToolName[]; additions: readonly ToolName[] }
+    | { kind: 'presetReplace'; names: readonly ToolName[]; disabled: readonly ToolName[]; additions: readonly ToolName[] }
+    | { kind: 'presetClear' };
 
-  // A base add after the preset applies to the current base.
-  addBaseTools(f.api, f.api, f.branch(), ['docker_ps']);
-  assert.equal(createToolAccessView(f.api, f.branch()).base('docker_ps'), true);
+  const arbTool = fc.constantFrom<ToolName>(...UNIVERSE);
+  const arbSub = fc.uniqueArray(arbTool, { minLength: 0, maxLength: 3 });
+  const arbOp: fc.Arbitrary<Op> = fc.oneof(
+    fc.record({ kind: fc.constant('baseAdd' as const), name: arbTool }),
+    fc.record({ kind: fc.constant('baseRemove' as const), name: arbTool }),
+    fc.record({ kind: fc.constant('dynActivate' as const), name: arbTool }),
+    fc.record({ kind: fc.constant('dynDeactivate' as const), name: arbTool }),
+    fc.record({ kind: fc.constant('banAdd' as const), name: arbTool }),
+    fc.record({ kind: fc.constant('banRemove' as const), name: arbTool }),
+    fc.record({ kind: fc.constant('presetNone' as const), additions: arbSub }),
+    fc.record({
+      kind: fc.constant('presetMod' as const),
+      add: arbSub,
+      remove: arbSub,
+      disabled: arbSub,
+      additions: arbSub,
+    }).map((op) => ({
+      ...op,
+      remove: op.remove.filter((name) => !op.add.includes(name)),
+    })),
+    fc.record({
+      kind: fc.constant('presetReplace' as const),
+      names: arbSub,
+      disabled: arbSub,
+      additions: arbSub,
+    }),
+    fc.constant<Op>({ kind: 'presetClear' }),
+  );
+
+  await checkProperty(fc.asyncProperty(
+    fc.uniqueArray(fc.constantFrom<ToolName>('read', 'write'), { minLength: 0, maxLength: 2 }),
+    arbSub,
+    fc.boolean(),
+    fc.array(arbOp, { minLength: 1, maxLength: 14 }),
+    async (initBaseline, startupBanList, hasUnmanagedLive, ops) => {
+      const f = fixture(initBaseline);
+      f.host.register({ name: 'job_stop', description: 'Stop a job', exposure: 'direct' });
+      f.host.register({ name: 'unmanaged_extra', description: 'Unmanaged', exposure: 'direct' });
+      ensureToolBase(f.api, f.api, f.branch());
+      setCapabilityStartupBlacklist(f.api, startupBanList);
+
+      // Independent reference model of the four orthogonal layers.
+      const baseline = new Set<string>(initBaseline);
+      const permanentAdditions = new Set<string>();
+      const startupBan = new Set<string>(startupBanList);
+      const manualBan = new Set<string>();
+      const manualBranch = new Map<string, 'add' | 'remove'>();
+      const dynamicBranch = new Set<string>();
+      const removalIntents = new Set<string>();
+      let preset:
+        | null
+        | { kind: 'none'; disabled: Set<string> }
+        | { kind: 'modifiers'; add: Set<string>; remove: Set<string>; disabled: Set<string> }
+        | { kind: 'replace'; names: Set<string>; disabled: Set<string> } = null;
+
+      const modelInBase = (name: string): boolean => {
+        const manual = manualBranch.get(name);
+        if (manual === 'add') return true;
+        if (manual === 'remove') return false;
+        const inEffBaseline = baseline.has(name) || permanentAdditions.has(name);
+        if (preset === null || preset.kind === 'none') return inEffBaseline;
+        if (preset.kind === 'replace') return preset.names.has(name);
+        return preset.add.has(name) || (inEffBaseline && !preset.remove.has(name));
+      };
+
+      for (const op of ops) {
+        if (op.kind === 'baseAdd') {
+          addBaseTools(f.api, f.api, f.branch(), [op.name]);
+          manualBranch.set(op.name, 'add');
+        } else if (op.kind === 'baseRemove') {
+          const wasInBase = modelInBase(op.name);
+          const removed = removeBaseTools(f.api, f.api, f.branch(), [op.name]);
+          assert.equal(removed.changed.length, wasInBase ? 1 : 0, `baseRemove(${op.name}) changed`);
+          if (wasInBase) {
+            manualBranch.set(op.name, 'remove');
+            removalIntents.add(op.name);
+          }
+        } else if (op.kind === 'dynActivate') {
+          activateToolTargets(f.api, f.api, f.branch(), [op.name]);
+          dynamicBranch.add(op.name);
+        } else if (op.kind === 'dynDeactivate') {
+          const wasInDynamic = dynamicBranch.has(op.name);
+          deactivateToolTargets(f.api, f.api, f.branch(), [op.name]);
+          if (wasInDynamic) {
+            dynamicBranch.delete(op.name);
+            removalIntents.add(op.name);
+          }
+        } else if (op.kind === 'banAdd') {
+          addBlacklistTargets(f.api, f.api, f.branch(), [op.name]);
+          manualBan.add(op.name);
+          removalIntents.add(op.name);
+        } else if (op.kind === 'banRemove') {
+          removeBlacklistTargets(f.api, f.api, f.branch(), [op.name]);
+          manualBan.delete(op.name);
+          startupBan.delete(op.name);
+        } else if (op.kind === 'presetNone') {
+          for (const a of op.additions) permanentAdditions.add(a);
+          f.branch().push(presetEntry({ name: 'p', instructions: null }, op.additions));
+          preset = { kind: 'none', disabled: new Set() };
+        } else if (op.kind === 'presetMod') {
+          for (const a of op.additions) permanentAdditions.add(a);
+          f.branch().push(presetEntry({
+            name: 'p', instructions: null,
+            toolSelection: { kind: 'modifiers', add: op.add, remove: op.remove },
+            disabledTools: op.disabled,
+          }, op.additions));
+          preset = { kind: 'modifiers', add: new Set(op.add), remove: new Set(op.remove), disabled: new Set(op.disabled) };
+        } else if (op.kind === 'presetReplace') {
+          for (const a of op.additions) permanentAdditions.add(a);
+          f.branch().push(presetEntry({
+            name: 'p', instructions: null,
+            toolSelection: { kind: 'replace', names: op.names },
+            tools: op.names,
+            disabledTools: op.disabled,
+          }, op.additions));
+          preset = { kind: 'replace', names: new Set(op.names), disabled: new Set(op.disabled) };
+        } else {
+          f.branch().push(presetEntry(null));
+          preset = null;
+        }
+      }
+
+      const view = createToolAccessView(f.api, f.branch());
+      const effectiveBaseline = new Set([...baseline, ...permanentAdditions]);
+      assert.deepEqual([...sessionBaseNames(f.branch())].sort(), [...effectiveBaseline].sort());
+
+      const expectedRetained: string[] = [];
+      const expectedExcluded: string[] = [];
+      const expectedRequested: string[] = [];
+
+      for (const name of UNIVERSE) {
+        const manual = manualBranch.get(name);
+        const presetBase = preset === null || preset.kind === 'none'
+          ? effectiveBaseline.has(name)
+          : preset.kind === 'replace'
+            ? preset.names.has(name)
+            : preset.add.has(name) || (effectiveBaseline.has(name) && !preset.remove.has(name));
+        const inBase = manual === 'add' ? true : manual === 'remove' ? false : presetBase;
+
+        // Baseline and permanent baselineAdditions never override startup/preset bans;
+        // only explicit manual base add or explicit preset add/replace can override local bans.
+        const presetExplicit = preset !== null && (
+          (preset.kind === 'replace' && preset.names.has(name))
+          || (preset.kind === 'modifiers' && preset.add.has(name))
+        );
+        const explicitGrant = manual === 'add' || (manual !== 'remove' && presetExplicit);
+        const hasStartup = startupBan.has(name);
+        const hasPresetBan = preset !== null && preset.disabled.has(name);
+        const hasManualBan = manualBan.has(name);
+        const blacklisted = hasManualBan || hasStartup || hasPresetBan;
+        const blocked = hasManualBan || ((hasStartup || hasPresetBan) && !explicitGrant);
+        const requested = (inBase || dynamicBranch.has(name)) && !blocked;
+
+        assert.equal(view.base(name), inBase, `base(${name})`);
+        assert.equal(view.blacklisted(name), blacklisted, `blacklisted(${name})`);
+        assert.equal(view.blocked(name), blocked, `blocked(${name})`);
+        assert.equal(view.banOverridden(name), blacklisted && !blocked, `banOverridden(${name})`);
+        assert.equal(view.requested(name), requested, `requested(${name})`);
+        if (requested) expectedRequested.push(name);
+
+        const presetIntentExclude = preset !== null && (
+          (preset.kind === 'replace' && effectiveBaseline.has(name) && !preset.names.has(name))
+          || (preset.kind === 'modifiers' && preset.remove.has(name))
+        );
+        if (presetIntentExclude) {
+          if (inBase) expectedRetained.push(name);
+          else expectedExcluded.push(name);
+        }
+      }
+
+      assert.deepEqual([...view.preset.retained].sort(), expectedRetained.sort());
+      assert.deepEqual([...presetRetainedByBranch(f.api, f.branch())].sort(), expectedRetained.sort());
+      assert.deepEqual([...view.preset.excluded].sort(), expectedExcluded.sort());
+
+      // Compaction drops excluded/blocked members while keeping requested and unmanaged tools.
+      const compacted = activeToolsAfterCollections(f.api, f.branch(), [...UNIVERSE, 'unmanaged_extra']);
+      for (const name of expectedRequested) assert.ok(compacted.includes(name));
+      for (const name of expectedExcluded) {
+        if (!dynamicBranch.has(name)) assert.ok(!compacted.includes(name));
+      }
+      assert.ok(compacted.includes('unmanaged_extra'));
+
+      // Compute independent managed set: any name with a current membership, ban,
+      // historical removal intent, or current preset exclusion.
+      const expectedManaged = new Set<string>();
+      for (const name of UNIVERSE) {
+        const inBase = modelInBase(name);
+        const hasBan = manualBan.has(name) || startupBan.has(name) || (preset !== null && preset.disabled.has(name));
+        const managed = inBase || dynamicBranch.has(name) || hasBan || removalIntents.has(name) || expectedExcluded.includes(name);
+        assert.equal(view.managed(name), managed, `managed(${name})`);
+        if (managed) expectedManaged.add(name);
+      }
+      assert.equal(view.managed('unmanaged_extra'), false);
+
+      // Branch sync preserves unmanaged live tools, drops managed non-requested tools,
+      // is idempotent, and makes presetLiveToolsInSync true.
+      if (hasUnmanagedLive) f.api.setActiveTools([...f.api.getActiveTools(), 'unmanaged_extra']);
+      const beforeBranchSync = f.api.getActiveTools();
+      const keptUnmanaged = beforeBranchSync.filter((name) => !expectedManaged.has(name) && !expectedRequested.includes(name));
+      syncActiveToolsForBranch(f.api, f.branch());
+      assert.equal(presetLiveToolsInSync(f.api, f.branch()), true);
+      if (hasUnmanagedLive) assert.ok(f.api.getActiveTools().includes('unmanaged_extra'));
+      assert.deepEqual([...f.api.getActiveTools()].sort(), [...new Set([...expectedRequested, ...keptUnmanaged])].sort());
+      const secondSync = syncActiveToolsForBranch(f.api, f.branch());
+      assert.deepEqual(secondSync.activated, []);
+      assert.deepEqual(secondSync.removed, []);
+
+      // Full collection sync converges the live set to exactly expectedRequested.
+      syncActiveToolsToCollections(f.api, f.branch());
+      assert.deepEqual([...f.api.getActiveTools()].sort(), [...expectedRequested].sort());
+    },
+  ));
 });
 
 test('base removal and deactivation keep the declaration but stop usage', () => {
@@ -301,12 +562,15 @@ test('the availability query lists current membership and optional facts', () =>
   addBaseTools(f.api, f.api, f.branch(), ['docker_ps']);
   addBlacklistTargets(f.api, f.api, f.branch(), ['docker_ps']);
 
+  // A hard-banned member is not requested, so it leaves the availability
+  // population; the base and blacklist lists still report the raw facts.
   const current = queryToolAccess(f.api, f.branch(), f.api.getActiveTools());
-  const baseEntry = current.entries.find((entry) => entry.name === 'docker_ps');
-  assert.equal(baseEntry?.usable, true, 'a base member stays usable despite the raw ban');
-  assert.equal(baseEntry?.blacklisted, true);
-  assert.equal(baseEntry?.blocked, false);
-  assert.equal(baseEntry?.banOverridden, true);
+  assert.equal(current.entries.some((entry) => entry.name === 'docker_ps'), false);
+  const facts = createToolAccessView(f.api, f.branch()).facts('docker_ps');
+  assert.equal(facts.blocked, true);
+  assert.equal(facts.banOverridden, false);
+  assert.equal(facts.blacklisted, true);
+  assert.equal(facts.requested, false);
   const base = listBaseTools(f.api, f.branch()).map((entry) => entry.target.target);
   assert.ok(base.includes('docker_ps'), 'the base list still reports the membership');
   const banned = listBlacklist(f.api, f.branch());
@@ -315,7 +579,8 @@ test('the availability query lists current membership and optional facts', () =>
 
   const withActivatable = queryToolAccess(f.api, f.branch(), f.api.getActiveTools(), { includeActivatable: true });
   assert.ok(withActivatable.entries.some((entry) => entry.name === 'docker_run'), 'an eligible inactive tool is activatable');
-  assert.ok(withActivatable.entries.some((entry) => entry.name === 'docker_ps'), 'the overridden base member remains listed');
+  assert.equal(withActivatable.entries.some((entry) => entry.name === 'docker_ps'), false,
+    'a hard-banned member is not an activation candidate');
 
   const withUsable = queryToolAccess(f.api, f.branch(), f.api.getActiveTools(), { includeUsable: true, filter: 'read' });
   assert.equal(withUsable.entries.length, 1);
@@ -329,7 +594,7 @@ test('sync sets the active set to the requested eligible tools', () => {
   addBlacklistTargets(f.api, f.api, f.branch(), ['write', 'docker_run']);
   const synced = syncActiveToolsToCollections(f.api, f.branch());
   assert.ok(synced.active.includes('docker_ps'));
-  assert.ok(synced.active.includes('write'), 'base (baseline) overrides the local blacklist');
+  assert.ok(!synced.active.includes('write'), 'a manual ban also beats a recorded baseline member');
   assert.deepEqual([...f.api.getActiveTools()].sort(), [...synced.active].sort());
 });
 
@@ -613,4 +878,79 @@ test('a child inherits ancestor EFFECTIVE bans, not raw bans the ancestor base o
   assert.equal(view.requested('docker_run'), false);
   assert.equal(createToolAdmission(child.api, child.branch()).admits('docker_run'), false);
   assert.equal(createToolAdmission(child.api, child.branch()).admits('docker_ps'), false);
+});
+
+test('a branch sync preserves names the harness does not manage', () => {
+  const f = fixture(['read', 'write']);
+  ensureToolBase(f.api, f.api, f.branch());
+  f.host.register({ name: 'job_stop', description: 'Stop a job', exposure: 'direct' });
+  f.host.register({ name: 'mcp__pending__call', description: 'Pending MCP tool', exposure: 'deferred' });
+  f.api.setActiveTools(['read', 'write', 'job_stop', 'mcp__pending__call']);
+  const calls: string[][] = [];
+  const spy = Object.assign(Object.create(f.api), {
+    setActiveTools: (names: string[]) => { calls.push([...names]); f.api.setActiveTools(names); },
+  }) as typeof f.api;
+
+  const same = syncActiveToolsForBranch(spy, f.branch());
+  assert.deepEqual(calls, [], 'no difference means no setActiveTools call');
+  assert.deepEqual(same.activated, []);
+  assert.deepEqual(same.removed, []);
+
+  // The branch preset excludes write; the native default and the unmanaged MCP
+  // name are still declared afterwards.
+  f.branch().push(presetEntry({
+    name: 'p', instructions: null,
+    toolSelection: { kind: 'modifiers', add: [], remove: ['write'] },
+  }));
+  assert.equal(createToolAccessView(f.api, f.branch()).managed('job_stop'), false);
+  const synced = syncActiveToolsForBranch(spy, f.branch());
+  assert.deepEqual(calls, [['read', 'job_stop', 'mcp__pending__call']]);
+  assert.deepEqual(synced.removed, ['write']);
+  assert.deepEqual(synced.activated, []);
+
+  // A requested base member whose server is not connected stays declared: the
+  // sync never drops a name the branch still requests.
+  addBaseTools(f.api, f.api, f.branch(), ['docker_ps']);
+  const withBase = f.api.getActiveTools();
+  f.host.unregister('docker_ps');
+  assert.equal(createToolAccessView(f.api, f.branch()).requested('docker_ps'), true);
+  const kept = syncActiveToolsForBranch(f.api, f.branch());
+  assert.ok(!kept.removed.includes('docker_ps'), 'an unregistered requested member is not dropped');
+  assert.ok(!f.api.getActiveTools().includes('write'));
+  assert.ok(withBase.length > 0);
+});
+
+test('presetLiveToolsInSync ignores unregistered requested members', () => {
+  const f = fixture(['read', 'write']);
+  ensureToolBase(f.api, f.api, f.branch());
+  addBaseTools(f.api, f.api, f.branch(), ['docker_ps']);
+  f.host.unregister('docker_ps');
+  assert.equal(presetLiveToolsInSync(f.api, f.branch()), true);
+});
+
+test('an ancestor manual blacklist stays a hard fence in a child scope', () => {
+  const parent = fixture(['read']);
+  ensureToolBase(parent.api, parent.api, parent.branch());
+  addBlacklistTargets(parent.api, parent.api, parent.branch(), ['docker_ps']);
+  const parentView = createToolAccessView(parent.api, parent.branch());
+  assert.equal(parentView.blocked('docker_ps'), true);
+
+  // This is how the subagent root service exposes an ancestor's live bans.
+  const child = fixture(['read']);
+  setCapabilityParent(child.api, parent.api, [], (name) => parentView.blocked(name));
+  ensureToolBase(child.api, child.api, child.branch());
+  const added = addBaseTools(child.api, child.api, child.branch(), ['docker_ps']);
+  assert.deepEqual(added.activated, [], 'the child cannot activate an ancestor-denied tool');
+  assert.deepEqual(added.skipped, [{ target: 'docker_ps', reason: 'not_permitted' }]);
+  const view = createToolAccessView(child.api, child.branch());
+  assert.equal(view.base('docker_ps'), true, 'the child base record is written');
+  assert.equal(view.blacklisted('docker_ps'), false, 'the ban itself is the ancestor branch record');
+  // The scope fence is an eligibility/execution check, not a local ban fact, so
+  // a published declaration is not rewritten mid-window.
+  assert.equal(view.blocked('docker_ps'), false);
+  assert.equal(view.requested('docker_ps'), true);
+  assert.equal(createToolAdmission(child.api, child.branch()).admits('docker_ps'), false,
+    'the ancestor fence still denies execution');
+  assert.equal(createEligibleToolCatalog(child.api).names.has('docker_ps'), false,
+    'the ancestor fence keeps it out of every eligible catalog');
 });

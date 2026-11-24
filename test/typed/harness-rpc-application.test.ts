@@ -21,6 +21,7 @@ import {
   type AgentSession, type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 
+import { validateMethodResult } from "../../src/harness-rpc/contract.ts";
 import { harnessRpcTarget } from "../../src/harness-rpc/discovery.ts";
 import { PRESET_STATE_RECORD } from "../../src/preset/state.ts";
 import { installHarnessSession } from "../../src/session/application.ts";
@@ -269,11 +270,28 @@ test("preset RPC apply/clear records the same branch state and tool selection as
   assert.ok(presets.some((preset) => preset?.["name"] === "rpc-apply"));
   assert.deepEqual(catalog["warnings"], []);
 
-  const applied = asRecord(await fixture.client.request("presets.apply", { name: "rpc-apply" }));
+  // The read-only comparison never appends to the branch, including the
+  // capability-tool-base capture, and reports no active preset.
+  const branchBeforeRead = fixture.session.sessionManager.getBranch().length;
+  const initial = await fixture.client.request("presets.current");
+  assert.equal(validateMethodResult("presets.current", initial).ok, true, "real presets.current matches the published schema");
+  assert.deepEqual(asRecord(initial), {
+    preset: null, status: null, currentVersion: null, changes: [],
+  });
+  assert.equal(fixture.session.sessionManager.getBranch().length, branchBeforeRead,
+    "presets.current is strictly read-only");
+
+  const appliedWire = await fixture.client.request("presets.apply", { name: "rpc-apply" });
+  assert.equal(validateMethodResult("presets.apply", appliedWire).ok, true, "real presets.apply matches the published schema");
+  const applied = asRecord(appliedWire);
   assert.ok(applied);
   assert.equal(applied["applied"], true);
-  assert.equal(applied["codemodeNotApplied"], false);
-  assert.equal(asRecord(applied["snapshot"])?.["name"], "rpc-apply");
+  assert.equal(applied["unchanged"], false);
+  const appliedSnapshot = asRecord(applied["snapshot"]);
+  assert.equal(appliedSnapshot?.["name"], "rpc-apply");
+  assert.equal(typeof appliedSnapshot?.["contentHash"], "string");
+  assert.equal(applied["contentHash"], appliedSnapshot?.["contentHash"],
+    "the result reports the actual applied version");
   assert.equal(fixture.session.getActiveToolNames().includes("read"), true);
   assert.equal(fixture.session.getActiveToolNames().includes("write"), false);
 
@@ -283,16 +301,114 @@ test("preset RPC apply/clear records the same branch state and tool selection as
 
   const current = asRecord(await fixture.client.request("presets.current"));
   assert.equal(asRecord(current?.["preset"])?.["name"], "rpc-apply");
+  assert.equal(current?.["status"], "current");
+  assert.equal(current?.["currentVersion"], applied["contentHash"]);
+  assert.deepEqual(current?.["changes"], []);
 
-  const cleared = asRecord(await fixture.client.request("presets.clear"));
-  assert.deepEqual(cleared, { cleared: true, snapshot: null, codemodeCleared: true, toolSyncError: null });
+  // Changing only the instruction text changes the version hash. presets.current
+  // reports the mismatch without writing, and a stale expectedVersion is refused
+  // before any record or live effect.
+  const agentDir = path.join(fixture.cwd, "agent");
+  const updatedPresets = {
+    "rpc-apply": { tools: ["+read", "-write"], instructions: "RPC_PRESET_INSTRUCTION_V2" },
+    "rpc-gated": { tools: ["+read", "-write"], instructions: "RPC_GATED_INSTRUCTION" },
+  };
+  await writeFile(path.join(agentDir, "presets.json"), JSON.stringify(updatedPresets));
+  const branchBeforeOutdated = fixture.session.sessionManager.getBranch().length;
+  const outdatedWire = await fixture.client.request("presets.current");
+  assert.equal(validateMethodResult("presets.current", outdatedWire).ok, true, "real outdated comparison matches the published schema");
+  const outdated = asRecord(outdatedWire);
+  assert.equal(outdated?.["status"], "outdated");
+  assert.equal(typeof outdated?.["currentVersion"], "string");
+  assert.notEqual(outdated?.["currentVersion"], applied["contentHash"]);
+  assert.ok(asArray(outdated?.["changes"]).includes("instructions: changed"));
+  assert.equal(fixture.session.sessionManager.getBranch().length, branchBeforeOutdated,
+    "the outdated comparison does not write");
+
+  await assert.rejects(
+    () => fixture.client.request("presets.apply", { name: "rpc-apply", expectedVersion: applied["contentHash"] }),
+    (error: unknown) => {
+      assert.ok(error instanceof RpcFailure);
+      assert.equal(error.code, "preset_version_mismatch");
+      const detail = asRecord(error.detail);
+      assert.equal(detail?.["expectedVersion"], applied["contentHash"]);
+      assert.equal(detail?.["currentVersion"], outdated?.["currentVersion"]);
+      return true;
+    },
+  );
+  assert.equal(fixture.session.sessionManager.getBranch().length, branchBeforeOutdated,
+    "a refused version mismatch writes no branch record");
+  assert.equal(asRecord(presetEntries(fixture.session).at(-1)?.["snapshot"])?.["contentHash"], applied["contentHash"]);
+
+  const upgradedWire = await fixture.client.request("presets.apply", {
+    name: "rpc-apply", expectedVersion: outdated?.["currentVersion"],
+  });
+  assert.equal(validateMethodResult("presets.apply", upgradedWire).ok, true, "real version upgrade matches the published schema");
+  const upgraded = asRecord(upgradedWire);
+  assert.ok(upgraded);
+  assert.equal(upgraded["applied"], true);
+  assert.equal(upgraded["unchanged"], false);
+  assert.equal(upgraded["contentHash"], outdated?.["currentVersion"]);
+  assert.equal(presetEntries(fixture.session).length, entries.length + 1, "the version upgrade writes one record");
+
+  // Re-applying the same version is a no-op: no redundant record, reported honestly.
+  const again = asRecord(await fixture.client.request("presets.apply", {
+    name: "rpc-apply", expectedVersion: outdated?.["currentVersion"],
+  }));
+  assert.ok(again);
+  assert.equal(again["applied"], true);
+  assert.equal(again["unchanged"], true);
+  assert.equal(again["contentHash"], outdated?.["currentVersion"]);
+  assert.equal(presetEntries(fixture.session).length, entries.length + 1, "an idempotent re-apply writes nothing");
+
+  // A name the loader rejects is unresolvable, not missing, and cannot be applied.
+  await writeFile(path.join(agentDir, "presets.json"), JSON.stringify({ "rpc-apply": { tools: 123 } }));
+  const branchBeforeInvalid = fixture.session.sessionManager.getBranch().length;
+  const invalid = asRecord(await fixture.client.request("presets.current"));
+  assert.equal(asRecord(invalid?.["preset"])?.["name"], "rpc-apply");
+  assert.equal(invalid?.["status"], "unresolvable");
+  assert.equal(invalid?.["currentVersion"], null);
+  assert.deepEqual(invalid?.["changes"], []);
+  assert.equal(fixture.session.sessionManager.getBranch().length, branchBeforeInvalid);
+  await assert.rejects(
+    () => fixture.client.request("presets.apply", { name: "rpc-apply" }),
+    (error: unknown) => {
+      assert.ok(error instanceof RpcFailure);
+      assert.equal(error.code, "not_found");
+      assert.match(error.message, /invalid in the current configuration/);
+      return true;
+    },
+  );
+
+  const clearedWire = await fixture.client.request("presets.clear");
+  assert.equal(validateMethodResult("presets.clear", clearedWire).ok, true, "real presets.clear matches the published schema");
+  const cleared = asRecord(clearedWire);
+  assert.deepEqual(cleared, { cleared: true, snapshot: null, toolSyncError: null });
   assert.equal(fixture.session.getActiveToolNames().includes("read"), true,
-    "clear does not roll back the selected tool set");
-  assert.equal(fixture.session.getActiveToolNames().includes("write"), false,
-    "clear does not resurrect a tool removed by the preset");
+    "clear returns to the effective baseline instead of rolling it back");
+  assert.equal(fixture.session.getActiveToolNames().includes("write"), true,
+    "clear withdraws the preset blacklist, so a baseline tool becomes available again");
   const afterClear = asRecord(await fixture.client.request("presets.current"));
   assert.equal(afterClear?.["preset"], null);
   assert.equal(asRecord(presetEntries(fixture.session).at(-1)?.["snapshot"]), null);
+});
+
+test("preset RPC reports a tool the manual base layer retains", { timeout: 20000 }, async (t) => {
+  const fixture = await startApplication(t);
+  const added = asRecord(await fixture.client.request("tools.base.add", { targets: ["write"] }));
+  assert.ok(added);
+
+  const result = await fixture.client.request("presets.apply", { name: "rpc-apply" });
+  assert.equal(validateMethodResult("presets.apply", result).ok, true, "real apply with a retained tool matches the published schema");
+  const applied = asRecord(result);
+  assert.ok(applied);
+  assert.equal(applied["applied"], true);
+  const retained = asArray(applied["problems"]).map(asRecord).find((problem) => problem?.["kind"] === "tool_retained_by_branch");
+  assert.ok(retained, "the preset's -write is reported as retained by the manual base layer");
+  assert.deepEqual(retained["retainedTools"], ["write"]);
+  assert.equal(fixture.session.getActiveToolNames().includes("write"), true,
+    "manual base membership wins over the preset exclusion");
+  assert.equal(fixture.session.getActiveToolNames().includes("read"), true);
 });
 
 test("Preset apply rechecks the Root epoch after a gated SDK model selection", { timeout: 20000 }, async (t) => {

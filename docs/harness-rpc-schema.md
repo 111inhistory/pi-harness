@@ -100,16 +100,17 @@ schema 与实现使用同一套集合模型，不把成员关系压成单一状�
 - `ToolAccessEntry` 分别报告 `base`、`dynamic`、`active`、`blacklisted`、`activatable`、`usable`；`active` 只是 SDK 激活集事实。`blacklistSources` 报告 `startup`、`preset`、`branch` 中当前贡献禁止的来源。
 - `tools.catalog` 默认返回当前有效成员（含 dynamic）；`includeActivatable` 在当前请求成员上展开可自加载的已注册/作用域合格工具；`includeUsable` 过滤为当前真正可调用集合。两者同时使用时只列 usable ∪ activatable，不包含不可用的请求基线成员。黑名单成员即使属于 base 也不是 usable。
 - `ToolTarget` 的 `kind` 为 `tool`、`mcp`、`namespace` 或 `prefix`；目标形式分别为精确工具名、`mcp://server`、`namespace://name` 与 config 默认的 `foo*`。`id` 是 `${kind}:${name}`。
-- 六个写方法共用 `ToolWriteResult`，以 `action` 区分；`changed`、`selected`、`noSchema`、`schema`、`schemaWithheld`、`containers`、`excluded`、`rejected`、`alreadySet`、`unresolved`、`skipped`、`activated`、`alreadyActive`、`removedActive`、`pendingCompaction`、`noticed`、`notRequested`、`stillBlacklisted` 与 `remainingSources` 都是独立事实。`containers` 单独报告已加载的 namespace/MCP 容器与本次选中的具体成员，不伪装为工具；`excluded` 只表示本次选择排除的精确工具名，不是黑名单或成员移除；`noSchema`/`schema` 是本次选中的具体工具请求的按工具模式（无策略写入时为空），`schemaWithheld` 只列当前实际被投影隐藏的 schema；`stillBlacklisted` 保留原始本地禁令，`banOverridden` 列出被 base 覆盖的原始禁令。`rejected` 非空表示整批在选择校验阶段被拒绝，未写记录、未应用效果，`reason` 仅用于 `no_schema_unsupported`。`blacklist remove` 不清除当前 Preset 的 `-tool` 贡献，也不解除 SDK 限制。`recordError` 表示记录写入失败且未应用效果；`effectError` 表示记录已持久化但 SDK 效果调用失败，不回滚或重试。
+- 六个写方法共用 `ToolWriteResult`，以 `action` 区分；`changed`、`selected`、`noSchema`、`schema`、`schemaWithheld`、`containers`、`excluded`、`rejected`、`alreadySet`、`unresolved`、`skipped`、`activated`、`alreadyActive`、`removedActive`、`pendingCompaction`、`noticed`、`notRequested`、`stillBlacklisted` 与 `remainingSources` 都是独立事实。`containers` 单独报告已加载的 namespace/MCP 容器与本次选中的具体成员，不伪装为工具；`excluded` 只表示本次选择排除的精确工具名，不是黑名单或成员移除；`noSchema`/`schema` 是本次选中的具体工具请求的按工具模式（无策略写入时为空），`schemaWithheld` 只列当前实际被投影隐藏的 schema；`stillBlacklisted` 保留原始本地禁令，`banOverridden` 列出被显式选择覆盖的 `startup`／Preset 原始禁令；手动 `branch` 禁令是硬围栏，任何 BASE/DYNAMIC 成员都不覆盖它，只有 `blacklist remove` 解除。`rejected` 非空表示整批在选择校验阶段被拒绝，未写记录、未应用效果，`reason` 仅用于 `no_schema_unsupported`。`blacklist remove` 不清除当前 Preset 的 `-tool` 贡献，也不解除 SDK 限制。`recordError` 表示记录写入失败且未应用效果；`effectError` 表示记录已持久化但 SDK 效果调用失败，不回滚或重试。
 
 ## 可选、null、错误与部分结果
 
 - 请求 `params` 在通用 envelope 中可选；方法 schema 对必填参数的方法要求 `params`。transport 把缺失或 `null` 的 `params` 当作空对象。
 - `RpcResponseId` 为 `id` 或 `null`；无法解析或缺少合法 `id` 的请求返回 `id:null`。
-- 错误分支固定为 `{id, ok:false, error:{code,message,detail?}}`。`code` 是开放字符串；稳定集合见 `RPC_ERROR`，端口还会返回 `invalid_target`、`unmanaged_endpoint`、`unknown_endpoint`。领域 `SubagentError` 与 `MainControlError` 的 code/message 会保留，仅有真正未预期异常使用 `internal`。
+- 错误分支固定为 `{id, ok:false, error:{code,message,detail?}}`。`code` 是开放字符串；稳定集合见 `RPC_ERROR`，端口还会返回 `invalid_target`、`unmanaged_endpoint`、`unknown_endpoint`；`presets.apply` 的过期预览使用 `preset_version_mismatch`，`detail` 为 `{expectedVersion,currentVersion}`。领域 `SubagentError` 与 `MainControlError` 的 code/message 会保留，仅有真正未预期异常使用 `internal`。
 - 部分结果不折叠为整体失败：`subagent.create` 成功返回已登记 `items` 与 `warnings`；启动失败使用 `start_failed`，`error.detail` 含 `registered` 与每个失败的 `{agentId, code, message}`；`message.send` 的广播回执保留 `sent` 与逐接收者 `errors`；权限写操作的 `skipped`/`unresolved` 与 `recordError` 分开。
 - `recordError` 为 `string|null`；非 `null` 表示权限记录未写入，相关效果未应用。
 - `jobs.get.record` 为 `JobRecordView|null`；运行中 Job 可能还没有终态记录。
+- `presets.current` 的 `preset`、`status`、`currentVersion` 可为 `null`；无激活 Preset 时三者同为 `null`，`changes` 为空数组。`presets.apply` 的 `contentHash` 为 `null` 表示没有生效版本。
 - `history.read` 是 `HistoryReadResult` 联合：`available:false` 只带 `reason:"history_unavailable"`；`available:true` 带 `live`、`bounds` 与 `entries`。`bounds.startEntryId` 可为 `null`，表示从分支开头读取，不是“未开始”。
 - `stream.subscribe` 的 `boundary.history` 可为 `null`，`boundary.partial` 可为 `null`；`live` 表示是否挂上实时源。已终态 Job 的边界仍返回真实快照，但不再补发终态事件。
 - `RpcEventEnvelope.seq` 是每连接单调序号，不是每订阅独立序号。

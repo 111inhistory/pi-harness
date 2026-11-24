@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import { buildToolPort } from "../../src/harness-rpc/ports/tool-info.ts";
 import { RpcRequestError } from "../../src/harness-rpc/error.ts";
+import { PRESET_STATE_RECORD, PRESET_STATE_VERSION, buildPresetSnapshot } from "../../src/preset/state.ts";
 import { setIndependentDeclarations } from "../../src/capability/declaration-visibility.ts";
 
 interface FakeTool {
@@ -212,7 +213,7 @@ test("blacklist add removes codemode-only members, holds declared ones and notic
   assert.deepEqual(listed.entries[0]?.sources, ["branch"]);
 });
 
-test("base overrides a local blacklist while the raw ban is retained", () => {
+test("a manual blacklist is a hard fence that only blacklist remove lifts", () => {
   const branch: unknown[] = [];
   seedBaseline(branch);
   const api = makeApi(TOOLS, [], branch);
@@ -221,18 +222,28 @@ test("base overrides a local blacklist while the raw ban is retained", () => {
   port.blacklistAdd({ targets: ["write"] });
 
   const list = port.catalog({ includeActivatable: true, includeUsable: true });
-  const write = byName(list.entries, "write");
-  assert.ok(write);
+  assert.equal(byName(list.entries, "write"), undefined,
+    "a hard-fenced member stays out of the availability population");
+  const write = port.detail({ name: "write" });
   assert.equal(write.base, true);
   assert.equal(write.blacklisted, true);
-  assert.equal(write.blocked, false);
-  assert.equal(write.banOverridden, true);
-  assert.equal(write.usable, true);
+  assert.equal(write.blocked, true);
+  assert.equal(write.banOverridden, false);
+  assert.equal(write.activatable, false);
+  assert.equal(write.usable, false);
   assert.equal(port.baseList().targets.length, 1, "base membership and raw blacklist survive together");
   assert.deepEqual(port.blacklistList().entries.map((entry) => entry.target.target), ["write"]);
+
+  const removed = port.blacklistRemove({ targets: ["write"] });
+  assert.equal(removed.action, "blacklist-remove");
+  const reopened = port.detail({ name: "write" });
+  assert.equal(reopened.blocked, false);
+  assert.equal(reopened.banOverridden, false);
+  assert.equal(reopened.usable, true);
+  assert.equal(api.getActiveTools().includes("write"), true);
 });
 
-test("a namespace ban is overridden only by exact base membership", () => {
+test("a namespace blacklist is a hard fence for exact base members too", () => {
   const branch: unknown[] = [];
   seedBaseline(branch);
   const api = makeApi(TOOLS, [], branch);
@@ -244,21 +255,37 @@ test("a namespace ban is overridden only by exact base membership", () => {
   assert.equal(dynamic.blacklisted, true);
   assert.equal(dynamic.blocked, true);
   assert.equal(dynamic.banOverridden, false);
+  assert.equal(dynamic.usable, false);
 
   port.baseAdd({ targets: ["mcp__srv__query"] });
   const base = port.detail({ name: "mcp__srv__query" });
   assert.equal(base.blacklisted, true, "namespace raw ban remains");
-  assert.equal(base.blocked, false);
-  assert.equal(base.banOverridden, true);
-  assert.equal(base.usable, true);
+  assert.equal(base.blocked, true, "exact base membership does not override a manual namespace ban");
+  assert.equal(base.banOverridden, false);
+  assert.equal(base.usable, false);
+
+  const removed = port.blacklistRemove({ targets: ["mcp://srv"] });
+  assert.equal(removed.action, "blacklist-remove");
+  const reopened = port.detail({ name: "mcp__srv__query" });
+  assert.equal(reopened.blocked, false);
+  assert.equal(reopened.usable, true);
 });
 
 test("blacklist remove restores preserved membership and reports preset contributions that remain", () => {
   const branch: unknown[] = [
     {
       type: "custom",
-      customType: "preset-state",
-      data: { version: 1, snapshot: { name: "strict", tools: ["write"], disabledTools: ["write"], instructions: null } },
+      customType: PRESET_STATE_RECORD,
+      data: {
+        version: PRESET_STATE_VERSION,
+        snapshot: buildPresetSnapshot({
+          name: "strict",
+          tools: ["write"],
+          disabledTools: ["write"],
+          instructions: null,
+          toolSelection: { kind: "replace", names: ["write"] },
+        }),
+      },
     },
   ];
   seedBaseline(branch);

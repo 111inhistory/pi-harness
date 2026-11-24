@@ -9,6 +9,7 @@
  * disposal. No provider is contacted and no extension or package is loaded.
  */
 import assert from 'node:assert/strict';
+import { buildPresetSnapshot, PRESET_STATE_VERSION } from '../../src/preset/state.ts';
 import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -279,7 +280,7 @@ async function openHarness(options: HarnessOptions): Promise<Harness> {
     assert.ok(parentApi, 'the parent extension factory ran');
     assert.ok(parentCtx, 'session_start captured the real ExtensionContext');
     session.sessionManager.appendCustomEntry('preset-state', {
-      version: 1, snapshot: { name: 'fixture', instructions: 'CURRENT_PRESET_GUIDANCE' },
+      version: PRESET_STATE_VERSION, snapshot: buildPresetSnapshot({ name: 'fixture', instructions: 'CURRENT_PRESET_GUIDANCE' }),
     });
     await session.prompt('Parent task: keep this context.');
     session.sessionManager.appendCustomEntry('harness-tool-guidance', {

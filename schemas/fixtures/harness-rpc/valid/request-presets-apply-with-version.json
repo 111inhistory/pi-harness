@@ -1,0 +1,8 @@
+{
+  "id": "preset-1",
+  "method": "presets.apply",
+  "params": {
+    "name": "fast",
+    "expectedVersion": "sha256:0123456789abcdef"
+  }
+}

@@ -83,6 +83,7 @@ import {
   blacklistedNoticeNames,
   ensureToolBase,
   sessionBaseNames,
+  syncActiveToolsForBranch,
 } from "./tool-access.ts";
 import { createToolAccessView, listBaseTools, listLoadedContainers } from "./tool-access-view.ts";
 import type { ToolGuidance } from "../tool-guidance.ts";
@@ -271,7 +272,10 @@ export default function capabilityExtension(
 
   pi.on("session_start", resetRunTracking);
   pi.on("session_before_switch", resetRunTracking);
-  pi.on("session_tree", resetRunTracking);
+  pi.on("session_tree", (_event, ctx) => {
+    resetRunTracking();
+    syncActiveToolsForBranch(pi, ctx.sessionManager.getBranch());
+  });
   pi.on("session_shutdown", resetRunTracking);
 
   pi.on("agent_start", () => {

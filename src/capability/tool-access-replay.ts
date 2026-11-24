@@ -5,6 +5,20 @@
  * remembered separately in the same record so one user operation is one durable
  * entry. Blacklist remains an independent target-rule union.
  *
+ * The effective base membership is layered, highest wins last:
+ *
+ * 1. the effective baseline (the captured `capability-tool-base` baseline plus
+ *    every permanent `baselineAdditions` increment a preset recorded),
+ * 2. the latest preset snapshot's normalized selection (`replace` replaces the
+ *    baseline layer, `modifiers` fold over it),
+ * 3. the user's manual `/capability base add|remove` records, which always win
+ *    over the preset layer regardless of branch order and are never cleared by a
+ *    preset switch, upgrade or clear.
+ *
+ * A preset's `disabledTools` is a preset-lifetime blacklist contribution, not a
+ * durable ban; the hard fences (startup/ancestor and manual blacklist) stay in
+ * the blacklist union and are never bypassed by a preset.
+ *
  * No registry, scope view or SDK effect is read here: the write side and the
  * read view both build on this replay.
  */
@@ -12,7 +26,7 @@
 import { CAPABILITY_DISCOVERY_RECORD, CAPABILITY_DISCOVERY_RECORD_VERSION, CAPABILITY_PRUNE_RECORD, CAPABILITY_PRUNE_RECORD_VERSION } from './discovery-record.ts';
 import { capabilityStartupBlacklist } from './scope.ts';
 import { parseToolTarget, type ToolTarget, type ToolTargetRecord } from './targets.ts';
-import { PRESET_STATE_RECORD, restorePresetSnapshot } from '../preset/state.ts';
+import { presetBaselineAdditions, readPresetState, type PresetToolSelection } from '../preset/state.ts';
 
 /** `customType` of the base membership record. */
 export const TOOL_BASE_RECORD = 'capability-tool-base';
@@ -57,13 +71,25 @@ export interface Contribution<TSource extends string> {
 
 type ActionMap = Map<string, 'add' | 'remove' | 'activate' | 'deactivate'>;
 
+/** The current preset's tool contribution as replayed against the baseline. */
+export interface PresetToolLayer {
+  readonly name: string | null;
+  /** Normalized intent, or null when no preset is active. */
+  readonly selection: PresetToolSelection | null;
+  /** Effective-baseline names the current preset excludes. */
+  readonly excluded: readonly string[];
+  /** Preset-excluded names the manual base layer keeps instead. */
+  readonly retained: readonly string[];
+}
+
 export interface AccessState {
-  /** Concrete base/dynamic membership by tool name. */
+  /** Effective base membership (baseline → preset → manual) by tool name. */
   readonly base: Map<string, Set<ToolBaseSource>>;
   readonly dynamic: Map<string, Set<ToolDynamicSource>>;
   /** Loaded container metadata, keyed by canonical container id. */
   readonly baseLoads: Map<string, Contribution<ToolBaseSource>>;
   readonly dynamicLoads: Map<string, Contribution<ToolDynamicSource>>;
+  /** Manual base actions only; a preset selection never writes this map. */
   readonly baseActions: ActionMap;
   readonly dynamicActions: ActionMap;
   readonly blacklist: Map<string, Contribution<ToolBlacklistSource>>;
@@ -73,6 +99,11 @@ export interface AccessState {
   readonly schemaModes: Map<string, ToolSchemaMode>;
   /** Targets named by a removal intent (base remove / deactivate / blacklist add). */
   readonly removalIntents: ToolTarget[];
+  /** Effective baseline layer: captured baseline ∪ permanent preset additions. */
+  readonly baseline: ReadonlySet<string>;
+  /** Base members an explicit selection put there (manual add, preset add/replace). */
+  readonly explicitBase: ReadonlySet<string>;
+  readonly preset: PresetToolLayer;
 }
 
 function addName<T>(entries: Map<string, Set<T>>, name: string, source: T): void {
@@ -171,47 +202,93 @@ function applyLoads<T extends string>(
   }
 }
 
-function applyPresetEntry(state: AccessState, entry: UnknownRecord): void {
-  const snapshot = restorePresetSnapshot([entry]);
-  if (snapshot === null) {
-    // Clearing ends the preset blacklist lifetime but keeps the applied
-    // availability selection as session base.
-    for (const sources of state.base.values()) {
-      if (!sources.has('preset')) continue;
-      sources.delete('preset');
-      sources.add('branch');
+/**
+ * Fold the preset layer onto the effective baseline.
+ *
+ * `replace` replaces the baseline layer only and `modifiers` add or subtract on
+ * it; the manual layer is folded afterwards, so neither form can erase a manual
+ * member. Every name the preset tries to exclude is a candidate for the removal
+ * intent; the manual layer can keep it (`retained`, reported to the apply
+ * notice), and only a still-absent name becomes an effective exclusion that a
+ * successful compaction may drop.
+ *
+ * `explicitBase` is the subset an explicit selection put there: a manual base
+ * add or the current preset's add/replace. Baseline membership and permanent
+ * increments are deliberately not explicit, so they never lift a local ban.
+ */
+function foldPresetLayer(
+  baseline: ReadonlySet<string>,
+  selection: PresetToolSelection | null,
+  manual: ReadonlyMap<string, 'add' | 'remove'>,
+): {
+  readonly base: Map<string, Set<ToolBaseSource>>;
+  readonly explicitBase: ReadonlySet<string>;
+  readonly excluded: readonly string[];
+  readonly retained: readonly string[];
+} {
+  const base = new Map<string, Set<ToolBaseSource>>();
+  const explicitBase = new Set<string>();
+  for (const name of baseline) addName(base, name, 'baseline');
+  /** Every name the preset intends to exclude from the layer below it. */
+  const intent: string[] = [];
+  if (selection !== null && selection.kind === 'replace') {
+    const selected = new Set(selection.names);
+    for (const name of baseline) if (!selected.has(name)) intent.push(name);
+    base.clear();
+    for (const name of selection.names) {
+      addName(base, name, 'preset');
+      explicitBase.add(name);
     }
-    for (const contribution of [...state.blacklist.values()]) {
-      if (contribution.sources.has('preset')) dropSource(state.blacklist, contribution.target.id, 'preset');
+  } else if (selection !== null && selection.kind === 'modifiers') {
+    for (const name of selection.add) {
+      addName(base, name, 'preset');
+      explicitBase.add(name);
     }
-    return;
+    for (const name of selection.remove) {
+      intent.push(name);
+      base.delete(name);
+    }
   }
-  if (snapshot.tools !== undefined) {
-    state.base.clear();
-    state.baseActions.clear();
-    for (const name of snapshot.tools) addName(state.base, name, 'preset');
+  for (const [name, action] of manual) {
+    if (action === 'add') {
+      addName(base, name, 'branch');
+      explicitBase.add(name);
+    } else {
+      base.delete(name);
+      explicitBase.delete(name);
+    }
   }
-  for (const contribution of [...state.blacklist.values()]) {
-    if (contribution.sources.has('preset')) dropSource(state.blacklist, contribution.target.id, 'preset');
-  }
-  for (const raw of snapshot.disabledTools ?? []) {
-    const target = parseToolTarget(raw);
-    if (target !== null) addSource(state.blacklist, target, 'preset');
-  }
+  // A name the preset removes can be kept by the manual layer even when the
+  // baseline never contained it (a manual member added earlier).
+  const retained = intent.filter((name) => base.has(name));
+  const kept = new Set(retained);
+  return {
+    base,
+    explicitBase,
+    excluded: intent.filter((name) => !kept.has(name)),
+    retained,
+  };
 }
 
 /** Replay the branch into the effective collections. */
 export function replay(host: { getAllTools(): readonly ToolTargetRecord[] }, branch: readonly unknown[] | null | undefined): AccessState {
-  const state: AccessState = {
-    base: new Map(), dynamic: new Map(),
-    baseLoads: new Map(), dynamicLoads: new Map(),
-    baseActions: new Map(), dynamicActions: new Map(),
-    blacklist: new Map(), blacklistActions: new Map(),
-    baselineRecorded: false, schemaModes: new Map(), removalIntents: [],
-  };
+  const baseLoads = new Map<string, Contribution<ToolBaseSource>>();
+  const dynamicLoads = new Map<string, Contribution<ToolDynamicSource>>();
+  const baseActions: ActionMap = new Map();
+  const dynamicActions: ActionMap = new Map();
+  const blacklist = new Map<string, Contribution<ToolBlacklistSource>>();
+  const blacklistActions: ActionMap = new Map();
+  const schemaModes = new Map<string, ToolSchemaMode>();
+  const removalIntents: ToolTarget[] = [];
+  const baseline = new Set<string>();
+  /** Latest manual base action per name; the layer itself is order independent. */
+  const manualBase = new Map<string, 'add' | 'remove'>();
+  const dynamic = new Map<string, Set<ToolDynamicSource>>();
+  let baselineRecorded = false;
+
   for (const raw of capabilityStartupBlacklist(host)) {
     const target = parseToolTarget(raw);
-    if (target !== null) addSource(state.blacklist, target, 'startup');
+    if (target !== null) addSource(blacklist, target, 'startup');
   }
   for (const entry of branch ?? []) {
     if (!isRecord(entry) || entry['type'] !== 'custom') continue;
@@ -220,36 +297,39 @@ export function replay(host: { getAllTools(): readonly ToolTargetRecord[] }, bra
     if (customType === TOOL_BASE_RECORD) {
       const record = parseBaseRecord(data);
       if (record === null) continue;
-      if (isRecord(data) && Array.isArray(data['baseline'])) state.baselineRecorded = true;
-      for (const name of record.baseline) addName(state.base, name, 'baseline');
-      applyLoads(state.baseLoads, record.load, isRecord(data) && Array.isArray(data['baseline']) ? 'baseline' : 'branch');
-      for (const name of record.add) {
-        state.baseActions.set(`tool:${name}`, 'add');
-        addName(state.base, name, 'branch');
+      const isBaseline = isRecord(data) && Array.isArray(data['baseline']);
+      if (isBaseline) baselineRecorded = true;
+      if (isBaseline) {
+        for (const name of record.baseline) baseline.add(name);
       }
-      for (const name of record.noSchema) state.schemaModes.set(name, 'no-schema');
-      for (const name of record.schema) state.schemaModes.set(name, 'schema');
+      applyLoads(baseLoads, record.load, isBaseline ? 'baseline' : 'branch');
+      for (const name of record.add) {
+        baseActions.set(`tool:${name}`, 'add');
+        manualBase.set(name, 'add');
+      }
+      for (const name of record.noSchema) schemaModes.set(name, 'no-schema');
+      for (const name of record.schema) schemaModes.set(name, 'schema');
       for (const name of record.remove) {
-        state.baseActions.set(`tool:${name}`, 'remove');
-        state.base.delete(name);
-        state.removalIntents.push({ target: name, kind: 'tool', name, id: `tool:${name}` });
+        baseActions.set(`tool:${name}`, 'remove');
+        manualBase.set(name, 'remove');
+        removalIntents.push({ target: name, kind: 'tool', name, id: `tool:${name}` });
       }
       continue;
     }
     if (customType === TOOL_DYNAMIC_RECORD) {
       const record = parseDynamicRecord(data);
       if (record === null) continue;
-      applyLoads(state.dynamicLoads, record.load, 'branch');
+      applyLoads(dynamicLoads, record.load, 'branch');
       for (const name of record.activate) {
-        state.dynamicActions.set(`tool:${name}`, 'activate');
-        addName(state.dynamic, name, 'branch');
+        dynamicActions.set(`tool:${name}`, 'activate');
+        addName(dynamic, name, 'branch');
       }
-      for (const name of record.noSchema) state.schemaModes.set(name, 'no-schema');
-      for (const name of record.schema) state.schemaModes.set(name, 'schema');
+      for (const name of record.noSchema) schemaModes.set(name, 'no-schema');
+      for (const name of record.schema) schemaModes.set(name, 'schema');
       for (const name of record.deactivate) {
-        state.dynamicActions.set(`tool:${name}`, 'deactivate');
-        state.dynamic.delete(name);
-        state.removalIntents.push({ target: name, kind: 'tool', name, id: `tool:${name}` });
+        dynamicActions.set(`tool:${name}`, 'deactivate');
+        dynamic.delete(name);
+        removalIntents.push({ target: name, kind: 'tool', name, id: `tool:${name}` });
       }
       continue;
     }
@@ -259,43 +339,93 @@ export function replay(host: { getAllTools(): readonly ToolTargetRecord[] }, bra
       for (const raw of record.add) {
         const target = parseToolTarget(raw);
         if (target === null) continue;
-        state.blacklistActions.set(target.id, 'add');
-        addSource(state.blacklist, target, 'branch');
-        state.removalIntents.push(target);
+        blacklistActions.set(target.id, 'add');
+        addSource(blacklist, target, 'branch');
+        removalIntents.push(target);
       }
       for (const raw of record.remove) {
         const target = parseToolTarget(raw);
         if (target === null) continue;
-        state.blacklistActions.set(target.id, 'remove');
+        blacklistActions.set(target.id, 'remove');
         // A remove clears the branch and matching startup target id only. The
         // current preset keeps its own lifetime and SDK bans are not ours.
-        dropSource(state.blacklist, target.id, 'branch');
-        dropSource(state.blacklist, target.id, 'startup');
+        dropSource(blacklist, target.id, 'branch');
+        dropSource(blacklist, target.id, 'startup');
       }
       continue;
     }
-    if (customType === PRESET_STATE_RECORD) { applyPresetEntry(state, entry); continue; }
     if (customType === CAPABILITY_DISCOVERY_RECORD) {
-      for (const name of discoverySelectedNames(data) ?? []) addName(state.dynamic, name, 'discovery');
+      for (const name of discoverySelectedNames(data) ?? []) addName(dynamic, name, 'discovery');
       continue;
     }
     if (customType === CAPABILITY_PRUNE_RECORD) {
-      for (const name of prunedNames(data) ?? []) state.dynamic.delete(name);
+      for (const name of prunedNames(data) ?? []) dynamic.delete(name);
     }
   }
-  return state;
+
+  // Fold the latest selection over the captured baseline and committed upgrades.
+  // The stored name projection is only used for comparison and compaction.
+  const snapshot = readPresetState(branch)?.snapshot ?? null;
+  for (const name of presetBaselineAdditions(branch)) baseline.add(name);
+  const selection = snapshot?.toolSelection ?? null;
+  const folded = foldPresetLayer(baseline, selection, manualBase);
+  for (const name of folded.excluded) removalIntents.push({ target: name, kind: 'tool', name, id: `tool:${name}` });
+  if (snapshot !== null) {
+    for (const raw of snapshot.disabledTools ?? []) {
+      const target = parseToolTarget(raw);
+      if (target !== null) addSource(blacklist, target, 'preset');
+    }
+  }
+
+  return {
+    base: folded.base,
+    dynamic,
+    baseLoads,
+    dynamicLoads,
+    baseActions,
+    dynamicActions,
+    blacklist,
+    blacklistActions,
+    baselineRecorded,
+    schemaModes,
+    removalIntents,
+    baseline,
+    explicitBase: folded.explicitBase,
+    preset: {
+      name: snapshot?.name ?? null,
+      selection,
+      excluded: folded.excluded,
+      retained: folded.retained,
+    },
+  };
 }
 
-/** The recorded availability baseline names, without capturing or writing. */
-export function sessionBaseNames(branch: readonly unknown[] | null | undefined): readonly string[] {
-  const names: string[] = [];
+/**
+ * The recorded `capability-tool-base` baseline, without capturing or writing.
+ *
+ * `recorded` stays true for an explicitly EMPTY baseline (`tools: []` /
+ * `--no-tools`), so callers can distinguish "recorded empty" from "never
+ * captured" instead of testing the name count.
+ */
+export function recordedBaseBaseline(branch: readonly unknown[] | null | undefined): {
+  readonly recorded: boolean;
+  readonly names: readonly string[];
+} {
+  const names = new Set<string>();
+  let recorded = false;
   for (const entry of branch ?? []) {
     if (!isRecord(entry) || entry['type'] !== 'custom' || entry['customType'] !== TOOL_BASE_RECORD) continue;
     const record = parseBaseRecord(entry['data']);
-    if (record === null) continue;
-    for (const name of record.baseline) if (!names.includes(name)) names.push(name);
+    if (record === null || !isRecord(entry['data']) || !Array.isArray(entry['data']['baseline'])) continue;
+    recorded = true;
+    for (const name of record.baseline) names.add(name);
   }
-  return names;
+  return { recorded, names: [...names] };
+}
+
+/** The recorded baseline names plus permanent preset increments, without writing. */
+export function sessionBaseNames(branch: readonly unknown[] | null | undefined): readonly string[] {
+  return [...new Set([...recordedBaseBaseline(branch).names, ...presetBaselineAdditions(branch)])];
 }
 
 /** Recorded baseline container loads, without capturing or writing. */

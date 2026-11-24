@@ -14,7 +14,7 @@ import capabilityExtension from '../src/capability/extension.ts';
 import { DEFAULT_HARNESS_CONFIG } from '../src/harness-config.ts';
 import { installPresetInstruction } from '../src/preset/instruction.ts';
 import { HARNESS_CONTEXT_SYNC_CUSTOM_TYPE } from '../src/request-instructions.ts';
-import { appendPresetState } from '../src/preset/state.ts';
+import { appendPresetState, buildPresetSnapshot } from '../src/preset/state.ts';
 import { serializedRequest, declaredTools } from './capability-model-wire.ts';
 
 /**
@@ -22,19 +22,19 @@ import { serializedRequest, declaredTools } from './capability-model-wire.ts';
  *
  * The model never mirrors the production resolver. It keeps three separately
  * tracked facts per tool: `base` and `dynamic` membership written by the real
- * `/capability` command, and the local `blacklisted` prohibition. Base wins over
- * the local ban: requested membership is `base || (dynamic && !blacklisted)`.
- * The ban stays recorded while base wins and reasserts when base is removed.
- * External fences (ancestor/role/depth/SDK) are admission-level and are not
- * overridable by base; the model does not synthesize them as local facts.
+ * `/capability` command, and the local `blacklisted` prohibition. A manual
+ * branch ban is a HARD fence: requested membership is `(base || dynamic) &&
+ * !blacklisted`, so neither base nor dynamic membership lifts it. The ban stays
+ * recorded and only an explicit `blacklist remove` reopens the tool.
+ * External fences (ancestor/role/depth/SDK) are admission-level; the model does
+ * not synthesize them as local facts.
  * Execution, discovery candidates, memory and declarations are all derived from
  * the membership facts rather than from the SDK's lingering active set.
  *
  * A declaration may outlive requested membership: removing a member (`base
- * remove`, `deactivate`) or blacklisting a dynamic-only member stops usage
- * immediately, but the native declaration is only dropped at the next successful
- * compaction so the request prefix stays cache-safe. A base member with a local
- * ban stays requested and declared. `declared` therefore models the SDK's
+ * remove`, `deactivate`) or blacklisting any member stops usage immediately, but
+ * the native declaration is only dropped at the next successful compaction so the
+ * request prefix stays cache-safe. `declared` therefore models the SDK's
  * declaration state separately from `requested`, and execution is asserted
  * against membership, never against the retained declaration.
  */
@@ -98,18 +98,18 @@ function hasAnyHarnessSection(messages: readonly Message[]): boolean {
     && Object.keys(message.sections).some(isHarnessSectionKey));
 }
 
-/** Requested membership: base wins over the local ban; dynamic does not. */
+/** Requested membership: a manual branch ban is a hard fence over both layers. */
 function requested(tool: ToolState): boolean {
-  return tool.base || (tool.dynamic && !tool.blacklisted);
+  return (tool.base || tool.dynamic) && !tool.blacklisted;
 }
 
 /**
  * Discovery memory is current knowledge, not usability: a removed member stays
- * discoverable, a dynamic-only blacklisted name is excluded, and a base member
- * with a local ban stays in memory because it remains usable.
+ * discoverable, and a locally banned name is excluded because no membership can
+ * lift the hard fence.
  */
 function remembered(tool: ToolState): boolean {
-  return tool.discovered && (!tool.blacklisted || tool.base);
+  return tool.discovered && !tool.blacklisted;
 }
 
 interface World {
@@ -308,17 +308,18 @@ function commandLine(action: Action, name: string): string {
 /**
  * Apply the membership transition the real command just recorded.
  *
- * Positive membership declares the tool now: base wins even over a recorded
- * local ban, while dynamic membership still loses to that ban. Removals and
- * blacklists only change requested membership. Their declaration removal is
- * deferred so the model can prove that retained declarations never grant
- * usage, then prove the compaction drops them.
+ * Positive membership declares the tool only when it is requested: a manual
+ * branch ban is a hard fence over both base and dynamic membership, so a
+ * blacklisted tool records membership without becoming usable or declared.
+ * Removals and blacklists only change requested membership. Their declaration
+ * removal is deferred so the model can prove that retained declarations never
+ * grant usage, then prove the compaction drops them.
  */
 function applyMembership(action: Action, tool: ToolState): void {
   if (action === 'base-add') {
     tool.base = true;
-    // Base wins over the local ban, so it declares even when the ban remains.
-    tool.declared = true;
+    // The record is written either way; only an unbanned member is declared.
+    if (requested(tool)) tool.declared = true;
     return;
   }
   if (action === 'activate') {
@@ -378,8 +379,10 @@ class Command implements AsyncCommand<State, World> {
     } else if (this.action === 'preset' || this.action === 'clear-preset') {
       state.preset = this.action === 'preset' ? `PBT_PRESET_${this.slot}_${this.schema}` : null;
       appendPresetState(world.api, {
-        version: 1,
-        snapshot: state.preset === null ? null : { name: 'generated', instructions: state.preset },
+        version: 2,
+        snapshot: state.preset === null
+          ? null
+          : buildPresetSnapshot({ name: 'generated', instructions: state.preset }),
       });
     } else if (this.action === 'describe' || this.action === 'schema') {
       if (this.action === 'describe') tool.description = this.description;
@@ -431,9 +434,9 @@ class Command implements AsyncCommand<State, World> {
     } else if (this.action === 'discover') {
       world.selection = this.slot;
       world.response = { name: 'capability', slot: this.slot, schema: 0 };
-      // A dynamic-only blacklisted name is not a discovery candidate; a base
-      // member stays usable (and discoverable) while its local ban is recorded.
-      if (!tool.blacklisted || tool.base) {
+      // A locally banned name is never a discovery candidate: the hard fence
+      // wins over base membership too.
+      if (!tool.blacklisted) {
         tool.dynamic = true;
         tool.discovered = true;
         tool.discoveredDescription = tool.description;
@@ -701,9 +704,9 @@ async function runNamespaceLifecycle() {
     } finally { await world.close(); }
   }
 
-  // A container blacklist is a group rule: it covers members registered after
-  // the rule, but an exact base membership is the local exception. The group
-  // ban stays recorded and reasserts as soon as that base membership is gone.
+  // A container blacklist is a group rule and a HARD fence: it covers members
+  // registered after the rule, and neither exact base membership nor dynamic
+  // membership lifts it. Only removing the group rule reopens the members.
   {
     const world = await fixture(false, true);
     try {
@@ -714,33 +717,30 @@ async function runNamespaceLifecycle() {
 
       world.registerNamespaceMember('history_ns_c');
       await world.session.prompt('/capability base add history_ns_c');
-      assert.equal(await callNamespaceTool(world, 'history_ns_c'), true,
-        'an exact base member overrides the covering container ban');
-      assert.equal(await callNamespaceTool(world, 'history_ns_a'), false,
-        'the container ban still denies dynamic members without base');
+      assert.equal(await callNamespaceTool(world, 'history_ns_c'), false,
+        'an exact base member cannot lift the covering container ban');
       const containerBans = world.session.sessionManager.getBranch()
         .filter(entry => entry.type === 'custom' && entry.customType === 'capability-tool-blacklist');
       assert.match(JSON.stringify(containerBans), /namespace:\/\/history_ns/,
-        'the container ban stays recorded while the exact base exception applies');
-
-      await world.session.prompt('/capability base remove history_ns_c');
-      assert.equal(await callNamespaceTool(world, 'history_ns_c'), false,
-        'removing base reasserts the still-recorded container ban immediately');
-      await world.session.prompt('/capability activate history_ns_c');
-      assert.equal(await callNamespaceTool(world, 'history_ns_c'), false,
-        'dynamic membership cannot bypass the covering container ban');
-      await world.session.prompt('/capability base add history_ns_c');
-      assert.equal(await callNamespaceTool(world, 'history_ns_c'), true,
-        'the exact base exception applies again while the container ban remains');
-      await world.session.prompt('/capability base remove history_ns_c');
-      assert.equal(await callNamespaceTool(world, 'history_ns_c'), false,
-        'the reasserted ban still blocks the preserved dynamic membership');
+        'the container ban stays recorded while the hard fence is in force');
 
       await world.session.prompt('/capability blacklist remove namespace://history_ns');
-      assert.equal(await callNamespaceTool(world, 'history_ns_a'), true,
-        'removing the container ban frees the preserved dynamic members');
       assert.equal(await callNamespaceTool(world, 'history_ns_c'), true,
-        'and the preserved dynamic member becomes usable again');
+        'removing the group rule reopens the recorded base member');
+      await world.session.prompt('/capability activate history_ns_a');
+      assert.equal(await callNamespaceTool(world, 'history_ns_a'), true,
+        'the preserved dynamic member becomes usable again');
+
+      await world.session.prompt('/capability base remove history_ns_c');
+      assert.equal(await callNamespaceTool(world, 'history_ns_c'), false,
+        'without base or dynamic membership the member is no longer requested');
+
+      await world.session.prompt('/capability blacklist add namespace://history_ns');
+      assert.equal(await callNamespaceTool(world, 'history_ns_c'), false,
+        're-adding the group rule denies the dynamic member again');
+      await world.session.prompt('/capability base add history_ns_c');
+      assert.equal(await callNamespaceTool(world, 'history_ns_c'), false,
+        'the exact base exception does not apply under the hard fence');
     } finally { await world.close(); }
   }
 

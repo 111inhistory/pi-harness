@@ -26,6 +26,7 @@ import test from 'node:test';
 
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
+import { convertResponsesMessages } from '../../node_modules/@earendil-works/pi-ai/dist/api/openai-responses-shared.js';
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -41,12 +42,17 @@ import { setCapabilityStartupBlacklist } from '../../src/capability/scope.ts';
 import {
   addBaseTools,
   addBlacklistTargets,
+  presetRetainedByBranch,
   removeBaseTools,
   removeBlacklistTargets,
 } from '../../src/capability/tool-access.ts';
 import { createToolAccessView } from '../../src/capability/tool-access-view.ts';
 import { createToolAdmission } from '../../src/capability/admission.ts';
-import { restorePresetSnapshot } from '../../src/preset/state.ts';
+import {
+  buildPresetSnapshot,
+  PRESET_STATE_VERSION,
+  restorePresetSnapshot,
+} from '../../src/preset/state.ts';
 
 import presetExtension from '../../extensions/preset.ts';
 import capabilityExtension from '../../src/capability/extension.ts';
@@ -57,6 +63,7 @@ async function offlineRuntime(cwd: string, requests?: unknown[]) {
   const model = runtime.getModel('openai-codex', 'gpt-6.1-sol');
   assert.ok(model);
   runtime.getAuth = async () => ({ auth: { apiKey: 'offline-only' }, env: {} });
+  runtime.checkAuth = async () => ({ apiKey: 'offline-only' } as never);
   runtime.hasConfiguredAuth = () => true;
   runtime.streamSimple = (_model, context) => {
     requests?.push(structuredClone(context.messages));
@@ -100,7 +107,10 @@ test('a preset-state instruction reaches a real offline request as a system sect
     assert.deepEqual(resourceLoader.getExtensions().errors, []);
 
     const sessionManager = SessionManager.inMemory(cwd);
-    sessionManager.appendCustomEntry('preset-state', { version: 1, snapshot: { name: 'fast', instructions: 'PRESET_INSTRUCTION_MARKER' } });
+    sessionManager.appendCustomEntry('preset-state', {
+      version: PRESET_STATE_VERSION,
+      snapshot: buildPresetSnapshot({ name: 'fast', instructions: 'PRESET_INSTRUCTION_MARKER' }),
+    });
 
     const created = await createAgentSession({
       cwd, agentDir: process.env['PI_CODING_AGENT_DIR']!, modelRuntime: runtime, model,
@@ -146,11 +156,11 @@ async function bootPresetSession(
   cwd: string,
   agentDir: string,
   presets: Record<string, unknown>,
-  options: { defaultTools?: string[]; withCapability?: boolean } = {},
+  options: { defaultTools?: string[]; withCapability?: boolean; requests?: unknown[] } = {},
 ): Promise<PresetSession> {
   await mkdir(agentDir, { recursive: true });
   await writeFile(path.join(agentDir, 'presets.json'), JSON.stringify(presets));
-  const { runtime, model } = await offlineRuntime(cwd);
+  const { runtime, model } = await offlineRuntime(cwd, options.requests);
   const settingsManager = SettingsManager.inMemory({
     defaultTools: options.defaultTools ?? ['read', 'bash', 'edit', 'write', 'capability', oldDefault],
     retry: { enabled: false }, compaction: { enabled: false, keepRecentTokens: 0 }, cacheWarming: 'off',
@@ -191,7 +201,7 @@ async function bootPresetSession(
   const ctx = {
     cwd,
     ui: { notify: () => {}, setStatus: () => {}, select: async () => undefined },
-    modelRegistry: { find: () => undefined },
+    modelRegistry: { find: (provider: string, id: string) => runtime.getModel(provider, id) },
     sessionManager: created.session.sessionManager,
     isProjectTrusted: () => true,
     getSystemPrompt: () => created.session.systemPrompt,
@@ -270,22 +280,29 @@ test('preset blacklist blocks additions and its lifetime ends on switch or clear
   let booted: PresetSession | undefined;
   try {
     booted = await bootPresetSession(cwd, agentDir, {
-      exclude: { tools: [`+${patch}`, `-${dynamicTool}`, `-${manualTool}`] },
+      exclude: { tools: [`+${patch}`, `+${pinned}`, `-${dynamicTool}`, `-${manualTool}`] },
       weak: { tools: ['+edit'] },
     });
     const { session, api, apply, branch } = booted;
 
-    // A pre-existing base membership is removed by the preset minus, and a
-    // branch ban on the plus target is overridden by the preset base.
+    // A manual base membership outlives the preset minus, while a manual
+    // blacklist is a hard fence the preset plus cannot override.
     addBaseTools(api, api, branch(), [manualTool]);
     addBlacklistTargets(api, api, branch(), [patch]);
     await apply('exclude');
     const afterMinus = createToolAccessView(api, branch());
-    assert.equal(afterMinus.base(manualTool), false, 'a preset minus removes prior base membership');
-    assert.equal(afterMinus.blacklisted(patch), true, 'the branch ban is retained as a raw fact');
-    assert.equal(afterMinus.banOverridden(patch), true, 'the preset plus contributes overriding base membership');
+    // The manual layer outranks the preset layer: a `/capability base add` is
+    // never silently cleared by a preset `-name`.
+    assert.equal(afterMinus.base(manualTool), true, 'a manual base member survives a preset minus');
+    assert.equal(afterMinus.blacklisted(manualTool), true, 'the preset minus stays a raw prohibition');
+    assert.equal(afterMinus.banOverridden(manualTool), true, 'the manual base member overrides the preset ban');
+    assert.deepEqual(presetRetainedByBranch(api, branch()), [manualTool],
+      'the retained name is reported so the user can see why it stayed available');
+    assert.equal(afterMinus.blacklisted(patch), true, 'the manual blacklist stays a raw fact');
+    assert.equal(afterMinus.banOverridden(patch), false, 'a manual blacklist is never overridden by a preset plus');
     let active = activeOf(session);
-    assert.ok(active.includes(patch), 'the positive token contributes base membership');
+    assert.ok(!active.includes(patch), 'a manually blacklisted tool cannot be activated by a preset add');
+    assert.ok(active.includes(pinned), 'the other positive token contributes base membership');
     assert.ok(!active.includes(dynamicTool), 'the final minus cannot be active');
     assert.deepEqual([...restorePresetSnapshot(branch())!.disabledTools!].sort(), [dynamicTool, manualTool].sort(),
       'the snapshot holds the current-preset blacklist');
@@ -300,7 +317,7 @@ test('preset blacklist blocks additions and its lifetime ends on switch or clear
     await apply('exclude');
     active = activeOf(session);
     assert.ok(!active.includes(dynamicTool), 'a preset blacklist blocks discovery activation immediately');
-    assert.ok(!active.includes(manualTool), 'a preset blacklist blocks even an explicitly activated member');
+    assert.ok(active.includes(manualTool), 'a manual base member overrides the preset minus even when re-activated');
 
     // A branch blacklist removal keeps the current preset contribution.
     const removal = removeBlacklistTargets(api, api, branch(), [dynamicTool]);
@@ -317,7 +334,7 @@ test('preset blacklist blocks additions and its lifetime ends on switch or clear
     active = activeOf(session);
     assert.ok(active.includes(dynamicTool), 'a switch withdraws the previous preset blacklist, not the membership');
     assert.ok(active.includes(manualTool), 'the preserved dynamic membership restores both members');
-    assert.ok(!active.includes(patch), 'the previous base selection is replaced by the new preset');
+    assert.ok(!active.includes(pinned), 'the previous preset add is withdrawn by the new selection');
 
     // Clear ends the blacklist lifetime too and keeps the base membership.
     await apply('exclude');
@@ -326,7 +343,9 @@ test('preset blacklist blocks additions and its lifetime ends on switch or clear
     active = activeOf(session);
     assert.ok(active.includes(dynamicTool), 'a cleared preset withdraws its blacklist, so the member returns');
     assert.equal(restorePresetSnapshot(branch()), null, 'clear records a null snapshot');
-    assert.ok(active.includes(patch), 'the base selection established by the preset stays after clear');
+    assert.ok(!active.includes(pinned), 'clear withdraws the preset tool contribution');
+    assert.ok(!active.includes(patch), 'the manual blacklist outlives the preset that named it');
+    assert.ok(active.includes(manualTool), 'the manual base membership stays after clear');
   } finally {
     booted?.session.dispose();
     if (previousAgentDir === undefined) delete process.env['PI_CODING_AGENT_DIR'];
@@ -402,6 +421,103 @@ test('a late default-active registration is not silently adopted into the preset
     // Naming it in the preset selection makes it base membership explicitly.
     await apply('adopt');
     assert.ok(activeOf(session).includes(lateTool), 'an explicit preset selection of the late tool keeps it available');
+  } finally {
+    booted?.session.dispose();
+    if (previousAgentDir === undefined) delete process.env['PI_CODING_AGENT_DIR'];
+    else process.env['PI_CODING_AGENT_DIR'] = previousAgentDir;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('real SDK tree restores Preset and manual tool changes made after the last request', async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), 'preset-tree-sdk-'));
+  const previousAgentDir = process.env['PI_CODING_AGENT_DIR'];
+  const agentDir = path.join(cwd, 'agent');
+  process.env['PI_CODING_AGENT_DIR'] = agentDir;
+  let booted: PresetSession | undefined;
+  try {
+    const requests: unknown[] = [];
+    booted = await bootPresetSession(cwd, agentDir, {
+      first: { tools: ['-edit', `+${patch}`] },
+      second: { tools: ['-bash'] },
+    }, { requests });
+    const { session, api, apply, branch } = booted;
+    await session.prompt('Seed the original SDK tool loadout');
+    const common = session.sessionManager.getLeafId()!;
+    await apply('first');
+    addBaseTools(api, api, branch(), [manualTool]);
+    const first = session.sessionManager.getLeafId()!;
+    await session.navigateTree(common);
+    await apply('second');
+    const second = session.sessionManager.getLeafId()!;
+    const count = session.sessionManager.getEntries().length;
+
+    await session.navigateTree(first);
+    assert.equal(restorePresetSnapshot(session.sessionManager.getBranch())?.name, 'first');
+    assert.ok(activeOf(session).includes(patch));
+    assert.ok(activeOf(session).includes(manualTool));
+    assert.ok(activeOf(session).includes('bash'));
+    assert.ok(!activeOf(session).includes('edit'));
+
+    await session.navigateTree(second);
+    assert.equal(restorePresetSnapshot(session.sessionManager.getBranch())?.name, 'second');
+    assert.ok(!activeOf(session).includes(patch));
+    assert.ok(!activeOf(session).includes(manualTool));
+    assert.ok(!activeOf(session).includes('bash'));
+    assert.ok(activeOf(session).includes('edit'));
+
+    await session.navigateTree(common);
+    assert.equal(restorePresetSnapshot(session.sessionManager.getBranch()), null);
+    assert.ok(activeOf(session).includes('bash') && activeOf(session).includes('edit'));
+    assert.equal(session.sessionManager.getEntries().length, count, 'navigation writes no extra history');
+
+    await session.prompt('Continue on the original branch');
+    const model = session.model!;
+    const wire = (messages: unknown) => convertResponsesMessages(
+      model, { messages } as never, new Set([model.provider]),
+      { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+    );
+    assert.equal(requests.length, 2);
+    const firstInput = wire(requests[0]);
+    assert.ok(firstInput.length > 0);
+    assert.deepEqual(wire(requests[1]).slice(0, firstInput.length), firstInput,
+      'returning to the original branch keeps its Responses input prefix');
+  } finally {
+    booted?.session.dispose();
+    if (previousAgentDir === undefined) delete process.env['PI_CODING_AGENT_DIR'];
+    else process.env['PI_CODING_AGENT_DIR'] = previousAgentDir;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('real SDK preset apply with model succeeds despite setModel appending model_change', async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), 'preset-model-sdk-'));
+  const previousAgentDir = process.env['PI_CODING_AGENT_DIR'];
+  const agentDir = path.join(cwd, 'agent');
+  process.env['PI_CODING_AGENT_DIR'] = agentDir;
+  let booted: PresetSession | undefined;
+  try {
+    booted = await bootPresetSession(cwd, agentDir, {
+      withModel: {
+        model: { provider: 'openai-codex', id: 'gpt-6.1-sol' },
+        thinkingLevel: 'medium',
+        tools: ['-edit', `+${patch}`],
+        instructions: 'MODEL_PRESET_OK',
+      },
+    });
+    const { session, apply } = booted;
+    const beforeModelChanges = session.sessionManager.getBranch().filter((entry) => entry.type === 'model_change').length;
+    await apply('withModel');
+    const branch = session.sessionManager.getBranch();
+    assert.equal(branch.filter((entry) => entry.type === 'model_change').length, beforeModelChanges + 1,
+      'real SDK setModel appends a new model_change entry before preset-state');
+    const recorded = restorePresetSnapshot(branch);
+    assert.ok(recorded, 'preset-state v2 snapshot must be recorded after real setModel');
+    assert.equal(recorded.name, 'withModel');
+    assert.deepEqual(recorded.model, { provider: 'openai-codex', id: 'gpt-6.1-sol' });
+    assert.equal(recorded.instructions, 'MODEL_PRESET_OK');
+    assert.ok(activeOf(session).includes(patch));
+    assert.ok(!activeOf(session).includes('edit'));
   } finally {
     booted?.session.dispose();
     if (previousAgentDir === undefined) delete process.env['PI_CODING_AGENT_DIR'];

@@ -373,34 +373,36 @@ test('only mode + lazySchemas keeps matched group names but withholds only the s
       .filter((entry) => entry.type === 'custom' && entry.customType === 'capability-tool-blacklist'));
     assert.match(branchBlacklist, /fixture-report/, 'the local ban stays recorded after base add');
 
+    // The manual branch ban is a hard fence: base membership does not lift it.
+    plainOnly = false;
+    directScript = true;
+    const reportsWhileBanned = reports.length;
+    await session.prompt('Try the base member while the manual ban stands');
+    const stillBanned = session.messages.findLast((message) => message.role === 'toolResult' && message.toolName === 'codemode');
+    assert.ok(stillBanned?.role === 'toolResult');
+    assert.equal(stillBanned.isError, true, 'the manual ban wins over the base member');
+    assert.equal(reports.length, reportsWhileBanned, 'the banned base member never reaches the extension');
+
+    // Removing the ban exposes the recorded base membership again.
+    plainOnly = true;
+    await session.prompt('/capability blacklist remove fixture-report');
     requests.length = 0;
-    await session.prompt('Inspect the base exception with the recorded ban');
+    await session.prompt('Inspect the base member without the ban');
     const exceptionRequest = requests.at(-1);
-    assert.ok(exceptionRequest, 'the base-exception inspection turn issues a request');
+    assert.ok(exceptionRequest, 'the base-member inspection turn issues a request');
     const exceptionDirectory = directoryOf(exceptionRequest);
-    assert.match(exceptionDirectory, /fixture[_-]report/, 'the base member stays in the directory');
+    assert.match(exceptionDirectory, /fixture[_-]report/, 'the base member is visible once the ban is removed');
     assert.match(exceptionDirectory, /Build a selected document report\./);
     assert.doesNotMatch(exceptionDirectory, /fixture_report\(args:/, 'its schema stays withheld by mode');
 
     plainOnly = false;
     directScript = true;
     const reportsBeforeException = reports.length;
-    await session.prompt('Run the base exception through Codemode');
+    await session.prompt('Run the base member through Codemode');
     const exceptionResult = session.messages.findLast((message) => message.role === 'toolResult' && message.toolName === 'codemode');
     assert.ok(exceptionResult?.role === 'toolResult');
     assert.equal(exceptionResult.isError, false, JSON.stringify(exceptionResult.content));
-    assert.equal(reports.length, reportsBeforeException + 1, 'base overrides the recorded local ban');
-
-    plainOnly = true;
-    await session.prompt('/capability base remove fixture-report');
-    plainOnly = false;
-    directScript = true;
-    const reportsBeforeReassert = reports.length;
-    await session.prompt('Try the reasserted ban through Codemode');
-    const reasserted = session.messages.findLast((message) => message.role === 'toolResult' && message.toolName === 'codemode');
-    assert.ok(reasserted?.role === 'toolResult');
-    assert.equal(reasserted.isError, true, 'removing base reasserts the recorded local ban');
-    assert.equal(reports.length, reportsBeforeReassert, 'the reasserted ban stops execution');
+    assert.equal(reports.length, reportsBeforeException + 1, 'the recorded base member executes once the ban is removed');
 
     assert.deepEqual(errors, []);
   } finally {

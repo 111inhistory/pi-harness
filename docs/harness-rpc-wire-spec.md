@@ -178,7 +178,7 @@ await runRpcMode(runtime); // SDK 循环安装自己的 normal setRebindSession 
 `Main`、Preset、Shell approval 与 session peer 操作都调用同一份共享业务域，不建立 RPC 专用副本：
 
 - `main.*` 绑定宿主已有的 `SdkMainControls`（或 extension-only 上下文）；输入、中断、压缩、会话替换继续走 SDK/扩展原语义。
-- `presets.*` 复用 Preset 目录、branch snapshot 与应用/清除操作；`presets.clear` 不回收已应用的模型、thinking 或工具效果。等待 SDK 模型选择后会复核 Root 代次，拒绝继续写入新分支；SDK 已产生的效果不自动回滚。
+- `presets.*` 复用 Preset 目录、branch snapshot 与应用/清除操作；`presets.clear` 追加一条 `snapshot:null` 记录，撤回当前 Preset 的工具选择与黑名单并回退到有效基线，但不回滚模型、thinking 或已提交的永久 `baselineAdditions`。等待 SDK 模型选择后会复核 Root 代次，拒绝继续写入新分支；SDK 已产生的效果不自动回滚。
 - `approvals.*` 直接观察和回复 Root 的 `ManualApprovalController`；没有第二套 approval 状态。
 - `sessions.*` 读取共享 session 目录并复用 `sessions connect` 的显式启用路径，不建立 RPC 专用连接表。
 
@@ -192,8 +192,8 @@ await runRpcMode(runtime); // SDK 循环安装自己的 normal setRebindSession 
 | `tools.base.list` | 否 | `ToolBaseListResult` | 记录中的 BASE 目标及当前成员 |
 | `tools.activate` | 是 | `ToolWriteResult` | 加入 DYNAMIC 集合并在资格允许时激活 |
 | `tools.deactivate` | 是 | `ToolWriteResult` | 仅移除 DYNAMIC，不触碰 BASE |
-| `tools.blacklist.add` | 是 | `ToolWriteResult` | 加入黑名单；覆盖 BASE/DYNAMIC 并立即阻止发现与执行 |
-| `tools.blacklist.remove` | 是 | `ToolWriteResult` | 清除分支贡献及匹配的 config 覆盖；当前 Preset 与 SDK 限制保留 |
+| `tools.blacklist.add` | 是 | `ToolWriteResult` | 加入黑名单；手动 branch 禁令为硬围栏，覆盖 BASE/DYNAMIC 并立即阻止调用；只有 `blacklist remove` 解除 |
+| `tools.blacklist.remove` | 是 | `ToolWriteResult` | 清除 branch 硬围栏及匹配的 config 覆盖，重新开放此前被阻止的成员；当前 Preset 与 SDK 限制保留 |
 | `tools.blacklist.list` | 否 | `ToolBlacklistListResult` | 黑名单目标与当前来源 |
 | `agents.tree` | 否 | `AgentsTreeResult` | Root Agent 树；可为 `null` |
 | `jobs.list` | 否 | `JobsListResult` | Job 列表；可按 `jobIds` 过滤 |
@@ -206,9 +206,9 @@ await runRpcMode(runtime); // SDK 循环安装自己的 normal setRebindSession 
 | `stream.subscribe` | 是 | `StreamSubscribeResult` | 订阅子会话执行流并返回读取边界 |
 | `stream.unsubscribe` | 是 | `StreamUnsubscribeResult` | 从当前连接移除一个订阅；不依赖 Root 绑定 |
 | `presets.catalog` | 否 | `PresetsCatalogResult` | 合并后的 Preset 目录与解析警告 |
-| `presets.current` | 否 | `PresetsCurrentResult` | 当前 branch 的 Preset snapshot，或 `null` |
-| `presets.apply` | 是 | `PresetApplyOutcome` | 解析并应用 Preset；返回问题与 Codemode 结果 |
-| `presets.clear` | 否 | `PresetClearOutcome` | 清除 branch 管理；不回滚已应用效果 |
+| `presets.current` | 否 | `PresetsCurrentResult` | 严格只读：当前 branch 的 Preset snapshot、版本状态与字段差异，或 `null` |
+| `presets.apply` | 是 | `PresetApplyOutcome` | 整套应用 Preset；可选 `expectedVersion` 拒绝过期预览，返回实际 `contentHash` |
+| `presets.clear` | 否 | `PresetClearOutcome` | 撤回 Preset 工具层与黑名单并回到有效基线；不回滚模型、thinking 或永久 baseline 增量 |
 | `approvals.list` | 否 | `ApprovalsListResult` | Root 上待处理的 Shell approval |
 | `approvals.get` | 是 | `ApprovalsGetResult` | 按 ID 返回一个待处理项，或 `null` |
 | `approvals.respond` | 是 | `ShellApprovalRespondResult` | 回答 `allow`/`deny`；首个有效回答生效 |
@@ -228,6 +228,19 @@ await runRpcMode(runtime); // SDK 循环安装自己的 normal setRebindSession 
 
 `paramsRequired:false` 的方法接受缺失或 `null` 的 `params`；`paramsRequired:true` 的方法要求 `params` 是对象。`main.input` 的 `disposition` 在 SDK host 下为 `handled`、`queued` 或 `started`；只有 extension-only fallback 才返回 `submitted`（已交给扩展，未承诺 SDK admission）。`main.state.session.capabilities.inputAdmission` 区分这两种宿主。
 
+### 5.1 Preset 版本、只读比较与升级写入
+
+Preset 以内部 `contentHash` 作为原子版本标识：语义字段（model、thinkingLevel、归一化工具意图、解析后的工具 name 投影、`disabledTools`、codemode、instructions）相同即同一版本，哈希不纳入工具 schema/guideline/snippet、`description` 或用户手动 `branch` 层。
+
+- `presets.current` 严格只读：不追加任何 branch 记录（包括 `capability-tool-base`），不触发 baseline 捕获，也不改变 live 模型、thinking 或工具集。它返回记录的 snapshot、与当前目录候选版本的比较 `status`、候选 `currentVersion` 与 `changes`。无激活 Preset 时 `preset` 为 `null`，`status` 与 `currentVersion` 也为 `null`，`changes` 为空数组。
+- `status`：`current`（版本一致）、`outdated`（同名配置仍可解析但哈希不同）、`missing`（当前目录无该名称）、`unresolvable`（同名配置存在但无法解析为可应用版本，或整个 `presets.json` 文档不可用）。名称被加载器拒绝或文档不可用时优先判为 `unresolvable`，不误报 `missing`。`missing`／`unresolvable` 时分支继续沿用记录快照运行，`currentVersion` 为 `null`，`changes` 为空；`changes` 仅在 `outdated` 时非空。
+- `changes` 是稳定的短摘要字符串数组，逐字段与工具名差异列出，例如 `model: p/m -> p2/m2`、`thinkingLevel: low -> high`、`codemode: on -> only`、`instructions: changed`、`toolSelection: modifiers -> replace`、`tools: +job_stop -edit`、`disabledTools: +x`；一致时为空。客户端应展示而不解析这些字符串。
+- `presets.apply` 始终重读最新目录并整套应用。可选 `expectedVersion` 是客户端从 `presets.current` 读到的 `currentVersion`；共享 apply 在同一次解析中比较该哈希与实际应用版本，不一致时不写任何记录、不产生模型/工具效果，并以 `ok:false`、`code:"preset_version_mismatch"`、`detail:{expectedVersion,currentVersion}` 拒绝，客户端应重新读取 `presets.current`。未提供 `expectedVersion` 时不比较。
+- 模型选择是 await 点：共享 apply 在恢复后重新核对调用方会话身份与 branch 上下文。会话已切换或退役、或 branch 在等待期间变化时，同样不写记录、不重放，并以 `ok:false`、`code:"runtime_transitioning"` 拒绝。
+- 成功结果包含 `contentHash`（实际生效版本的哈希，等于 `snapshot.contentHash`）与 `unchanged`。同版本重套且 live 工具集已同步时返回 `applied:true`、`unchanged:true`，不追加冗余记录；上次 live 同步失败后显式重套允许只重同步 live。Preset 的 `-name` 若被用户手动 `/capability base` 层保留，`problems` 会带一条 `{severity:"warning",kind:"tool_retained_by_branch",retainedTools,detail}`，说明该工具为何仍可用；这是信息性告警，不是失败。
+- `snapshot` 是 v2 规范化快照：`tools` 为基于名义候选底座解析出的工具 name 投影，`disabledTools` 为当前 Preset 的显式排除 name 投影，`toolSelection` 为 `{kind:"none"}`、`{kind:"modifiers",add,remove}` 或 `{kind:"replace",names}` 之一，`contentHash` 为版本哈希。未声明的字段缺席；`preset`/`snapshot` 为 `null` 表示清除或未应用，`contentHash` 为 `null` 表示本次没有生效版本。工具成员关系由 `toolSelection` 在重放时按有效基线重新推导，`tools` 只用于版本差异与压缩对比，不作为 live 成员的第二份真相。Codemode 模式保存在快照内，按 branch 顺序与独立的手动 `codemode-mode` 记录共同决定，不再有单独的 Preset Codemode 记录或“已记录未应用”结果。
+- `presets.clear` 返回 `{cleared:true, snapshot:null, toolSyncError}`：它追加一条空快照记录，撤回 Preset 工具选择、黑名单与 Codemode 声明，回到有效基线与手动 `codemode-mode`／Settings；模型、thinking 与永久 `baselineAdditions` 不回滚。`toolSyncError` 非 `null` 表示清除已持久化但 live 工具重同步失败，不回滚也不自动重试。
+
 ## 6. 值模型：可选、null、数字与不透明载荷
 
 - 只使用 JSON 值：对象、数组、字符串、数字、布尔、`null`。没有 `undefined`、`NaN`、`Infinity`。
@@ -241,6 +254,7 @@ await runRpcMode(runtime); // SDK 循环安装自己的 normal setRebindSession 
   - `stream.boundary.history` 与 `partial` 可为 `null`。
   - `ToolDetail.parameters` 与 `promptGuidelines` 可为 `null`。
   - `main.state.session` 的 `sessionFile`、`name`、`leafId`、`model` 可为 `null`；extension-only fallback 的 `streaming`、`compacting`、`retrying`、`pendingMessageCount` 也可能为 `null`，表示该宿主无法观察 SDK 的对应运行时事实。
+- `presets.current` 的 `preset`、`status`、`currentVersion` 可为 `null`：`preset:null` 表示当前分支没有激活 Preset，此时 `status` 与 `currentVersion` 也是 `null`；`status:"missing"`／`"unresolvable"` 时 `currentVersion` 为 `null`。`presets.apply.contentHash` 为 `null` 表示没有生效的 snapshot。
 - 数字字段：`seq`、`pid`、`protocolVersion`、`round`、`total`、`modelCalls`、`activeTimeMs` 是整数；`id` 是字符串或数字。大整数按 IEEE-754 处理，精确关联用字符串。
 - `main.input.disposition` 是 `handled`、`queued`、`started` 或 `submitted`；`main.state.generation` 随 Root binding 递增，`main.subscribe` 事件的 `generation`／`rootSessionId` 用于识别事件属于哪一代 Root。
 - `main.state.session.capabilities` 是宿主能力声明：SDK host 下 `inputAdmission:true`，且 `navigateTree`、`reload`、`newSession`、`switchSession`、`fork` 可用；extension-only 下 `inputAdmission:false`，以上运行时操作不可用。两类宿主的 `input`、`interrupt`、`compact`、`events` 都由共享扩展/SDK 操作支撑。
@@ -250,7 +264,7 @@ await runRpcMode(runtime); // SDK 循环安装自己的 normal setRebindSession 
 ## 7. 错误与部分结果
 
 - 方法拒绝通过 `ok:false` 响应表达；已准入 Main 输入的后续错误通过 `main.subscribe` 的 `input_error` 事件提供，不撤销先前的准入回执。连接断开是传输层事实。
-- `error.code` 是字符串。传输/路由稳定集合包括 `invalid_request`、`method_not_found`、`not_found`、`not_ready`、`unavailable`、`internal`；端口还会产生 `invalid_target`、`unmanaged_endpoint`、`unknown_endpoint`。领域 `SubagentError` 与 `MainControlError` 的 `code`、`message` 会原样保留；只有真正未预期的异常才归为 `internal`。
+- `error.code` 是字符串。传输/路由稳定集合包括 `invalid_request`、`method_not_found`、`not_found`、`not_ready`、`unavailable`、`internal`；端口还会产生 `invalid_target`、`unmanaged_endpoint`、`unknown_endpoint`、`runtime_transitioning`。`presets.apply` 的 `expectedVersion` 失配使用 `preset_version_mismatch`，`detail` 为 `{expectedVersion,currentVersion}`；等待模型选择期间会话或 branch 上下文变化使用 `runtime_transitioning`。两者都没有写入任何记录或效果。领域 `SubagentError` 与 `MainControlError` 的 `code`、`message` 会原样保留；只有真正未预期的异常才归为 `internal`。
 - `error.detail` 可选，结构由产生错误的操作决定；解析器应保留原始 JSON。例如 `subagent.create` 的启动失败使用 `start_failed`，`detail` 含已登记的 `registered` 项与每个失败的 `{agentId, code, message}`；客户端不得因为整批报错而重放已登记项。
 - 部分结果不是错误：`subagent.create` 成功的 `items`/`warnings`、`message.send` 广播的 `sent`/`errors`、工具集合写的 `skipped`/`unresolved`/`notRequested`/`stillBlacklisted` 都在 `ok:true` 结果中。启动失败则走 `ok:false` + `start_failed` detail，而不是虚构一个成功的部分结果。
 - 工具集合写操作先写记录再应用效果；`recordError` 非 `null` 表示记录未写入，相关效果未应用（fail-closed），改变的逐项会出现在 `skipped`。
@@ -263,9 +277,9 @@ BASE、DYNAMIC 与 BLACKLIST 是三份独立集合，不压成单一状态枚举
 
 - **BASE**：会话基线成员；来源 `baseline`、`preset`、`branch`。
 - **DYNAMIC**：用户激活或 Capability 发现得到的动态成员；来源 `discovery`、`branch`。
-- **BLACKLIST**：除非分支显式移除或 Preset 生命周期结束，否则始终禁止；来源 `startup`、`preset`、`branch`。
+- **BLACKLIST**：来源 `startup`、`preset`、`branch`。手动 `branch` 禁令是硬围栏：任何 BASE/DYNAMIC 成员都不能覆盖它，只有 `blacklist remove` 解除；`startup` 与当前 Preset 的 `-tool` 禁令可被显式选择覆盖，但普通基线成员（含永久 `baselineAdditions`）不能覆盖它们。
 - 有效请求成员为 `(base ∪ dynamic) − blacklist`，并继续受注册、作用域与 SDK 限制。
-- `registered`、`eligible`、`active`、`base`、`dynamic`、`blacklisted`、`activatable`、`usable` 是独立事实。`active` 只是 SDK 激活集；`usable` 表示当前真正可调用，黑名单成员即使属于 BASE 也不可用。
+- `registered`、`eligible`、`active`、`base`、`dynamic`、`blacklisted`、`blocked`、`banOverridden`、`activatable`、`usable` 是独立事实。`active` 只是 SDK 激活集；`usable` 表示当前真正可调用，黑名单成员即使属于 BASE 也不可用。`blocked` 是生效后的禁止事实，`banOverridden` 只标记被显式选择覆盖的 `startup`／Preset 原始禁令；祖先围栏由资格与准入执行，不折进 `blocked`。
 
 目标形式：
 

@@ -9,6 +9,7 @@
  */
 
 import assert from "node:assert/strict";
+import { buildPresetSnapshot, PRESET_STATE_VERSION } from '../../src/preset/state.ts';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -964,8 +965,8 @@ test("ordinary inherited child with parent preset keeps preset text exact once a
   } as Model<Api>;
   const parentManager = SessionManager.inMemory(h.cwd);
   parentManager.appendCustomEntry('preset-state', {
-    version: 1,
-    snapshot: { name: 'parent-preset', instructions: 'PARENT_PRESET_BODY' },
+    version: PRESET_STATE_VERSION,
+    snapshot: buildPresetSnapshot({ name: 'parent-preset', instructions: 'PARENT_PRESET_BODY' }),
   });
   const seed = [parentManager.getHeader(), ...parentManager.getBranch()].filter(
     (entry): entry is NonNullable<typeof entry> => entry !== null,
@@ -1018,8 +1019,8 @@ test("fresh routed-preset continuation restores preset addendum from branch when
   } as Model<Api>;
   const childManager = SessionManager.inMemory(h.cwd);
   childManager.appendCustomEntry('preset-state', {
-    version: 1,
-    snapshot: { name: 'child-preset', instructions: 'FRESH_RESUME_PRESET_BODY' },
+    version: PRESET_STATE_VERSION,
+    snapshot: buildPresetSnapshot({ name: 'child-preset', instructions: 'FRESH_RESUME_PRESET_BODY' }),
   });
   let captured: Message[] = [];
   h.runtime.streamSimple = (_m, context) => {

@@ -202,7 +202,7 @@ export const ToolWriteResultSchema = Type.Object({
   noticed: stringArray(description('Used tools that received one model-facing notice for this change.')),
   notRequested: stringArray(description('Targets with no preserved base/dynamic membership after a deactivation or blacklist removal.')),
   stillBlacklisted: stringArray(description('Affected tools still covered by a raw blacklist source after the write; preset contributions and SDK hard limits are not lifted.')),
-  banOverridden: stringArray(description('Affected tools whose raw local ban is retained but overridden by base membership.')),
+  banOverridden: stringArray(description('Affected tools whose raw startup/preset ban is retained but overridden by an explicit selection; a manual branch ban is never overridden.')),
   remainingSources: Type.Array(ToolBlacklistSourceSchema, description('Blacklist sources still effective for the affected targets after the write.')),
   recordError: nullable(Type.String(description('Set when the membership record could not be written; effects are then not applied.'))),
   effectError: nullable(Type.String(description('Set when the membership record was written but applying an SDK/active-set effect failed; nothing is rolled back.'))),
@@ -229,8 +229,8 @@ const toolStatusFields = {
   dynamic: Type.Boolean(description('Recorded dynamic activation currently covers this tool.')),
   active: Type.Boolean(description('Live SDK active-set membership; independent of base/dynamic/blacklist.')),
   blacklisted: Type.Boolean(description('Raw local blacklist fact; a base member does not delete it.')),
-  blocked: Type.Boolean(description('Effective blacklist prohibition after base override; outer ancestor bans always block.')),
-  banOverridden: Type.Boolean(description('A raw local ban is retained but currently overridden by base membership.')),
+  blocked: Type.Boolean(description('Effective blacklist prohibition after an explicit-selection override of a startup/preset ban; manual branch bans and outer ancestor bans always block.')),
+  banOverridden: Type.Boolean(description('A raw startup/preset ban is retained but currently overridden by an explicit selection; a manual branch ban is never overridden.')),
   activatable: Type.Boolean(description('Registered and scope-eligible, not blacklisted, and available for self-loading.')),
   usable: Type.Boolean(description('Actually callable now after base/dynamic/blacklist and registration/scope/SDK constraints.')),
   blacklistSources: Type.Array(ToolBlacklistSourceSchema, description('Every source contributing to the blacklist for this tool.')),
@@ -659,6 +659,33 @@ export const PresetCodemodeSchema = Type.Object({
   mode: CodemodeModeSchema,
 }, { additionalProperties: false });
 
+/**
+ * Normalized tool intent recorded with a snapshot. `none` is an undeclared
+ * selection; `modifiers` keeps the literal +/- operations; `replace` is a plain
+ * name replacement. The resolved projection travels separately in `tools`.
+ */
+export const PresetToolSelectionSchema = Type.Union([
+  Type.Object({
+    kind: Type.Literal('none'),
+  }, { additionalProperties: false }),
+  Type.Object({
+    kind: Type.Literal('modifiers'),
+    add: stringArray(),
+    remove: stringArray(),
+  }, { additionalProperties: false }),
+  Type.Object({
+    kind: Type.Literal('replace'),
+    names: stringArray(),
+  }, { additionalProperties: false }),
+]);
+
+export const PresetVersionStatusSchema = Type.Union([
+  Type.Literal('current'),
+  Type.Literal('outdated'),
+  Type.Literal('missing'),
+  Type.Literal('unresolvable'),
+]);
+
 export const PresetConfigSchema = Type.Object({
   description: Type.Optional(Type.String()),
   model: Type.Optional(PresetModelSchema),
@@ -682,17 +709,27 @@ export const PresetSnapshotSchema = Type.Object({
   name: Type.String({ minLength: 1 }),
   model: Type.Optional(PresetModelSchema),
   thinkingLevel: Type.Optional(ThinkingLevelNameSchema),
-  tools: Type.Optional(stringArray()),
+  tools: Type.Optional(stringArray(description('Resolved tool-name projection against the nominal candidate baseline.'))),
+  disabledTools: Type.Optional(stringArray(description('Current-preset blacklist projection: the explicit final minus names.'))),
   codemode: Type.Optional(PresetCodemodeSchema),
   instructions: nullable(Type.String()),
+  contentHash: Type.String(description('Deterministic hash of the semantic preset content; equal hashes are interchangeable versions.')),
+  toolSelection: PresetToolSelectionSchema,
 }, { additionalProperties: false });
 
 export const PresetsCurrentResultSchema = Type.Object({
   preset: nullable(PresetSnapshotSchema),
+  status: nullable(PresetVersionStatusSchema),
+  currentVersion: nullable(Type.String(description('Candidate contentHash from the current catalog; null for missing or unresolvable candidates.'))),
+  changes: stringArray(description('One short summary per differing field or tool-name delta; empty when current, missing or unresolvable.')),
 }, { additionalProperties: false });
 
 export const PresetApplyParamsSchema = Type.Object({
   name: Type.String({ minLength: 1 }),
+  expectedVersion: Type.Optional(Type.String({
+    minLength: 1,
+    description: 'ContentHash the client read from presets.current; a mismatch is refused before any write.',
+  })),
 }, { additionalProperties: true });
 
 export const PresetIssueSeveritySchema = Type.Union([Type.Literal('error'), Type.Literal('warning')]);
@@ -719,29 +756,29 @@ export const PresetApplyProblemSchema = Type.Union([
   }, { additionalProperties: false }),
   Type.Object({
     severity: Type.Literal('warning'),
-    kind: Type.Literal('codemode_not_applied'),
-    codemode: PresetCodemodeSchema,
+    kind: Type.Literal('tool_sync_failed'),
     detail: Type.String(),
   }, { additionalProperties: false }),
   Type.Object({
     severity: Type.Literal('warning'),
-    kind: Type.Literal('tool_sync_failed'),
+    kind: Type.Literal('tool_retained_by_branch'),
+    retainedTools: stringArray(description('Tools a preset tried to exclude but the manual /capability base layer keeps available.')),
     detail: Type.String(),
   }, { additionalProperties: false }),
 ]);
 
 export const PresetApplyOutcomeSchema = Type.Object({
   applied: Type.Boolean(),
+  unchanged: Type.Boolean(description('True when the recorded version and live state already matched; no branch entry was appended.')),
   snapshot: nullable(PresetSnapshotSchema),
+  contentHash: nullable(Type.String(description('Actual contentHash in force after the apply; null when nothing was applied.'))),
   issues: Type.Array(PresetIssueSchema),
   problems: Type.Array(PresetApplyProblemSchema),
-  codemodeNotApplied: Type.Boolean(),
 }, { additionalProperties: false });
 
 export const PresetClearOutcomeSchema = Type.Object({
   cleared: Type.Literal(true),
   snapshot: Type.Null(),
-  codemodeCleared: Type.Boolean(),
   toolSyncError: nullable(Type.String(description('Set when the clear is durable but the blacklist-withdrawal loadout sync failed; nothing is rolled back.'))),
 }, { additionalProperties: false });
 
@@ -1057,6 +1094,8 @@ export const SHARED_CONTRACT_DEFS = {
   CodemodeMode: CodemodeModeSchema,
   PresetModel: PresetModelSchema,
   PresetCodemode: PresetCodemodeSchema,
+  PresetToolSelection: PresetToolSelectionSchema,
+  PresetVersionStatus: PresetVersionStatusSchema,
   PresetConfig: PresetConfigSchema,
   PresetCatalogItem: PresetCatalogItemSchema,
   PresetsCatalogResult: PresetsCatalogResultSchema,
@@ -1171,7 +1210,7 @@ export const HARNESS_RPC_CONTRACT = {
     params: 'TargetsParams', result: 'ToolWriteResult', paramsRequired: true,
   }),
   [RPC_METHODS.toolsBlacklistAdd]: defineMethod({
-    description: 'Add branch blacklist targets; base overrides local bans without deleting them, while dynamic additions do not.',
+    description: 'Add manual branch blacklist targets as a hard fence; only blacklist remove reopens them, and neither base nor preset membership overrides them.',
     params: 'TargetsParams', result: 'ToolWriteResult', paramsRequired: true,
   }),
   [RPC_METHODS.toolsBlacklistRemove]: defineMethod({
@@ -1227,11 +1266,11 @@ export const HARNESS_RPC_CONTRACT = {
     params: 'NoParams', result: 'PresetsCatalogResult', paramsRequired: false,
   }),
   [RPC_METHODS.presetsCurrent]: defineMethod({
-    description: 'Return the currently active branch preset snapshot, or null.',
+    description: 'Read the active branch preset snapshot and compare it with the current catalog candidate without writing branch state.',
     params: 'NoParams', result: 'PresetsCurrentResult', paramsRequired: false,
   }),
   [RPC_METHODS.presetsApply]: defineMethod({
-    description: 'Resolve and apply a named preset to the current session.',
+    description: 'Resolve and apply a named preset as one atomic version, optionally refusing a stale expectedVersion before any write.',
     params: 'PresetApplyParams', result: 'PresetApplyOutcome', paramsRequired: true,
   }),
   [RPC_METHODS.presetsClear]: defineMethod({
@@ -1355,6 +1394,8 @@ export type HarnessInfoResult = DeepReadonly<Static<typeof HarnessInfoResultSche
 export type HarnessRpcRecord = DeepReadonly<Static<typeof HarnessRpcRecordSchema>>;
 export type ThinkingLevelName = DeepReadonly<Static<typeof ThinkingLevelNameSchema>>;
 export type CodemodeMode = DeepReadonly<Static<typeof CodemodeModeSchema>>;
+export type PresetToolSelection = DeepReadonly<Static<typeof PresetToolSelectionSchema>>;
+export type PresetVersionStatus = DeepReadonly<Static<typeof PresetVersionStatusSchema>>;
 export type PresetModel = DeepReadonly<Static<typeof PresetModelSchema>>;
 export type PresetConfig = DeepReadonly<Static<typeof PresetConfigSchema>>;
 export type PresetCatalogItem = DeepReadonly<Static<typeof PresetCatalogItemSchema>>;

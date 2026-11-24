@@ -29,7 +29,7 @@
 | `capability/tool-access-view.ts`、`capability/targets.ts` | 单次操作的集合视图、目录查询与目标匹配 | 跨请求缓存、写入或 SDK 激活 |
 | `capability/tool-access.ts` | 基线捕获、集合操作持久化与效果应用、SDK 实际状态同步和收尾 | SDK 隐藏限制的推测、模型指令授予权限；历史转换由 scripts 独立执行 |
 | `harness-rpc/*` | 协议契约、校验、传输、发现与领域适配；Root 与宿主订阅寿命 | Main 执行状态、审批决定、第二套 Job 或权限状态机 |
-| `capability/lazy-schemas.ts`、`capability/codemode-mode.ts` | lazySchemas ref 解析与组归属、生效 Codemode 模式（预设记录在分支上的覆盖，回退到 Pi 设置） | 改变启用集合、授权或工具 exposure；写入 Pi 原生设置 |
+| `capability/lazy-schemas.ts`、`capability/codemode-mode.ts` | lazySchemas ref 解析与组归属、按分支顺序读取 Preset 快照和手动 Codemode 模式，回退到 Pi 设置 | 改变启用集合、授权或工具 exposure；写入 Pi 原生设置 |
 | `src/preset/*`、`extensions/preset.ts` | 模型 Preset 配置加载与合并、解析、模型／thinking／工具应用、分支快照与 instructions 段落、`/preset` 与 `--preset` | Capability 检索、Subagent 路由、Pi 原生设置写入 |
 | `listeners.ts`、`ipc/` | 每个根唯一的 Agent IPC `main.sock` 绑定、NDJSON 分帧、`agentId`／`token` 异步回调路由、端点 dev／ino 与有效 UID 校验，以及只在最后一个端点释放后清理本根创建且已空的目录 | 用显示窗口决定可达性、另写广播状态机、按文件路径推断 Actor 归属 |
 | `session-peers.ts`、`session-directory.ts` | 根持有的跨 session 操作对象、连接与目录名称同步；目录发布、存活校验与归属删除，逻辑 `:main` 寻址与单帧写入 | 根代次、压缩闸门、Runtime、认证协议或跨主机调度 |

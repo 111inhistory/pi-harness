@@ -432,6 +432,26 @@
         "stateful"
       ],
       "nativeValidity": "strict"
+    },
+    {
+      "path": "valid/request-presets-apply-with-version.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": true,
+      "conformance": [
+        "envelope",
+        "payload"
+      ]
+    },
+    {
+      "path": "invalid/request-presets-apply-empty-version.json",
+      "kind": "frame",
+      "schema": "MethodRequest",
+      "valid": false,
+      "conformance": [
+        "envelope",
+        "payload"
+      ]
     }
   ],
   "scenarios": [

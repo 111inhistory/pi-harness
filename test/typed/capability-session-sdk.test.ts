@@ -30,7 +30,7 @@ import { installPresetInstruction } from '../../src/preset/instruction.ts';
 import { CAPABILITY_STEP_TOOL_NAME } from '../../src/capability/contracts.ts';
 import { activateToolTargets } from '../../src/capability/tool-access.ts';
 import { providerSessionPolicy } from '../../src/provider-session.ts';
-import { appendPresetState, PRESET_STATE_VERSION } from '../../src/preset/state.ts';
+import { appendPresetState, buildPresetSnapshot, PRESET_STATE_VERSION } from '../../src/preset/state.ts';
 import { CAPABILITY_DISCOVERY_RECORD } from '../../src/capability/discovery-record.ts';
 import { waitFor } from '../../test-support/async.ts';
 
@@ -226,7 +226,7 @@ async function runScenario(api: 'openai-responses' | 'anthropic-messages'): Prom
       appendEntry: (customType, data) => sessionManager.appendCustomEntry(customType, data),
     }, {
       version: PRESET_STATE_VERSION,
-      snapshot: { name: 'parent-preset', instructions: 'CURRENT_PARENT_PRESET' },
+      snapshot: buildPresetSnapshot({ name: 'parent-preset', instructions: 'CURRENT_PARENT_PRESET' }),
     });
     session = (await createAgentSession({
       cwd, agentDir, modelRuntime: runtime, model, settingsManager, resourceLoader, sessionManager,

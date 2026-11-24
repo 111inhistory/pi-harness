@@ -12,7 +12,7 @@ import { createCapabilityScopeView, type CapabilityScopeView } from './scope.ts'
 import { matchesToolTarget, type ToolTarget, type ToolTargetKind, type ToolTargetRecord } from './targets.ts';
 import { classifyTool, isMcpTool, type ToolCategory } from './tool-classify.ts';
 import { toolReachability } from './activation.ts';
-import { replay, type AccessState, type Contribution } from './tool-access-replay.ts';
+import { replay, type AccessState, type Contribution, type PresetToolLayer } from './tool-access-replay.ts';
 
 /** The host surface reads need. */
 export interface ToolAccessHost {
@@ -106,6 +106,10 @@ export interface ToolAccessView {
   readonly blacklistTargets: readonly ToolBlacklistTarget[];
   readonly loadedContainers: readonly ToolContainer[];
   readonly removalPending: (name: string) => boolean;
+  /** The harness holds a membership, ban or exclusion fact for this name. */
+  readonly managed: (name: string) => boolean;
+  /** The current preset's contribution as replayed against the effective baseline. */
+  readonly preset: PresetToolLayer;
   /** True only before any base record exists (native pre-record startup window). */
   readonly preRecord: boolean;
 }
@@ -244,10 +248,10 @@ export function createToolAccessView(
   const tools = snapshot ?? host.getAllTools();
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const scope = scopeView ?? createCapabilityScopeView(host);
-  // At a chain root the configured startup blacklist is a LOCAL policy and a
-  // base member overrides it. In a child it comes from the ancestor chain and
-  // is an external fence no child base can lift. Preset/branch bans are always
-  // local to this session.
+  // At a chain root the configured startup blacklist is a LOCAL policy an
+  // explicit base member can override. In a child the same patterns come from
+  // the ancestor chain and are an external fence. A manual `branch` ban is a
+  // hard local fence in both cases: no base or preset member lifts it.
   const localEntries = new Map<string, Contribution<'startup' | 'preset' | 'branch'>>();
   const ancestorEntries = new Map<string, Contribution<'startup' | 'preset' | 'branch'>>();
   for (const { target, sources } of state.blacklist.values()) {
@@ -287,15 +291,27 @@ export function createToolAccessView(
     const cached = cache.get(name);
     if (cached !== undefined) return cached;
     const blacklistSources = lookup(blacklist, name, tool);
-    const explicitBase = state.base.has(name);
-    const baseMember = explicitBase
+    const localSources = lookup(localBlacklist, name, tool);
+    const member = state.base.has(name);
+    const explicit = state.explicitBase.has(name);
+    const baseMember = member
       || (preRecord && tool !== undefined && tool.exposure !== 'hidden' && !isMcpTool(name) && !removed(name, tool));
+    // Hard fences, highest precedence: the ancestor chain's configured startup
+    // patterns and a manual `/capability blacklist` target. Neither a base member
+    // nor a preset can lift them. Ancestor role/depth denials and an ancestor's
+    // own branch/preset bans arrive through the scope predicate instead; they are
+    // enforced by eligibility and admission, never folded into `blocked`, so an
+    // already-published declaration is not rewritten mid-window.
     const ancestorBlocked = lookup(ancestorBlacklist, name, tool) !== null;
-    const locallyBanned = lookup(localBlacklist, name, tool) !== null;
-    // Only an explicit base record overrides a local ban; the implicit
-    // pre-record startup window is availability, not a user whitelist.
-    const blocked = ancestorBlocked || (locallyBanned && !explicitBase);
-    const banOverridden = explicitBase && locallyBanned && !ancestorBlocked;
+    const manualBanned = localSources?.has('branch') === true;
+    // A root-local startup ban and a preset's own ban are local policy: only an
+    // explicit selection (a manual base add or the current preset's add/replace)
+    // overrides them. Baseline membership, including a permanent preset
+    // increment, never lifts a ban, so a newly added default tool cannot bypass
+    // a configured prohibition.
+    const overridable = localSources !== null && !manualBanned;
+    const blocked = ancestorBlocked || manualBanned || (overridable && !explicit);
+    const banOverridden = explicit && overridable && !ancestorBlocked;
     const mode = state.schemaModes.get(name) ?? null;
     const requested = (baseMember || state.dynamic.has(name)) && !blocked;
     const facts: ToolAccessFacts = {
@@ -416,6 +432,12 @@ export function createToolAccessView(
     })),
     loadedContainers: containerList,
     removalPending: (name) => removed(name, byName.get(name)),
+    managed: (name) => {
+      const tool = byName.get(name);
+      const entry = factsOf(name, tool);
+      return entry.base || entry.dynamic || entry.blacklisted || removed(name, tool);
+    },
+    preset: state.preset,
     preRecord,
   };
 }

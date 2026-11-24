@@ -11,6 +11,7 @@ import test from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { createCapabilityPicker, requiredPickerTerminalRows, type PickerMode } from '../../src/tui/capability-picker.ts';
 import { queryToolAccess } from '../../src/capability/tool-access-view.ts';
+import { setCapabilityStartupBlacklist } from '../../src/capability/scope.ts';
 import { capabilityHost, type CapabilityTestTool } from './support/capability-host.ts';
 
 const tools: readonly CapabilityTestTool[] = [
@@ -214,11 +215,16 @@ test('member selection is an explicit snapshot and deactivation emits exact name
   assert.deepEqual(deactivate.result(), ['msg_write']);
 });
 
-test('base override rows show retained ban separately and stay selectable', () => {
+test('a hard-banned base member is not an activation candidate until the ban is removed', () => {
   const fixture = capabilityHost(tools, ['codemode', 'deck_pages'], 'all');
   fixture.api.appendEntry('capability-tool-base', { version: 1, baseline: ['codemode'] });
   fixture.api.appendEntry('capability-tool-base', { version: 1, add: ['deck_pages'] });
   fixture.api.appendEntry('capability-tool-blacklist', { version: 1, add: ['deck_pages'] });
+  const banned = queryToolAccess(fixture.api, fixture.branch(), fixture.activeNames(), { includeActivatable: true }).entries;
+  assert.equal(banned.some((entry) => entry.name === 'deck_pages'), false,
+    'a manual ban is a hard fence, so the member is not selectable');
+
+  fixture.api.appendEntry('capability-tool-blacklist', { version: 1, remove: ['deck_pages'] });
   const entries = queryToolAccess(fixture.api, fixture.branch(), fixture.activeNames(), { includeActivatable: true }).entries;
   let result: readonly string[] | null | undefined;
   const component = createCapabilityPicker({
@@ -229,7 +235,26 @@ test('base override rows show retained ban separately and stay selectable', () =
   } as never);
   const row = component.render(160).find((line) => line.includes('deck_pages')) ?? '';
   assert.match(row, /\[ \]/);
-  assert.match(row, /ban overridden/);
+  press(component, KEYS.down, KEYS.tab, KEYS.confirm);
+  assert.deepEqual(result, ['deck_pages']);
+});
+
+test('an explicit base member over a root startup ban renders as a selectable exception', () => {
+  const fixture = capabilityHost(tools, ['codemode'], 'all');
+  fixture.api.appendEntry('capability-tool-base', { version: 1, baseline: ['codemode'] });
+  setCapabilityStartupBlacklist(fixture.api, ['deck_pages']);
+  fixture.api.appendEntry('capability-tool-base', { version: 1, add: ['deck_pages'] });
+  const entries = queryToolAccess(fixture.api, fixture.branch(), fixture.activeNames(), { includeActivatable: true }).entries;
+  let result: readonly string[] | null | undefined;
+  const component = createCapabilityPicker({
+    ...fakeOptions(30),
+    entries,
+    mode: 'activate',
+    done: (value: readonly string[] | null) => { result = value; },
+  } as never);
+  const row = component.render(160).find((line) => line.includes('deck_pages')) ?? '';
+  assert.match(row, /\[ \]/);
+  assert.match(row, /ban overridden/, 'the retained startup ban stays visible');
   press(component, KEYS.down, KEYS.tab, KEYS.confirm);
   assert.deepEqual(result, ['deck_pages']);
 });

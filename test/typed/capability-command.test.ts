@@ -232,7 +232,7 @@ test('a tool in both collections survives removing either membership', async () 
   assert.equal(fixture.activeNames().includes('script_only'), false);
 });
 
-test('list shows raw blacklist, base override and actual usability independently', async () => {
+test('a hard-banned base member leaves the availability list while base keeps the record', async () => {
   const { fixture, command } = install(tools, ['read', 'codemode']);
   await command.run('base add read deck_pages');
   await command.run('blacklist add deck_pages');
@@ -240,17 +240,22 @@ test('list shows raw blacklist, base override and actual usability independently
   await command.run('list --activatable');
   const activatable = command.notifications.at(-1)?.text ?? '';
   assert.match(activatable, /read {2}\[base · usable\]/);
-  assert.match(activatable, /deck_pages {2}\[base · blacklisted: branch · ban overridden by base · usable\]/);
+  assert.doesNotMatch(activatable, /deck_pages/, 'a hard-banned member is not an activation candidate');
   assert.match(activatable, /script_only {2}\[activatable\]/);
 
   await command.run('list --usable');
   const usable = command.notifications.at(-1)?.text ?? '';
   assert.match(usable, /read {2}\[base · usable\]/);
-  assert.match(usable, /deck_pages {2}\[base · blacklisted: branch · ban overridden by base · usable\]/);
+  assert.doesNotMatch(usable, /deck_pages/);
 
-  await command.run('base remove deck_pages');
+  await command.run('base list');
+  assert.match(command.notifications.at(-1)?.text ?? '', /deck_pages {2}\(1 tool · branch\)/,
+    'the membership record is retained');
   assert.equal(createToolAccessView(fixture.api, fixture.branch()).blocked('deck_pages'), true,
-    'the retained raw ban applies again after base removal');
+    'the manual ban stays effective');
+  await command.run('blacklist remove deck_pages');
+  assert.equal(createToolAccessView(fixture.api, fixture.branch()).blocked('deck_pages'), false,
+    'only an explicit blacklist removal reopens it');
 });
 
 test('dynamic activation never overrides a local blacklist', async () => {
@@ -304,17 +309,24 @@ test('a durable record with an SDK effect failure is reported separately', async
     typeof data === 'object' && data !== null && Array.isArray((data as { add?: unknown }).add)), [{ version: 1, add: ['script_only'] }]);
 });
 
-test('base overrides a local blacklist until base removal; the raw ban then resurfaces', async () => {
+test('a manual blacklist blocks a base member immediately and survives a base removal', async () => {
   const { fixture, command } = install(tools, ['codemode']);
   await command.run('base add script_only');
   await command.run('blacklist add script_only');
   const added = command.notifications.at(-1)?.text ?? '';
-  assert.match(added, /Ban overridden by base/);
-  assert.match(added, /raw blacklist is retained/);
-  assert.equal(fixture.activeNames().includes('script_only'), true);
+  assert.match(added, /Still blacklisted \(raw\)/);
+  assert.doesNotMatch(added, /Ban overridden by base/, 'a manual ban is a hard fence, not an exception');
+  assert.match(added, /Remaining blacklist sources/);
+  assert.equal(fixture.activeNames().includes('script_only'), false,
+    'a Codemode-only member loses its declaration now');
 
   await command.run('list');
-  assert.match(command.notifications.at(-1)?.text ?? '', /script_only {2}\[base · blacklisted: branch · ban overridden by base · usable\]/);
+  assert.doesNotMatch(command.notifications.at(-1)?.text ?? '', /script_only/,
+    'a hard-banned member is not requested and not listed as available');
+
+  await command.run('base list');
+  assert.match(command.notifications.at(-1)?.text ?? '', /script_only {2}\(1 tool · branch\)/,
+    'the base record still reports the membership');
 
   await command.run('blacklist list');
   assert.match(command.notifications.at(-1)?.text ?? '', /Capability · blacklist · 1 target/);
@@ -322,15 +334,14 @@ test('base overrides a local blacklist until base removal; the raw ban then resu
   assert.match(command.notifications.at(-1)?.text ?? '', /preset -tool/);
 
   await command.run('base remove script_only');
-  assert.equal(fixture.activeNames().includes('script_only'), false);
-  assert.equal(createToolAccessView(fixture.api, fixture.branch()).blocked('script_only'), true);
+  assert.equal(createToolAccessView(fixture.api, fixture.branch()).blocked('script_only'), true,
+    'removing base does not lift the manual ban');
 
   await command.run('blacklist remove script_only');
   const text = command.notifications.at(-1)?.text ?? '';
   assert.match(text, /Capability · blacklist remove script_only/);
   assert.match(text, /Recorded blacklist removal intent/);
   assert.equal(fixture.activeNames().includes('script_only'), false);
-  assert.match(text, /current preset -tool remains/);
 });
 
 test('an activate picker selects through the hierarchical component and cancellation writes nothing', async () => {

@@ -18,8 +18,8 @@ import { createCapabilityScopeView } from './scope.ts';
 import {
   isRecord,
   parseBlacklistRecord,
-  parseBaseRecord,
   parseDynamicRecord,
+  recordedBaseBaseline,
   replay,
   strings,
   TOOL_BASE_RECORD,
@@ -31,6 +31,7 @@ import {
   TOOL_DYNAMIC_RECORD,
   TOOL_DYNAMIC_VERSION,
   type AccessState,
+  type PresetToolLayer,
   type ToolBaseSource,
   type ToolBlacklistSource,
   type ToolDynamicSource,
@@ -47,6 +48,7 @@ import { createEligibleToolCatalog } from './tool-catalog.ts';
 import { matchesToolTarget, parseToolTarget, type ToolTarget, type ToolTargetRecord } from './targets.ts';
 
 export {
+  type PresetToolLayer,
   TOOL_BASE_RECORD,
   TOOL_BASE_VERSION,
   TOOL_BLACKLIST_RECORD,
@@ -417,8 +419,8 @@ function resolveAddition(
       for (const name of members) {
         if (!eligibleMember(name)) continue;
         // A base-add namespace snapshot deliberately includes locally banned
-        // members: exact base membership is the override. Activate/discovery
-        // cannot lift the local ban.
+        // members: explicit membership overrides a root startup or preset ban.
+        // Activate/discovery and manual/ancestor fences are never lifted here.
         if (context.action === 'activate' && pre.blocked(name)) continue;
         chosen.push(name);
       }
@@ -961,36 +963,66 @@ export function removeBlacklistTargets(host: ToolAccessApplyHost, writer: ToolAc
   return blacklistWrite(host, writer, branch, targets, 'blacklist-remove');
 }
 
+/**
+ * The baseline a capture would use, computed READ-ONLY.
+ *
+ * A recorded `capability-tool-base` baseline wins whenever one exists, INCLUDING
+ * an explicitly empty one (`tools: []` / `--no-tools`); a missing record falls
+ * back to the names {@link ensureToolBase} would capture now. Callers compare the
+ * recorded fact, never the name count, so an empty baseline stays distinct from
+ * no baseline. A pure preview of a versioned apply reads this, so the preview and
+ * the later capture agree.
+ */
+export function toolBaselineNames(
+  host: ToolAccessApplyHost,
+  branch: readonly unknown[] | null | undefined,
+): readonly string[] {
+  const recorded = recordedBaseBaseline(branch);
+  return recorded.recorded ? recorded.names : baselineCapture(host, branch).names;
+}
+
+/**
+ * The startup availability baseline a capture would record, computed READ-ONLY.
+ *
+ * The single copy of the capture rule: registered, not hidden, not awaiting a
+ * removal, and not raw-blacklisted. The capture uses the RAW blacklist on
+ * purpose: an active default tool must not become an explicit whitelist entry
+ * merely because it was live at session start, and only a later explicit base
+ * record overrides a local ban.
+ */
+function baselineCapture(
+  host: ToolAccessApplyHost,
+  branch: readonly unknown[] | null | undefined,
+): { readonly names: readonly string[]; readonly tools: ReadonlyMap<string, ToolTargetRecord> } {
+  const entries = branch ?? [];
+  const view = createToolAccessView(host, entries);
+  const tools = new Map(host.getAllTools().map((tool) => [tool.name, tool]));
+  const names = host.getActiveTools().filter((name) => {
+    const tool = tools.get(name);
+    if (tool === undefined || tool.exposure === 'hidden') return false;
+    return !view.removalPending(name) && !view.blacklisted(name);
+  });
+  return { names, tools };
+}
+
 /** Capture the startup availability baseline once. */
 export function ensureToolBase(host: ToolAccessApplyHost, writer: ToolAccessWriter, branch: readonly unknown[] | null | undefined): readonly string[] {
   const entries = branch ?? [];
-  const recorded: string[] = [];
-  let hasBaseline = false;
-  for (const entry of entries) {
-    if (!isRecord(entry) || entry['type'] !== 'custom' || entry['customType'] !== TOOL_BASE_RECORD) continue;
-    const record = parseBaseRecord(entry['data']);
-    if (record === null || !isRecord(entry['data']) || !Array.isArray(entry['data']['baseline'])) continue;
-    hasBaseline = true;
-    for (const name of record.baseline) if (!recorded.includes(name)) recorded.push(name);
-  }
-  if (hasBaseline) return recorded;
-  const view = createToolAccessView(host, entries);
-  const tools = new Map(host.getAllTools().map((tool) => [tool.name, tool]));
-  const captured = host.getActiveTools().filter((name) => {
-    const tool = tools.get(name);
-    if (tool === undefined || tool.exposure === 'hidden') return false;
-    // Startup baseline capture uses the RAW blacklist: an active default tool
-    // must not become an explicit whitelist entry merely because it was live at
-    // session start. Only a later explicit base record overrides a local ban.
-    return !view.removalPending(name) && !view.blacklisted(name);
-  });
-  const loads = [...new Set(captured.flatMap((name) => {
-    const tool = tools.get(name);
+  const recorded = recordedBaseBaseline(entries);
+  if (recorded.recorded) return recorded.names;
+  const captured = baselineCapture(host, entries);
+  const loads = [...new Set(captured.names.flatMap((name) => {
+    const tool = captured.tools.get(name);
     const target = tool === undefined ? null : containerTargetForTool(tool);
     return target === null ? [] : [target.target];
   }))];
-  writer.appendEntry(TOOL_BASE_RECORD, payloadOf({ version: TOOL_BASE_VERSION, baseline: captured, load: loads }));
-  return captured;
+  // Preserve `baseline` even when empty (--no-tools / all startup tools blocked)
+  // so replay and recordedBaseBaseline distinguish an empty baseline from unrecorded.
+  writer.appendEntry(TOOL_BASE_RECORD, {
+    ...payloadOf({ version: TOOL_BASE_VERSION, load: loads }),
+    baseline: captured.names,
+  });
+  return captured.names;
 }
 
 /** Recompute the live active set from the collections, reporting SDK-accepted names. */
@@ -1004,6 +1036,96 @@ export function syncActiveToolsToCollections(host: ToolAccessApplyHost, branch: 
   const active = requested.filter((name) => accepted.has(name));
   const next = new Set(active);
   return { active, activated: active.filter((name) => !before.has(name)), removed: [...before].filter((name) => !next.has(name)) };
+}
+
+/** The branch's intended active set, plus the predicates a sync needs. */
+interface ActiveToolPlan {
+  readonly target: readonly string[];
+  readonly targetSet: ReadonlySet<string>;
+  /** The harness requests this name even while it is not registered. */
+  readonly requested: (name: string) => boolean;
+  readonly managed: (name: string) => boolean;
+}
+
+/**
+ * Compute the active set the branch asks for.
+ *
+ * Only registered, requested and eligible names are targets. `requested` also
+ * covers a requested name whose tool is not registered now (a disconnected MCP
+ * member), so a branch sync neither drops nor forgets it. `managed` is true only
+ * where the harness holds a membership, ban or exclusion fact, so an SDK-native
+ * name is never removed by a branch sync.
+ */
+function activeToolPlan(host: ToolAccessHost, branch: readonly unknown[] | null | undefined): ActiveToolPlan {
+  const view = createToolAccessView(host, branch);
+  const catalog = createEligibleToolCatalog(host, { blocked: (tool) => !view.requested(tool.name) });
+  const target = catalog.tools.map((tool) => tool.name);
+  return {
+    target,
+    targetSet: new Set(target),
+    requested: (name) => view.requested(name),
+    managed: (name) => view.managed(name),
+  };
+}
+
+/**
+ * Whether the live loadout already matches the branch.
+ *
+ * Unknown native/SDK names and unregistered pending names never make this false;
+ * only a missing target or a harness-managed name outside the target does. A
+ * preset re-apply uses it to report "no change" without a redundant
+ * `setActiveTools` call.
+ */
+export function presetLiveToolsInSync(host: ToolAccessApplyHost, branch: readonly unknown[] | null | undefined): boolean {
+  const plan = activeToolPlan(host, branch);
+  const active = host.getActiveTools();
+  const activeSet = new Set(active);
+  if (plan.target.some((name) => !activeSet.has(name))) return false;
+  return !active.some((name) => !plan.targetSet.has(name) && plan.managed(name) && !plan.requested(name));
+}
+
+/**
+ * Minimal-diff sync for a branch switch (`session_tree`).
+ *
+ * Deactivates only harness-managed names the target excludes and activates the
+ * missing targets; every other live name is left untouched. An unchanged result
+ * returns without calling `setActiveTools`, so no transcript record and no
+ * prompt rebuild happens. Removing a restored tool is a requested change and the
+ * SDK then drops its own pending set; this function cannot see those unregistered
+ * names and does not claim to preserve them.
+ */
+export function syncActiveToolsForBranch(host: ToolAccessApplyHost, branch: readonly unknown[] | null | undefined): ToolSyncResult {
+  const plan = activeToolPlan(host, branch);
+  const before = host.getActiveTools();
+  const next: string[] = [];
+  const nextSet = new Set<string>();
+  for (const name of before) {
+    if (!plan.targetSet.has(name) && plan.managed(name) && !plan.requested(name)) continue;
+    next.push(name);
+    nextSet.add(name);
+  }
+  for (const name of plan.target) {
+    if (nextSet.has(name)) continue;
+    next.push(name);
+    nextSet.add(name);
+  }
+  if (next.length === before.length && next.every((name, index) => name === before[index])) {
+    return { active: [...before], activated: [], removed: [] };
+  }
+  host.setActiveTools(next);
+  const beforeSet = new Set(before);
+  const after = new Set(host.getActiveTools());
+  const active = next.filter((name) => after.has(name));
+  return {
+    active,
+    activated: active.filter((name) => !beforeSet.has(name)),
+    removed: before.filter((name) => !after.has(name)),
+  };
+}
+
+/** Preset-excluded names the manual `/capability base` layer keeps instead. */
+export function presetRetainedByBranch(host: ToolAccessHost, branch: readonly unknown[] | null | undefined): readonly string[] {
+  return replay(host, branch).preset.retained;
 }
 
 /** The active set after a successful compaction. */

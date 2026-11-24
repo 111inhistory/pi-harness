@@ -11,6 +11,7 @@ import presetExtension from '../../extensions/preset.ts';
 interface Captured {
   commands: Record<string, (args: string, ctx: unknown) => Promise<void>>;
   handlers: Record<string, ((event: unknown, ctx: unknown) => unknown)[]>;
+  complete?: Parameters<ExtensionAPI['registerCommand']>[1]['getArgumentCompletions'];
 }
 
 interface Harness {
@@ -59,8 +60,9 @@ function setup(options: SetupOptions = {}): Harness {
 
   const pi = {
     registerFlag: () => {},
-    registerCommand: (name: string, definition: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-      caps.commands[name] = definition.handler;
+    registerCommand: (name: string, definition: Parameters<ExtensionAPI['registerCommand']>[1]) => {
+      caps.commands[name] = async (args, ctx) => { await definition.handler(args, ctx as never); };
+      if (name === 'preset' && definition.getArgumentCompletions) caps.complete = definition.getArgumentCompletions;
     },
     on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
       (caps.handlers[event] ??= []).push(handler);
@@ -83,10 +85,13 @@ function setup(options: SetupOptions = {}): Harness {
   } as unknown as ExtensionAPI;
   const ctx = {
     cwd,
+    hasUI: false,
+    mode: 'print',
     ui: {
       notify: (message: string, level: string) => { calls.notices.push({ message, level }); },
       setStatus: (_key: string, value: string | undefined) => { calls.status.push(value); },
       select: async () => undefined,
+      addAutocompleteProvider: () => {},
     },
     modelRegistry: {
       find: (provider: string, id: string) => (modelIds.has(`${provider}/${id}`) ? { provider, id } : undefined),
@@ -195,11 +200,7 @@ test('/preset clear succeeds despite unreadable catalog source after apply persi
   assert.equal(snapshotBefore?.instructions, 'Follow concise guidelines.');
   assert.deepEqual(snapshotBefore?.codemode, { mode: 'only' });
 
-  const modeBefore = h.calls.appended
-    .filter((entry) => entry.customType === 'codemode-mode')
-    .map((entry) => (entry.data as { mode?: unknown }).mode)
-    .at(-1);
-  assert.equal(modeBefore, 'only');
+  assert.ok(!h.calls.appended.some(entry => entry.customType === 'codemode-mode'));
 
   const beforeOptions = { appendSystemPrompt: 'BASE_APPEND', sections: {} as Record<string, string> };
   await h.fire('before_agent_start', { systemPromptOptions: beforeOptions });
@@ -212,8 +213,7 @@ test('/preset clear succeeds despite unreadable catalog source after apply persi
   mkdirSync(catalogPath);
   assert.throws(() => readFileSync(catalogPath, 'utf8'), { code: 'EISDIR' });
 
-  // 3. Clear must succeed despite the unreadable catalog: snapshot, instructions,
-  //    and codemode are withdrawn while model/thinking/tools remain unchanged.
+  // 3. Clear withdraws the preset's contributions even without the catalog.
   await h.caps.commands['preset']!('clear', h.ctx);
 
   const snapshotAfter = h.calls.appended
@@ -222,11 +222,7 @@ test('/preset clear succeeds despite unreadable catalog source after apply persi
     .at(-1);
   assert.equal(snapshotAfter, null, 'clear writes a null snapshot');
 
-  const modeAfter = h.calls.appended
-    .filter((entry) => entry.customType === 'codemode-mode')
-    .map((entry) => (entry.data as { mode?: unknown }).mode)
-    .at(-1);
-  assert.equal(modeAfter, null, 'clear withdraws the codemode mode override');
+  assert.ok(!h.calls.appended.some(entry => entry.customType === 'codemode-mode'));
 
   const afterOptions = { appendSystemPrompt: 'BASE_APPEND', sections: {} as Record<string, string> };
   await h.fire('before_agent_start', { systemPromptOptions: afterOptions });
@@ -235,13 +231,10 @@ test('/preset clear succeeds despite unreadable catalog source after apply persi
   assert.equal(h.calls.status.at(-1), undefined, 'status is cleared');
   assert.deepEqual(h.calls.setModel, ['p/m'], 'model is not rolled back');
   assert.deepEqual(h.calls.setThinking, ['low'], 'thinking is not rolled back');
-  assert.deepEqual(h.calls.setActiveTools.at(-1), ['read', 'bash', 'edit', 'write'], 'tools are not rolled back');
+  assert.deepEqual(h.calls.setActiveTools.at(-1), ['read', 'bash', 'edit'], 'tools follow the unmodified baseline');
 
-  // Any command that genuinely requires catalog access fails because of the obstruction.
-  await assert.rejects(
-    async () => h.caps.commands['preset']!('other', h.ctx),
-    { code: 'EISDIR' },
-  );
+  await h.caps.commands['preset']!('other', h.ctx);
+  assert.ok(h.calls.notices.some(notice => notice.level === 'error' && notice.message.includes('other')));
 });
 
 test('a preset without a tool selection applies when the baseline cannot be recorded', async () => {
@@ -300,8 +293,57 @@ test('clear reports a loadout sync failure instead of claiming the loadout was u
   assert.ok(h.calls.notices.some((notice) =>
     notice.level === 'warning' && notice.message.includes('could not be synchronized')));
   assert.ok(!h.calls.notices.some((notice) =>
-    notice.message === 'Preset cleared; its tool blacklist was withdrawn. Model, thinking and the tool baseline are unchanged.'));
+    notice.message === 'Preset cleared; tools now follow the branch baseline and manual choices. Model and thinking are unchanged.'));
   assert.equal(h.calls.status.at(-1), undefined, 'the cleared snapshot still releases the status');
   const lastState = h.calls.appended.filter((entry) => entry.customType === 'preset-state').at(-1);
   assert.deepEqual((lastState?.data as { snapshot: unknown }).snapshot, null);
+});
+
+test('version prompts are TUI-only and skipping applies to the candidate seen on the branch', async () => {
+  const h = setup({ presets: { writer: { instructions: 'v1' } } });
+  await applyOnStart(h, 'writer');
+  const file = path.join(process.env['PI_CODING_AGENT_DIR']!, 'presets.json');
+  writeFileSync(file, JSON.stringify({ writer: { instructions: 'v2' } }));
+  let prompts = 0;
+  let useUpdate = false;
+  (h.ctx.ui as { select: unknown }).select = async (_title: string, choices: string[]) => {
+    prompts += 1;
+    return choices[useUpdate ? 0 : 1];
+  };
+  Object.assign(h.ctx, { hasUI: true, mode: 'rpc' });
+  await h.fire('session_start', { reason: 'startup' });
+  assert.equal(prompts, 0);
+  const before = h.calls.appended.length;
+  Object.assign(h.ctx, { mode: 'tui' });
+  await h.fire('session_start', { reason: 'startup' });
+  assert.equal(prompts, 1);
+  assert.deepEqual(h.calls.appended.slice(before).map(entry => entry.customType), ['preset-version-skipped']);
+  await h.fire('session_start', { reason: 'resume' });
+  assert.equal(prompts, 1);
+  writeFileSync(file, JSON.stringify({ writer: { instructions: 'v3' } }));
+  useUpdate = true;
+  await h.fire('session_start', { reason: 'resume' });
+  assert.equal(prompts, 2);
+  assert.equal(h.calls.status.at(-1), 'preset:writer');
+  const latest = h.calls.appended.at(-1)?.data as { snapshot?: { instructions?: string } };
+  assert.equal(latest.snapshot?.instructions, 'v3');
+  assert.deepEqual((await h.caps.complete?.('w'))?.map(item => item.value), ['writer']);
+});
+
+test('tree marks invalid and missing Presets and the picker can clear an empty catalog', async () => {
+  const h = setup({ presets: { writer: { instructions: 'v1' } } });
+  await applyOnStart(h, 'writer');
+  const file = path.join(process.env['PI_CODING_AGENT_DIR']!, 'presets.json');
+  writeFileSync(file, JSON.stringify({ writer: { instructions: false } }));
+  await h.fire('session_tree', {});
+  assert.equal(h.calls.status.at(-1), 'preset:writer (invalid)');
+  writeFileSync(file, '{}');
+  await h.fire('session_tree', {});
+  assert.equal(h.calls.status.at(-1), 'preset:writer (missing)');
+  (h.ctx.ui as { select: unknown }).select = async (_title: string, choices: string[]) => {
+    assert.deepEqual(choices, ['(none)']);
+    return choices[0];
+  };
+  await h.caps.commands['preset']!('show', h.ctx);
+  assert.equal(h.calls.status.at(-1), undefined);
 });

@@ -24,7 +24,7 @@ import subagentExtension from '../../extensions/harness.ts';
 import { addBaseTools, addBlacklistTargets } from '../../src/capability/tool-access.ts';
 import { deferred } from '../../test-support/async.ts';
 import { restorePresetSnapshot } from '../../src/preset/state.ts';
-import { readCodemodeModeOverride } from '../../src/capability/codemode-mode.ts';
+import { effectiveCodemodeMode } from '../../src/capability/codemode-mode.ts';
 
 function usage(): Usage {
   return {
@@ -170,7 +170,7 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
     AgentSession.prototype.prompt = async function (...args: Parameters<AgentSession['prompt']>) {
       const branch = this.sessionManager.getBranch();
       prompted.push({ text: String(args[0]), tools: this.getActiveToolNames(),
-        preset: restorePresetSnapshot(branch)?.name, mode: readCodemodeModeOverride(branch), thinking: this.thinkingLevel });
+        preset: restorePresetSnapshot(branch)?.name, mode: effectiveCodemodeMode(branch, 'on'), thinking: this.thinkingLevel });
       return originalPrompt.apply(this, args);
     };
 
@@ -209,7 +209,7 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
     assert.ok(grandchildPrompt.tools.includes('msg_write'),
       'the local Preset +msg_write survives the root base addition');
     assert.equal(grandchildPrompt.preset, 'nested-worker');
-    assert.equal(grandchildPrompt.mode, 'only', 'the shared Preset application writes the child Codemode override');
+    assert.equal(grandchildPrompt.mode, 'only', 'the child uses the Codemode mode from its Preset snapshot');
     assert.equal(grandchildPrompt.thinking, 'low');
     assert.match(grandchildRequests[0]!.text, /PRESET_NESTED_GUIDANCE/,
       'Preset instructions reach the actual child model request');
