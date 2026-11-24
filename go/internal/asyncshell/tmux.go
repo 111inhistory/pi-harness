@@ -858,7 +858,7 @@ func cancelTask(dir string, rootArg ...string) {
 	monitorPid := readPid(paths.MonitorPid)
 	if monitorPid != nil && alive(*monitorPid) {
 		// Wait without destructive action while the monitor may still finalize.
-		if waitForClose(paths, CancelWaitMs) {
+		if waitForClose(paths, CancelWaitMs, *monitorPid) {
 			if err := releaseTaskBackend(paths.Dir); err != nil {
 				cleanupErr(err)
 			}
@@ -927,11 +927,17 @@ func waitForStartup(paths TaskPaths, timeoutMs int) bool {
 	return exists(paths.Started) || exists(paths.Closed)
 }
 
-func waitForClose(paths TaskPaths, timeoutMs int) bool {
+func waitForClose(paths TaskPaths, timeoutMs int, monitorPid int) bool {
 	deadline := nowMs() + int64(timeoutMs)
 	for nowMs() < deadline {
 		if exists(paths.Closed) {
 			return true
+		}
+		if monitorPid > 0 && !alive(monitorPid) {
+			// Monitor writes closed before exiting; re-check after exit so a
+			// clean finalization racing the liveness probe is still observed,
+			// while a monitor that exited without closing stops waiting early.
+			return exists(paths.Closed)
 		}
 		sleep(MonitorTickMs)
 	}

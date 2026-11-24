@@ -25,6 +25,7 @@ type Options struct {
 	TimeoutMs *int
 	Input     *string
 	Env       map[string]string
+	ExtraEnv  []string
 	Verbatim  bool
 	Hide      bool
 }
@@ -38,7 +39,9 @@ func Run(command string, args []string, options Options) Result {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, command, args...)
 	if options.Env != nil {
-		cmd.Env = envSlice(options.Env)
+		cmd.Env = append(envSlice(options.Env), options.ExtraEnv...)
+	} else if len(options.ExtraEnv) > 0 {
+		cmd.Env = append(os.Environ(), options.ExtraEnv...)
 	}
 	if options.Input != nil {
 		cmd.Stdin = strings.NewReader(*options.Input)

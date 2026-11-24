@@ -12,12 +12,8 @@ import (
 // version is unknown ownership: cleanup must never guess.
 const ownershipVersion = 1
 
-const (
-	// taskSocketName is reserved for this task's terminal backend.
-	taskSocketName = "tmux.sock"
-	// socketProbeTimeoutMs bounds one liveness probe.
-	socketProbeTimeoutMs = 500
-)
+// taskSocketName is reserved for this task's terminal backend.
+const taskSocketName = "tmux.sock"
 
 // ownershipID is the no-follow identity of one filesystem object captured when
 // the task owns it (task directory at allocation, socket immediately after the

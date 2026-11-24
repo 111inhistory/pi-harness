@@ -15,7 +15,14 @@ import (
 	shellbackend "pijob/internal/asyncshell/backend"
 )
 
-const usesFilesystemSocket = true
+const (
+	usesFilesystemSocket = true
+	// POSIX ServerState is an in-process Unix socket dial (~1ms), so tight
+	// probe bounds suffice.
+	serverProbeTimeoutMs = 500
+	postKillWaitMs       = 2_000
+	postKillPollDelayMs  = 25
+)
 
 func isNoFilesystemSocket(error) bool { return false }
 
@@ -225,7 +232,7 @@ func unlinkOwnedSocket(dir string, record ownershipRecord, serverExited bool) er
 	if current.Dev != record.Socket.Dev || current.Ino != record.Socket.Ino || current.Uid != record.Socket.Uid || current.Mode != record.Socket.Mode {
 		return aserr.New("socket_unknown", "The task socket identity changed; it is left in place.")
 	}
-	state, err := backend.ServerState(dir, socketProbeTimeoutMs)
+	state, err := backend.ServerState(dir, serverProbeTimeoutMs)
 	if err != nil || state == shellbackend.ServerUnknown || state == shellbackend.ServerMissing || state == shellbackend.ServerRunning {
 		return aserr.New("socket_unknown", "The task's terminal server is not confirmed stopped; its socket is left in place.")
 	}

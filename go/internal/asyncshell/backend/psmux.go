@@ -47,10 +47,15 @@ type WindowsBackend struct{}
 
 func (WindowsBackend) Kind() string { return "windows" }
 
+// psmux 3.4+ pre-spawns a detached "-s __warm__" server running an idle shell
+// in the caller's cwd on new-session. That warm server can outlive the task's
+// own server and keep its working directory locked on Windows.
+var psmuxExtraEnv = []string{"PSMUX_NO_WARM=1"}
+
 func (WindowsBackend) runWithTimeout(dir string, args []string, timeoutMs int, stdin *string) CommandResult {
 	full := append([]string{"-L", labelOf(dir)}, args...)
 	timeout := timeoutMs
-	result := proc.Run(psmuxBinary, full, proc.Options{TimeoutMs: &timeout, Input: stdin, Hide: true})
+	result := proc.Run(psmuxBinary, full, proc.Options{TimeoutMs: &timeout, Input: stdin, ExtraEnv: psmuxExtraEnv, Hide: true})
 	if result.Error != nil {
 		panic(aserr.New("psmux_unavailable", describeWin(result.Error)))
 	}

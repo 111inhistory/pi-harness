@@ -15,16 +15,16 @@ import { piJobExecutable } from "./executable.ts";
  * `tmux.go`: a single `releaseTaskBackend` verifies persisted ownership,
  * probes the backend tri-state, kills only after verification, and confirms
  * stop with a bounded post-kill probe. Its cancel budget is
- * `CancelBudgetMs = 40_000` (conservative static worst case ~35.7s when a final
- * dial overlaps the post-kill deadline, with cancel-scoped controls at 5s);
- * there is no retry or supervisor, and an unknown outcome
- * returns nonzero and never writes `closed`.
+ * `CancelBudgetMs = 45_000` (conservative static worst case ~35s on POSIX and
+ * ~42s on Windows when a final 5s probe overlaps the 5s post-kill deadline,
+ * with cancel-scoped controls at 5s); there is no retry or supervisor, and an
+ * unknown outcome returns nonzero and never writes `closed`.
  *
  * This TS timeout adds a fixed 5s process/exit margin over that native budget.
  * It is a timeout, never a retry, watchdog or second authority. The host
  * retains its owner/task fence when this rejects.
  */
-export const NATIVE_CANCEL_TIMEOUT_MS = 45_000;
+export const NATIVE_CANCEL_TIMEOUT_MS = 50_000;
 
 export function cancelTask(directory: string, root: string): Promise<void> {
   if (!existsSync(directory)) return Promise.resolve();

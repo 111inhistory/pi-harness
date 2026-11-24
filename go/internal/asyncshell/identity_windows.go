@@ -10,7 +10,15 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const usesFilesystemSocket = false
+const (
+	usesFilesystemSocket = false
+	// Windows ServerState spawns psmux.exe, so each probe needs the same
+	// subprocess timeout budget as other cancel-scoped controls, and post-kill
+	// confirmation allows slower ConPTY/server teardown without tight polling.
+	serverProbeTimeoutMs = CancelControlTimeoutMs
+	postKillWaitMs       = 5_000
+	postKillPollDelayMs  = 100
+)
 
 var errNoFilesystemSocket = fmt.Errorf("the psmux backend uses a named pipe, not a filesystem socket")
 

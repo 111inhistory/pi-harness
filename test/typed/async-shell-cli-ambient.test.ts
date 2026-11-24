@@ -40,7 +40,7 @@ test.before(async () => {
 });
 
 test.after(async () => {
-  if (bundleDir !== '') await rm(bundleDir, { recursive: true, force: true });
+  if (bundleDir !== '') await rm(bundleDir, { recursive: true, force: true, maxRetries: 15, retryDelay: 100 });
 });
 
 interface AmbientHost {

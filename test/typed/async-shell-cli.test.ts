@@ -53,7 +53,7 @@ test.before(async () => {
 });
 
 test.after(async () => {
-  if (bundleDir !== '') await rm(bundleDir, { recursive: true, force: true });
+  if (bundleDir !== '') await rm(bundleDir, { recursive: true, force: true, maxRetries: 15, retryDelay: 100 });
 });
 
 interface CliResult {
@@ -86,7 +86,7 @@ async function cancelTask(dir: string, root = stateRoot()): Promise<void> {
 /** Remove one test task after it is stopped, so no state outlives the run. */
 async function cleanup(dir: string, root = stateRoot()): Promise<void> {
   await cancelTask(dir, root).catch(() => {});
-  await rm(dir, { recursive: true, force: true });
+  await rm(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 100 });
 }
 
 function nodeScript(script: string): readonly string[] {

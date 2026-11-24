@@ -14,14 +14,16 @@ import (
 const CancelControlTimeoutMs = 5_000
 
 // PostKillWaitMs bounds the cumulative confirmation window after kill-server.
-const PostKillWaitMs = 2_000
+// POSIX probes a Unix socket in-process (2s); Windows spawns psmux.exe (5s).
+const PostKillWaitMs = postKillWaitMs
 
-// CancelBudgetMs is the static upper bound for cancel: startup gate <= 15s,
-// PTY release <= 13.5s (including one dial begun just before the post-kill
-// deadline) or pipe release <= 4s, monitor ownership 5s, monitor wait 15s,
-// SIGKILL wait 2s and final wait 0.2s. All stages are individually bounded;
-// there is no wall-clock watchdog or retry authority.
-const CancelBudgetMs = 40_000
+// CancelBudgetMs is the static upper bound for cancel: startup gate <= 15s
+// (mutually exclusive with a live monitor), monitor wait 15s, monitor
+// ownership 5s, SIGKILL wait 2s, and release (POSIX PTY <= 13s; Windows PTY <=
+// 20s including one 5s probe begun just before the 5s post-kill deadline; pipe
+// <= 4s). All stages are individually bounded; there is no wall-clock watchdog
+// or retry authority.
+const CancelBudgetMs = 45_000
 
 type processState int
 
@@ -94,7 +96,7 @@ func releaseTaskBackend(dir string) error {
 		return aserr.New("socket_unknown", "The backend bound without a captured socket identity; no kill or unlink is attempted.")
 	}
 
-	state, stateErr := backend.ServerState(dir, socketProbeTimeoutMs)
+	state, stateErr := backend.ServerState(dir, serverProbeTimeoutMs)
 	if stateErr != nil {
 		return aserr.New("socket_unknown", "Cannot determine the terminal server state: "+messageOf(stateErr))
 	}
@@ -152,18 +154,14 @@ func releaseTaskBackend(dir string) error {
 		_ = backend.KillServerWithin(dir, CancelControlTimeoutMs)
 		deadline := time.Now().Add(time.Duration(PostKillWaitMs) * time.Millisecond)
 		for {
-			remaining := time.Until(deadline)
-			if remaining <= 0 {
+			if time.Until(deadline) <= 0 {
 				return aserr.New("socket_unknown", "The terminal server did not stop within the bounded wait; its socket is left in place.")
 			}
-			probeMs := int(remaining.Milliseconds())
-			if probeMs > socketProbeTimeoutMs {
-				probeMs = socketProbeTimeoutMs
-			}
-			if probeMs <= 0 {
-				probeMs = 1
-			}
-			probe, probeErr := backend.ServerState(dir, probeMs)
+			// Give every probe started before the deadline its full
+			// serverProbeTimeoutMs budget. Clamping a probe down to a tiny
+			// remaining slice causes subprocess probes (Windows psmux.exe) to
+			// time out even after the server has already stopped.
+			probe, probeErr := backend.ServerState(dir, serverProbeTimeoutMs)
 			if probeErr != nil {
 				return aserr.New("socket_unknown", "Cannot confirm terminal server stop: "+messageOf(probeErr))
 			}
@@ -171,7 +169,7 @@ func releaseTaskBackend(dir string) error {
 			case shellbackend.ServerStopped:
 				serverExited = true
 			case shellbackend.ServerRunning:
-				waitProbe(25, deadline)
+				waitProbe(postKillPollDelayMs, deadline)
 				continue
 			case shellbackend.ServerSuspect:
 				// The recorded pid was verified before the kill. After it, only a
@@ -183,7 +181,7 @@ func releaseTaskBackend(dir string) error {
 				if !alive(record.ServerPid) {
 					serverExited = true
 				} else {
-					waitProbe(25, deadline)
+					waitProbe(postKillPollDelayMs, deadline)
 					continue
 				}
 			case shellbackend.ServerMissing:
