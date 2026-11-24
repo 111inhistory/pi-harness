@@ -44,7 +44,7 @@ export function applySystemPromptSections(
  */
 export function renderCustomContextSync(
   sections: Readonly<Record<string, string | null | undefined>>,
-  fallbackSummary?: string,
+  summary?: string,
 ): string | null {
   const blocks: string[] = [];
   for (const [key, value] of Object.entries(sections)) {
@@ -58,9 +58,8 @@ export function renderCustomContextSync(
       blocks.push(`<${key}>\n${value}\n</${key}>`);
     }
   }
-  if (blocks.length > 0) return blocks.join('\n\n');
-  if (fallbackSummary !== undefined && fallbackSummary.trim().length > 0) {
-    return fallbackSummary.trim();
+  if (summary !== undefined && summary.trim().length > 0) {
+    blocks.push(summary.trim());
   }
-  return null;
+  return blocks.length > 0 ? blocks.join('\n\n') : null;
 }

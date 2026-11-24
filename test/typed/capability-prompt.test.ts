@@ -708,11 +708,10 @@ test("a withheld declaration keeps its per-tool guidance and one namespace guide
 
     const sections = requests.flatMap((messages) => messages.flatMap((message) =>
       message.role === "system" && message.sections ? [message.sections] : []));
-    const capabilitiesSection = sections.map(section => section[CAPABILITY_SECTION])
-      .find((value) => value !== undefined);
-    assert.match(capabilitiesSection ?? "", /SPECIFIC_FIXTURE_RULE/,
+    const guide = (key: string) => sections.map(section => section[key] ?? "").join("\n");
+    assert.match(guide("capability-guide-tool-fixture_guided"), /SPECIFIC_FIXTURE_RULE/,
       "the withheld declaration's tool-specific guideline is projected dynamically");
-    assert.match(capabilitiesSection ?? "", /SHARED_FIXTURE_RULE/,
+    assert.match(guide("capability-guide-namespace-fixtures"), /SHARED_FIXTURE_RULE/,
       "the canonical namespace guide renders once through its loaded container");
     const rules = sections.map(section => section["rules"] ?? "").join("\n");
     assert.doesNotMatch(rules, /SPECIFIC_FIXTURE_RULE|SHARED_FIXTURE_RULE/,

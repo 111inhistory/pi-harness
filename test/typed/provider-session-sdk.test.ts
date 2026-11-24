@@ -316,6 +316,31 @@ test('Responses keeps the inherited prefix and appends instructions and same-nam
   assert.doesNotMatch(JSON.stringify(appended), /tools_removed|tool_removal|toolsRemoved/);
 });
 
+test('Responses appends an updated tool-guidance section only when mid-conversation system messages are enabled', async () => {
+  const history: Message[] = [
+    { ...system('BASE', [tool('read')]), sections: { rules: 'Original read guidance.' } },
+    user('TASK'),
+  ];
+  const update: SystemMessage = { ...system(''), sections: { rules: 'Updated read guidance.' } };
+  const capture = (messages: readonly Message[], enabled: boolean) => capturePayload<ResponsesPayload>((onPayload) => streamResponses(
+    responsesModel({ supportsMidConvoSystemMessages: enabled, supportsAdditionalTools: true }),
+    context(messages),
+    { apiKey: 'offline-fixture', fetch: offlineFetch, onPayload },
+  ));
+
+  const baseline = await capture(history, true);
+  const appended = await capture([...history, update], true);
+  assert.deepEqual(appended.input?.slice(0, baseline.input?.length), baseline.input);
+  assert.deepEqual(appended.tools, baseline.tools);
+  assert.equal(responseTexts(appended).at(-1), 'Updated system prompt section "rules":\n\nUpdated read guidance.');
+
+  const foldedBaseline = await capture(history, false);
+  const foldedUpdate = await capture([...history, update], false);
+  assert.match(responseTexts(foldedBaseline)[0]!, /Original read guidance/);
+  assert.match(responseTexts(foldedUpdate)[0]!, /Updated read guidance/);
+  assert.doesNotMatch(responseTexts(foldedUpdate)[0]!, /Original read guidance/);
+});
+
 test('Responses tool-search mode appends declarations without rewriting the top-level tools', async () => {
   const inherited: Message[] = [
     system('BASE', [tool('read', 'read v1')]),

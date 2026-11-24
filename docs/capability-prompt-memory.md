@@ -2,7 +2,7 @@
 
 Capability 发现采用惰性机制，但选中的能力必须在会话压缩与嵌套工具调用中保留。
 
-`src/capability/prompt.ts` 根据所选原生分支上的规范 `capability-discovery` 事实渲染当前 `<capabilities>` 段落。动态指令在 `before_agent_start` 写入 SDK 的 `systemPromptOptions.sections`，由 SDK 比较并持久化。同 turn 必要更新使用带内容的持久化 user 状态消息，不再逐请求追加尾部 system。
+`src/capability/prompt.ts` 根据所选原生分支上的规范 `capability-discovery` 事实渲染当前 `<capabilities>` 段落。Capability 的通用用法独立于 SDK 的 `rules`，在分支首次生成 `capability-rules` 时确定；之后沿该分支恢复已有文本。动态工具和命名空间指引各有稳定的 section 名，由 SDK 比较并持久化，只追加变化的段落（含撤销）。SDK 原生工具声明及其自带指引仍由 Pi 管理。
 
 ## 持久化分支存储
 
@@ -56,7 +56,7 @@ Codemode 依然可用于执行与组合。其沙箱不注册 `searchTools`。`AL
 
 已安装的 SDK 应用隐藏过滤与完整的强制提示词投影。完整的强制提示词优先并可抑制 Harness 系统段落；已持久化的 user 状态消息仍属于对话历史。Harness 不通过 provider hooks 绕过 SDK 边界。
 
-必要的同 turn 发现更新通过 `harness-context-sync` custom 消息承载当前状态，经 SDK 编码为 user。嵌套发现合并到外层工具结果边界；重复未变结果不再发消息。中止或代次切换后禁止晚到刷新写入。中途自动压缩和压缩后续跑重新同步当前非空状态，以恢复可能被压缩丢弃的信息。
+必要的同 turn 发现更新通过 `harness-context-sync` custom 消息承载变化的段落和撤销通知，经 SDK 编码为 user。嵌套发现合并到外层工具结果边界；未变化的指引不重发。中止或代次切换后禁止晚到刷新写入。中途自动压缩和压缩后续跑重新同步当前非空状态，以恢复可能被压缩丢弃的信息。
 
 原生描述、schema 和 `promptGuidelines` 由 SDK 管理；已经由活跃且声明的工具提供原生指引时，Capability 记忆省略重复共享文本，否则保留。实现不添加显式缓存断点；离线编码验证不代表服务端缓存命中或计费结果。详见[Provider 传输行为](provider-transports.md)。
 

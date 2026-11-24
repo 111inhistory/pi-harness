@@ -886,6 +886,11 @@ test('subagent_create capacity reaches physical request under customPrompt and c
         assert.ok(declared.includes('codemode'), 'codemode is declared natively');
         assert.ok(!declared.includes('subagent_create'), 'subagent_create is withheld from native declarations');
         assert.match(sections['rules'] ?? '', /at most 4 active batches/);
+        assert.match(sections['capability-rules'] ?? '', /Many local Tools/);
+        assert.doesNotMatch(sections['rules'] ?? '', /Many local Tools/);
+        await session.prompt('Keep the same guidance');
+        assert.equal(requests[1]!.slice(1).some(message => message.sections?.['capability-rules'] !== undefined), false,
+          'the persisted rules are not wrapped and emitted again');
       }
     } finally {
       await session?.extensionRunner?.emit({ type: 'session_shutdown', reason: 'quit' });
@@ -974,6 +979,12 @@ test('capabilities clears cleanly across next-run and same-run non-empty->empty 
             return { content: [{ type: 'text', text: 'cleared' }], details: {} };
           },
         });
+        pi.registerTool({
+          name: 'retained_ns_tool', label: 'Retained tool', description: 'Retained tool',
+          parameters: { type: 'object', properties: {} },
+          namespace: { name: 'retained_ns', instructions: 'RETAINED_NS_PROSE' },
+          async execute() { return { content: [{ type: 'text', text: 'ok' }], details: {} }; },
+        });
       },
     }],
   });
@@ -985,21 +996,28 @@ test('capabilities clears cleanly across next-run and same-run non-empty->empty 
       cwd: dir, agentDir: dir, modelRuntime: runtime, model,
       settingsManager: settings, resourceLoader: loader, sessionManager: SessionManager.inMemory(dir),
     })).session;
-    // 1) Turn 1: under customPrompt, SDK does not build <rules>, so capabilities carries GUIDED_NS_PROSE.
-    extApi.appendEntry('capability-tool-base', { version: 1, baseline: ['clear_guidance'] });
+    const guide = 'capability-guide-namespace-guided_ns';
+    // 1) Under customPrompt, the SDK does not build <rules>; the guide has its own section.
+    extApi.appendEntry('capability-tool-base', { version: 1, baseline: ['clear_guidance', 'retained_ns_tool'] });
     await session.bindExtensions({});
-    extApi.setActiveTools(['clear_guidance', 'guided_ns_tool']);
+    extApi.setActiveTools(['clear_guidance', 'guided_ns_tool', 'retained_ns_tool']);
     await session.prompt('Turn 1');
     assert.equal(requests.length, 1);
     assert.equal(requests[0]![0]?.sections?.['rules'], undefined, 'customPrompt does not build SDK <rules>');
-    assert.match(requests[0]![0]?.sections?.[CAPABILITY_SECTION] ?? '', /GUIDED_NS_PROSE/,
+    assert.match(requests[0]![0]?.sections?.[guide] ?? '', /GUIDED_NS_PROSE/,
       'capabilities supplies namespace guidance when customPrompt suppresses <rules>');
+    const retainedGuide = 'capability-guide-namespace-retained_ns';
+    const retainedText = `<${retainedGuide}>\nRETAINED_NS_PROSE\n</${retainedGuide}>`;
+    assert.equal(requests[0]![0]?.sections?.[retainedGuide], retainedText);
 
     // 2) Next-run non-empty -> empty: blacklist guided_ns_tool (not in baseline) before Turn 2.
     extApi.appendEntry('capability-tool-blacklist', { version: 1, add: ['guided_ns_tool'] });
     await session.prompt('Turn 2');
     assert.equal(requests.length, 2);
     const turn2 = requests[1]!;
+    const firstWire = responsesWire(model, requests[0]!);
+    assert.deepEqual(responsesWire(model, turn2).slice(0, firstWire.length), firstWire,
+      'the native section removal does not rewrite the preceding Responses input');
     const effectiveAfterTurn2 = turn2.reduce<Record<string, string>>((acc, message) => {
       if (message.role === 'system' && message.sections) {
         for (const [k, v] of Object.entries(message.sections)) {
@@ -1009,30 +1027,35 @@ test('capabilities clears cleanly across next-run and same-run non-empty->empty 
       }
       return acc;
     }, {});
-    assert.equal(effectiveAfterTurn2[CAPABILITY_SECTION], undefined,
-      'next-run non-empty->empty removes capabilities via SDK section diff');
+    assert.equal(effectiveAfterTurn2[guide], undefined,
+      'next-run removal clears the individual guide via SDK section diff');
+    assert.equal(effectiveAfterTurn2[retainedGuide], retainedText);
+    assert.equal(turn2.slice(1).filter(message => message.sections?.[retainedGuide] !== undefined).length, 0,
+      'unrelated guidance is not repeated in later native updates');
 
     // 3) Same-run non-empty -> empty (sectionsKey only): unblacklist/base-add for Turn 3, then clear_guidance removes it mid-run.
+    extApi.appendEntry('capability-tool-blacklist', { version: 1, remove: ['guided_ns_tool'] });
     extApi.appendEntry('capability-tool-base', { version: 1, add: ['guided_ns_tool'] });
-    extApi.setActiveTools(['clear_guidance', 'guided_ns_tool']);
+    extApi.setActiveTools(['clear_guidance', 'guided_ns_tool', 'retained_ns_tool']);
     await session.prompt('Turn 3');
     assert.equal(requests.length, 4);
     assert.match(JSON.stringify(requests[2]), /GUIDED_NS_PROSE/, 'Turn 3 starts with GUIDED_NS_PROSE');
     const turn3FollowUp = requests[3]!;
     const syncText = JSON.stringify(turn3FollowUp.at(-1));
-    assert.match(syncText, /Dynamic capability context cleared for the current session state\./,
+    assert.match(syncText, /capability-guide-namespace-guided_ns.*was removed and no longer applies/,
       'same-run non-empty->empty emits persisted harness-context-sync clearing notice');
+    assert.doesNotMatch(syncText, /RETAINED_NS_PROSE/);
 
     // 4) Same-run simultaneous toolsKey change + non-empty -> empty: both facts must reach the next request.
     extApi.appendEntry('capability-tool-base', { version: 1, add: ['guided_ns_tool'] });
-    extApi.setActiveTools(['clear_guidance', 'guided_ns_tool']);
+    extApi.setActiveTools(['clear_guidance', 'guided_ns_tool', 'retained_ns_tool']);
     await session.prompt('Turn 4');
     assert.equal(requests.length, 6);
     const turn4FollowUp = requests[5]!;
     const bothSyncText = JSON.stringify(turn4FollowUp.at(-1));
     assert.match(bothSyncText, /Active tool declarations updated for the current session state\./,
       'simultaneous toolsKey + clear emits tool declaration update');
-    assert.match(bothSyncText, /Dynamic capability context cleared for the current session state\./,
+    assert.match(bothSyncText, /capability-guide-namespace-guided_ns.*was removed and no longer applies/,
       'simultaneous toolsKey + clear also emits capability context clearing notice');
   } finally {
     await session?.extensionRunner?.emit({ type: 'session_shutdown', reason: 'quit' });

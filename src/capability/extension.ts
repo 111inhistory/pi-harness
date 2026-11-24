@@ -91,7 +91,6 @@ import { installCapabilityCommand } from "./command.ts";
 import { hasPresetBaseToolRemoval } from "../preset/state.ts";
 import { createToolAdmission, isMcpExecutionTool } from "./admission.ts";
 import { setCapabilityStartupBlacklist } from "./scope.ts";
-import { renderGuidanceText } from "../tool-guidance.ts";
 import {
   applySystemPromptSections,
   HARNESS_CONTEXT_SYNC_CUSTOM_TYPE,
@@ -106,6 +105,13 @@ import { CapabilityManager } from "./manager.ts";
 import { lazySchemasActive, matchesLazySchemaRef, parseLazySchemaRefs, planNoSchema } from "./lazy-schemas.ts";
 
 const toolsPrompt = readToolsPrompt();
+const CAPABILITY_RULES_SECTION = 'capability-rules';
+
+function guidanceSection(id: string): string {
+  return /^(namespace|tool):[a-z0-9_-]+$/.test(id) || id === 'capability-blacklisted'
+    ? `capability-guide-${id.replace(':', '-')}`
+    : `capability-guide-encoded-${Buffer.from(id).toString('hex')}`;
+}
 
 interface CapabilityToolsPrompt {
   readonly capability: {
@@ -194,14 +200,14 @@ export default function capabilityExtension(
   let inLoop = false;
   let afterAgentEnd = false;
   let generation = 0;
-  let lastSyncedSectionsKey = "";
+  let lastSyncedSections: Readonly<Record<string, string>> = {};
   let lastSyncedToolsKey = "";
   let lastCustomPrompt = false;
   const resetRunTracking = (): void => {
     inLoop = false;
     afterAgentEnd = false;
     generation += 1;
-    lastSyncedSectionsKey = "";
+    lastSyncedSections = {};
     lastSyncedToolsKey = "";
     lastCustomPrompt = false;
   };
@@ -211,7 +217,6 @@ export default function capabilityExtension(
     ctx: ExtensionContext,
   ): {
     readonly sections: Record<string, string>;
-    readonly sectionsKey: string;
     readonly toolsKey: string;
   } => {
     const access = createToolAccessView(pi, branch);
@@ -240,25 +245,28 @@ export default function capabilityExtension(
     ];
     const blacklistGuidance = blacklistedGuidance(pi, branch);
     if (blacklistGuidance !== null) guidance.push(blacklistGuidance);
-    const guidanceText = renderGuidanceText(guidance);
     const memory = capabilityPromptSections(branch, {
       allowsTool: (name) => available.has(name),
       instructions: toolNamespaceInstructions(catalog.tools),
       nativeGuidanceRefs: projectedNamespaceRefs(guidance, catalog.tools, declared, callable, nativeRulesRendered),
     });
     const pruneText = capabilityPruneNoticeText(branch);
-    const snapshot = composeCapabilitiesSnapshot([guidanceText, memory[CAPABILITY_SECTION], pruneText]);
+    const snapshot = composeCapabilitiesSnapshot([memory[CAPABILITY_SECTION], pruneText]);
     const sections: Record<string, string> = {};
+    for (const entry of guidance) {
+      if (entry.eligible !== false && entry.tools.length > 0 && entry.text.trim().length > 0) {
+        sections[guidanceSection(entry.id)] = entry.text;
+      }
+    }
     const snapshotText = snapshot[CAPABILITY_SECTION];
     if (typeof snapshotText === "string" && snapshotText.trim().length > 0) {
       sections[CAPABILITY_SECTION] = snapshotText;
     }
-    const sectionsKey = sections[CAPABILITY_SECTION] ?? "";
     const toolsKey = JSON.stringify({
       active: [...active],
       declared: [...declared].sort(),
     });
-    return { sections, sectionsKey, toolsKey };
+    return { sections, toolsKey };
   };
 
   pi.on("session_start", resetRunTracking);
@@ -283,29 +291,52 @@ export default function capabilityExtension(
   pi.on("before_agent_start", (event, ctx) => {
     event.systemPromptOptions.skills = [];
     lastCustomPrompt = Boolean(event.systemPromptOptions.customPrompt);
-    const { sections, sectionsKey, toolsKey } = computeCurrentState(ctx.sessionManager.getBranch(), ctx);
-    applySystemPromptSections(event.systemPromptOptions.sections ??= {}, sections, [CAPABILITY_SECTION]);
-    lastSyncedSectionsKey = sectionsKey;
+    const branch = ctx.sessionManager.getBranch();
+    const { sections, toolsKey } = computeCurrentState(branch, ctx);
+    const target = event.systemPromptOptions.sections ??= {};
+    applySystemPromptSections(target, sections, Object.keys(target).filter(key => key === CAPABILITY_SECTION || key.startsWith('capability-guide-')));
+    if (discovery && !lastCustomPrompt) {
+      // Keep general usage rules stable across reloads. Dynamic guides have
+      // separate sections so Pi can append just the affected resources.
+      const open = `<${CAPABILITY_RULES_SECTION}>\n`;
+      const close = `\n</${CAPABILITY_RULES_SECTION}>`;
+      let rules = toolsPrompt.capability.guidelines.map(line => `- ${line}`).join('\n');
+      for (let i = branch.length - 1; i >= 0; i -= 1) {
+        const entry = branch[i];
+        if (entry?.type !== 'message' || entry.message.role !== 'system') continue;
+        const previous = entry.message.sections?.[CAPABILITY_RULES_SECTION];
+        if (previous?.startsWith(open) && previous.endsWith(close)) {
+          // SDK options take the section body; the SDK adds its tags when persisting.
+          rules = previous.slice(open.length, -close.length);
+          break;
+        }
+      }
+      target[CAPABILITY_RULES_SECTION] = rules;
+    } else {
+      delete target[CAPABILITY_RULES_SECTION];
+    }
+    lastSyncedSections = sections;
     lastSyncedToolsKey = toolsKey;
   });
 
   const emitMidRunBoundarySync = (ctx: ExtensionContext, options?: { force?: boolean }): void => {
     if (ctx.signal?.aborted) return;
     const expectedGeneration = generation;
-    const { sections, sectionsKey, toolsKey } = computeCurrentState(ctx.sessionManager.getBranch(), ctx);
-    const stateChanged = sectionsKey !== lastSyncedSectionsKey || toolsKey !== lastSyncedToolsKey;
-    if (!options?.force && !stateChanged) return;
-    if (options?.force && !stateChanged && Object.keys(sections).length === 0) return;
+    const { sections, toolsKey } = computeCurrentState(ctx.sessionManager.getBranch(), ctx);
+    const changed = Object.fromEntries(Object.entries(sections).filter(([key, value]) => options?.force || lastSyncedSections[key] !== value));
+    const removed = Object.keys(lastSyncedSections).filter(key => !(key in sections));
     const toolsChanged = toolsKey !== lastSyncedToolsKey;
-    const cleared = lastSyncedSectionsKey !== "" && sectionsKey === "";
     const summaryParts: string[] = [];
     if (toolsChanged) summaryParts.push("Active tool declarations updated for the current session state.");
-    if (cleared) summaryParts.push("Dynamic capability context cleared for the current session state.");
+    if (removed.includes(CAPABILITY_SECTION)) summaryParts.push("Dynamic capability context cleared for the current session state.");
+    for (const key of removed) {
+      if (key !== CAPABILITY_SECTION) summaryParts.push(`Tool guidance section "${key}" was removed and no longer applies.`);
+    }
     const summary = summaryParts.length > 0 ? summaryParts.join(" ") : undefined;
-    const content = renderCustomContextSync(sections, summary);
+    const content = renderCustomContextSync(changed, summary);
     if (content === null) return;
     if (generation !== expectedGeneration || ctx.signal?.aborted) return;
-    lastSyncedSectionsKey = sectionsKey;
+    lastSyncedSections = sections;
     lastSyncedToolsKey = toolsKey;
     // During an active streaming turn, steer queues the sync cleanly before the
     // next model call; when idle (overflow/queued-continuation post-run compaction),
@@ -416,7 +447,6 @@ export default function capabilityExtension(
     label: "Capability",
     description: CAPABILITY_TOOL_DESCRIPTION,
     promptSnippet: toolsPrompt.capability.snippet,
-    promptGuidelines: [...toolsPrompt.capability.guidelines],
     parameters: CAPABILITY_PARAMETERS,
     async execute(toolCallId, _params, callerSignal, _onUpdate, ctx) {
       return manager.run([callerSignal, ctx.signal], async signal => {

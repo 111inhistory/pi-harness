@@ -28,6 +28,8 @@ Chat Completions 的两个标志必须都明确为 `true`。携带工具的 syst
 
 `supportsMidConvoSystemMessages` 同时决定指引更新是否保留在历史位置。未开启时，Pi 把 system 更新折叠到头部提示词。该文本能力与增量工具声明彼此独立。
 
+对于会绑定推理历史前缀的 OpenAI 模型，更新工具指引后应比较相邻请求的 `input` 和工具声明，确保已有条目不被改写。经网关访问时，Pi 的本地编码与网关转发是两个验证边界：本地仅追加并不能证明转发后仍保持原前缀。收到 `prefix_mismatch` 时，用响应中 `input_transformations` 的条目 ID 对照此前响应；后续请求重复报告同一 ID 不表示再次改写了前缀。参见 [OpenAI 前缀保留指南](https://developers.openai.com/api/docs/guides/keep-prefix-unchanged)。
+
 `toolAdditions` 与 `toolSameNameUpdates` 只描述原生工具声明能力。文本工具伪新增不在本模型内，也未实现；未来启用需要模型级检测和服务端验证，不能只凭供应商或 API 判断。
 
 静态工具指引使用 SDK 原生 `promptGuidelines`。动态命名空间指引、Capability 记忆和 Preset 指令在 `before_agent_start` 写入 `systemPromptOptions.sections`，由 SDK 比较并持久化。必要的同 turn 状态更新以带内容的持久化 custom 消息同步，经 SDK 编码为 user；普通未变工具循环保持以工具结果收尾。Harness 不再逐请求追加尾部 system，不保存描述基准或历史放置位置，也不输出第二层描述修正。
