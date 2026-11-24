@@ -15,7 +15,7 @@ JSON 仅为存储格式，不改变面向模型的排版、空白或装配方式
 | 文件 | 字段 / 内容 | 说明 |
 | --- | --- | --- |
 | `btw.json` | `system`、`toolsBlocked` | 独立问答的附加指令与模型收到的工具阻断说明 |
-| `async-shell.json` | `guideline` | Shell 工具的 pi-job Skill 入口提示，使用环境变量与相对路径 |
+| `async-shell.json` | `guideline`、`stop`、`send`、`key` | Shell 工具的调用指引与后台 Job 控制工具说明；逐次结果正文由执行代码装配 |
 | `capability-discovery.json` | `system`<br>`user` | 内部检索 Agent 的系统补充与启动检索的用户提示词 |
 | `subagent-tools.json` | `instructions`<br>`create.guideline`、`list.guideline`、`signal.guideline`、`msg_write.guidelines`<br>工具描述及参数说明 | Namespace 共同规则与工具专属规则分开；批次创建、列表查询、中断／停止控制、消息通信分别由对应工具承载，域归属不要求附带所有成员的操作说明 |
 | `subagent-turns.json` | `context`、`inheritedContext`<br>`batchContext`、`goal`、`roster`、`collaborate`、`unnamedMember`<br>`msgWriteReminder`、`interruptionNotice`<br>消息标题与续跑控制 | 子 Agent 的身份与创建者逻辑地址；批次上下文与名册标题、成员目标标题、多成员协作提示、未命名成员占位；收尾自提醒、带发送者地址的中断说明；消息归属、跨 session 发送者与回复地址、续跑控制与 Inherited 默认上下文指引 |

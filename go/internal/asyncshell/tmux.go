@@ -57,6 +57,7 @@ type TaskPaths struct {
 	State      string
 	Raw        string
 	Filtered   string
+	Index      string
 	CaptureOk  string
 	Exit       string
 	Cancel     string
@@ -111,13 +112,6 @@ type exitFile struct {
 	InternalError bool    `json:"internalError,omitempty"`
 }
 
-// OutputChunk is TS interface OutputChunk.
-type OutputChunk struct {
-	Text      string
-	Cursor    int64
-	Truncated bool
-}
-
 // CreateTaskOptions is TS interface CreateTaskOptions.
 type CreateTaskOptions struct {
 	Argv      []string
@@ -129,6 +123,9 @@ type CreateTaskOptions struct {
 	// terminal state. It is a host-only mode used when the caller keeps the
 	// foreground execution lease.
 	Foreground bool
+	// Host marks a host-protocol call: its deliveries are model-visible windows
+	// instead of the CLI's sequential increments.
+	Host bool
 	// CallID is echoed on the register frame for host startup correlation.
 	CallID   string
 	Callback *CallbackTarget
@@ -184,7 +181,7 @@ func taskPaths(dir string) TaskPaths {
 	file := func(name string) string { return filepath.Join(dir, name) }
 	return TaskPaths{
 		Dir: dir, Task: file("task.json"), State: file("state.json"), Raw: file("raw.log"),
-		Filtered: file("output.log"), CaptureOk: file("capture-ok"), Exit: file("exit.json"),
+		Filtered: file("output.log"), Index: file("output.index"), CaptureOk: file("capture-ok"), Exit: file("exit.json"),
 		Cancel: file("cancel.requested"), Closed: file("closed"), Delivery: file("delivery.json"),
 		Started: file("started"), PollCursor: file("poll.cursor"), MonitorPid: file("monitor.pid"), RunnerPid: file("runner.pid"),
 		ChildPid: file("child.pid"), JobRunner: file("job-runner"), JobMonitor: file("job-monitor"),
@@ -377,32 +374,6 @@ func utf8Boundary(buffer []byte, length int) int {
 	return length
 }
 
-func readOutput(file string, cursor int64) OutputChunk {
-	handle, err := os.Open(file)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return OutputChunk{Text: "", Cursor: maxInt64(0, cursor), Truncated: false}
-		}
-		panic(err)
-	}
-	defer handle.Close()
-	info, err := handle.Stat()
-	if err != nil {
-		panic(err)
-	}
-	size := info.Size()
-	start := minInt64(maxInt64(0, cursor), size)
-	if start >= size {
-		return OutputChunk{Text: "", Cursor: start, Truncated: false}
-	}
-	want := minInt64(MaxResultBytes, size-start)
-	buffer := make([]byte, int(want))
-	read, _ := handle.ReadAt(buffer, start)
-	length := utf8Boundary(buffer, read)
-	next := start + int64(length)
-	return OutputChunk{Text: string(buffer[:length]), Cursor: next, Truncated: next < size}
-}
-
 func readCursor(paths TaskPaths) int64 {
 	data, err := os.ReadFile(paths.PollCursor)
 	if err != nil {
@@ -415,28 +386,57 @@ func readCursor(paths TaskPaths) int64 {
 	return 0
 }
 
-func hasMore(file string, cursor int64) bool {
-	info, err := os.Stat(file)
-	if err != nil {
-		return false
+// shellResult wraps one bounded selection as a wire result.
+func shellResult(paths TaskPaths, state taskState, chosen selection) ShellResult {
+	return ShellResult{
+		ID: state.ID, Status: state.Status, ExitCode: state.ExitCode,
+		Output: chosen.text, Cursor: chosen.next, LogPath: paths.Filtered,
+		Truncated: chosen.truncated, Window: chosen.window, Message: resultMessage(state.Status),
 	}
-	return info.Size() > cursor
 }
 
+// resultOf is one sequential increment at cursor: the read/poll shape, which never
+// skips bytes and never reorders head and tail.
 func resultOf(paths TaskPaths, state taskState, cursor int64) ShellResult {
-	chunk := readOutput(paths.Filtered, cursor)
-	return ShellResult{ID: state.ID, Status: state.Status, ExitCode: state.ExitCode, Output: chunk.Text, Cursor: chunk.Cursor, LogPath: paths.Filtered, Truncated: chunk.Truncated, Message: resultMessage(state.Status)}
+	log := openOutputLog(paths)
+	defer log.Close()
+	return shellResult(paths, state, log.chunkAt(cursor))
 }
 
+// consumeOutput advances the shared consumption cursor.
 func consumeOutput(paths TaskPaths, state taskState) ShellResult {
 	result := resultOf(paths, state, readCursor(paths))
 	writePrivateFile(paths.PollCursor, []byte(strconv.FormatInt(result.Cursor, 10)+"\n"))
 	return result
 }
 
+// unreadResult is the model-visible background delivery: the unread range, or its
+// head and tail when the range exceeds the result budget.
+func unreadResult(paths TaskPaths, state taskState) ShellResult {
+	log := openOutputLog(paths)
+	defer log.Close()
+	result := shellResult(paths, state, log.unread(readCursor(paths)))
+	writePrivateFile(paths.PollCursor, []byte(strconv.FormatInt(result.Cursor, 10)+"\n"))
+	return result
+}
+
+// syncResult is the managed foreground delivery: the bounded tail of the whole
+// transcript, matching the native shell. It consumes to EOF because the caller
+// asked for a finished command rather than a follow-up increment.
+func syncResult(paths TaskPaths, state taskState) ShellResult {
+	log := openOutputLog(paths)
+	defer log.Close()
+	result := shellResult(paths, state, log.syncTail())
+	writePrivateFile(paths.PollCursor, []byte(strconv.FormatInt(result.Cursor, 10)+"\n"))
+	return result
+}
+
+// statusResult reports state without returning or consuming transcript bytes.
 func statusResult(paths TaskPaths, state taskState) ShellResult {
-	cursor := readCursor(paths)
-	return ShellResult{ID: state.ID, Status: state.Status, ExitCode: state.ExitCode, Output: "", Cursor: cursor, LogPath: paths.Filtered, Truncated: hasMore(paths.Filtered, cursor), Message: resultMessage(state.Status)}
+	log := openOutputLog(paths)
+	defer log.Close()
+	cursor := clampCursor(readCursor(paths), log.size)
+	return shellResult(paths, state, log.emptyAt(cursor, log.hasMore(cursor)))
 }
 
 func resultMessage(status ShellStatus) string {
@@ -675,7 +675,18 @@ func createTask(options CreateTaskOptions) ShellResult {
 	}
 
 	decide := func(mode string, state taskState) ShellResult {
-		result := consumeOutput(paths, state)
+		// Exactly one reader consumes the shared cursor per decision: a host
+		// delivery must not first advance the cursor with a CLI increment.
+		var result ShellResult
+		if options.Host {
+			if mode == "sync" {
+				result = syncResult(paths, state)
+			} else {
+				result = unreadResult(paths, state)
+			}
+		} else {
+			result = consumeOutput(paths, state)
+		}
 		delivery, err := json.Marshal(map[string]string{"mode": mode})
 		if err != nil {
 			panic(err)
@@ -1035,19 +1046,26 @@ func MonitorMain(dir string) {
 	paths := taskPaths(dir)
 	frameAttempted := false
 	var task taskFile
+	var written *transcript
 	defer func() {
+		// The transcript closes after a panic path has appended its reminder.
+		defer func() {
+			if written != nil {
+				written.Close()
+			}
+		}()
 		if recovered := recover(); recovered != nil {
 			safe := safeReadTask(paths)
 			message := "internal error: " + messageOf(recovered)
-			_ = caught(func() {
-				appendPrivateFile(paths.Filtered, []byte("async-shell: "+message+"\n"))
-			})
+			if written != nil {
+				_ = caught(func() { _ = written.Append("async-shell: " + message + "\n") })
+			}
 			state := taskState{ID: safe.ID, Status: StatusInternalError, ExitCode: nil, CreatedAt: safe.CreatedAt, FinalizedAt: int64Ptr(nowMs())}
 			_ = caught(func() { writeState(paths, state) })
 			if releaseErr := releaseTaskBackend(dir); releaseErr != nil {
-				_ = caught(func() {
-					appendPrivateFile(paths.Filtered, []byte("async-shell: cleanup unknown: "+messageOf(releaseErr)+"\n"))
-				})
+				if written != nil {
+					_ = caught(func() { _ = written.Append("async-shell: cleanup unknown: " + messageOf(releaseErr) + "\n") })
+				}
 			}
 			if !frameAttempted {
 				var callback *CallbackTarget
@@ -1062,6 +1080,7 @@ func MonitorMain(dir string) {
 			}
 		}
 	}()
+	written = openTranscriptOrPanic(paths)
 	if exists(paths.Closed) {
 		return
 	}
@@ -1110,7 +1129,7 @@ func MonitorMain(dir string) {
 			}
 			text := filter.Write(chunk)
 			if text != "" {
-				appendPrivateFile(paths.Filtered, []byte(text))
+				mustAppend(written, text)
 			}
 		}
 		return grew
@@ -1122,7 +1141,7 @@ func MonitorMain(dir string) {
 		}
 		text := filter.Flush()
 		if text != "" {
-			appendPrivateFile(paths.Filtered, []byte(text))
+			mustAppend(written, text)
 		}
 		lastFlush = nowMs()
 	}
@@ -1198,13 +1217,13 @@ func MonitorMain(dir string) {
 				status = StatusInternalError
 			}
 			if exit.Error != nil {
-				appendPrivateFile(paths.Filtered, []byte("async-shell: "+*exit.Error+"\n"))
+				mustAppend(written, "async-shell: "+*exit.Error+"\n")
 			}
 			if exit.Signal != nil {
-				appendPrivateFile(paths.Filtered, []byte("async-shell: terminated by "+*exit.Signal+"\n"))
+				mustAppend(written, "async-shell: terminated by "+*exit.Signal+"\n")
 			}
 		} else {
-			appendPrivateFile(paths.Filtered, []byte("async-shell: the task exited without reporting a status\n"))
+			mustAppend(written, "async-shell: the task exited without reporting a status\n")
 		}
 
 		if !released {
@@ -1214,7 +1233,7 @@ func MonitorMain(dir string) {
 		if releaseErr != nil {
 			status = StatusInternalError
 			exitCode = nil
-			appendPrivateFile(paths.Filtered, []byte("async-shell: cleanup unknown: "+messageOf(releaseErr)+"\n"))
+			mustAppend(written, "async-shell: cleanup unknown: "+messageOf(releaseErr)+"\n")
 		}
 		finalizedAt := nowMs()
 		state := taskState{ID: task.ID, Status: status, ExitCode: exitCode, CreatedAt: task.CreatedAt, FinalizedAt: int64Ptr(finalizedAt)}
@@ -1223,9 +1242,13 @@ func MonitorMain(dir string) {
 		callback := CallbackFromEnv()
 		if callback != nil {
 			decision := readDelivery(paths, DecisionWaitMs)
-			result := statusResult(paths, state)
+			// A synchronised delivery already owns the transcript, so only an
+			// asynchronous one reads and consumes the unread window here.
+			var result ShellResult
 			if decision == "async" {
-				result = consumeOutput(paths, state)
+				result = unreadResult(paths, state)
+			} else {
+				result = statusResult(paths, state)
 			}
 			frameAttempted = true
 			_ = sendFrame(*callback, AsyncShellCompleteFrame{Kind: AsyncShellKind, AgentID: callback.AgentID, Token: callback.Token, Operation: "complete", ID: task.ID, Notify: decision == "async", Result: result})
@@ -1312,13 +1335,6 @@ func minInt64(left int64, right int64) int64 {
 	return right
 }
 
-func maxInt64(left int64, right int64) int64 {
-	if left > right {
-		return left
-	}
-	return right
-}
-
 func lastN(value string, count int) string {
 	if len(value) <= count {
 		return value
@@ -1359,6 +1375,16 @@ func ReadTask(dir string, cursor *int64) (result ShellResult, err error) {
 func StatusTask(dir string) (result ShellResult, err error) {
 	defer aserr.Recover(&err)
 	result = statusTask(dir)
+	return result, nil
+}
+
+// WindowTask returns and consumes the model-visible unread window. The host uses
+// it where the result is a model delivery rather than a CLI increment.
+func WindowTask(dir string) (result ShellResult, err error) {
+	defer aserr.Recover(&err)
+	paths := taskPaths(dir)
+	task := readTaskFile(paths)
+	result = unreadResult(paths, readStateFile(paths, task))
 	return result, nil
 }
 

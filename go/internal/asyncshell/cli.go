@@ -218,7 +218,7 @@ func run(argv []string, machine bool) (err error) {
 		_ = os.Unsetenv("PI_ASYNC_SHELL_CALL_ID")
 		options := CreateTaskOptions{
 			Argv: parsed.Argv, Cwd: parsed.Cwd, TimeoutMs: parsed.TimeoutMs, WaitMs: parsed.WaitMs,
-			Pipe: parsed.Pipe, Foreground: parsed.Foreground, CallID: callID,
+			Pipe: parsed.Pipe, Foreground: parsed.Foreground, Host: machine, CallID: callID,
 			Callback: CallbackFromEnv(),
 		}
 		result, taskErr := CreateTask(options)
@@ -380,6 +380,15 @@ func run(argv []string, machine bool) (err error) {
 		}
 		if err := CancelTask(dir); err != nil {
 			return err
+		}
+		if machine {
+			// The host reports the Job to the model, so a cancel is a delivery
+			// window rather than a sequential CLI increment.
+			window, windowErr := WindowTask(dir)
+			if windowErr != nil {
+				return windowErr
+			}
+			return report(window, machine)
 		}
 		result, taskErr := PollTask(dir, nil)
 		if taskErr != nil {

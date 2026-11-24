@@ -26,9 +26,15 @@ npm run install:async-shell
 
 ### 模型工具
 
-通过 `bash` 或 Windows 上的 `powershell` 直接运行命令。未提供 `timeout` 时，普通调用先等待 `shell.autoBackgroundAfterMs`（默认 60 秒）；仍在运行就返回 Job ID 和日志路径，原命令继续执行。`background: true` 在启动后立即返回 Job；同时提供 `timeout` 时，超时仍限制 Job 的执行时间。只指定 `timeout` 而未请求后台时保持前台执行。前台结束时直接返回文本；退出码非零时保留输出，并附上退出码说明。
+通过 `bash` 或 Windows 上的 `powershell` 直接运行命令。`timeout` 限制命令的总运行时间；`shell.maxForegroundWaitMs`（默认 180 秒）只决定本次调用等待多久就交出 Job。未提供 `timeout` 时，普通调用先等待 `shell.autoBackgroundAfterMs`（默认 60 秒）；仍在运行就返回 Job ID 和日志路径，原命令继续执行。`background: true` 在启动后立即返回 Job；同时提供 `timeout` 时，超时仍限制 Job 的执行时间。提供 `timeout` 且 `timeout * 1000` 不超过 `shell.maxForegroundWaitMs` 时，调用等待终态并返回前台结果。提供更长的 `timeout` 时，窗口内结束就返回前台结果；达到等待上限仍在运行则返回同一个 Job，`timeout` 从启动起计时，转后台不重置。
 
-`pty` 默认 `false`：普通子进程使用管道输出，stdin 为 EOF。POSIX 停止操作只针对 Job 的进程组，不能清理自行脱离该进程组的进程。`pty: true` 使用 PTY／ConPTY。用 `read` 按行查看返回的临时日志路径；`job_stop(id)` 停止当前执行拥有的 Job，成功报告同一次取消后不重复通知。`job_send(id, text, enter?)` 与 `job_key(id, key)` 仅接受该执行拥有的 PTY Job；`enter` 默认 `false`。模型无需使用 CLI 的 `poll` 或字节游标。
+前台结果与 Pi 原生 Bash／PowerShell 对齐：保留最后 2,000 行且最多 50 KiB。同步交付确定后，从完整日志做有界尾读；不从首个输出分块恢复尾部，也不把整份日志读入内存。截断时说明已显示范围与完整日志路径，尾部诊断仍在正文中；退出码非零时保留输出，并附上退出码说明。
+
+显式后台、自动转后台、完成通知和 `job_stop` 的模型正文先用一句话报告状态，再给出本次新增未读区间内的输出。该区间最多 32 KiB 且最多 2,000 行；超出时保留头部和尾部，省略中间部分。截断说明给出 `output.log` 路径与全局 1-based 行号，不向模型暴露字节游标；模型用 `read` 的 `offset` 按行续读，建议行号允许与最后展示行重叠 1 行，避免末尾行尚未换行时丢内容。没有截断时保留 `Output log:` 入口，日志路径只出现一次。显式后台不附自动转后台建议；自动转后台提示使用实际等待窗口，并说明仍生效的 `timeout`（如有）。同步返回的终态不补发完成通知，异步完成只通知一次；`internal_error` 的清理警告 `message` 放在正文醒目位置，不随输出截断丢失。
+
+`pty` 默认 `false`：普通子进程使用管道输出，stdin 为 EOF。POSIX 停止操作只针对 Job 的进程组，不能清理自行脱离该进程组的进程。`pty: true` 使用 PTY／ConPTY。用 `read` 按行查看返回的临时日志路径；`job_stop(id)` 停止当前执行拥有的 Job，首句只报告实际终态，任务已先自然结束时按实际终态报告，有用时附退出码或失败原因。`job_send(id, text, enter?)` 与 `job_key(id, key)` 仅接受该执行拥有的 PTY Job；`enter` 默认 `false`。模型无需使用 CLI 的 `poll` 或字节游标。
+
+受管 `bash`／`powershell` 保留 SDK 的 `outputSchema`，并向 `codemode` 等程序化调用方返回统一的 `structuredContent`：`output` 为本次交付的过滤输出（最多 1 MiB，不含截断尾注），并包含 `truncated`、`full_output_path`（截断、转后台或 `internal_error` 时）、`exit_code`（运行中或未产生退出码时为 `null`）、`wall_time_seconds`、`status`，以及显式后台或自动转后台时的 `job_id`。非零退出在 `codemode` 中 resolve 该对象而不抛错；脚本用 `status === 'running'` 与 `job_id` 判断是否已转后台。`structuredContent` 只服务程序化调用方，不进入模型正文或持久化历史。
 
 Windows 非 PTY 后端使用 Job Object：先确认运行器已经加入，再启动命令；停止时确认 Job 内进程全部退出。系统禁止加入 Job Object 时启动失败，不退回到无管控执行。依赖 stdin 传入命令的 Shell（如旧版 WSL Bash）保留原生前台传输方式，但不能启动受管 Job。未安装 Go 后端或宿主不可用时，普通调用仍可使用 SDK 前台执行；显式后台或 PTY 请求则报错。
 
@@ -47,7 +53,7 @@ pi-job cancel TASK_ID
 
 `--cwd <dir>` 指定任务工作目录；未指定时使用调用 CLI 时的当前目录。`--wait` 控制本次调用等待多久，默认 5s；`--wait 0` 在命令启动后立即返回。到期后任务继续运行。`--timeout` 控制任务本身的运行上限。等待窗口内完成时直接返回结果，不额外发送完成通知。
 
-`poll` 不等待新输出，默认读取尚未返回的增量。结果包含 `id`、`status`、`exitCode`、`output`、`cursor`、`logPath` 和 `truncated`。游标是过滤后日志的 UTF-8 字节偏移。每次 `output` 最多 32 KiB，累计日志保留；`truncated` 表示本次没有容纳全部输出，可继续查询或读取日志文件。任务已进入终态时，也应继续读取尚未返回的输出。
+`poll` 不等待新输出，默认读取尚未返回的增量。结果包含任务 ID、状态、退出码、输出、游标、日志路径及截断提示。游标是过滤后日志的 UTF-8 字节偏移，指向本块实际读到的位置，不跳过未读内容。每次输出最多 32 KiB 或 2,000 行，先达到任一上限就停止；前台尾部预算不抬高该分块上限。截断表示本次没有容纳全部输出，可继续查询或读取日志文件。任务已进入终态时，也应继续读取尚未返回的输出。
 
 `internal_error` 表示 pi-job 自身发生内部异常，与命令返回非零的 `failed` 区分。结果的 `message` 提醒模型：清理仅尽力而为，不应假定命令已停止或资源已清理，应先检查任务再采取行动。
 

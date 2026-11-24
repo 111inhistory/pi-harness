@@ -80,6 +80,7 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 | --- | --- | --- |
 | `shell.preflight` | `true` | 执行前检查 Shell 语法 |
 | `shell.autoBackgroundAfterMs` | `60000` | 未指定执行超时或显式后台时，Shell 自动转入后台前的等待时间（毫秒） |
+| `shell.maxForegroundWaitMs` | `180000` | 未显式后台时，Shell 调用等待终态的上限（毫秒）；`timeout` 更长时到期返回运行中的 Job |
 | `shell.approval.enabled` | `false` | 启用 Shell 权限审批 |
 | `shell.approval.mode` | `auto` | 没有分支模式记录时的默认值：`ask`、`auto` 或 `yolo` |
 | `shell.approval.command` | `[]` | 静态判断程序及参数数组；空数组表示交给后续审批 |
@@ -91,6 +92,8 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 | `shell.approval.reviewer.provider` | `openai-codex` | 审查模型提供方 |
 | `shell.approval.reviewer.model` | `codex-auto-review` | 审查模型；不会静默替换为其他模型 |
 | `shell.approval.reviewer.timeoutMs` | `90000` | 自动审查超时，单位毫秒 |
+
+`shell.autoBackgroundAfterMs` 不得超过 `shell.maxForegroundWaitMs`，否则配置校验失败。等待上限只决定工具调用何时交出 Job；`timeout` 始终限制命令的总运行时间，转后台不重置。
 
 `Ask` 使用明确规则，其余请求交用户；`Auto Approve` 在规则之外调用自动审查，失败时转人工；`YOLO` 跳过权限审批，仍遵守语法检查开关。`/permissions ask|auto|yolo` 保存当前分支的模式选择，并对后续请求生效；resume 与 `/reload` 恢复选择，没有记录时才使用配置默认值。页脚显示当前模式。人工审批超时、取消或无交互界面均不执行命令。
 

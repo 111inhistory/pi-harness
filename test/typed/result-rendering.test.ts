@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { stripVTControlCharacters } from 'node:util';
 import test from 'node:test';
-import { CustomMessageComponent, ToolExecutionComponent, initTheme, type MessageRenderer, type ToolRendererResolver, type ToolRenderers } from '@earendil-works/pi-coding-agent';
+import { CustomMessageComponent, ToolExecutionComponent, initTheme, type ExtensionAPI, type MessageRenderer, type ToolRendererResolver, type ToolRenderers } from '@earendil-works/pi-coding-agent';
 import { Text, visibleWidth, type Component, type TUI, type TuiMouseEvent } from '@earendil-works/pi-tui';
 import { installResultRendering } from '../../src/result-rendering.ts';
 import { deliveryMessage } from '../../src/subagent/delivery.ts';
+import { installAsyncShellSurface } from '../../src/async-shell/surface.ts';
 
 function renderers() {
   let resolver: ToolRendererResolver | undefined;
@@ -73,6 +74,28 @@ test('existing native or extension result renderers are preserved', () => {
   assert.equal(renderers().resolver('bash', () => native), native);
 });
 
+test('managed shell row renders call flags and keeps a running Job summary and log path visible', () => {
+  initTheme('dark');
+  const definitions = new Map<string, ToolRenderers>();
+  const api = { registerTool(tool: ToolRenderers & { name: string }) { definitions.set(tool.name, tool); }, on() { return () => {}; } };
+  installAsyncShellSurface(api as unknown as ExtensionAPI, async () => assert.fail('rendering must not start a Job'), 'main');
+  const definition = definitions.get('bash');
+  assert.ok(definition);
+  const component = new ToolExecutionComponent('bash', 'ui-shell', { command: 'build', timeout: 240, background: true, pty: true },
+    { showImages: false }, definition, { requestRender() {} } as TUI, '/tmp');
+  component.updateResult({ isError: false, content: [{ type: 'text', text: 'MODEL_ONLY' }], details: {
+    shell: { summary: 'Job job_11111111 started in the background.', output: `${'build output\n'.repeat(50)}LAST_LINE`,
+      footer: 'Output log: /tmp/project/output.log' },
+  } });
+  const collapsed = plain(component.render(80));
+  assert.match(collapsed, /build.*\(timeout 240s\).*\(background\).*\(pty\)/);
+  assert.match(collapsed, /Job job_11111111 started in the background/);
+  assert.match(collapsed, /Output log: \/tmp\/project\/output.log/);
+  assert.doesNotMatch(collapsed, /LAST_LINE|MODEL_ONLY/);
+  component.setExpanded(true);
+  assert.match(plain(component.render(80)), /LAST_LINE/);
+});
+
 test('Subagent peer messages fold with sender and round visible, and expand fully', () => {
   initTheme('dark');
   const message = deliveryMessage({ sourceId: 'sub_01', round: 3, jobId: 'sub_01_r3',
@@ -93,18 +116,23 @@ test('Subagent peer messages fold with sender and round visible, and expand full
   assert.deepEqual(message, before);
 });
 
-test('async shell completion folds output with its task status and preserves result data', () => {
+test('async shell terminal card keeps the warning, tail, and log path visible without mutating history', () => {
   initTheme('dark');
-  const result = { id: 'job_11111111', status: 'completed', exitCode: 0, output: `${'build output\n'.repeat(50)}FINAL_SHELL_OUTPUT`, cursor: 1000, logPath: '/tmp/project/output.log', truncated: false };
-  const message = { role: 'custom' as const, customType: 'async-shell-result', content: JSON.stringify(result), display: true, details: { source: 'host', result }, timestamp: 0 };
+  const result = { id: 'job_11111111', status: 'internal_error', exitCode: 7, message: 'Cleanup could not be confirmed.',
+    output: `FIRST_SHELL_OUTPUT\n${'build output\n'.repeat(50)}FINAL_SHELL_OUTPUT`, cursor: 1000, logPath: '/tmp/project/output.log', truncated: false,
+    window: { firstLine: 1, headLines: 0, headBytes: 0, tailFirstLine: 1, totalLines: 52 } };
+  const message = { role: 'custom' as const, customType: 'async-shell-result', content: 'Model-facing text', display: true, details: { source: 'host', result }, timestamp: 0 };
   const before = structuredClone(message);
   const component = new CustomMessageComponent(message, renderers().shell);
   const collapsed = component.render(80);
   assert.ok(collapsed.length < 20);
-  assert.match(plain(collapsed), /job_11111111.*completed/);
-  assert.doesNotMatch(plain(collapsed), /FINAL_SHELL_OUTPUT/);
+  assert.match(plain(collapsed), /job_11111111.*internal error.*exit code 7/);
+  assert.match(plain(collapsed), /Cleanup could not be confirmed/);
+  assert.match(plain(collapsed), /FINAL_SHELL_OUTPUT/);
+  assert.match(plain(collapsed), /Output log: \/tmp\/project\/output.log/);
+  assert.doesNotMatch(plain(collapsed), /FIRST_SHELL_OUTPUT|Model-facing text|"cursor"/);
   component.setExpanded(true);
-  assert.match(plain(component.render(80)), /FINAL_SHELL_OUTPUT/);
+  assert.match(plain(component.render(80)), /FIRST_SHELL_OUTPUT/);
   assert.deepEqual(message, before);
 });
 

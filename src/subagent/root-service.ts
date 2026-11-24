@@ -4,6 +4,7 @@ import { installAsyncShellSurface } from '../async-shell/surface.ts';
 import { installInheritedShellChecks } from '../shell-approval/bridge.ts';
 import { cancelTask } from '../async-shell/cancel.ts';
 import type { ShellResult } from '../async-shell/protocol.ts';
+import { describeShellResult, shellText } from '../async-shell/presentation.ts';
 import { existsSync } from 'node:fs';
 import {
   SessionManager,
@@ -527,7 +528,7 @@ export class RootService implements ManagedWriteHost {
     this.assertOperational();
     const message = {
       customType: 'async-shell-result',
-      content: JSON.stringify(result),
+      content: shellText(describeShellResult(result, 'terminal')),
       display: true,
       details: { source: 'host', result },
     };

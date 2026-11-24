@@ -47,6 +47,7 @@ test('async shell callbacks share the root main endpoint and cannot target sibli
   await writeSocket(main, {
     ...frame, operation: 'complete', notify: true,
     result: { id: frame.id, status: 'completed', exitCode: 0, output: 'done', cursor: 4,
+      window: { firstLine: 1, headLines: 0, headBytes: 0, tailFirstLine: 1, totalLines: 1 },
       logPath: path.join(root, 'output.log'), truncated: false },
   });
   assert.equal(host.hasPending('sub_1'), false);

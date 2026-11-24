@@ -487,7 +487,8 @@
       "tests": [
         "test/typed/async-shell-cli.test.ts",
         "test/typed/async-shell-cli-ambient.test.ts",
-        "test/typed/async-shell-id.test.ts"
+        "test/typed/async-shell-id.test.ts",
+        "test/typed/shell-clipped-replay-sdk.test.ts"
       ]
     },
     {

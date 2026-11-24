@@ -19,7 +19,7 @@ export type JobInput = { readonly text: string; readonly enter: boolean } | { re
 interface Owner {
   readonly token: string;
   readonly tasks: Map<string, OwnedTask>;
-  readonly launches: Map<string, { pty: boolean; abort: (directory: string) => void }>;
+  readonly launches: Map<string, { pty: boolean; registered: (directory: string) => void }>;
   retiring: boolean;
   release: Promise<void> | null;
 }
@@ -69,7 +69,7 @@ export class AsyncShellHost {
   }
 
   /** Correlate registration with the admitted launch without exposing its lease. */
-  async start(actorId: string, pty: boolean, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<ShellResult> {
+  async start(actorId: string, pty: boolean, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv, signal?: AbortSignal, onRegister?: (directory: string) => void): Promise<ShellResult> {
     signal?.throwIfAborted();
     const owner = this.#owners.get(actorId);
     if (this.#closed || !this.#options.accepting() || !owner || owner.retiring || owner.token !== env.PI_ASYNC_SHELL_TOKEN) {
@@ -85,9 +85,10 @@ export class AsyncShellHost {
       cancellation = this.#options.cancel(directory, this.#root);
       void cancellation.catch(() => {});
     };
-    owner.launches.set(callId, { pty, abort: registered => {
-      directory = registered;
+    owner.launches.set(callId, { pty, registered: path => {
+      directory = path;
       if (signal?.aborted) queueMicrotask(abort);
+      else onRegister?.(path);
     } });
     signal?.addEventListener('abort', abort, { once: true });
     try {
@@ -194,7 +195,7 @@ export class AsyncShellHost {
       const launch = frame.callId === undefined ? undefined : owner.launches.get(frame.callId);
       if (frame.callId !== undefined && launch === undefined) refuse('The Job launch no longer owns this registration.');
       owner.tasks.set(frame.id, { directory: frame.directory, status: 'running', startedAt: performance.now(), pty: launch?.pty ?? true });
-      launch?.abort(frame.directory);
+      launch?.registered(frame.directory);
       return;
     }
     const task = owner.tasks.get(frame.id);

@@ -69,6 +69,12 @@ export interface HarnessConfig {
   };
   readonly shell: {
     readonly autoBackgroundAfterMs: number;
+    /**
+     * Longest a shell call keeps waiting for a terminal state before handing the
+     * running job back as a background job. `timeout` still bounds total runtime;
+     * this only decides when the tool call itself returns.
+     */
+    readonly maxForegroundWaitMs: number;
     readonly preflight: boolean;
     readonly approval: {
       readonly enabled: boolean;
@@ -122,6 +128,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
   codemode: { memoryLimitBytes: 256 * 1024 * 1024, defaultMaxOutputTokens: 10_000 },
   shell: {
     autoBackgroundAfterMs: 60_000,
+    maxForegroundWaitMs: 180_000,
     preflight: true,
     approval: {
       enabled: false, mode: 'auto', command: [], ruleFiles: [], commandTimeoutMs: 10_000, manualTimeoutMs: 30_000,
@@ -289,6 +296,10 @@ function validateRelations(config: HarnessConfig, origins: FieldOrigins, sources
     if (!config.subagent.budgetsByDepth[depth]) {
       fail(['subagent.maxDepth'], `subagent.budgetsByDepth.${depth}`, 'is required by subagent.maxDepth.');
     }
+  }
+  const shell = config.shell;
+  if (shell.autoBackgroundAfterMs > shell.maxForegroundWaitMs) {
+    fail(['shell.autoBackgroundAfterMs', 'shell.maxForegroundWaitMs'], 'shell.autoBackgroundAfterMs', 'must not exceed maxForegroundWaitMs.');
   }
   const retry = config.subagent.routingRetry;
   if (retry.maxDelayMs < retry.baseDelayMs) {

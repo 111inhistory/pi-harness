@@ -6,6 +6,7 @@
 
 | 文档 | 归档原因与当前入口 |
 | --- | --- |
+| [工具输出裁剪与 Shell 自动转后台提案](tool-output-and-shell-background-proposal.md) | 双限裁剪、前台等待上限与 Job 返回已实现，使用[异步 Shell](../async-shell.md) |
 | [Harness 配置与提示词提案](harness-configuration-and-prompts.md) | 配置与段落定制已实现，使用[配置说明](../harness-configuration.md) |
 | [Capability 反馈精简与交付筛选](capability-mcp-readiness.md) | 反馈投影、交付筛选与沙箱规则已实现，使用[接口契约](../interface-contract.md) |
 | [父 Subagent 等待保活设计](subagent-parent-hold-design.md) | parent-hold 已实现，使用[当前架构](../architecture.md) |

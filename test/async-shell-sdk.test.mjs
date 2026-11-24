@@ -18,7 +18,7 @@ describe('Async shell SDK scenarios', { concurrency: 2 }, () => {
   for (const shell of shells) {
     const scenario = shell === 'powershell' ? 'async-shell-powershell' : 'async-shell';
     test(`native terminal completion resumes its owning SDK Subagent through ${shell}`, {
-      skip: !available, timeout: 45000,
+      skip: !available, timeout: 150000,
     }, async t => {
       const cwd = await fsp.mkdtemp(path.join(os.tmpdir(), 'pi-shell-sdk-'));
       // A detached native finalizer can still be exiting after writing its
@@ -28,7 +28,7 @@ describe('Async shell SDK scenarios', { concurrency: 2 }, () => {
       await execute(process.execPath, [build, cli]);
       try {
         const { stdout, stderr } = await execute(process.execPath, [fixture, scenario], {
-          cwd, timeout: 30000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024,
+          cwd, timeout: 120000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024,
           env: {
             ...process.env, PI_OFFLINE: '1', PI_ASYNC_SHELL_CLI: cli,
             PI_CODING_AGENT_DIR: path.join(cwd, 'agent'), PI_SUBAGENT_SOCKET_DIR: path.join(cwd, 'uds'),

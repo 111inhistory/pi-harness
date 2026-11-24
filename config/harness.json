@@ -57,6 +57,7 @@
   },
   "shell": {
     "autoBackgroundAfterMs": 60000,
+    "maxForegroundWaitMs": 180000,
     "preflight": true,
     "approval": {
       "enabled": false,

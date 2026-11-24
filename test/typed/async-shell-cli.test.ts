@@ -432,7 +432,8 @@ test('a monitor internal error crosses the native callback with a cleanup remind
 });
 
 test('a completion frame cannot report a running task', () => {
-  const result = { id: 'job_11111111', status: 'running', exitCode: null, output: '', cursor: 0, logPath: '/tmp/job_11111111/output.log', truncated: false };
+  const result = { id: 'job_11111111', status: 'running', exitCode: null, output: '', cursor: 0, logPath: '/tmp/job_11111111/output.log', truncated: false,
+    window: { firstLine: 1, headLines: 0, headBytes: 0, tailFirstLine: 1, totalLines: 0 } };
   const frame = { kind: 'async-shell', agentId: 'main', token: 'token', operation: 'complete', id: 'job_11111111', notify: true, result };
   assert.throws(() => validateAsyncShellFrame(frame), /running/);
   assert.deepEqual(

@@ -517,7 +517,11 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 
 ## 异步 Shell
 
-原有 Bash／PowerShell 工具接受 `background` 和 `pty`，长时间运行的命令可返回 Job ID 和日志路径。当前执行可用 `job_stop` 停止自己的 Job；只有 PTY Job 接受 `job_send` 和 `job_key`，日志使用 `read` 查看。显式 `timeout` 与转后台等待分别控制执行期限和等待时间。独立 `pi-job` CLI、平台限制和安装契约见[异步 Shell](async-shell.md)。
+Bash／PowerShell 工具接受 `background` 和 `pty`，长时间运行的命令可返回 Job ID 和日志路径。`timeout` 限制命令的总运行时间；未显式后台时，`shell.maxForegroundWaitMs` 决定工具调用等待终态的上限，达到上限仍在运行则返回同一个 Job。当前执行可用 `job_stop` 停止自己的 Job；只有 PTY Job 接受 `job_send` 和 `job_key`，日志使用 `read` 查看。独立 `pi-job` CLI、平台限制和安装契约见[异步 Shell](async-shell.md)。
+
+- **模型可见输出**：前台结果保留最后 2,000 行且最多 50 KiB。显式后台、自动转后台、完成通知与 `job_stop` 只输出本次新增的未读区间，单块最多 32 KiB 且最多 2,000 行；超出时保留头尾，截断说明使用 `output.log` 的全局 1-based 行号。同步终态不补发通知，异步完成只通知一次；`internal_error` 的 `message` 不随截断丢失。
+- **`structuredContent`**：`bash`／`powershell` 保留原 SDK 的 `outputSchema` 字段，增加 `status` 与可选 `job_id`，`exit_code` 允许 `null`。非零退出在 `codemode` 中 resolve 而不抛错；`structuredContent` 不进入模型正文或持久化历史。
+- **TUI**：Shell 结果由结构化 `details` 渲染。工具调用头显示 `background`／`pty`；受管前台等待期推送仅用于展示的尾部预览；转后台、显式后台、`job_stop` 与 `async-shell-result` 卡片显示状态、`message`、`exitCode`、输出预览、截断提示与 `logPath`，不展示裸 JSON。折叠只影响显示，不改变已定稿的模型正文。
 
 注册和完成事件回到会话唯一的 Agent IPC 端点 `main.sock`，帧中携带发起调用的 `agentId` 与该执行租约的 `token`，由根路由到对应 Actor。Main 和子会话在每次 Shell 启动时获得各自的 `PI_AGENT_ID`、`PI_AGENT_SOCKET`（即 `main.sock`）、`PI_ASYNC_SHELL_TOKEN` 和私有任务根；事件不占用 Agent 消息发送者身份，也不产生消息工具授权。未完成异步 Shell 与直接子节点共同保留 Subagent 当前 Job；完成事件先入队，后释放等待。
 
@@ -525,7 +529,7 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 
 本节指引与其他 namespace、MCP 指引共用分支记录与增量更新规则；会话恢复重放已有正文和落点。
 
-工具提示词应表达上述使用流程和行为边界。提示词正文存放在 `prompts/`，通过 `src/prompt-text.ts` 的类型化缓存 getter 读取；执行代码保留数据装配、参数结构和权限判断。角色说明来自 `subagent-routing.json`，候选偏好使用所引用或临时 Preset 的 description，不新增模板框架或静默回退正文。
+工具提示词应表达上述使用流程和行为边界。提示词正文存放在 `prompts/`，通过 `src/prompt-text.ts` 的类型化缓存 getter 读取；执行代码保留数据装配、参数结构和权限判断。Shell 的逐次结果正文、截断说明与界面文案由执行代码按结果字段装配，不放入提示词资产；`prompts/async-shell.json` 只保存工具用途、参数指引和固定控制工具描述。角色说明来自 `subagent-routing.json`，候选偏好使用所引用或临时 Preset 的 description，不新增模板框架或静默回退正文。
 
 ### Subagent 提示词装配
 

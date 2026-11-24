@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { piJobExecutable } from './executable.ts';
-import { validateShellResult, type ShellResult } from './protocol.ts';
+import { MAX_FOREGROUND_RESULT_BYTES, validateShellResult, type ShellResult } from './protocol.ts';
 import { NATIVE_CANCEL_TIMEOUT_MS } from './cancel.ts';
 
 /** A single submission to the native backend; a missing reply is never replayed. */
@@ -19,7 +19,7 @@ export function runJobCommand(
         return;
       }
       try {
-        const result = validateShellResult(JSON.parse(stdout));
+        const result = validateShellResult(JSON.parse(stdout), args[0] === 'create' ? MAX_FOREGROUND_RESULT_BYTES : undefined);
         if (args[0] !== 'create' && result.id !== args[1]) throw new Error('Job ID mismatch.');
         resolve(result);
       }

@@ -12,6 +12,7 @@ const id = 'job_11111111';
 const directory = path.join(os.tmpdir(), `pi-async-shell-${process.getuid?.() ?? 0}`, id);
 const result: ShellResult = {
   id, status: 'completed', exitCode: 0, output: 'done\n', cursor: 5,
+  window: { firstLine: 1, headLines: 1, headBytes: 5, tailFirstLine: 1, totalLines: 1 },
   logPath: path.join(directory, 'output.log'), truncated: false,
 };
 const deferred = () => {
@@ -181,5 +182,14 @@ test('native shell still executes when callback IPC is unavailable and clears in
       PI_AGENT_ID: null, PI_AGENT_SOCKET: null, PI_ASYNC_SHELL_TOKEN: null, PI_ASYNC_SHELL_ROOT: null,
       PI_ASYNC_SHELL_HOST_ERROR: 'fixture IPC endpoint unavailable',
     });
+    // Native fallback keeps Pi's own result fields but adds the same status
+    // discriminator as the managed paths, so Codemode never branches on shape.
+    const structured = answer.structuredContent as {
+      status?: unknown; exit_code?: unknown; truncated?: unknown; wall_time_seconds?: unknown;
+    } | undefined;
+    assert.equal(structured?.status, 'completed');
+    assert.equal(structured?.exit_code, 0);
+    assert.equal(structured?.truncated, false);
+    assert.equal(typeof structured?.wall_time_seconds, 'number');
   }
 });

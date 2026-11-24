@@ -28,7 +28,7 @@ import { createSdkFixture } from "./subagent-sdk-fixture.ts";
 
 const scenario = process.argv[2];
 const fixture = await createSdkFixture({ scenario, ...(scenario === "continuation-crash" ? { durable: true } : {}),
-  ...(scenario.startsWith('async-shell') ? { config: { shell: { autoBackgroundAfterMs: 2500 } } } : {}),
+  ...(scenario.startsWith('async-shell') ? { config: { shell: { autoBackgroundAfterMs: 1000, maxForegroundWaitMs: 3000 } } } : {}),
 });
 const { cwd, agentDir, sessionSocketDir, session, sessionManager, model, controls, chats, notificationChats, classifications, textAnswer, toolAnswer, assistant, call, create, item, settled, listener, events, controlledGate, abortable, durable, childManagers } = fixture;
 const mainAddress = formatMainEndpointPath(sessionSocketDir);

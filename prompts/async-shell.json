@@ -1,6 +1,6 @@
 {
-  "guideline": "Use background: true to return a Shell Job after startup, and pty: true only when it needs a terminal. Use read on the Job's log path, job_stop to stop it, and job_send or job_key for PTY input. Completion is delivered automatically; continue independent work or conclude your turn.",
-  "stop": "Stop a Shell Job owned by this Agent.",
+  "guideline": "Use background: true to return a Shell Job after startup, and pty: true only when it needs a terminal. timeout limits total runtime; if the command is still running when the foreground wait limit expires, the call returns the Job instead. Use read on the returned output.log with a 1-based line offset to continue from omitted output. Use job_stop to stop the Job, and job_send or job_key for PTY input. Completion is delivered automatically; continue independent work or conclude your turn.",
+  "stop": "Stop a Shell Job owned by this Agent and report its terminal state.",
   "send": "Send literal text to a running PTY Job. Set enter to send Enter after the text; defaults to false.",
   "key": "Send one terminal key to a running PTY Job, for example Enter or C-c."
 }

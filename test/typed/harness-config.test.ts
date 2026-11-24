@@ -181,6 +181,26 @@ test('a trusted project composes with the global layer and wins per field', asyn
   assert.equal(config.subagent.prompts.common, 'global common');
 });
 
+test('layered files fail the foreground wait relation at the layer that breaks it', async (t) => {
+  const { agentDir, cwd } = await tempRoots(t);
+  await writeJson(path.join(agentDir, 'harness.json'), { shell: { autoBackgroundAfterMs: 10_000, maxForegroundWaitMs: 30_000 } });
+  const projectFile = path.join(cwd, '.pi', 'harness.json');
+  const global = loadHarnessConfig({ cwd, agentDir, projectTrusted: false });
+  assert.deepEqual([global.shell.autoBackgroundAfterMs, global.shell.maxForegroundWaitMs], [10_000, 30_000]);
+  assert.equal(global.shell.preflight, DEFAULT_HARNESS_CONFIG.shell.preflight);
+
+  await writeJson(projectFile, { shell: { autoBackgroundAfterMs: 60_000 } });
+  assert.throws(
+    () => loadHarnessConfig({ cwd, agentDir, projectTrusted: true }),
+    (error: unknown) => error instanceof HarnessConfigError
+      && error.source === projectFile
+      && error.field === 'shell.autoBackgroundAfterMs'
+      && /must not exceed maxForegroundWaitMs\.$/.test(error.message),
+  );
+  // The same file is inert while the project is untrusted.
+  assert.equal(loadHarnessConfig({ cwd, agentDir, projectTrusted: false }).shell.autoBackgroundAfterMs, 10_000);
+});
+
 test('an untrusted project file is ignored even when it is invalid', async (t) => {
   const { agentDir, cwd } = await tempRoots(t);
   await writeJson(path.join(cwd, '.pi', 'harness.json'), { subagent: { surprise: true } });
@@ -259,6 +279,49 @@ test('BM25 and retry bounds accept their documented ranges and reject the rest',
   expectError(resolveError([retry({ maxAttempts: 0 })]), 'global', 'subagent.routingRetry.maxAttempts');
   expectError(resolveError([retry({ maxAttempts: 2.5 })]), 'global', 'subagent.routingRetry.maxAttempts');
   expectError(resolveError([retry({ maxDelayMs: 100, baseDelayMs: 200 })]), 'global', 'subagent.routingRetry.maxDelayMs');
+});
+
+test('shell foreground wait defaults to three minutes and accepts override', () => {
+  assert.equal(DEFAULT_HARNESS_CONFIG.shell.maxForegroundWaitMs, 180_000);
+  assert.equal(resolveHarnessConfig().shell.maxForegroundWaitMs, 180_000);
+  assert.equal(DEFAULT_HARNESS_CONFIG.shell.autoBackgroundAfterMs <= DEFAULT_HARNESS_CONFIG.shell.maxForegroundWaitMs, true);
+  const shell = (value: Record<string, number>) => ({ source: 'global', value: { shell: value } });
+  assert.equal(resolveHarnessConfig([shell({ maxForegroundWaitMs: 600_000 })]).shell.maxForegroundWaitMs, 600_000);
+  expectError(resolveError([shell({ maxForegroundWaitMs: 0 })]), 'global', 'shell.maxForegroundWaitMs');
+  expectError(resolveError([shell({ maxForegroundWaitMs: 1.5 })]), 'global', 'shell.maxForegroundWaitMs');
+  expectError(resolveError([shell({ maxForegroundWaitMs: Number.POSITIVE_INFINITY })]), 'global', 'shell.maxForegroundWaitMs');
+});
+
+test('auto background wait may not exceed the foreground wait', () => {
+  const shell = (value: Record<string, number>) => ({ source: 'global', value: { shell: value } });
+  assert.equal(
+    resolveHarnessConfig([shell({ autoBackgroundAfterMs: 180_000, maxForegroundWaitMs: 180_000 })]).shell.autoBackgroundAfterMs,
+    180_000,
+  );
+  expectError(
+    resolveError([shell({ autoBackgroundAfterMs: 180_001, maxForegroundWaitMs: 180_000 })]),
+    'global', 'shell.autoBackgroundAfterMs',
+  );
+  // A layer that lowers the ceiling invalidates the inherited wait it now constrains.
+  expectError(
+    resolveError([{ source: 'global', value: { shell: { maxForegroundWaitMs: 30_000 } } }]),
+    'global', 'shell.autoBackgroundAfterMs',
+  );
+  // Layers compose before judging, so the failure names the layer that last touched either side.
+  expectError(
+    resolveError([
+      { source: 'global', value: { shell: { maxForegroundWaitMs: 30_000, autoBackgroundAfterMs: 10_000 } } },
+      { source: 'project', value: { shell: { autoBackgroundAfterMs: 60_000 } } },
+    ]),
+    'project', 'shell.autoBackgroundAfterMs',
+  );
+  assert.equal(
+    resolveHarnessConfig([
+      { source: 'global', value: { shell: { maxForegroundWaitMs: 30_000, autoBackgroundAfterMs: 10_000 } } },
+      { source: 'project', value: { shell: { maxForegroundWaitMs: 60_000 } } },
+    ]).shell.maxForegroundWaitMs,
+    60_000,
+  );
 });
 
 test('positive integer limits reject zero, fractions and non-finite values', () => {

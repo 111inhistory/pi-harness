@@ -7,11 +7,9 @@
  * travel over the existing managed NDJSON endpoint with `writeSocket`; an empty response line is the acknowledgement, and an unknown
  * handoff result is never replayed by the sender.
  *
- * `ShellResult.cursor` is the byte offset just past the text this result carried,
- * inside the task's complete filtered output log — not a character count and not
- * a raw-log offset. The log keeps every filtered byte; only a response is bounded
- * (`MAX_RESULT_BYTES`), so a result may report `truncated` and the caller
- * continues from `cursor`.
+ * `ShellResult.cursor` is a private byte offset in the filtered log. The host
+ * can consume an entire window while showing only parts of it. The window's
+ * line coordinates let the caller find the omitted regions with `read`.
  */
 
 import { isTaskId } from "./task-id.ts";
@@ -20,6 +18,7 @@ export const ASYNC_SHELL_KIND = "async-shell";
 
 /** Upper bound of one result's `output`, in bytes of UTF-8. */
 export const MAX_RESULT_BYTES = 32 * 1024;
+export const MAX_FOREGROUND_RESULT_BYTES = 50 * 1024;
 
 const MAX_ID_CHARS = 12;
 const MAX_AGENT_ID_CHARS = 64;
@@ -28,18 +27,26 @@ const MAX_PATH_CHARS = 4096;
 
 export type ShellStatus = "running" | "completed" | "failed" | "internal_error" | "cancelled" | "timed_out";
 
+export interface ShellOutputWindow {
+  readonly firstLine: number;
+  readonly headLines: number;
+  readonly headBytes: number;
+  readonly tailFirstLine: number;
+  readonly totalLines: number;
+}
 
 export interface ShellResult {
   readonly id: string;
   readonly status: ShellStatus;
   readonly exitCode: number | null;
-  /** Filtered text of this response, at most `MAX_RESULT_BYTES`. */
+  /** Filtered output, possibly two concatenated excerpts (see `window`). */
   readonly output: string;
-  /** Byte offset just past `output` in the complete filtered log. */
+  /** End of the consumed range in the filtered log. */
   readonly cursor: number;
+  readonly window: ShellOutputWindow;
   /** The complete filtered transcript on disk; it is never capped. */
   readonly logPath: string;
-  /** More filtered output remains after `cursor`; read on from there. */
+  /** Some output was omitted or remains after `cursor`. */
   readonly truncated: boolean;
   /** Internal-error reminder; output and cursor retain their normal log semantics. */
   readonly message?: string;
@@ -120,15 +127,37 @@ function cursor(value: unknown): number {
   return value;
 }
 
-export function validateShellResult(value: unknown): ShellResult {
+function lineNumber(value: unknown, field: string, minimum: number): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) {
+    throw new AsyncShellFrameError(`result.window.${field} is outside the allowed range.`);
+  }
+  return value;
+}
+
+function outputWindow(value: unknown, output: Buffer): ShellOutputWindow {
+  if (!record(value)) throw new AsyncShellFrameError('result.window must be an object.');
+  const firstLine = lineNumber(value['firstLine'], 'firstLine', 1);
+  const headLines = lineNumber(value['headLines'], 'headLines', 0);
+  const headBytes = lineNumber(value['headBytes'], 'headBytes', 0);
+  const tailFirstLine = lineNumber(value['tailFirstLine'], 'tailFirstLine', firstLine);
+  const totalLines = lineNumber(value['totalLines'], 'totalLines', 0);
+  if ((headBytes === 0) !== (headLines === 0) || headBytes > output.length ||
+    ((output[headBytes] ?? 0) & 0xc0) === 0x80 || tailFirstLine > totalLines + 1 ||
+    (output.length > 0 && tailFirstLine > totalLines)) {
+    throw new AsyncShellFrameError('result.window does not match the output range.');
+  }
+  return { firstLine, headLines, headBytes, tailFirstLine, totalLines };
+}
+
+export function validateShellResult(value: unknown, maxOutputBytes = MAX_RESULT_BYTES): ShellResult {
   if (!record(value)) throw new AsyncShellFrameError("frames carry one result object.");
   const id = value["id"];
   if (typeof id !== 'string' || !isTaskId(id)) throw new AsyncShellFrameError('Invalid job result ID.');
   const reported = status(value["status"]);
   const output = value["output"];
   if (typeof output !== "string") throw new AsyncShellFrameError("result.output must be a string.");
-  if (Buffer.byteLength(output, "utf8") > MAX_RESULT_BYTES) {
-    throw new AsyncShellFrameError(`result.output must not exceed ${MAX_RESULT_BYTES} bytes.`);
+  if (Buffer.byteLength(output, "utf8") > maxOutputBytes) {
+    throw new AsyncShellFrameError(`result.output must not exceed ${maxOutputBytes} bytes.`);
   }
   if (typeof value["truncated"] !== "boolean") throw new AsyncShellFrameError("result.truncated must be a boolean.");
   return {
@@ -137,6 +166,7 @@ export function validateShellResult(value: unknown): ShellResult {
     exitCode: exitCode(value["exitCode"]),
     output,
     cursor: cursor(value["cursor"]),
+    window: outputWindow(value['window'], Buffer.from(output)),
     logPath: text(value["logPath"], "result.logPath", MAX_PATH_CHARS),
     truncated: value["truncated"],
     ...(reported === "internal_error"
