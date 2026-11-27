@@ -495,7 +495,9 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 | `presets.catalog/current/apply/clear` | 共享 Preset 配置、分支快照及应用／清除结果，保持稀疏选择语义 |
 | `hooks.current` | 当前有效 Hook 结构、禁用规则、分支静音及脱敏配置诊断 |
 | `hooks.stats` | 当前会话的 Hook、工具和分类器计数快照 |
+| `hooks.mute/unmute/reset` | 写入当前分支的 Hook 静音增量 |
 | `approvals.list/get/respond/subscribe` | 真实审批队列和首次有效决定，保持超时、取消、无消费者时拒绝及退役释放 |
+| `approvals.mode.get/set` | 读取 Shell 审批模式，或为当前分支固定后续请求使用的模式 |
 | `sessions.list/connect` | 共享会话目录与联系操作，联系和发送相互独立 |
 | `tools.catalog`、`tools.detail` | 当前作用域目录与详情，报告 registered、eligible、active、managed 和 permission；禁用项保留，供用户管理 |
 | `tools.activate`、`tools.deactivate` | 修改当前会话按需激活集合，与用户命令共用领域操作 |
@@ -508,9 +510,16 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 | `message.send` | 按完整逻辑地址投递、续跑或广播，返回领域回执与逐接收者结果；广播与子节点选择排除发送者，跨会话只允许 Main 到对方 `:main`，其他来源拒绝 |
 | `history.read` | 读取指定 Job 的原生历史区间；running Job 返回已产生区间与 live 端，首个 Job 的 `null` start 是合法边界（按分支开头读取），memory-only 会话明确报告历史不可用 |
 | `stream.subscribe`、`stream.unsubscribe` | 订阅或解除指定 Job 的子会话执行流；订阅响应携带读取边界（状态、轮次、历史区间、已产生消息与当前 `partial`），事件携带订阅、根会话、Agent 与 Job 归属 |
+| `shell.jobs.subscribe` | 读取当前根的活跃后台 Shell Job，并订阅后续变化 |
 
 - 公开参数、结果、校验和生成 schema 关联于 `src/harness-rpc/contract.ts`，编译时核对方法覆盖及结果类型。SDK 事件与历史保留不透明载荷。领域错误保留 code、message 和 detail；登记后的启动失败以 `start_failed` 和 detail 中的 registered／failures 报告，不能视为整批未创建。查询与回执不额外写入 Main 对话，操作自身仍保留业务记录。
 - 子任务操作使用当前领域绑定；Root 过渡期间拒绝访问旧服务。SDK Main 控制独立于 Subagent 健康状态；后续回调受绑定代次围栏隔离。
+
+### Shell 审批模式
+
+`approvals.mode.get` 无参数，返回配置默认值、当前模式及其来源。`autoFallbackToManual` 只在审批启用、当前模式为 `auto` 且审查器停用或 Node 版本不支持时为 `true`。审批停用时仍可读取；未安装 Shell 审批扩展时返回 `unavailable`。
+
+`approvals.mode.set` 接收 `{ mode }`，允许 `ask`、`auto`、`yolo`，返回 `{ mode, previousMode, changed, source }`。首次显式选择会写入分支，即使选择等于配置默认值。已有相同分支值时返回 `changed: false`。成功响应的 `source` 为 `branch`。模式变更只影响后续审批，无须等待当前轮结束。审批停用或扩展未安装时返回 `unavailable`。
 
 ### Hook 查询
 
@@ -518,6 +527,20 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 
 - `hooks.current` 读取当前分支的 Preset 与静音记录，复用 Hook 文件快照。首次查询可加载文件。规则按 ID 排序，`active` 表示可参与执行，`muted` 表示分支静音。`disabled` 列出合并后被文件或 Preset 禁用的 ID；`muted` 包含已无规则定义的历史 ID。文件层无效时返回 `valid: false`，`rules` 和 `disabled` 为空；刷新失败而旧快照仍有效时继续返回旧快照。`warnings` 只含层级、可用的规则 ID 和诊断码。响应不含配置路径、规则表达式、动作正文或分类问题。
 - `hooks.stats` 返回当前会话的计数快照：按 ID 排序的最多 64 条规则、其余规则的合计、固定六类工具和分类器计数。分类耗时按毫秒取整。会话切换后从新会话读取，查询不清零。
+
+### Hook 静音
+
+`hooks.mute` 和 `hooks.unmute` 接收 `{ id }`。`hooks.reset` 无参数。三种方法均返回 `{ changed, muted }`，其中 `muted` 按 ID 的 ASCII 顺序排列。会话必须空闲；分支无法写入时返回 `not_ready`。未安装 Hooks 时返回 `unavailable`。
+
+客户端可静音尚未定义的 ID。`hooks.unmute` 和 `hooks.reset` 只清除分支静音。TOML 中的 `enabled = false` 仍然生效。重复设置相同状态时，方法返回 `changed: false`，不追加记录。静音会撤销旧规则的待提交动作；取消静音只授权后续匹配。
+
+### Shell Job 观察
+
+`shell.jobs.subscribe` 接收可选的 `{ agentId }`。宿主在同一次操作中返回 `{ subscription, jobs }` 并安装订阅。`jobs` 只含当前根中已转后台且还未结束的 Shell Job。客户端用 `stream.unsubscribe` 退订。根退役时宿主解除订阅；客户端连接到新根后可重新订阅。
+
+事件的 `kind` 为 `shell_job`，并带 `rootSessionId`。`phase` 为 `backgrounded` 或 `finished`。普通前台命令不产生事件。采用受管环境直接启动 `pi-job` 时，注册表示宿主已接纳启动，进程可能尚未开始。此时 `shell`、`cwd` 和 `command` 为 `null`。`pid` 是登记进程的 PID，`startedAt` 和 `finishedAt` 是 Unix 毫秒时间。
+
+事件不含 stdout 或 stderr。`command` 最多 4 KiB（UTF-8），`commandTruncated` 标记省略，`logPath` 指向完整日志。`finished` 携带 `status`、`exitCode` 和 `truncated`。`internal_error` 可以结束观察，底层资源仍可能由原根保留并清理。新订阅不补发已结束的 Job。
 
 ### 执行流
 

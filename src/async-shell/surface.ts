@@ -193,7 +193,7 @@ export function installAsyncShellSurface(
                   ...(waitMs === undefined ? ['--foreground'] : ['--wait', String(waitMs)]),
                   ...(timeoutMs === undefined ? [] : ['--timeout', String(Math.ceil(timeoutMs))]),
                   '--', shell.shell, ...shell.args, text,
-                ], cwd, env, signal, startPreview);
+                ], cwd, env, signal, startPreview, { shell: shell.shell, command });
               } finally {
                 previewEnded = true;
                 clearTimeout(previewTimer);

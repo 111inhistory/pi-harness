@@ -232,8 +232,8 @@ test('a failed append keeps the current mode and reports an error instead of suc
   assert.deepEqual(persistedModes(manager), [], 'no entry is invented after the failed write');
 });
 
-test('a picker that resolves after session teardown neither persists nor changes mode', async t => {
-  for (const cancellation of ['switch', 'tree'] as const) {
+test('a stale picker neither persists nor changes mode', async t => {
+  for (const cancellation of ['switch', 'tree', 'append'] as const) {
     const { manager } = temporarySession(t);
     const f = fixture(manager);
     f.start('startup');
@@ -242,7 +242,8 @@ test('a picker that resolves after session teardown neither persists nor changes
     const pending = f.command.handler('', f.context);
     assert.equal(f.pickers.length, 1, `${cancellation}: picker opened`);
     if (cancellation === 'switch') f.beforeSwitch();
-    else f.beforeTree();
+    else if (cancellation === 'tree') f.beforeTree();
+    else manager.appendCustomEntry('fixture', {});
     f.resolveSelect(f.pickers[0]![2]!);
     await pending;
 

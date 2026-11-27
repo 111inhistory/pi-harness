@@ -1,0 +1,19 @@
+{
+  "kind": "shell_job",
+  "rootSessionId": "fixture-root",
+  "phase": "finished",
+  "jobId": "job_0123abcd",
+  "agentId": "main",
+  "pty": false,
+  "shell": null,
+  "cwd": null,
+  "command": null,
+  "commandTruncated": false,
+  "pid": 123,
+  "startedAt": 1000,
+  "logPath": "/tmp/fixture/job_0123abcd/output.log",
+  "finishedAt": 1100,
+  "status": "completed",
+  "exitCode": 0,
+  "truncated": false
+}

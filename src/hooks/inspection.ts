@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { restorePresetSnapshot } from '../preset/state.ts';
 import { HookLayerError, hookLayerWinners, type HookAction, type HookSource, type readHookLayers } from './config.ts';
-import { restoreHookOverrides } from './override.ts';
+import { restoreHookOverrides, type HookOverride } from './override.ts';
 import type { HookStatsSnapshot } from './stats.ts';
 import { compileWhen } from './when.ts';
 
@@ -53,7 +53,10 @@ export function inspectHooks(ctx: ExtensionContext, readLayers: () => ReturnType
 interface HookInspection {
   current(ctx: ExtensionContext): ReturnType<typeof inspectHooks> | undefined;
   stats(): HookStatsSnapshot | undefined;
+  override(ctx: ExtensionContext, delta: HookOverride): HookOverrideResult | undefined;
 }
+
+export interface HookOverrideResult { readonly changed: boolean; readonly muted: readonly string[] }
 
 const CHANNEL = 'pi-harness:hook-inspection';
 interface Exchange { inspection?: HookInspection }

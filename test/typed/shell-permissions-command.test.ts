@@ -37,6 +37,7 @@ function fixture(enabled = true) {
   const pickers: string[][] = [];
   let pick: number | undefined;
   const context = {
+    cwd: manager.getCwd(), isProjectTrusted: () => true,
     hasUI: true, mode: 'tui', sessionManager: manager,
     ui: {
       addAutocompleteProvider(factory: AutocompleteProviderFactory) { wrappers.push(factory); },

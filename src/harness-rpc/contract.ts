@@ -725,6 +725,8 @@ export const PresetsCurrentResultSchema = Type.Object({
 }, { additionalProperties: false });
 
 const hookId = Type.String({ pattern: '^[a-z][a-z0-9-]{0,63}$' });
+const hookIdParams = Type.Object({ id: hookId }, { additionalProperties: true });
+const hookOverrideResult = Type.Object({ changed: Type.Boolean(), muted: Type.Array(hookId, { uniqueItems: true }) }, { additionalProperties: false });
 const hookSource = Type.Union([Type.Literal('global'), Type.Literal('preset'), Type.Literal('project')]);
 const hookAction = Type.Union([Type.Literal('injectHint'), Type.Literal('injectSection'), Type.Literal('activate'), Type.Literal('discoverCapability')]);
 const hookRuleSummary = Type.Object({
@@ -828,6 +830,16 @@ export const PresetClearOutcomeSchema = Type.Object({
 
 export const ShellApprovalDecisionSchema = Type.Union([Type.Literal('allow'), Type.Literal('deny')]);
 
+const shellPermissionMode = Type.Union([Type.Literal('ask'), Type.Literal('auto'), Type.Literal('yolo')]);
+const approvalModeGetResult = Type.Object({
+  enabled: Type.Boolean(), mode: shellPermissionMode, source: Type.Union([Type.Literal('config'), Type.Literal('branch')]),
+  defaultMode: shellPermissionMode, autoFallbackToManual: Type.Boolean(),
+}, { additionalProperties: false });
+const approvalModeSetParams = Type.Object({ mode: shellPermissionMode }, { additionalProperties: true });
+const approvalModeSetResult = Type.Object({ mode: shellPermissionMode, previousMode: shellPermissionMode,
+  changed: Type.Boolean(), source: Type.Literal('branch'),
+}, { additionalProperties: false });
+
 export const ShellApprovalPendingStateSchema = Type.Union([Type.Literal('queued'), Type.Literal('active')]);
 
 export const ShellApprovalPendingSchema = Type.Object({
@@ -889,6 +901,27 @@ export const ApprovalsEventSchema = Type.Object({
 // ---------------------------------------------------------------------------
 // Session peers
 // ---------------------------------------------------------------------------
+
+const shellAgentId = Type.String({ minLength: 1, maxLength: 64 });
+const shellJobFields = {
+  jobId: Type.String({ pattern: '^job_[0-9a-f]{8}$' }), agentId: shellAgentId, pty: Type.Boolean(),
+  shell: nullable(Type.String()), cwd: nullable(Type.String()), command: nullable(Type.String({ maxLength: 4096 })),
+  commandTruncated: Type.Boolean(), pid: Type.Integer({ minimum: 1 }), startedAt: Type.Integer({ minimum: 0 }),
+  logPath: Type.String({ minLength: 1 }),
+};
+const shellJobSummary = Type.Object(shellJobFields, { additionalProperties: false });
+const shellJobsSubscribeParams = Type.Object({ agentId: Type.Optional(shellAgentId) }, { additionalProperties: true });
+const shellJobsSubscribeResult = Type.Object({
+  subscription: Type.String({ minLength: 1 }), jobs: Type.Array(shellJobSummary),
+}, { additionalProperties: false });
+const shellEventFields = { kind: Type.Literal('shell_job'), rootSessionId: Type.String({ minLength: 1 }), ...shellJobFields };
+export const ShellJobEventSchema = Type.Union([
+  Type.Object({ ...shellEventFields, phase: Type.Literal('backgrounded') }, { additionalProperties: false }),
+  Type.Object({ ...shellEventFields, phase: Type.Literal('finished'), finishedAt: Type.Integer({ minimum: 0 }),
+    status: Type.Union([Type.Literal('completed'), Type.Literal('failed'), Type.Literal('internal_error'), Type.Literal('cancelled'), Type.Literal('timed_out')]),
+    exitCode: nullable(Type.Integer()), truncated: Type.Boolean(),
+  }, { additionalProperties: false }),
+]);
 
 export const LiveSessionSchema = Type.Object({
   sessionId: Type.String({ minLength: 1 }),
@@ -1142,6 +1175,8 @@ export const SHARED_CONTRACT_DEFS = {
   PresetSnapshot: PresetSnapshotSchema,
   PresetsCurrentResult: PresetsCurrentResultSchema,
   HooksCurrentResult: HooksCurrentResultSchema,
+  HookIdParams: hookIdParams,
+  HookOverrideResult: hookOverrideResult,
   HooksStatsResult: HooksStatsResultSchema,
   PresetApplyParams: PresetApplyParamsSchema,
   PresetIssueSeverity: PresetIssueSeveritySchema,
@@ -1151,6 +1186,9 @@ export const SHARED_CONTRACT_DEFS = {
   PresetApplyOutcome: PresetApplyOutcomeSchema,
   PresetClearOutcome: PresetClearOutcomeSchema,
   ShellApprovalDecision: ShellApprovalDecisionSchema,
+  ApprovalModeGetResult: approvalModeGetResult,
+  ApprovalModeSetParams: approvalModeSetParams,
+  ApprovalModeSetResult: approvalModeSetResult,
   ShellApprovalPendingState: ShellApprovalPendingStateSchema,
   ShellApprovalPending: ShellApprovalPendingSchema,
   ApprovalsListResult: ApprovalsListResultSchema,
@@ -1160,6 +1198,9 @@ export const SHARED_CONTRACT_DEFS = {
   ShellApprovalRespondResult: ShellApprovalRespondResultSchema,
   ApprovalsSubscribeResult: ApprovalsSubscribeResultSchema,
   ApprovalsEvent: ApprovalsEventSchema,
+  ShellJobsSubscribeParams: shellJobsSubscribeParams,
+  ShellJobsSubscribeResult: shellJobsSubscribeResult,
+  ShellJobEvent: ShellJobEventSchema,
   LiveSession: LiveSessionSchema,
   SessionsListResult: SessionsListResultSchema,
   SessionsConnectParams: SessionsConnectParamsSchema,
@@ -1299,6 +1340,10 @@ export const HARNESS_RPC_CONTRACT = {
     description: 'Subscribe to a Job live event stream and capture a consistent boundary snapshot.',
     params: 'JobIdParams', result: 'StreamSubscribeResult', paramsRequired: true,
   }),
+  [RPC_METHODS.shellJobsSubscribe]: defineMethod({
+    description: 'Observe background Shell Jobs in the active root with an initial snapshot and optional Actor filter.',
+    params: 'ShellJobsSubscribeParams', result: 'ShellJobsSubscribeResult', paramsRequired: false,
+  }),
   [RPC_METHODS.streamUnsubscribe]: defineMethod({
     description: 'Detach a subscription from the current RPC connection.',
     params: 'StreamUnsubscribeParams', result: 'StreamUnsubscribeResult', paramsRequired: true,
@@ -1315,6 +1360,18 @@ export const HARNESS_RPC_CONTRACT = {
     description: 'Inspect the effective Hook rules and branch mute state without exposing configuration text.',
     params: 'NoParams', result: 'HooksCurrentResult', paramsRequired: false,
   }),
+  [RPC_METHODS.hooksMute]: defineMethod({
+    description: 'Mute a Hook ID on the active branch while the session is idle.',
+    params: 'HookIdParams', result: 'HookOverrideResult', paramsRequired: true,
+  }),
+  [RPC_METHODS.hooksUnmute]: defineMethod({
+    description: 'Clear one branch Hook mute while the session is idle.',
+    params: 'HookIdParams', result: 'HookOverrideResult', paramsRequired: true,
+  }),
+  [RPC_METHODS.hooksReset]: defineMethod({
+    description: 'Clear all branch Hook mutes while the session is idle.',
+    params: 'NoParams', result: 'HookOverrideResult', paramsRequired: false,
+  }),
   [RPC_METHODS.hooksStats]: defineMethod({
     description: 'Read bounded in-memory Hook, tool and classifier counters for the active session.',
     params: 'NoParams', result: 'HooksStatsResult', paramsRequired: false,
@@ -1326,6 +1383,14 @@ export const HARNESS_RPC_CONTRACT = {
   [RPC_METHODS.presetsClear]: defineMethod({
     description: 'Clear the active preset from branch management without rolling back model/thinking/tools.',
     params: 'NoParams', result: 'PresetClearOutcome', paramsRequired: false,
+  }),
+  [RPC_METHODS.approvalsModeGet]: defineMethod({
+    description: 'Read the configured and branch-selected Shell approval mode.',
+    params: 'NoParams', result: 'ApprovalModeGetResult', paramsRequired: false,
+  }),
+  [RPC_METHODS.approvalsModeSet]: defineMethod({
+    description: 'Pin the Shell approval mode to the active branch for subsequent requests.',
+    params: 'ApprovalModeSetParams', result: 'ApprovalModeSetResult', paramsRequired: true,
   }),
   [RPC_METHODS.approvalsList]: defineMethod({
     description: 'List pending shell approval requests on the root approval controller.',
@@ -1463,6 +1528,7 @@ export type ApprovalsGetResult = DeepReadonly<Static<typeof ApprovalsGetResultSc
 export type ShellApprovalRespondResult = DeepReadonly<Static<typeof ShellApprovalRespondResultSchema>>;
 export type ApprovalsSubscribeResult = DeepReadonly<Static<typeof ApprovalsSubscribeResultSchema>>;
 export type ApprovalsEvent = DeepReadonly<Static<typeof ApprovalsEventSchema>>;
+export type ShellJobEvent = DeepReadonly<Static<typeof ShellJobEventSchema>>;
 export type LiveSession = DeepReadonly<Static<typeof LiveSessionSchema>>;
 export type SessionsListResult = DeepReadonly<Static<typeof SessionsListResultSchema>>;
 export type SessionConnect = DeepReadonly<Static<typeof SessionConnectSchema>>;

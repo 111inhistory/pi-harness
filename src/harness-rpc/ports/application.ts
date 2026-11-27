@@ -3,8 +3,9 @@ import {
   loadPresets, currentPresetView, applyPresetToSession, clearPresetFromSession,
 } from '../../preset/application.ts';
 import type { PresetApplyOutcome as DomainPresetApplyOutcome } from '../../preset/apply.ts';
-import { shellApprovalController } from '../../shell-approval/extension.ts';
+import { shellApprovalController, shellPermissionModes } from '../../shell-approval/extension.ts';
 import { hookInspection } from '../../hooks/inspection.ts';
+import type { HookOverride } from '../../hooks/override.ts';
 import type { RootService } from '../../subagent/root-service.ts';
 import type { MethodParams, MethodResult } from '../contract.ts';
 import type { PresetSnapshot } from '../../preset/state.ts';
@@ -60,7 +61,24 @@ export function buildApplicationPort(api: ExtensionAPI, ctx: ExtensionContext, r
     if (value === undefined) throw new RpcRequestError(RPC_ERROR.unavailable, 'Shell approval is not available in this session.');
     return value;
   };
+  const permissionModes = () => {
+    assertSession();
+    const port = shellPermissionModes(api);
+    if (port === undefined) throw new RpcRequestError(RPC_ERROR.unavailable, 'Shell permission modes are not available in this session.');
+    return port;
+  };
+  const changeHookOverride = (delta: HookOverride): MethodResult<'hooks.mute'> => {
+    assertSession();
+    const port = hookInspection(api);
+    if (port === undefined) throw new RpcRequestError(RPC_ERROR.unavailable, 'Hooks are not available in this session.');
+    const result = port.override(ctx, delta);
+    if (result === undefined) throw new RpcRequestError(RPC_ERROR.notReady, 'The branch is not ready for Hook overrides.');
+    return result;
+  };
   return {
+    hooksMute: ({ id }: MethodParams<'hooks.mute'>) => changeHookOverride({ version: 1, op: 'mute', id }),
+    hooksUnmute: ({ id }: MethodParams<'hooks.unmute'>) => changeHookOverride({ version: 1, op: 'unmute', id }),
+    hooksReset: () => changeHookOverride({ version: 1, op: 'reset' }),
     hooksCurrent(): MethodResult<'hooks.current'> {
       assertSession();
       const result = hookInspection(api)?.current(ctx);
@@ -130,6 +148,22 @@ export function buildApplicationPort(api: ExtensionAPI, ctx: ExtensionContext, r
       return clearPresetFromSession(host);
     },
     approvalsList(): MethodResult<'approvals.list'> { return { items: controller().list() }; },
+    shellJobsSubscribe(params: MethodParams<'shell.jobs.subscribe'>, connection: RpcConnection): MethodResult<'shell.jobs.subscribe'> {
+      assertSession();
+      let unsubscribe: (() => void) | undefined;
+      const subscription = connection.addSubscription(() => unsubscribe?.(), 'root');
+      const observation = root.shell.observe(params.agentId, event => {
+        connection.pushEvent(subscription, { kind: 'shell_job', rootSessionId: root.sessionId, ...event });
+      });
+      unsubscribe = observation.unsubscribe;
+      return { subscription, jobs: observation.jobs };
+    },
+    approvalsModeGet(): MethodResult<'approvals.mode.get'> { return permissionModes().get(ctx); },
+    approvalsModeSet(params: MethodParams<'approvals.mode.set'>): MethodResult<'approvals.mode.set'> {
+      const result = permissionModes().set(ctx, params.mode);
+      if (result === undefined) throw new RpcRequestError(RPC_ERROR.unavailable, 'Shell approval is disabled.');
+      return result;
+    },
     approvalsGet(params: MethodParams<'approvals.get'>): MethodResult<'approvals.get'> {
       return { item: controller().get(params.id) ?? null };
     },

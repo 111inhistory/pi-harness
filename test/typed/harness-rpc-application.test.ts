@@ -9,20 +9,24 @@
  */
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from 'node:url';
 import test from "node:test";
 import { stringify } from "smol-toml";
 
 import { fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import {
   createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
   type AgentSession, type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 
-import { validateMethodResult } from "../../src/harness-rpc/contract.ts";
+import { ShellJobEventSchema, validateMethodResult } from "../../src/harness-rpc/contract.ts";
+import { Value } from 'typebox/value';
 import { configLifecycleFor } from "../../src/config-lifecycle.ts";
 import capabilityExtension from "../../extensions/capability.ts";
 import { harnessRpcTarget } from "../../src/harness-rpc/discovery.ts";
@@ -157,19 +161,26 @@ interface ApplicationFixture {
   readonly api: ExtensionAPI;
   readonly client: RpcClient;
   readonly controller: ShellApprovalController;
+  readonly runtime: ModelRuntime;
+  readonly permissionStatuses: readonly (string | undefined)[];
 }
 
-async function startApplication(t: test.TestContext, hooks = false): Promise<ApplicationFixture> {
+async function startApplication(t: test.TestContext, hooks = false, approvalModeEnabled?: boolean): Promise<ApplicationFixture> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), "harness-rpc-application-"));
   const agentDir = path.join(cwd, "agent");
   const socketDir = path.join(cwd, "uds");
   await mkdir(agentDir, { recursive: true });
   await mkdir(socketDir, { recursive: true, mode: 0o700 });
+  if (approvalModeEnabled !== undefined) await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
+    version: 1, shell: { approval: { enabled: approvalModeEnabled, mode: 'auto', reviewer: { enabled: false } } },
+  }));
 
   const previousAgentDir = process.env["PI_CODING_AGENT_DIR"];
   const previousSocketDir = process.env["PI_SUBAGENT_SOCKET_DIR"];
+  const previousShellRoot = process.env['PI_ASYNC_SHELL_ROOT'];
   process.env["PI_CODING_AGENT_DIR"] = agentDir;
   process.env["PI_SUBAGENT_SOCKET_DIR"] = socketDir;
+  process.env['PI_ASYNC_SHELL_ROOT'] = path.join(cwd, 'shell');
 
   const runtime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,
@@ -233,6 +244,8 @@ async function startApplication(t: test.TestContext, hooks = false): Promise<App
     else process.env["PI_CODING_AGENT_DIR"] = previousAgentDir;
     if (previousSocketDir === undefined) delete process.env["PI_SUBAGENT_SOCKET_DIR"];
     else process.env["PI_SUBAGENT_SOCKET_DIR"] = previousSocketDir;
+    if (previousShellRoot === undefined) delete process.env['PI_ASYNC_SHELL_ROOT'];
+    else process.env['PI_ASYNC_SHELL_ROOT'] = previousShellRoot;
     await rm(cwd, { recursive: true, force: true });
   };
   t.after(cleanup);
@@ -245,7 +258,12 @@ async function startApplication(t: test.TestContext, hooks = false): Promise<App
     session = created.session;
     // Bind the SDK extension runner in RPC mode before session_start so the
     // production assembly opens the Harness endpoint for this real session.
-    await session.bindExtensions({ mode: "rpc", onError: (error) => extensionErrors.push(error) });
+    const permissionStatuses: (string | undefined)[] = [];
+    await session.bindExtensions({ mode: "rpc", onError: (error) => extensionErrors.push(error),
+      uiContext: { ...session.extensionRunner.createContext().ui, setStatus(key, value) {
+        if (key === 'shell-permission') permissionStatuses.push(value);
+      } },
+    });
     assert.deepEqual(extensionErrors, []);
 
     const context = session.extensionRunner.createCommandContext();
@@ -255,7 +273,7 @@ async function startApplication(t: test.TestContext, hooks = false): Promise<App
     client = await RpcClient.connect(target.address);
     const controller = shellApprovalController(api);
     assert.ok(controller, "the real Shell approval extension provides its controller");
-    return { cwd, session, root, api, client, controller };
+    return { cwd, session, root, api, client, controller, permissionStatuses, runtime };
   } catch (error) {
     await cleanup();
     throw error;
@@ -313,12 +331,113 @@ second = [{ type = 'injectHint', text = 'SECOND_FIXTURE_HINT' }]
   assert.deepEqual(await client.request("hooks.current"), current, "a failed refresh retains the visible snapshot");
   const anchor = session.sessionManager.appendMessage({ role: "user", content: "Branch anchor", timestamp: Date.now() });
   await session.prompt("/hooks mute main");
-  await session.prompt("/hooks mute missing");
+  assert.deepEqual(await client.request('hooks.mute', { id: 'missing', future: true }), { changed: true, muted: ['main', 'missing'] });
+  const mutedLeaf = session.sessionManager.getLeafId();
+  assert.deepEqual(await client.request('hooks.mute', { id: 'missing' }), { changed: false, muted: ['main', 'missing'] });
+  assert.equal(session.sessionManager.getLeafId(), mutedLeaf);
   const muted = asRecord(await client.request("hooks.current"));
   assert.deepEqual(muted?.["muted"], ["main", "missing"]);
   assert.equal(asRecord(asArray(muted?.["rules"])[1])?.["active"], false);
+  assert.deepEqual(await client.request('hooks.mute', { id: 'hidden' }), { changed: true, muted: ['hidden', 'main', 'missing'] });
+  assert.deepEqual(await client.request('hooks.unmute', { id: 'hidden' }), { changed: true, muted: ['main', 'missing'] });
+  assert.deepEqual(asRecord(await client.request('hooks.current'))?.['disabled'], ['hidden']);
+  assert.deepEqual(await client.request('hooks.reset'), { changed: true, muted: [] });
+  assert.deepEqual(await client.request('hooks.reset'), { changed: false, muted: [] });
   await session.navigateTree(anchor);
   assert.deepEqual(await client.request("hooks.current"), current, "the same socket reflects the rebound branch");
+});
+
+test('Hook writes refuse a busy Main on the real socket', async t => {
+  const { client, session, runtime } = await startApplication(t, true);
+  const release = deferred();
+  let streaming = false;
+  runtime.streamSimple = model => {
+    const stream = new AssistantMessageEventStream();
+    streaming = true;
+    void release.promise.then(() => {
+      stream.push({ type: 'done', reason: 'stop', message: {
+        role: 'assistant', api: model.api, provider: model.provider, model: model.id,
+        content: [{ type: 'text', text: 'Done' }], stopReason: 'stop', timestamp: Date.now(),
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      } });
+      stream.end();
+    });
+    return stream;
+  };
+  const turn = session.prompt('Hold this fixture turn.');
+  try {
+    await Promise.race([
+      waitFor(() => streaming, { label: 'held Main request' }),
+      turn.then(() => { throw new Error('Main settled before the model request.'); }),
+    ]);
+    assert.equal(session.isIdle, false);
+    const leaf = session.sessionManager.getLeafId();
+    for (const method of ['hooks.mute', 'hooks.unmute', 'hooks.reset']) {
+      await assert.rejects(client.request(method, method === 'hooks.reset' ? undefined : { id: 'fixture' }),
+        (error: unknown) => error instanceof RpcFailure && error.code === 'not_ready');
+    }
+    assert.equal(session.sessionManager.getLeafId(), leaf);
+  } finally {
+    release.resolve();
+    await turn;
+  }
+});
+
+test('Shell Job subscription snapshots live jobs and receives background and terminal metadata on the real socket', {
+  skip: process.platform === 'win32', timeout: 20000,
+}, async t => {
+  const { cwd, root, session, client } = await startApplication(t);
+  const cli = path.join(cwd, 'pi-job');
+  const build = spawnSync(process.execPath, [fileURLToPath(new URL('../../scripts/build-async-shell.mjs', import.meta.url)), cli], { encoding: 'utf8' });
+  assert.equal(build.status, 0, `the async-shell CLI must build: ${build.stderr}`);
+  const previousCli = process.env['PI_ASYNC_SHELL_CLI'];
+  process.env['PI_ASYNC_SHELL_CLI'] = cli;
+  t.after(() => {
+    if (previousCli === undefined) delete process.env['PI_ASYNC_SHELL_CLI'];
+    else process.env['PI_ASYNC_SHELL_CLI'] = previousCli;
+  });
+  const leaf = session.sessionManager.appendMessage({ role: 'user', content: 'Shell fixture anchor', timestamp: Date.now() });
+  const first = asRecord(await client.request('shell.jobs.subscribe', { agentId: 'main', future: true }));
+  assert.equal(validateMethodResult('shell.jobs.subscribe', first).ok, true);
+  assert.deepEqual(first?.['jobs'], []);
+  const filtered = asRecord(await client.request('shell.jobs.subscribe', { agentId: 'sub_99' }));
+  assert.deepEqual(filtered?.['jobs'], []);
+  const bash = session.getToolDefinition('bash');
+  assert.ok(bash);
+  const run = (id: string, command: string, background = false) => bash.execute(id, { command, background, timeout: 10 },
+    undefined, undefined, session.extensionRunner.createToolContext(id, undefined));
+
+  await run('foreground', 'printf foreground');
+  assert.deepEqual(client.events, []);
+  const command = 'while [ ! -f finish-shell-fixture ]; do sleep 0.02; done; printf background';
+  try {
+    await run('background', command, true);
+    const start = asRecord(await waitFor(() => client.events[0], { label: 'Shell backgrounded event' }));
+    assert.equal(Value.Check(ShellJobEventSchema, start), true);
+    assert.equal(start?.['phase'], 'backgrounded');
+    assert.equal(start?.['rootSessionId'], root.sessionId);
+    assert.equal(start?.['agentId'], 'main');
+    assert.equal(start?.['command'], command);
+    assert.equal(start?.['pty'], false);
+    const live = asRecord(await client.request('shell.jobs.subscribe'));
+    const [job] = asArray(live?.['jobs']);
+    assert.equal(asRecord(job)?.['jobId'], start?.['jobId']);
+    assert.equal(asRecord(job)?.['logPath'], start?.['logPath']);
+    await client.request('stream.unsubscribe', { subscription: live?.['subscription'] });
+    await writeFile(path.join(cwd, 'finish-shell-fixture'), 'finish');
+    const terminal = asRecord(await waitFor(() => client.events[1], { label: 'Shell finished event' }));
+    assert.equal(Value.Check(ShellJobEventSchema, terminal), true);
+    assert.equal(terminal?.['phase'], 'finished');
+    assert.equal(terminal?.['jobId'], start?.['jobId']);
+    assert.equal(terminal?.['status'], 'completed');
+    assert.equal(terminal?.['exitCode'], 0);
+    assert.equal(client.events.length, 2);
+    await session.navigateTree(leaf);
+    assert.deepEqual(asRecord(await client.request('shell.jobs.subscribe'))?.['jobs'], []);
+  } finally {
+    await writeFile(path.join(cwd, 'finish-shell-fixture'), 'finish');
+  }
 });
 
 function presetEntries(session: AgentSession): JsonObject[] {
@@ -521,6 +640,40 @@ test("Preset apply rechecks the Root epoch after a gated SDK model selection", {
   assert.deepEqual(presetEntries(fixture.session), [],
     "the rejected old apply must not write a Preset snapshot to the new branch");
   fixture.api.setModel = originalSetModel;
+});
+
+test('approval mode RPC pins the default and shares state and status with /permissions', async t => {
+  const { client, session, permissionStatuses } = await startApplication(t, false, true);
+  const inherited = { enabled: true, mode: 'auto', source: 'config', defaultMode: 'auto', autoFallbackToManual: true };
+  const originalLeaf = session.sessionManager.getLeafId();
+  assert.deepEqual(await client.request('approvals.mode.get'), inherited);
+  assert.equal(session.sessionManager.getLeafId(), originalLeaf);
+  assert.deepEqual(await client.request('approvals.mode.set', { mode: 'auto' }), {
+    mode: 'auto', previousMode: 'auto', changed: true, source: 'branch',
+  });
+  const pinned = session.sessionManager.getLeafId();
+  assert.notEqual(pinned, originalLeaf);
+  assert.deepEqual(await client.request('approvals.mode.set', { mode: 'auto' }), {
+    mode: 'auto', previousMode: 'auto', changed: false, source: 'branch',
+  });
+  assert.equal(session.sessionManager.getLeafId(), pinned);
+  assert.deepEqual(await client.request('approvals.mode.set', { mode: 'ask' }), {
+    mode: 'ask', previousMode: 'auto', changed: true, source: 'branch',
+  });
+  assert.equal(permissionStatuses.at(-1), 'Permissions: Ask');
+  await session.prompt('/permissions yolo');
+  assert.deepEqual(await client.request('approvals.mode.get'), { ...inherited, mode: 'yolo', source: 'branch', autoFallbackToManual: false });
+});
+
+test('disabled approval mode is readable but rejects mutation', async t => {
+  const { client, session } = await startApplication(t, false, false);
+  const leaf = session.sessionManager.getLeafId();
+  assert.deepEqual(await client.request('approvals.mode.get'), {
+    enabled: false, mode: 'auto', source: 'config', defaultMode: 'auto', autoFallbackToManual: false,
+  });
+  await assert.rejects(client.request('approvals.mode.set', { mode: 'ask' }), (error: unknown) =>
+    error instanceof RpcFailure && error.code === 'unavailable');
+  assert.equal(session.sessionManager.getLeafId(), leaf);
 });
 
 test("approval RPC observes and decides the live controller; unsubscribe, timeout and dispose stay fail-closed", { timeout: 20000 }, async (t) => {
