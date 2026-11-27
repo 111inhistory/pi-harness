@@ -4,12 +4,13 @@ import type { CapabilityHookPort } from '../capability/extension.ts';
 import { runClassifier } from '../classifier-client.ts';
 import { harnessConfigFor } from '../harness-config.ts';
 import { configLifecycleFor, createSyncSlotToken } from '../config-lifecycle.ts';
-import { PRESET_STATE_RECORD, restorePresetSnapshot } from '../preset/state.ts';
+import { PRESET_STATE_COMMITTED, PRESET_STATE_RECORD, restorePresetSnapshot } from '../preset/state.ts';
 import { applySystemPromptSections } from '../request-instructions.ts';
 import { clipText } from '../text-output.ts';
 import { extractBranchToolObservations, installToolObservation, type ToolObservation } from '../tool-observation.ts';
 import { canClassifyForBranch, classifiedActions, hookQuestion, HOOK_QUESTION } from './classify.ts';
-import { mergeHookLayers, readHookLayers, type HookAction, type HookRule } from './config.ts';
+import { isHookId, mergeHookLayers, readHookLayers, type HookAction, type HookRule, type HookRules } from './config.ts';
+import { applyHookOverride, HOOK_OVERRIDE_RECORD, restoreHookOverrides, type HookOverride } from './override.ts';
 import { buildHookClassifierSlice, type HookClassifierSubject, type HookClassifierSources, type HookClassifierToolFact } from './projection.ts';
 import { HOOK_HINT_MESSAGE, HOOK_REPEAT_RECORD, readHintReceipts, restoreRepeat, type HookReceipt } from './repeat.ts';
 import { emitHookStat, toolCategory, type HookOutcome, type HookStatsBinding } from './stats.ts';
@@ -22,7 +23,7 @@ const MAX_TURN_ATTEMPTS = 4;
 const ATTEMPT_REFUSED = Symbol('hook classifier attempt refused');
 
 interface Counters { modelCalls: number; toolCalls: number; nestedToolCalls?: number; toolErrors: number }
-interface EffectiveRule { readonly id: string; readonly key: string; readonly rule: HookRule; readonly when?: CompiledWhen }
+interface EffectiveRule { readonly id: string; readonly key: string; readonly token: symbol; readonly rule: HookRule; readonly when?: CompiledWhen }
 interface MatchedRule {
   readonly rule: EffectiveRule;
   readonly seed: string;
@@ -140,12 +141,19 @@ const HOOK_SLOT = createSyncSlotToken({
 export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookPort, stats?: HookStatsBinding): void {
   const configFor = harnessConfigFor(pi);
   const lifecycle = configLifecycleFor(pi);
-  const layers = lifecycle.bindSyncSlot(HOOK_SLOT);
+  const layers = lifecycle.bindSyncSlot(HOOK_SLOT, ({ value }) => {
+    if (branchState?.scopeCurrent()) updateEligibility(value, branchState.presetHooks, branchState.muted);
+  });
   let lastLayerError: unknown;
+  let closed = false;
+  let eligible = new Map<string, { readonly key: string; readonly token: symbol }>();
   const running = new Map<string, { readonly controller: AbortController; readonly requiresTurn: boolean }>();
   let branchState: {
     readonly layersRevision: number;
     readonly scopeCurrent: () => boolean;
+    readonly presetHooks: HookRules;
+    readonly muted: Set<string>;
+    matcherChanged: boolean;
     readonly rules: readonly EffectiveRule[];
     readonly preset: string | undefined;
     userTurn: number;
@@ -167,8 +175,23 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
     producingModel?: NonNullable<WhenContext['model']>;
   } | undefined;
 
-  const recordOutcome = (id: string, outcome: HookOutcome) => emitHookStat(stats?.(), { type: 'hook', id, outcome });
+  function updateEligibility(value: ReturnType<typeof readHookLayers>, preset: HookRules, muted: ReadonlySet<string>) {
+    const merged = mergeHookLayers(value.global.rules, preset, value.project.rules);
+    const next = new Map<string, { readonly key: string; readonly token: symbol }>();
+    for (const [id, rule] of merged) {
+      if (muted.has(id)) continue;
+      const key = ruleIdentity(id, rule);
+      const existing = eligible.get(id);
+      next.set(id, existing?.key === key ? existing : { key, token: Symbol(id) });
+    }
+    eligible = next;
+    return merged;
+  }
+
+  const canCommit = (rule: EffectiveRule): boolean => branchState?.scopeCurrent() === true && eligible.get(rule.id)?.token === rule.token;
+  const recordOutcome = (id: string, outcome: HookOutcome) => emitHookStat(stats?.capture(), { type: 'hook', id, outcome });
   const invalidateBranch = (): void => {
+    eligible.clear();
     branchState = undefined;
     turnState = undefined;
     for (const task of running.values()) task.controller.abort();
@@ -202,7 +225,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
       cursor = entry.parentId;
     }
     if (cursor === branch.leaf) branch.leaf = leaf;
-    else branchState = undefined;
+    else { branchState = undefined; eligible.clear(); }
   }
 
   pi.on('agent_settled', (_event, ctx) => {
@@ -212,11 +235,51 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
     for (const task of running.values()) if (task.requiresTurn) task.controller.abort();
   });
   pi.on('session_before_switch', invalidateBranch);
+  pi.events.on(PRESET_STATE_COMMITTED, invalidateBranch);
   pi.on('session_before_fork', invalidateBranch);
   pi.on('session_before_tree', invalidateBranch);
   pi.on('session_tree', invalidateBranch);
-  pi.on('session_shutdown', invalidateBranch);
-  pi.on('session_start', () => { lastLayerError = undefined; invalidateBranch(); });
+  pi.on('session_shutdown', () => { closed = true; invalidateBranch(); });
+  pi.on('session_start', () => { closed = false; lastLayerError = undefined; invalidateBranch(); });
+
+  pi.registerCommand('hooks', {
+    description: 'Inspect Hook statistics or mute Hooks on this branch',
+    handler: async (args, ctx) => {
+      const [op, id, ...extra] = args.trim().split(/\s+/);
+      if (op === 'stats' && id === undefined) {
+        ctx.ui.notify(stats?.render() ?? 'Hook Stats are unavailable for this session.', 'info');
+        return;
+      }
+      let delta: HookOverride;
+      if (op === 'reset' && id === undefined) delta = { version: 1, op };
+      else if ((op === 'mute' || op === 'unmute') && isHookId(id) && extra.length === 0) delta = { version: 1, op, id };
+      else {
+        ctx.ui.notify('Usage: /hooks stats | mute ID | unmute ID | reset', 'info');
+        return;
+      }
+      if (closed || !ctx.isIdle()) {
+        ctx.ui.notify('Wait for the session to become idle before changing Hook overrides.', 'warning');
+        return;
+      }
+      const epoch = capability.branchEpoch();
+      const leaf = ctx.sessionManager.getLeafId();
+      const branch = ctx.sessionManager.getBranch();
+      const muted = restoreHookOverrides(branch);
+      if (!applyHookOverride(muted, delta)) {
+        ctx.ui.notify('Hook overrides unchanged.', 'info');
+        return;
+      }
+      if (closed || !ctx.isIdle() || epoch !== capability.branchEpoch() || leaf !== ctx.sessionManager.getLeafId()) return;
+      pi.appendEntry(HOOK_OVERRIDE_RECORD, delta);
+      if (branchState?.scopeCurrent()) {
+        applyHookOverride(branchState.muted, delta);
+        branchState.matcherChanged = true;
+        const snapshot = layers.peek(ctx);
+        if (snapshot !== undefined) updateEligibility(snapshot.value, branchState.presetHooks, muted);
+      }
+      ctx.ui.notify('Hook overrides updated.', 'info');
+    },
+  });
 
   function bindBranch(ctx: ExtensionContext, mode: 'start' | 'commit' = 'start'): typeof branchState {
     let currentLayers: ReturnType<typeof layers.read>;
@@ -224,7 +287,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
       currentLayers = layers.read(ctx);
     } catch (error) {
       // An unreadable higher layer could have disabled lower rules.
-      branchState = undefined;
+      invalidateBranch();
       if (lastLayerError !== error) {
         lastLayerError = error;
         ctx.ui.notify(`Hooks: ${error instanceof Error ? error.message : String(error)}`, 'error');
@@ -233,22 +296,27 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
     }
     const manager = ctx.sessionManager;
     const leaf = manager.getLeafId();
-    if (branchState !== undefined && (!branchState.scopeCurrent() ||
-      (turnState === undefined && mode === 'start' && branchState.layersRevision !== currentLayers.revision))) branchState = undefined;
+    if (branchState !== undefined && !branchState.scopeCurrent()) invalidateBranch();
+    if (branchState !== undefined && turnState === undefined && mode === 'start' &&
+      (branchState.matcherChanged || branchState.layersRevision !== currentLayers.revision)) branchState = undefined;
     advanceBranch(ctx, mode === 'commit' && turnState !== undefined);
     if (branchState !== undefined) return branchState;
     const branch = manager.getBranch();
     const snapshot = restorePresetSnapshot(branch);
+    const presetHooks = snapshot?.hooks ?? {};
+    const muted = restoreHookOverrides(branch);
     const rules: EffectiveRule[] = [];
     let classifierUnavailable = false;
     const hasClassifier = configFor(ctx).classifier.models.length > 0;
-    for (const [id, rule] of mergeHookLayers(currentLayers.value.global.rules, snapshot?.hooks ?? {}, currentLayers.value.project.rules)) {
+    for (const [id, rule] of updateEligibility(currentLayers.value, presetHooks, muted)) {
+      const identity = eligible.get(id);
+      if (identity === undefined) continue;
       if (rule.classify !== undefined && !hasClassifier) {
         classifierUnavailable = true;
         continue;
       }
       try {
-        rules.push({ id, key: ruleIdentity(id, rule), rule,
+        rules.push({ id, ...identity, rule,
           ...(rule.when === undefined ? {} : { when: compileWhen(rule.when, rule.on) }) });
       } catch (error) {
         ctx.ui.notify(`Hooks: ${id}: ${error instanceof Error ? error.message : String(error)}`, 'error');
@@ -257,7 +325,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
     if (classifierUnavailable) ctx.ui.notify('Hooks: classified rules require at least one classifier.models entry.', 'warning');
     const repeat = restoreRepeat(branch, new Map(rules.flatMap(entry => entry.rule.repeat === undefined ? [] : [[entry.key, entry.rule.repeat]])));
     const capturePreviews = rules.some(({ rule }) => rule.classify?.include.includes('recentToolPreviews'));
-    branchState = { rules, layersRevision: currentLayers.revision, scopeCurrent: lifecycle.captureScope(ctx),
+    branchState = { rules, layersRevision: currentLayers.revision, scopeCurrent: lifecycle.captureScope(ctx), presetHooks, muted, matcherChanged: false,
       preset: snapshot?.name, repeat, userTurn: repeat.userTurn,
       bashIsPosix: posixBash(pi), recentTools: [], recentToolsClipped: false, capturePreviews, leaf };
     return branchState;
@@ -330,7 +398,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
       if (rule.classify !== undefined && deferred === undefined) continue;
       if (rule.actions[0]?.type === 'injectSection') continue;
       if (deferred === undefined) recordOutcome(effective.id, 'matched');
-      if (deferred !== undefined && (!branch.rules.some(rule => rule.key === key) || epoch !== capability.branchEpoch())) {
+      if (!canCommit(effective) || epoch !== capability.branchEpoch()) {
         recordOutcome(effective.id, 'stale');
         continue;
       }
@@ -395,6 +463,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
               const controller = new AbortController();
               const discovery = capability.discover(ctx, {
                 branchEpoch: epoch, deadline, seed: action.hint === undefined ? seed : `${seed}\n\n${action.hint}`,
+                canPublish: () => canCommit(effective),
                 signal: deferred === undefined
                   ? AbortSignal.any([controller.signal, AbortSignal.timeout(remaining)])
                   : AbortSignal.any([controller.signal, AbortSignal.timeout(remaining), deferred.signal]),
@@ -443,9 +512,10 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
     const { id, key, rule } = hit.rule;
     const classify = rule.classify;
     if (branch === undefined || turn === undefined || classify === undefined || hit.classification === undefined) return;
-    const sink = stats?.();
+    const sink = stats?.capture();
     const report = (outcome: HookOutcome) => emitHookStat(sink, { type: 'hook', id, outcome });
     report('matched');
+    if (!canCommit(hit.rule)) { report('stale'); return; }
     if (ctx.signal?.aborted || running.size >= MAX_ASYNC_HOOKS || running.has(id) || turn.passiveHints.has(id)
         || turn.attempts >= MAX_TURN_ATTEMPTS) { report('suppressed'); return; }
     const userTurn = branch.userTurn + Number(turn.awaitingStartUser);
@@ -495,7 +565,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
       const actions = classifiedActions(rule, outcome.result.answers);
       if (actions === undefined) { report('failed'); return; }
       if (actions.length === 0) { report('observed'); return; }
-      if (!bindBranch(ctx, 'commit')?.rules.some(entry => entry.key === key)) { report('stale'); return; }
+      if (!canCommit(hit.rule) || !bindBranch(ctx, 'commit') || !canCommit(hit.rule)) { report('stale'); return; }
       const next = (actions: readonly HookAction[], repeatAlreadyAccepted = false): MatchedRule => ({
         rule: hit.rule, seed: hit.seed,
         deferred: { actions, deadline, signal, branchEpoch, ...(repeatAlreadyAccepted ? { repeatAlreadyAccepted: true } : {}) },
@@ -591,7 +661,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
   installToolObservation(pi, (observation, _event, ctx) => {
     const truncated = observationTruncated(observation);
     if (stats !== undefined && observation.status !== 'cancelled' && observation.status !== 'unfinished') {
-      emitHookStat(stats(), { type: 'tool', category: toolCategory(observation.toolName), failed: observation.isError,
+      emitHookStat(stats.capture(), { type: 'tool', category: toolCategory(observation.toolName), failed: observation.isError,
         nested: observation.isNested, ...(truncated === undefined ? {} : { truncated }) });
     }
     if (branchState === undefined || turnState === undefined || ctx.signal?.aborted) return;

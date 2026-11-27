@@ -11,6 +11,7 @@ import shellPreflightExtension from '../../src/shell-approval/extension.ts';
 import capabilityExtension from '../../src/capability/extension.ts';
 import { installHookSurface } from '../../src/hooks/extension.ts';
 import { normalizeHookRules } from '../../src/hooks/config.ts';
+import { restoreHookOverrides } from '../../src/hooks/override.ts';
 import { HOOK_HINT_MESSAGE, HOOK_REPEAT_RECORD } from '../../src/hooks/repeat.ts';
 import { appendPresetState, buildPresetSnapshot, PRESET_STATE_VERSION } from '../../src/preset/state.ts';
 
@@ -97,6 +98,8 @@ test('Main Hook delivers coalesced nested hints in the next native request and r
     };
     const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: 'off', retry: { enabled: false } }, { projectTrusted: true });
     let probes = 0;
+    let beforeOuterResult: (() => Promise<void>) | undefined;
+    let cancelNavigation = false;
     const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager,
       noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
       extensionFactories: [{ name: 'shell-fixture', factory: shellPreflightExtension }, { name: 'hooks-fixture', factory(pi) {
@@ -109,10 +112,13 @@ test('Main Hook delivers coalesced nested hints in the next native request and r
           parameters: { type: 'object', properties: {} } as never,
           async execute(_id, _params, _signal, _update, ctx) {
             for (let i = 0; i < 2; i++) await ctx.executeTool('command_probe', { command: 'read fixture' });
+            await beforeOuterResult?.();
             return { content: [{ type: 'text', text: 'wrapped' }], details: {} };
           },
         });
-      } }, { name: 'harness-fixture', factory: harnessExtension }],
+      } }, { name: 'harness-fixture', factory: harnessExtension }, { name: 'navigation-fixture', factory(pi) {
+        pi.on('session_before_tree', () => cancelNavigation ? { cancel: true } : undefined);
+      } }],
     });
     await resourceLoader.reload();
     const sessionManager = SessionManager.inMemory(cwd);
@@ -174,6 +180,36 @@ test('Main Hook delivers coalesced nested hints in the next native request and r
     await session.prompt('Turn on an earlier branch');
     assert.equal(session.sessionManager.getBranch().filter(e => e.type === 'custom_message' && e.customType === HOOK_HINT_MESSAGE).length, 2);
     assert.equal(probes, 8);
+    await session.navigateTree(firstUser.id);
+    beforeOuterResult = async () => {
+      await writeFile(hookFile, `${globalHooks.split('[hooks.nested-result]')[0]}[hooks.nested-result]\nenabled = false\n`
+        + globalHooks.slice(globalHooks.indexOf('[hooks.nested-duplicate]')));
+      await session!.prompt('/config reload');
+      await writeFile(hookFile, globalHooks);
+      await session!.prompt('/config reload');
+    };
+    const initialNotices = notices.length;
+    await session.prompt('Refresh while nested hints wait for the outer result');
+    assert.equal(notices.slice(initialNotices).filter(message => message === 'hooks.toml: updated.').length, 2);
+    const last = session.sessionManager.getBranch().filter(entry => entry.type === 'custom_message' && entry.customType === HOOK_HINT_MESSAGE).at(-1);
+    assert.ok(last?.type === 'custom_message');
+    const currentReceipts = last.details as { repeat: Array<{ key: string }> };
+    assert.deepEqual(currentReceipts.repeat.map(receipt => receipt.key.split(':')[0]), ['nested-duplicate'],
+      'restoring a removed rule cannot revive its queued hint; the unrelated rule still commits');
+    await session.prompt('/hooks mute nested-result');
+    const mutedLeaf = session.sessionManager.getLeafId();
+    assert.ok(mutedLeaf);
+    cancelNavigation = true;
+    assert.equal((await session.navigateTree(firstUser.id)).cancelled, true);
+    await session.prompt('/hooks mute nested-duplicate');
+    assert.deepEqual([...restoreHookOverrides(session.sessionManager.getBranch())], ['nested-result', 'nested-duplicate']);
+    cancelNavigation = false;
+    await session.navigateTree(firstUser.id);
+    assert.equal(restoreHookOverrides(session.sessionManager.getBranch()).size, 0);
+    await session.navigateTree(mutedLeaf);
+    assert.deepEqual([...restoreHookOverrides(session.sessionManager.getBranch())], ['nested-result']);
+    await session.prompt('/hooks reset');
+    assert.equal(restoreHookOverrides(session.sessionManager.getBranch()).size, 0);
     assert.deepEqual(errors, []);
   } finally {
     try {

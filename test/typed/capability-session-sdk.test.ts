@@ -352,7 +352,7 @@ for (const api of ['openai-responses', 'anthropic-messages'] as const) {
 }
 
 
-async function runCapabilityLifecycleCase(mode: 'navigate' | 'shutdown' | 'cancel' | 'background' | 'background-navigate'): Promise<void> {
+async function runCapabilityLifecycleCase(mode: 'navigate' | 'shutdown' | 'cancel' | 'background' | 'background-navigate' | 'background-revoke'): Promise<void> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'pi-capability-lifecycle-'));
   const agentDir = path.join(cwd, 'agent');
   await mkdir(agentDir, { recursive: true });
@@ -379,7 +379,7 @@ async function runCapabilityLifecycleCase(mode: 'navigate' | 'shutdown' | 'cance
     let retrievalCalls = 0;
     let parentCalls = 0;
     let hookPort: CapabilityHookPort | undefined;
-    const backgroundMode = mode === 'background' || mode === 'background-navigate';
+    const backgroundMode = mode.startsWith('background');
     let gateRetrieval = true;
     let releaseHeldRetrieval: (() => void) | undefined;
     runtime.streamSimple = (_requestModel, context, options) => {
@@ -458,7 +458,8 @@ async function runCapabilityLifecycleCase(mode: 'navigate' | 'shutdown' | 'cance
     if (backgroundMode) {
       assert.ok(hookPort);
       const { branchEpoch } = hookPort.snapshot(context);
-      const request = { branchEpoch, seed: 'background seed' };
+      let publish = true;
+      const request = { branchEpoch, seed: 'background seed', canPublish: () => publish };
       assert.deepEqual(hookPort.discover(context, { ...request, deadline: performance.now() - 1 }), { accepted: false, reason: 'cancelled' });
       const pending = hookPort.discover(context, request);
       assert.equal(pending.accepted, true);
@@ -467,6 +468,10 @@ async function runCapabilityLifecycleCase(mode: 'navigate' | 'shutdown' | 'cance
       if (mode === 'background-navigate') {
         await session.navigateTree(anchor);
         assert.equal(hookPort.activate(context, { branchEpoch, targets: ['fixture_slides'] }), undefined);
+      } else if (mode === 'background-revoke') {
+        publish = false;
+        assert.deepEqual(hookPort.discover(context, request), { accepted: false, reason: 'suppressed' },
+          'revocation does not release the slot while the underlying retrieval is still running');
       } else {
         await session.prompt('Complete the Main turn without tools.');
         assert.equal(hookPort.branchEpoch(), branchEpoch, 'settling a turn keeps the branch lease');
@@ -566,4 +571,8 @@ test('background Capability can publish after Main settles without waking it', a
 
 test('background Capability loses write authority when Main navigates to another branch', async () => {
   await runCapabilityLifecycleCase('background-navigate');
+});
+
+test('background Capability checks final publication authority after its held retrieval', async () => {
+  await runCapabilityLifecycleCase('background-revoke');
 });

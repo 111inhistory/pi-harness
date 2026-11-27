@@ -56,6 +56,7 @@ import type { CodemodeMode, PresetModel, ThinkingLevelName } from './config.ts';
 
 /** `customType` of one applied-preset snapshot. */
 export const PRESET_STATE_RECORD = 'preset-state';
+export const PRESET_STATE_COMMITTED = 'pi-harness:preset-state-committed';
 export const PRESET_STATE_VERSION = 2;
 /** `customType` of one "keep the recorded preset version" decision. */
 export const PRESET_VERSION_SKIPPED_RECORD = 'preset-version-skipped';

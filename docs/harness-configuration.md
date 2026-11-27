@@ -188,7 +188,9 @@ implementation = [{ type = "injectHint", text = "Check the public contract befor
 
 ### 会话统计
 
-Main 的 `/hook-stats` 显示当前会话的规则匹配、动作受理、跳过及失败计数，以及工具类别、已知截断、分类器尝试、耗时和 token 用量。它只保留配置的 Hook ID、固定类别和计数；归入 `Other Hook IDs` 的规则不单独保留 ID。统计随会话加载重置，保留在内存中，无需配置。
+Main 的 `/hooks stats` 显示当前会话的规则匹配、动作受理、跳过及失败计数，以及工具类别、已知截断、分类器尝试、耗时和 token 用量。它只保留配置的 Hook ID、固定类别和计数；归入 `Other Hook IDs` 的规则不单独保留 ID。统计随会话加载重置，保留在内存中，无需配置。
+
+会话空闲时，用 `/hooks mute ID` 静音当前分支上的规则。用 `/hooks unmute ID` 取消该 ID 的静音，用 `/hooks reset` 清除当前分支上的全部静音。三者都记录分支增量。取消静音不会启用被 TOML 的 `enabled = false` 禁用的规则。刷新后的新规则从下一轮开始匹配；删除、修改或静音规则会立即撤销该规则尚未提交的动作。已经交给 SDK 的消息保留。
 
 ## Capability
 

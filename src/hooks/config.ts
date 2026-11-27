@@ -152,12 +152,16 @@ function isDeferredAction(action: HookAction): action is DeferredAction {
   return action.type !== 'injectSection';
 }
 
+export function isHookId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(value);
+}
+
 export function normalizeHookRules(value: unknown, validateWhen = true): HookRules {
   const entries = Object.entries(table(value, 'hooks')).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
   if (entries.length > 32) throw new Error('a Hook layer may define at most 32 rules');
   const rules: Record<string, HookRules[string]> = Object.create(null);
   for (const [id, value] of entries) {
-    if (!/^[a-z][a-z0-9-]{0,63}$/.test(id)) throw new Error(`invalid Hook id: ${id}`);
+    if (!isHookId(id)) throw new Error(`invalid Hook id: ${id}`);
     const raw = fields(value, ['enabled', 'description', 'on', 'when', 'repeat', 'timeoutMs', 'actions', 'classify', 'onChoice'], id);
     if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') throw new Error(`${id}.enabled must be boolean`);
     if (raw.description !== undefined) boundedText(raw.description, 500, `${id}.description`);

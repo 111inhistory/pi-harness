@@ -155,6 +155,7 @@ export interface CapabilityHookPort {
     readonly branchEpoch: number; readonly seed: string; readonly signal?: AbortSignal;
     /** A monotonic deadline, using the same performance clock as the caller. */
     readonly deadline?: number;
+    readonly canPublish?: () => boolean;
   }): { readonly accepted: true; readonly done: Promise<'published' | 'empty' | 'failed' | 'cancelled'> }
     | { readonly accepted: false; readonly reason: 'suppressed' | 'cancelled' };
 }
@@ -480,7 +481,7 @@ export default function capabilityExtension(
     ctx: ExtensionContext,
     signal: AbortSignal,
     expectedEpoch: number,
-    invocation: { readonly toolCallId: string } | { readonly seed: string; readonly deadline?: number },
+    invocation: { readonly toolCallId: string } | { readonly seed: string; readonly deadline?: number; readonly canPublish?: () => boolean },
   ) => {
     const deadline = 'deadline' in invocation ? invocation.deadline : undefined;
     const isCurrent = (): boolean => !closed && branchEpoch === expectedEpoch && !signal.aborted
@@ -523,7 +524,10 @@ export default function capabilityExtension(
         }
         // Persist before making selected tools visible. The epoch check and
         // these synchronous mutations share one event-loop boundary.
-        if (!isCurrent()) return { result: cancelledBeforePublication(result), previouslyActive, activation, published };
+        let allowed = true;
+        try { allowed = !('canPublish' in invocation) || invocation.canPublish?.() !== false; }
+        catch { allowed = false; }
+        if (!isCurrent() || !allowed) return { result: cancelledBeforePublication(result), previouslyActive, activation, published };
         try {
           appendDiscoveryRecord(pi as DiscoveryRecordWriter, toolCallId, result, result.coverage);
           published = true;
@@ -576,7 +580,8 @@ export default function capabilityExtension(
         const clipped = clipText(request.seed, { maxLines: 80, maxBytes: 4096 }, 'head-tail');
         const { result, published } = await manager.run([controller.signal, request.signal], signal =>
           runDiscovery(ctx, signal, request.branchEpoch, { seed: clipped.text,
-            ...(request.deadline === undefined ? {} : { deadline: request.deadline }) }));
+            ...(request.deadline === undefined ? {} : { deadline: request.deadline }),
+            ...(request.canPublish === undefined ? {} : { canPublish: request.canPublish }) }));
         if (result.endReason === 'cancelled') return 'cancelled';
         if (result.status === 'failed') return 'failed';
         return published ? 'published' : 'empty';

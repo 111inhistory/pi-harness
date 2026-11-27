@@ -90,21 +90,22 @@ export function createConfigLifecycle() {
     });
   }
 
-  function publish<T>(token: SlotSpec<T>, cache: Cache<T>, value: T): Loaded<T> {
-    delete cache.failure;
+  function publish<T>(token: SlotSpec<T>, cache: Cache<T>, value: T, onPublish?: (snapshot: SlotSnapshot<T>) => void): Loaded<T> {
     const previous = cache.snapshot;
     if (previous !== undefined && token.equals?.(previous.value, value)) return { snapshot: previous, changed: false };
     const snapshot = { value, revision: ++revision };
+    onPublish?.(snapshot);
+    delete cache.failure;
     cache.snapshot = snapshot;
     return { snapshot, changed: true };
   }
 
-  function bindSyncSlot<T>(token: SyncSlotToken<T>) {
+  function bindSyncSlot<T>(token: SyncSlotToken<T>, onPublish?: (snapshot: SlotSnapshot<T>) => void) {
     function load(ctx: ConfigContext, owner: Scope, cache: Cache<T>): Loaded<T> {
       try {
         const value = token.load(ctx);
         assertScope(ctx, owner);
-        return publish(token, cache, value);
+        return publish(token, cache, value, onPublish);
       } catch (error) {
         assertScope(ctx, owner);
         if (token.refreshable && cache.snapshot === undefined) cache.failure = { error };

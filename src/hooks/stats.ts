@@ -16,7 +16,10 @@ export type HookStat =
       readonly inputTokens?: number; readonly outputTokens?: number };
 
 export type HookStatSink = (event: HookStat) => void;
-export type HookStatsBinding = () => HookStatSink | undefined;
+export interface HookStatsBinding {
+  capture(): HookStatSink | undefined;
+  render(): string | undefined;
+}
 
 /** The optional observer is outside the action and repeat commit paths. */
 export function emitHookStat(sink: HookStatSink | undefined, event: HookStat): void {
@@ -99,13 +102,12 @@ export function installHookStats(pi: ExtensionAPI): HookStatsBinding {
   let epoch = 0;
   pi.on('session_start', () => { epoch += 1; session = createSessionStats(); });
   pi.on('session_shutdown', () => { epoch += 1; session = undefined; });
-  pi.registerCommand('hook-stats', {
-    description: 'Show local Hook and tool statistics for this session',
-    handler: async (_args, ctx) => { ctx.ui.notify(session?.render() ?? 'Hook Stats are unavailable for this session.', 'info'); },
-  });
-  return () => {
-    if (session === undefined) return undefined;
-    const expectedEpoch = epoch;
-    return event => { if (epoch === expectedEpoch) session?.record(event); };
+  return {
+    render: () => session?.render(),
+    capture() {
+      if (session === undefined) return undefined;
+      const expectedEpoch = epoch;
+      return event => { if (epoch === expectedEpoch) session?.record(event); };
+    },
   };
 }
