@@ -1,6 +1,7 @@
 /** Resolve external Harness settings once per root, then share typed values. */
 import path from 'node:path';
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { getAgentDir, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { configLifecycleFor, createSyncSlotToken, type ConfigContext } from './config-lifecycle.ts';
 import { configPaths, readConfigDocument, requireConfigVersion, type ConfigLocation, type ConfigScope } from './config-storage.ts';
 import type { BudgetProfile } from './subagent/job-budget.ts';
 import { promptString } from './prompt-text.ts';
@@ -370,34 +371,31 @@ export function loadHarnessConfig(location: LoadHarnessConfigOptions): HarnessCo
   return resolveHarnessConfig(layers);
 }
 
-export type HarnessConfigProvider = (ctx: ExtensionContext) => HarnessConfig;
+export type HarnessConfigProvider = (ctx: ConfigContext) => HarnessConfig;
 type ConfigHost = Pick<ExtensionAPI, 'on'> & { readonly events?: ExtensionAPI['events'] };
-const providers = new WeakMap<ConfigHost, HarnessConfigProvider>();
 const CONFIG_CHANNEL = 'pi-harness:config-provider';
 interface ConfigExchange { provider?: HarnessConfigProvider }
+const localProviders = new WeakMap<ConfigHost, HarnessConfigProvider>();
+
+const HARNESS_SLOT = createSyncSlotToken({ name: 'harness.json', load: ctx =>
+  loadHarnessConfig({ cwd: ctx.cwd, agentDir: getAgentDir(), projectTrusted: ctx.isProjectTrusted() }),
+});
 
 /** One provider per SDK surface; child surfaces receive their root's snapshot. */
 export function harnessConfigFor(pi: ConfigHost, fixed?: HarnessConfig): HarnessConfigProvider {
-  const existing = providers.get(pi);
-  if (existing) return existing;
+  const local = pi.events === undefined ? localProviders.get(pi) : undefined;
+  if (local !== undefined) return local;
   // Entry points have distinct APIs; their resource loader's native bus is shared.
   const exchange: ConfigExchange = {};
   pi.events?.emit(CONFIG_CHANNEL, exchange);
-  if (exchange.provider) {
-    providers.set(pi, exchange.provider);
-    return exchange.provider;
+  if (exchange.provider !== undefined) return exchange.provider;
+  let provider: HarnessConfigProvider;
+  if (fixed !== undefined) provider = () => fixed;
+  else {
+    const slot = configLifecycleFor(pi).bindSyncSlot(HARNESS_SLOT);
+    provider = ctx => slot.read(ctx).value;
   }
-  let cached: HarnessConfig | undefined = fixed;
-  const provider: HarnessConfigProvider = fixed
-    ? () => fixed
-    : (ctx) => cached ??= loadHarnessConfig({ cwd: ctx.cwd, agentDir: getAgentDir(), projectTrusted: ctx.isProjectTrusted() });
-  if (!fixed) {
-    const reset = (): void => { cached = undefined; };
-    pi.on('session_start', reset);
-    pi.on('session_tree', reset);
-    pi.on('session_shutdown', reset);
-  }
-  providers.set(pi, provider);
+  if (pi.events === undefined) localProviders.set(pi, provider);
   pi.events?.on(CONFIG_CHANNEL, data => { (data as ConfigExchange).provider = provider; });
   return provider;
 }

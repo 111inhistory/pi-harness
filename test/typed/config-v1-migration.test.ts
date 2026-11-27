@@ -53,7 +53,7 @@ test('config v1 CLI previews files and produces documents accepted by their load
   assert.equal(read(`${project}.pre-config-v1`), originalProject);
   assert.equal(read(`${preset}.pre-config-v1`), oldPreset);
   assert.equal(read(`${hook}.pre-config-v1`), oldHook);
-  assert.deepEqual(readHookLayer(agentDir).version, {
+  assert.deepEqual(readHookLayer(hook).rules.version, {
     on: 'before_agent_start', actions: [{ type: 'injectHint', text: 'Inspect the fixture.' }],
   });
   assert.deepEqual(loadHarnessConfig({ agentDir, cwd, projectTrusted: true }).capability.blacklist, ['global-tool', 'project-tool']);
@@ -68,16 +68,16 @@ test('config v1 CLI previews files and produces documents accepted by their load
 test('Hook file version and structure failures have distinct diagnostic classes', t => {
   const { agentDir } = fixture(t);
   const file = path.join(agentDir, 'hooks.toml');
-  assert.deepEqual(readHookLayer(agentDir), {});
+  assert.deepEqual(readHookLayer(file), { rules: {}, digest: null });
   for (const [text, code] of [
     ['', 'version_invalid'], ['version = 2', 'version_invalid'], ['[muted]\nenabled = false', 'version_invalid'],
     ['version = 1\n[muted]\nenabled = false', 'layer_invalid'], ['version = 1\nhooks = []', 'layer_invalid'], ['[', 'layer_invalid'],
   ] as const) {
     writeFileSync(file, text);
-    assert.throws(() => readHookLayer(agentDir), (error: unknown) => error instanceof HookConfigError && error.code === code);
+    assert.throws(() => readHookLayer(file), (error: unknown) => error instanceof HookConfigError && error.code === code);
   }
   writeFileSync(file, 'version = 1\n');
-  assert.deepEqual(Object.entries(readHookLayer(agentDir)), []);
+  assert.deepEqual(Object.entries(readHookLayer(file).rules), []);
 });
 
 test('Harness v1 CLI refuses project-only violations and existing backups before writing either layer', t => {

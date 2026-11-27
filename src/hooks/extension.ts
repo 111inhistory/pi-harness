@@ -1,15 +1,15 @@
 import { createHash } from 'node:crypto';
-import path from 'node:path';
 import { getAgentDir, SettingsManager, type ExtensionAPI, type ExtensionContext, type SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { CapabilityHookPort } from '../capability/extension.ts';
 import { runClassifier } from '../classifier-client.ts';
 import { harnessConfigFor } from '../harness-config.ts';
+import { configLifecycleFor, createSyncSlotToken } from '../config-lifecycle.ts';
 import { PRESET_STATE_RECORD, restorePresetSnapshot } from '../preset/state.ts';
 import { applySystemPromptSections } from '../request-instructions.ts';
 import { clipText } from '../text-output.ts';
 import { extractBranchToolObservations, installToolObservation, type ToolObservation } from '../tool-observation.ts';
 import { canClassifyForBranch, classifiedActions, hookQuestion, HOOK_QUESTION } from './classify.ts';
-import { mergeHookLayers, readHookLayer, type HookAction, type HookRule, type HookRules } from './config.ts';
+import { mergeHookLayers, readHookLayers, type HookAction, type HookRule } from './config.ts';
 import { buildHookClassifierSlice, type HookClassifierSubject, type HookClassifierSources, type HookClassifierToolFact } from './projection.ts';
 import { HOOK_HINT_MESSAGE, HOOK_REPEAT_RECORD, readHintReceipts, restoreRepeat, type HookReceipt } from './repeat.ts';
 import { emitHookStat, toolCategory, type HookOutcome, type HookStatsBinding } from './stats.ts';
@@ -130,15 +130,22 @@ function ruleIdentity(id: string, rule: HookRule): string {
   return `${id}:${createHash('sha256').update(JSON.stringify(rule), 'utf8').digest('hex')}`;
 }
 
+const HOOK_SLOT = createSyncSlotToken({
+  name: 'hooks.toml', refreshable: true,
+  load: ctx => readHookLayers({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted(), agentDir: getAgentDir() }),
+  equals: (a, b) => a.global.digest === b.global.digest && a.project.digest === b.project.digest,
+});
+
 /** The Main adapter owns rule state; the narrow Capability port owns execution and publication. */
 export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookPort, stats?: HookStatsBinding): void {
   const configFor = harnessConfigFor(pi);
-  let global: HookRules = {};
-  let project: HookRules = {};
-  let layerContext: { readonly cwd: string; readonly trusted: boolean } | undefined;
-  let layersValid = true;
+  const lifecycle = configLifecycleFor(pi);
+  const layers = lifecycle.bindSyncSlot(HOOK_SLOT);
+  let lastLayerError: unknown;
   const running = new Map<string, { readonly controller: AbortController; readonly requiresTurn: boolean }>();
   let branchState: {
+    readonly layersRevision: number;
+    readonly scopeCurrent: () => boolean;
     readonly rules: readonly EffectiveRule[];
     readonly preset: string | undefined;
     userTurn: number;
@@ -209,28 +216,25 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
   pi.on('session_before_tree', invalidateBranch);
   pi.on('session_tree', invalidateBranch);
   pi.on('session_shutdown', invalidateBranch);
-  pi.on('session_start', () => { layerContext = undefined; invalidateBranch(); });
+  pi.on('session_start', () => { lastLayerError = undefined; invalidateBranch(); });
 
   function bindBranch(ctx: ExtensionContext, mode: 'start' | 'commit' = 'start'): typeof branchState {
-    const trusted = ctx.isProjectTrusted();
-    if (layerContext?.cwd !== ctx.cwd || layerContext.trusted !== trusted) {
-      global = {};
-      project = {};
-      layersValid = true;
+    let currentLayers: ReturnType<typeof layers.read>;
+    try {
+      currentLayers = layers.read(ctx);
+    } catch (error) {
+      // An unreadable higher layer could have disabled lower rules.
       branchState = undefined;
-      try {
-        global = readHookLayer(getAgentDir());
-        if (trusted) project = readHookLayer(path.join(ctx.cwd, '.pi'));
-      } catch (error) {
-        // An unreadable higher layer could have disabled lower rules.
-        layersValid = false;
+      if (lastLayerError !== error) {
+        lastLayerError = error;
         ctx.ui.notify(`Hooks: ${error instanceof Error ? error.message : String(error)}`, 'error');
       }
-      layerContext = { cwd: ctx.cwd, trusted };
+      return undefined;
     }
-    if (!layersValid) return undefined;
     const manager = ctx.sessionManager;
     const leaf = manager.getLeafId();
+    if (branchState !== undefined && (!branchState.scopeCurrent() ||
+      (turnState === undefined && mode === 'start' && branchState.layersRevision !== currentLayers.revision))) branchState = undefined;
     advanceBranch(ctx, mode === 'commit' && turnState !== undefined);
     if (branchState !== undefined) return branchState;
     const branch = manager.getBranch();
@@ -238,7 +242,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
     const rules: EffectiveRule[] = [];
     let classifierUnavailable = false;
     const hasClassifier = configFor(ctx).classifier.models.length > 0;
-    for (const [id, rule] of mergeHookLayers(global, snapshot?.hooks ?? {}, project)) {
+    for (const [id, rule] of mergeHookLayers(currentLayers.value.global.rules, snapshot?.hooks ?? {}, currentLayers.value.project.rules)) {
       if (rule.classify !== undefined && !hasClassifier) {
         classifierUnavailable = true;
         continue;
@@ -253,7 +257,8 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
     if (classifierUnavailable) ctx.ui.notify('Hooks: classified rules require at least one classifier.models entry.', 'warning');
     const repeat = restoreRepeat(branch, new Map(rules.flatMap(entry => entry.rule.repeat === undefined ? [] : [[entry.key, entry.rule.repeat]])));
     const capturePreviews = rules.some(({ rule }) => rule.classify?.include.includes('recentToolPreviews'));
-    branchState = { rules, preset: snapshot?.name, repeat, userTurn: repeat.userTurn,
+    branchState = { rules, layersRevision: currentLayers.revision, scopeCurrent: lifecycle.captureScope(ctx),
+      preset: snapshot?.name, repeat, userTurn: repeat.userTurn,
       bashIsPosix: posixBash(pi), recentTools: [], recentToolsClipped: false, capturePreviews, leaf };
     return branchState;
   }

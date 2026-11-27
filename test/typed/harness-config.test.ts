@@ -521,10 +521,12 @@ test('one provider caches its snapshot until the session lifecycle invalidates i
 
   await writeJson(globalFile, { subagent: { maxActiveBatches: 2 } });
   emit('session_tree');
-  assert.equal(provider(context(cwd, true)).subagent.maxActiveBatches, 2);
+  assert.equal(provider(context(cwd, true)), reloaded);
 
   await writeJson(globalFile, { subagent: { maxActiveBatches: 4 } });
   emit('session_shutdown');
+  assert.throws(() => provider(context(cwd, true)), /configuration scope changed/);
+  emit('session_start');
   assert.equal(provider(context(cwd, true)).subagent.maxActiveBatches, 4);
 });
 

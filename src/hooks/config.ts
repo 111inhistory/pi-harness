@@ -1,6 +1,6 @@
-import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { parseToolTarget } from '../capability/targets.ts';
-import { readConfigDocument, requireConfigVersion } from '../config-storage.ts';
+import { configPaths, readConfigDocument, requireConfigVersion, type ConfigLocation, type ConfigScope } from '../config-storage.ts';
 import type { HookClassifierInclude } from './projection.ts';
 import { compileWhen, type WhenTrigger } from './when.ts';
 
@@ -243,13 +243,33 @@ export function validateHookDocument(file: string, value: unknown): HookRules {
   }
 }
 
-export function readHookLayer(directory: string): HookRules {
-  const file = path.join(directory, 'hooks.toml');
+export function readHookLayer(file: string): { readonly rules: HookRules; readonly digest: string | null } {
   const document = readConfigDocument(file, 'toml');
-  if (document.status === 'missing') return {};
+  if (document.status === 'missing') return { rules: {}, digest: null };
   if (document.status !== 'ok') throw new HookConfigError(file, 'layer_invalid',
     document.error instanceof Error ? document.error.message : String(document.error));
-  return validateHookDocument(file, document.value);
+  return { rules: validateHookDocument(file, document.value), digest: createHash('sha256').update(document.text).digest('hex') };
+}
+
+export class HookLayerError extends Error {
+  readonly scope: ConfigScope;
+  readonly code: HookConfigError['code'];
+
+  constructor(scope: ConfigScope, error: unknown) {
+    super(error instanceof Error ? error.message : String(error), { cause: error });
+    this.name = 'HookLayerError';
+    this.scope = scope;
+    this.code = error instanceof HookConfigError ? error.code : 'layer_invalid';
+  }
+}
+
+export function readHookLayers(location: ConfigLocation) {
+  const layers = { global: { rules: {} as HookRules, digest: null as string | null }, project: { rules: {} as HookRules, digest: null as string | null } };
+  for (const { scope, path } of configPaths(location, 'hooks.toml', 'global-and-project')) {
+    try { layers[scope] = readHookLayer(path); }
+    catch (error) { throw new HookLayerError(scope, error); }
+  }
+  return layers;
 }
 
 export function mergeHookLayers(...layers: readonly HookRules[]): readonly (readonly [string, HookRule])[] {

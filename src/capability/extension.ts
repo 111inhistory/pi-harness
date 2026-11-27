@@ -488,10 +488,11 @@ export default function capabilityExtension(
     let result: CapabilityDiscoveryResult;
     let previouslyActive = new Set<string>();
     let activation: Activation | undefined;
+    let config: HarnessConfig | undefined;
     let published = false;
     try {
       if (!isCurrent()) return { result: cancelledBeforePublication(capabilityFailureResult('Capability discovery cancelled.')), previouslyActive, activation, published };
-      const config = configFor(ctx);
+      config = configFor(ctx);
       const toolCallId = 'toolCallId' in invocation ? invocation.toolCallId : undefined;
       const { cwd, modelRegistry, sessionManager } = ctx;
       const branch = () => sessionManager.getBranch();
@@ -543,7 +544,7 @@ export default function capabilityExtension(
     } catch (error) {
       result = capabilityFailureResult(`capability discovery failed: ${errorMessage(error)}.`);
     }
-    return { result, previouslyActive, activation, published };
+    return { result, previouslyActive, activation, published, config };
   };
 
   const port: CapabilityHookPort = {
@@ -597,8 +598,14 @@ export default function capabilityExtension(
       explicitRuns += 1;
       try {
         return await manager.run([callerSignal, ctx.signal], async signal => {
-          const run = await runDiscovery(ctx, signal, branchEpoch, { toolCallId });
-          const config = configFor(ctx);
+          const expectedEpoch = branchEpoch;
+          const run = await runDiscovery(ctx, signal, expectedEpoch, { toolCallId });
+          const config = run.config;
+          if (closed || branchEpoch !== expectedEpoch || config === undefined) return {
+            content: [{ type: 'text', text: JSON.stringify(capabilityPublicResult(run.result)) }],
+            details: run.result,
+            isError: run.result.status === 'failed',
+          };
           const branch = ctx.sessionManager.getBranch();
           const result = appendLazyModelOnlyAdvisory(pi, config, run.result, branch);
           if (result.unavailable !== undefined && result.unavailable.length > 0
