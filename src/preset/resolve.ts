@@ -99,6 +99,7 @@ export interface PresetApplyPlan {
   readonly codemode?: { readonly mode: CodemodeMode };
   /** Resolved instruction text; null when the preset carries none. */
   readonly instructions: string | null;
+  readonly hooks?: NonNullable<PresetConfig['hooks']>;
   /** Version identity of every semantic field above. */
   readonly contentHash: string;
   /** Registered Harness default tools this apply adds to the permanent baseline. */
@@ -229,6 +230,7 @@ export function resolvePreset(name: string, preset: PresetConfig, view: PresetCa
     toolSelection,
     ...(codemode === undefined ? {} : { codemode }),
     instructions,
+    ...(preset.hooks === undefined ? {} : { hooks: preset.hooks }),
     baselineAdditions,
     contentHash: presetContentHash({
       ...(model === undefined ? {} : { model }),
@@ -237,6 +239,7 @@ export function resolvePreset(name: string, preset: PresetConfig, view: PresetCa
       ...toolFields(),
       ...(codemode === undefined ? {} : { codemode }),
       instructions,
+      ...(preset.hooks === undefined ? {} : { hooks: preset.hooks }),
     }),
   };
   return { plan, issues };

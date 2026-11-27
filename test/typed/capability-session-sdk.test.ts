@@ -25,7 +25,7 @@ import {
   type AgentSession, type ExtensionAPI,
 } from '@earendil-works/pi-coding-agent';
 
-import capabilityExtension from '../../src/capability/extension.ts';
+import capabilityExtension, { type CapabilityHookPort } from '../../src/capability/extension.ts';
 import { installPresetInstruction } from '../../src/preset/instruction.ts';
 import { CAPABILITY_STEP_TOOL_NAME } from '../../src/capability/contracts.ts';
 import { activateToolTargets } from '../../src/capability/tool-access.ts';
@@ -352,7 +352,7 @@ for (const api of ['openai-responses', 'anthropic-messages'] as const) {
 }
 
 
-async function runCapabilityLifecycleCase(mode: 'navigate' | 'shutdown' | 'cancel'): Promise<void> {
+async function runCapabilityLifecycleCase(mode: 'navigate' | 'shutdown' | 'cancel' | 'background' | 'background-navigate'): Promise<void> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'pi-capability-lifecycle-'));
   const agentDir = path.join(cwd, 'agent');
   await mkdir(agentDir, { recursive: true });
@@ -377,11 +377,15 @@ async function runCapabilityLifecycleCase(mode: 'navigate' | 'shutdown' | 'cance
     } as Model<Api>;
 
     let retrievalCalls = 0;
+    let parentCalls = 0;
+    let hookPort: CapabilityHookPort | undefined;
+    const backgroundMode = mode === 'background' || mode === 'background-navigate';
     let gateRetrieval = true;
     let releaseHeldRetrieval: (() => void) | undefined;
     runtime.streamSimple = (_requestModel, context, options) => {
       const stream = new AssistantMessageEventStream();
       if (!toolNames(context.messages).includes(CAPABILITY_STEP_TOOL_NAME)) {
+        parentCalls += 1;
         const reply = assistant(model, [{ type: 'text', text: 'parent done' }], 'stop');
         stream.push({ type: 'done', reason: 'stop', message: reply });
         stream.end();
@@ -417,10 +421,11 @@ async function runCapabilityLifecycleCase(mode: 'navigate' | 'shutdown' | 'cance
     const loader = new DefaultResourceLoader({
       cwd, agentDir, settingsManager,
       noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
-      additionalExtensionPaths: [entryPath],
+      additionalExtensionPaths: backgroundMode ? [] : [entryPath],
       extensionFactories: [{
         name: 'capability-lifecycle-tools',
         factory(pi) {
+          if (backgroundMode) hookPort = capabilityExtension(pi);
           pi.registerTool({
             name: 'fixture_slides', label: 'Fixture slides', description: 'A selectable local fixture capability.',
             parameters: { type: 'object', properties: {} }, defaultActive: false,
@@ -450,6 +455,31 @@ async function runCapabilityLifecycleCase(mode: 'navigate' | 'shutdown' | 'cance
     const tool = session.getToolDefinition('capability');
     assert.ok(tool);
     const context = session.extensionRunner.createToolContext('lifecycle-capability', undefined);
+    if (backgroundMode) {
+      assert.ok(hookPort);
+      const { branchEpoch } = hookPort.snapshot(context);
+      const request = { branchEpoch, seed: 'background seed' };
+      assert.deepEqual(hookPort.discover(context, { ...request, deadline: performance.now() - 1 }), { accepted: false, reason: 'cancelled' });
+      const pending = hookPort.discover(context, request);
+      assert.equal(pending.accepted, true);
+      await waitFor(() => retrievalCalls >= 2, { label: 'held background retrieval model' });
+      assert.deepEqual(hookPort.discover(context, request), { accepted: false, reason: 'suppressed' });
+      if (mode === 'background-navigate') {
+        await session.navigateTree(anchor);
+        assert.equal(hookPort.activate(context, { branchEpoch, targets: ['fixture_slides'] }), undefined);
+      } else {
+        await session.prompt('Complete the Main turn without tools.');
+        assert.equal(hookPort.branchEpoch(), branchEpoch, 'settling a turn keeps the branch lease');
+      }
+      releaseHeldRetrieval?.();
+      const expected = mode === 'background' ? 'published' : 'cancelled';
+      assert.equal(await pending.done, expected);
+      assert.equal(session.getActiveToolNames().includes('fixture_slides'), mode === 'background');
+      assert.equal(session.sessionManager.getBranch().filter(entry =>
+        entry.type === 'custom' && entry.customType === CAPABILITY_DISCOVERY_RECORD).length, mode === 'background' ? 1 : 0);
+      assert.equal(parentCalls, mode === 'background' ? 1 : 0, 'publication does not wake Main');
+      return;
+    }
     SessionManager.inMemory = (...args: Parameters<typeof originalInMemory>): SessionManager => {
       const manager = originalInMemory(...args);
       childManagers.push(manager);
@@ -529,4 +559,11 @@ test('SDK tree navigation vs shutdown: invalidate keeps retrieval usable; dispos
 
 test('cancelled SDK tree navigation uses invalidation, not disposal, and allows a fresh retrieval', { timeout: 30_000 }, async () => {
   await runCapabilityLifecycleCase('cancel');
+});
+test('background Capability can publish after Main settles without waking it', async () => {
+  await runCapabilityLifecycleCase('background');
+});
+
+test('background Capability loses write authority when Main navigates to another branch', async () => {
+  await runCapabilityLifecycleCase('background-navigate');
 });

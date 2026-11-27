@@ -1,0 +1,161 @@
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import { fauxProvider, getCurrentSystemMessage, InMemoryCredentialStore, type AssistantMessage } from '@earendil-works/pi-ai';
+import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type AgentSession } from '@earendil-works/pi-coding-agent';
+import capabilityExtension from '../../src/capability/extension.ts';
+import { installHookSurface } from '../../src/hooks/extension.ts';
+import { normalizeHookRules } from '../../src/hooks/config.ts';
+import { HOOK_HINT_MESSAGE, HOOK_REPEAT_RECORD } from '../../src/hooks/repeat.ts';
+import { appendPresetState, buildPresetSnapshot, PRESET_STATE_VERSION } from '../../src/preset/state.ts';
+
+const START = 'HOOK_START_SAFE';
+const NESTED = 'HOOK_NESTED_SAFE';
+const PRESET = 'HOOK_PRESET_SECTION';
+const PRESET_SECTION = `<hook-section>\n${PRESET}\n</hook-section>`;
+const PEER_WAKE = 'Peer wake';
+
+const globalHooks = `
+[start]
+on = 'before_agent_start'
+actions = [{ type = 'injectHint', text = '${START}' }]
+[start.repeat]
+maxTriggers = 1
+
+[override]
+on = 'before_agent_start'
+actions = [{ type = 'injectHint', text = 'GLOBAL_SHOULD_NOT_APPEAR' }]
+
+[nested-result]
+on = 'tool_result'
+when = '''tool == 'command_probe' && nested && contains(input.command, 'read fixture') && turn.modelCalls >= 1'''
+actions = [{ type = 'injectHint', text = '${NESTED}' }]
+[nested-result.repeat]
+maxTriggers = 1
+
+[nested-duplicate]
+on = 'tool_result'
+when = '''tool == 'command_probe' && nested'''
+actions = [{ type = 'injectHint', text = '${NESTED}', display = true }]
+[nested-duplicate.repeat]
+maxTriggers = 1
+`;
+
+test('Main Hook delivers coalesced nested hints in the next native request and restores branch-local repeat', async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), 'pi-hook-sdk-'));
+  const agentDir = path.join(cwd, 'agent');
+  const previousAgentDir = process.env['PI_CODING_AGENT_DIR'];
+  process.env['PI_CODING_AGENT_DIR'] = agentDir;
+  let session: AgentSession | undefined;
+  try {
+    await mkdir(agentDir);
+    await mkdir(path.join(cwd, '.pi'));
+    await writeFile(path.join(agentDir, 'hooks.toml'), globalHooks);
+    await writeFile(path.join(cwd, '.pi', 'hooks.toml'), '[override]\nenabled = false\n');
+    const provider = fauxProvider({ models: [{ id: 'hook-fixture' }] });
+    const model = provider.models[0]!;
+    const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+    runtime.registerNativeProvider(provider.provider);
+    runtime.getAuth = async () => ({ auth: { apiKey: 'offline-fixture' }, env: {} });
+    runtime.hasConfiguredAuth = () => true;
+    // Request system messages carry section *diffs*, so the prompt a wake actually sees is
+    // the SDK replay; capture that projection per request instead of the raw patches.
+    const requests: { text: string; peerWake: boolean; sections: Readonly<Record<string, string | null>> }[] = [];
+    runtime.streamSimple = (_model, context) => {
+      requests.push({
+        text: JSON.stringify(context),
+        peerWake: context.messages.some(message => message.role === 'user'
+          && JSON.stringify(message.content).includes(PEER_WAKE)),
+        sections: getCurrentSystemMessage(context.messages)?.sections ?? {},
+      });
+      const first = requests.length % 2 === 1;
+      const reply: AssistantMessage = {
+        role: 'assistant', api: model.api, provider: model.provider, model: model.id,
+        content: first ? [{ type: 'toolCall', id: `wrapper-${requests.length}`, name: 'wrapper', arguments: {} }]
+          : [{ type: 'text', text: 'Done' }],
+        stopReason: first ? 'toolUse' : 'stop', timestamp: Date.now(),
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      };
+      const stream = new AssistantMessageEventStream();
+      stream.push({ type: 'done', reason: first ? 'toolUse' : 'stop', message: reply });
+      stream.end();
+      return stream;
+    };
+    const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: 'off', retry: { enabled: false } }, { projectTrusted: true });
+    let probes = 0;
+    const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager,
+      noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+      extensionFactories: [{ name: 'hooks-fixture', factory(pi) {
+        installHookSurface(pi, capabilityExtension(pi));
+        pi.registerTool({ name: 'command_probe', label: 'Probe', description: 'Record a mock command', defaultActive: true,
+          parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } as never,
+          async execute() { probes += 1; return { content: [{ type: 'text', text: 'recorded' }], details: {} }; },
+        });
+        pi.registerTool({ name: 'wrapper', label: 'Wrapper', description: 'Run nested commands', defaultActive: true,
+          parameters: { type: 'object', properties: {} } as never,
+          async execute(_id, _params, _signal, _update, ctx) {
+            for (let i = 0; i < 2; i++) await ctx.executeTool('command_probe', { command: 'read fixture' });
+            return { content: [{ type: 'text', text: 'wrapped' }], details: {} };
+          },
+        });
+      } }],
+    });
+    await resourceLoader.reload();
+    const sessionManager = SessionManager.inMemory(cwd);
+    appendPresetState({ appendEntry: (kind, data) => sessionManager.appendCustomEntry(kind, data) }, {
+      version: PRESET_STATE_VERSION,
+      snapshot: buildPresetSnapshot({ name: 'hooked', instructions: null, hooks: normalizeHookRules({
+        section: { on: 'before_agent_start', actions: [{ type: 'injectSection', text: PRESET }] },
+        override: { on: 'before_agent_start', actions: [{ type: 'injectHint', text: 'PRESET_SHOULD_NOT_APPEAR' }] },
+      }) }),
+    });
+    session = (await createAgentSession({ cwd, agentDir, model, modelRuntime: runtime, settingsManager, resourceLoader, sessionManager })).session;
+    const errors: unknown[] = [];
+    await session.bindExtensions({ onError: error => errors.push(error) });
+    session.setActiveToolsByName(['wrapper', 'command_probe']);
+    await session.prompt('Turn one');
+    assert.equal(requests.length, 2);
+    assert.match(requests[0]!.text, new RegExp(START));
+    assert.match(requests[0]!.text, new RegExp(PRESET));
+    assert.doesNotMatch(requests[0]!.text, /SHOULD_NOT_APPEAR/);
+    assert.doesNotMatch(requests[0]!.text, new RegExp(NESTED));
+    assert.match(requests[1]!.text, new RegExp(NESTED));
+    const branch = session.sessionManager.getBranch();
+    const firstUser = branch.find(e => e.type === 'message' && e.message.role === 'user');
+    assert.ok(firstUser);
+    const hints = branch.filter(e => e.type === 'custom_message' && e.customType === HOOK_HINT_MESSAGE);
+    assert.equal(hints.length, 2, 'two nested results share one outer hint');
+    const nestedHint = hints.at(-1);
+    assert.equal(nestedHint?.type, 'custom_message');
+    assert.equal(nestedHint.content, NESTED);
+    assert.equal(nestedHint.display, true);
+    const details = nestedHint.details as { repeat: { key: string }[] };
+    assert.deepEqual(details.repeat.map(receipt => receipt.key.split(':')[0]), ['nested-duplicate', 'nested-result']);
+    assert.equal(branch.filter(e => e.type === 'custom' && e.customType === HOOK_REPEAT_RECORD).length, 0, 'hint receipts live on the native messages');
+    await session.prompt('Turn two');
+    assert.equal(session.sessionManager.getBranch().filter(e => e.type === 'custom_message' && e.customType === HOOK_HINT_MESSAGE).length, 2);
+    await session.sendCustomMessage({ customType: 'agent-delivery', content: PEER_WAKE, display: false }, { triggerTurn: true });
+    const wakeRequests = requests.filter(request => request.peerWake);
+    assert.ok(wakeRequests.length > 0, 'the peer wake reaches the provider as its own request');
+    for (const wake of wakeRequests) {
+      assert.equal(wake.sections['hook-section'], PRESET_SECTION,
+        'a peer wake request replays the unchanged static section instead of re-sending it');
+    }
+    assert.equal(session.sessionManager.getBranch().filter(e => e.type === 'custom_message' && e.customType === HOOK_HINT_MESSAGE).length, 2);
+    await session.navigateTree(firstUser.id);
+    await session.prompt('Turn on an earlier branch');
+    assert.equal(session.sessionManager.getBranch().filter(e => e.type === 'custom_message' && e.customType === HOOK_HINT_MESSAGE).length, 2);
+    assert.equal(probes, 8);
+    assert.deepEqual(errors, []);
+  } finally {
+    try { await session?.dispose(); } finally {
+      if (previousAgentDir === undefined) delete process.env['PI_CODING_AGENT_DIR'];
+      else process.env['PI_CODING_AGENT_DIR'] = previousAgentDir;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }
+});

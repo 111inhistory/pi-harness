@@ -311,7 +311,9 @@ export function createCapabilityDiscovery(deps: CapabilityDiscoveryDependencies)
   if (typeof deps?.broker?.search !== 'function') throw new TypeError('createCapabilityDiscovery requires a broker with search().');
   if (typeof deps.openSession !== 'function') throw new TypeError('createCapabilityDiscovery requires an openSession().');
   return {
-    async discover({ cwd = process.cwd(), signal }: { cwd?: string | undefined; signal?: AbortSignal | undefined } = {}): Promise<CapabilityDiscoveryResult> {
+    async discover({ cwd = process.cwd(), signal, seed }: {
+      cwd?: string | undefined; signal?: AbortSignal | undefined; seed?: string | undefined;
+    } = {}): Promise<CapabilityDiscoveryResult> {
       const budgetProfile = deps.budget ?? DEFAULT_HARNESS_CONFIG.capability.budget;
       const noSelectionLimit = deps.noSelectionLimit ?? DEFAULT_HARNESS_CONFIG.capability.noSelectionLimit;
       const run: Run = { broker: deps.broker, cwd, signal, noSelectionLimit, hits: new Map(), selected: new Set(), warnings: [], emptyQueries: [],
@@ -336,7 +338,9 @@ export function createCapabilityDiscovery(deps: CapabilityDiscoveryDependencies)
         });
         let thrown: unknown = null;
         try {
-          const messages = await run.session.prompt(CAPABILITY_DISCOVERY_PROMPT);
+          const prompt = seed === undefined ? CAPABILITY_DISCOVERY_PROMPT
+            : `${CAPABILITY_DISCOVERY_PROMPT}\n\n${promptString('capability-discovery.json', 'requestData')} ${JSON.stringify(seed)}`;
+          const messages = await run.session.prompt(prompt);
           const detail = providerErrorDetail(messages);
           if (detail !== null && run.end === null) thrown = new Error(detail);
         } catch (error) { thrown = error; }

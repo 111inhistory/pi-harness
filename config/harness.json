@@ -1,5 +1,6 @@
 {
   "classifier": { "models": [] },
+  "hooks": { "timeoutMs": 5000 },
   "subagent": {
     "maxDepth": 2,
     "maxActiveBatches": 4,

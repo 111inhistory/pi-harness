@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DEFAULT_MAX_LINES, createCodemodeExtension, type ExtensionAPI, type ExtensionContext, type ExtensionToolContext, type ToolDefinition } from '@earendil-works/pi-coding-agent';
-import { CodemodeSandbox, parseCodemodeSource, renderToolSample, type CodemodeTool, type CodemodeJsonSchema, toCodemodeIdentifier } from '@earendil-works/pi-codemode';
+import { CodemodeSandbox, parseCodemodeSource, renderToolSample, type CodemodeErrorKind, type CodemodeTool, type CodemodeJsonSchema, toCodemodeIdentifier } from '@earendil-works/pi-codemode';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { ClassifierContext, ImagesContext, ModelType, Usage } from '@earendil-works/pi-ai';
 import { DEFAULT_HARNESS_CONFIG, type HarnessConfigProvider } from '../harness-config.ts';
@@ -13,6 +13,36 @@ import { createToolAccessView } from './tool-access-view.ts';
 import { clipText } from '../text-output.ts';
 
 const codemodeScope = promptString('native-discovery.json', 'codemodeScope');
+
+export type CodemodeNestedCallStatus = 'ok' | 'error' | 'cancelled';
+
+export interface CodemodeNestedCallDetail {
+  readonly id: string;
+  readonly name: string;
+  readonly args: string;
+  readonly status: CodemodeNestedCallStatus;
+  readonly durationMs?: number;
+  readonly error?: string;
+}
+
+/**
+ * Raw script error metadata reported by QuickJS / pi-codemode.
+ * Note: `kind: "script"` covers both parse failures and runtime throws, so
+ * `kind` + `name` never claims a compile-vs-runtime stage distinction.
+ */
+export interface CodemodeScriptErrorDetail {
+  readonly kind: CodemodeErrorKind;
+  readonly name?: string;
+}
+
+export interface CodemodeToolDetails {
+  readonly calls: readonly CodemodeNestedCallDetail[];
+  readonly ok: boolean;
+  readonly durationMs: number;
+  readonly truncated: boolean;
+  readonly fullOutputPath?: string;
+  readonly error?: CodemodeScriptErrorDetail;
+}
 
 /**
  * A fixed-shape usage snapshot. Accumulation mutates its numeric fields, so the
@@ -319,7 +349,7 @@ export function installCapabilityCodemode(
           const declarations = new Map(tools.map((tool) => [tool.name, renderToolSample(declaration(tool,
             pi.getAllTools().find((entry) => entry.name === tool.name)?.promptGuidelines))]));
           const summaries = new Map(tools.map((tool) => [tool.name, summary(tool)]));
-          const calls: { id: string; name: string; args: string; status: string; durationMs?: number; error?: string }[] = [];
+          const calls: { id: string; name: string; args: string; status: 'running' | CodemodeNestedCallStatus; durationMs?: number; error?: string }[] = [];
           const publish = () => onUpdate?.({ content: [], details: { calls: calls.map((call) => ({ ...call })) } });
           let usage: Usage | undefined;
           const addUsage = (next: Usage | undefined) => {
@@ -403,7 +433,23 @@ export function installCapabilityCodemode(
                 { type: 'text' as const, text: `Script ${result.ok ? 'completed' : 'failed'}\nWall time ${((performance.now() - started) / 1000).toFixed(3)} seconds\nOutput:\n${text}` },
                 ...result.output.filter((item) => item.type === 'image').map(({ type, data, mimeType }) => ({ type, data, mimeType })),
               ],
-              details: { calls: calls.map((call) => ({ ...call, status: call.status === 'running' ? 'cancelled' : call.status })), ...(fullOutputPath ? { fullOutputPath } : {}) },
+              details: {
+                calls: calls.map((call): CodemodeNestedCallDetail => ({
+                  id: call.id,
+                  name: call.name,
+                  args: call.args,
+                  status: call.status === 'running' ? 'cancelled' : call.status,
+                  ...(call.durationMs === undefined ? {} : { durationMs: call.durationMs }),
+                  ...(call.error === undefined ? {} : { error: call.error }),
+                })),
+                ok: result.ok,
+                durationMs: Math.max(0, Math.round(performance.now() - started)),
+                truncated: clipped.truncated,
+                ...(fullOutputPath ? { fullOutputPath } : {}),
+                ...(!result.ok
+                  ? { error: { kind: result.error.kind, ...(result.error.name ? { name: result.error.name } : {}) } }
+                  : {}),
+              } satisfies CodemodeToolDetails,
               // The published result takes its own fixed-shape snapshot: a model
               // call that settles after the script cannot keep adding into it.
               ...(usage ? { usage: ownUsage(usage) } : {}),

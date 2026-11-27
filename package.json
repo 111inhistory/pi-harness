@@ -43,6 +43,7 @@
   "dependencies": {
     "@earendil-works/pi-codemode": "1.6.1",
     "minisearch": "7.2.0",
+    "re2js": "2.10.0",
     "smol-toml": "1.9.1"
   },
   "peerDependencies": {

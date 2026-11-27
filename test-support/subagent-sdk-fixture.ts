@@ -11,7 +11,7 @@ import {
 import { getSystemMessageText } from "@earendil-works/pi-ai";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type {
-  AgentSession, AgentToolResult, ExtensionError, ExtensionUIContext, InlineExtension,
+  AgentSession, AgentToolResult, ExtensionAPI, ExtensionError, ExtensionUIContext, InlineExtension,
 } from "@earendil-works/pi-coding-agent";
 import type {
   Api, AssistantMessage, ClassifierAnswer, Context, JsonObject, Message, Model, StopReason,
@@ -334,9 +334,9 @@ export async function createSdkFixture(options: SdkFixtureOptions): Promise<SdkF
     const settingsManager = SettingsManager.inMemory(settings);
     const extensionFactories: InlineExtension[] = [
       { name: "result-rendering", factory: installResultRendering },
-      ...(scenario !== "namespace-reverse" ? [{ name: "capability", factory: capabilityExtension }] : []),
+      ...(scenario !== "namespace-reverse" ? [{ name: "capability", factory: (pi: ExtensionAPI) => { capabilityExtension(pi); } }] : []),
       ...(scenario === "capability-missing" ? [] : [{ name: "subagent", factory: subagentExtension }]),
-      ...(scenario === "namespace-reverse" ? [{ name: "capability", factory: capabilityExtension }] : []),
+      ...(scenario === "namespace-reverse" ? [{ name: "capability", factory: (pi: ExtensionAPI) => { capabilityExtension(pi); } }] : []),
       ...(scenario.startsWith("responses-") ? [{ name: "codemode", factory: createCodemodeExtension(), replaceable: true }] : []),
       { name: "external-test-tool", factory(pi) {
         pi.registerTool({ name: "external_test_tool", label: "External Test Tool", description: "A non-transplantable test extension tool.",

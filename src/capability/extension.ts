@@ -74,17 +74,19 @@ import {
 import { projectedNamespaceRefs, registeredToolGuidance, toolNamespaceInstructions, withheldToolGuidance } from "./tool-instructions.ts";
 import { capabilityPruneNoticeText } from './compaction-context.ts';
 import { recordCompactionPruning } from './pruning.ts';
-import { appendDiscoveryRecord } from "./discovery-record.ts";
+import { appendDiscoveryRecord, discoveryRecords } from "./discovery-record.ts";
 import { installNativeDiscoveryBoundary } from "./native-discovery.ts";
 import { createEligibleToolCatalog, retainSelectedToolMembers, retainReachableSelectedTools, supplySelectedToolInterfaces } from "./tool-catalog.ts";
 import { activateToolNames, codemodeAvailable, toolReachability } from "./activation.ts";
 import {
+  activateToolTargets,
   activeToolsAfterCollections,
   blacklistedNoticeNames,
   ensureToolBase,
   sessionBaseNames,
   syncActiveToolsForBranch,
 } from "./tool-access.ts";
+import { clipText } from '../text-output.ts';
 import { createToolAccessView, listBaseTools, listLoadedContainers } from "./tool-access-view.ts";
 import type { ToolGuidance } from "../tool-guidance.ts";
 import { argumentCompletionProvider } from "../autocomplete.ts";
@@ -138,6 +140,25 @@ interface Activation {
 
 type DiscoveryRecordWriter = Parameters<typeof appendDiscoveryRecord>[0];
 
+export interface CapabilityHookPort {
+  branchEpoch(): number;
+  snapshot(ctx: Pick<ExtensionContext, 'sessionManager'>): {
+    readonly branchEpoch: number;
+    readonly active: ReturnType<ExtensionAPI['getAllTools']>;
+    readonly activatable: ReturnType<ExtensionAPI['getAllTools']>;
+  };
+  /** A stale or unavailable operation has no effect and returns undefined. */
+  activate(ctx: Pick<ExtensionContext, 'sessionManager'>, request: {
+    readonly branchEpoch: number; readonly targets: readonly string[]; readonly signal?: AbortSignal;
+  }): ReturnType<typeof activateToolTargets> | undefined;
+  discover(ctx: ExtensionContext, request: {
+    readonly branchEpoch: number; readonly seed: string; readonly signal?: AbortSignal;
+    /** A monotonic deadline, using the same performance clock as the caller. */
+    readonly deadline?: number;
+  }): { readonly accepted: true; readonly done: Promise<'published' | 'empty' | 'failed' | 'cancelled'> }
+    | { readonly accepted: false; readonly reason: 'suppressed' | 'cancelled' };
+}
+
 function readToolsPrompt(): CapabilityToolsPrompt {
   return { capability: {
     snippet: promptString("capability-tools.json", "capability", "snippet"),
@@ -148,13 +169,25 @@ function readToolsPrompt(): CapabilityToolsPrompt {
 export default function capabilityExtension(
   pi: ExtensionAPI,
   { discovery = true, config }: { discovery?: boolean; config?: HarnessConfig } = {},
-): void {
+): CapabilityHookPort {
   const configFor = harnessConfigFor(pi, config);
   const manager = new CapabilityManager();
-  pi.on("session_before_switch", () => manager.invalidate());
-  pi.on("session_before_fork", () => manager.invalidate());
-  pi.on("session_before_tree", () => manager.invalidate());
-  pi.on("session_shutdown", () => manager.dispose());
+  let branchEpoch = 0;
+  let closed = false;
+  let background: AbortController | undefined;
+  let explicitRuns = 0;
+  const invalidateBranch = (): void => {
+    branchEpoch += 1;
+    manager.invalidate();
+  };
+  pi.on("session_before_switch", invalidateBranch);
+  pi.on("session_before_fork", invalidateBranch);
+  pi.on("session_before_tree", invalidateBranch);
+  pi.on("session_shutdown", () => {
+    closed = true;
+    invalidateBranch();
+    manager.dispose();
+  });
   const declaredTools = installNativeDiscoveryBoundary(pi, configFor);
   /**
    * Publish the configured blacklist on this surface as the `startup` source.
@@ -171,12 +204,9 @@ export default function capabilityExtension(
     schemaRefs: (ctx) => configFor(ctx).capability.lazySchemas,
   });
   let autocompleteInstalled = false;
-  const service = {
-    agentDir: getAgentDir(),
-    projectTrusted: false,
-  };
+  const agentDir = getAgentDir();
   pi.on("session_start", (_event, ctx) => {
-    service.projectTrusted = ctx.isProjectTrusted();
+    invalidateBranch();
     applyStartupBlacklist(configFor(ctx).capability.blacklist);
     // Capture the availability baseline once. A resumed branch already records
     // it, so the historical base is never rebuilt from the current active set.
@@ -273,6 +303,7 @@ export default function capabilityExtension(
   pi.on("session_start", resetRunTracking);
   pi.on("session_before_switch", resetRunTracking);
   pi.on("session_tree", (_event, ctx) => {
+    invalidateBranch();
     resetRunTracking();
     syncActiveToolsForBranch(pi, ctx.sessionManager.getBranch());
   });
@@ -445,113 +476,176 @@ export default function capabilityExtension(
     }
   });
 
-  if (!discovery) return;
-  pi.registerTool({
+  const runDiscovery = async (
+    ctx: ExtensionContext,
+    signal: AbortSignal,
+    expectedEpoch: number,
+    invocation: { readonly toolCallId: string } | { readonly seed: string; readonly deadline?: number },
+  ) => {
+    const deadline = 'deadline' in invocation ? invocation.deadline : undefined;
+    const isCurrent = (): boolean => !closed && branchEpoch === expectedEpoch && !signal.aborted
+      && (deadline === undefined || performance.now() < deadline);
+    let result: CapabilityDiscoveryResult;
+    let previouslyActive = new Set<string>();
+    let activation: Activation | undefined;
+    let published = false;
+    try {
+      if (!isCurrent()) return { result: cancelledBeforePublication(capabilityFailureResult('Capability discovery cancelled.')), previouslyActive, activation, published };
+      const config = configFor(ctx);
+      const toolCallId = 'toolCallId' in invocation ? invocation.toolCallId : undefined;
+      const { cwd, modelRegistry, sessionManager } = ctx;
+      const branch = () => sessionManager.getBranch();
+      const lazyNames = lazyGroupMemberNames(pi, config, branch());
+      const snapshot = captureInheritedContext(pi, ctx, toolCallId);
+      const runService = { agentDir, projectTrusted: ctx.isProjectTrusted() };
+      const engine = createCapabilityDiscovery({
+        broker: createCapabilityBroker(createProviders(pi, runService, branch), config.capability.search),
+        openSession: (request) => openInternalSession(pi, runService, { cwd, modelRegistry, sessionManager }, request, snapshot, lazyNames),
+        budget: config.capability.budget,
+        noSelectionLimit: config.capability.noSelectionLimit,
+      });
+      const seed = 'seed' in invocation ? invocation.seed : undefined;
+      result = await engine.discover({ cwd, signal, seed });
+      if (!isCurrent()) return { result: cancelledBeforePublication(result), previouslyActive, activation, published };
+      const currentBranch = branch();
+      const access = createToolAccessView(pi, currentBranch);
+      const eligible = createEligibleToolCatalog(pi, { blocked: tool => access.blocked(tool.name) }).names;
+      result = retainReachableTools(pi, retainSelectedTools(pi, result, 'catalog', eligible));
+      if (result.status !== 'failed') {
+        previouslyActive = new Set(pi.getActiveTools());
+        if (seed !== undefined) {
+          const additions = new Set([...eligible].filter(name => !previouslyActive.has(name)));
+          result = backgroundDiscoveryDelta(result, currentBranch, additions);
+          if (result.tools.length + result.mcp.length + result.skills.length === 0) {
+            return { result, previouslyActive, activation, published };
+          }
+        }
+        // Persist before making selected tools visible. The epoch check and
+        // these synchronous mutations share one event-loop boundary.
+        if (!isCurrent()) return { result: cancelledBeforePublication(result), previouslyActive, activation, published };
+        try {
+          appendDiscoveryRecord(pi as DiscoveryRecordWriter, toolCallId, result, result.coverage);
+          published = true;
+        } catch (error) {
+          result = discoveryNotDurable(result, error);
+        }
+      }
+      if (published) {
+        try {
+          activation = activateSelectedTools(pi, result, branch());
+          result = retainSelectedTools(pi, result, 'activation', activation.active);
+          if (activation.warnings.length > 0) result = withOuterWarnings(result, activation.warnings);
+        } catch (error) {
+          result = retainSelectedTools(pi, result, 'activation', new Set(pi.getActiveTools().filter(name => eligible.has(name))));
+          result = withOuterWarnings(result, [`selected tools could not be activated: ${errorMessage(error)}`]);
+        }
+      }
+    } catch (error) {
+      result = capabilityFailureResult(`capability discovery failed: ${errorMessage(error)}.`);
+    }
+    return { result, previouslyActive, activation, published };
+  };
+
+  const port: CapabilityHookPort = {
+    branchEpoch: () => branchEpoch,
+    snapshot(ctx) {
+      const branch = ctx.sessionManager.getBranch();
+      const access = createToolAccessView(pi, branch);
+      const catalog = createEligibleToolCatalog(pi, { blocked: tool => access.blocked(tool.name) });
+      const active = new Set(pi.getActiveTools());
+      const admission = createToolAdmission(pi, branch, catalog);
+      const reachability = { codemodeAvailable: codemodeAvailable(pi) };
+      return {
+        branchEpoch,
+        active: catalog.tools.filter(tool => active.has(tool.name) && admission.admits(tool.name)),
+        activatable: catalog.tools.filter(tool => !active.has(tool.name) && toolReachability(tool.exposure, reachability) === null),
+      };
+    },
+    activate(ctx, request) {
+      if (closed || branchEpoch !== request.branchEpoch || request.signal?.aborted) return undefined;
+      return activateToolTargets(pi, pi, ctx.sessionManager.getBranch(), request.targets);
+    },
+    discover(ctx, request) {
+      if (closed || branchEpoch !== request.branchEpoch || request.signal?.aborted
+          || (request.deadline !== undefined && performance.now() >= request.deadline)) return { accepted: false, reason: 'cancelled' };
+      if (!discovery || background !== undefined || explicitRuns > 0) return { accepted: false, reason: 'suppressed' };
+      const controller = new AbortController();
+      background = controller;
+      const done = (async () => {
+        const clipped = clipText(request.seed, { maxLines: 80, maxBytes: 4096 }, 'head-tail');
+        const { result, published } = await manager.run([controller.signal, request.signal], signal =>
+          runDiscovery(ctx, signal, request.branchEpoch, { seed: clipped.text,
+            ...(request.deadline === undefined ? {} : { deadline: request.deadline }) }));
+        if (result.endReason === 'cancelled') return 'cancelled';
+        if (result.status === 'failed') return 'failed';
+        return published ? 'published' : 'empty';
+      })().finally(() => {
+        background = undefined;
+      });
+      return { accepted: true, done };
+    },
+  };
+
+  if (discovery) pi.registerTool({
     name: CAPABILITY_TOOL_NAME,
     label: "Capability",
     description: CAPABILITY_TOOL_DESCRIPTION,
     promptSnippet: toolsPrompt.capability.snippet,
     parameters: CAPABILITY_PARAMETERS,
     async execute(toolCallId, _params, callerSignal, _onUpdate, ctx) {
-      return manager.run([callerSignal, ctx.signal], async signal => {
-        let result: CapabilityDiscoveryResult;
-        let interfaceSources: CapabilityInterfaceSources | null = null;
-        let previouslyActive = new Set<string>();
-        try {
-          service.projectTrusted = ctx.isProjectTrusted();
+      background?.abort();
+      explicitRuns += 1;
+      try {
+        return await manager.run([callerSignal, ctx.signal], async signal => {
+          const run = await runDiscovery(ctx, signal, branchEpoch, { toolCallId });
           const config = configFor(ctx);
-          const lazyNames = lazyGroupMemberNames(pi, config, ctx.sessionManager.getBranch());
-          const snapshot = captureInheritedContext(pi, ctx, toolCallId);
-          const engine = createCapabilityDiscovery({
-            broker: createCapabilityBroker(createProviders(pi, service, () => ctx.sessionManager.getBranch()), config.capability.search),
-            openSession: (request) => openInternalSession(pi, service, ctx, request, snapshot, lazyNames),
-            budget: config.capability.budget,
-            noSelectionLimit: config.capability.noSelectionLimit,
-          });
-          result = await engine.discover(signal === undefined ? { cwd: ctx.cwd } : { cwd: ctx.cwd, signal });
-          if (cancelled(signal, ctx.signal)) {
-            result = cancelledBeforePublication(result);
-          } else {
-            // The search result is a snapshot. Re-read the current registered,
-            // permitted catalog before persisting or activating anything, so a
-            // tool that was unregistered, hidden or denied during retrieval never
-            // enters the branch record or the published selection.
-            result = retainSelectedTools(pi, result, "catalog");
-            // Reachability is judged against the live session before the record is
-            // written, so a selected tool whose only call path is Codemode is never
-            // recorded as available while Codemode is disabled.
-            if (result.status !== "failed") {
-              result = retainReachableTools(pi, result);
-            }
-            if (result.status !== "failed") {
-              // Persist before activation. Memory is the durability contract, so a
-              // failed record write fails closed: nothing is advertised as selected
-              // and nothing is activated, because the next request could not restore
-              // it. The thrown detail stays in the internal warnings audit.
-              try {
-                appendDiscoveryRecord(pi as DiscoveryRecordWriter, toolCallId, result, result.coverage);
-              } catch (error) {
-                result = discoveryNotDurable(result, error);
-              }
-            }
+          const branch = ctx.sessionManager.getBranch();
+          const result = appendLazyModelOnlyAdvisory(pi, config, run.result, branch);
+          if (result.unavailable !== undefined && result.unavailable.length > 0
+              && (result.status === 'partial' || result.status === 'failed')) {
+            const names = result.unavailable.map(entry => entry.name);
+            ctx.ui.notify(`Capability: ${names.length} selected tool${names.length === 1 ? '' : 's'} could not be enabled in this session: ${names.join(', ')}.`, 'warning');
           }
-          if (result.status !== "failed" && !cancelled(signal, ctx.signal)) {
-            try {
-              previouslyActive = new Set(pi.getActiveTools());
-              const branch = ctx.sessionManager.getBranch();
-              const activation = activateSelectedTools(pi, result, branch);
-              const access = createToolAccessView(pi, branch);
-              const eligible = createEligibleToolCatalog(pi, {
-                blocked: (tool) => access.blocked(tool.name),
-              }).names;
-              // Publication follows what is actually active, not what the search
-              // hoped to activate. This is a synchronous read of the SDK's state,
-              // not a rollback path.
-              result = retainSelectedTools(pi, result, "activation", activation.active);
-              if (activation.warnings.length > 0) {
-                result = withOuterWarnings(result, activation.warnings);
-              }
-              interfaceSources = capabilityInterfaceSources(
-                activation.active, declaredTools, eligible.has("codemode"),
-                lazySelectedNames(pi, config, activation.active, ctx.sessionManager.getBranch()),
-              );
-            } catch (error) {
-              const active = new Set(pi.getActiveTools());
-              const eligible = createEligibleToolCatalog(pi).names;
-              result = retainSelectedTools(pi, result, "activation", new Set([...active].filter(name => eligible.has(name))));
-              result = withOuterWarnings(result, [`selected tools could not be activated: ${errorMessage(error)}`]);
-            }
-          } else if (result.status !== "failed") {
-            result = cancelledBeforePublication(result);
-          }
-        } catch (error) {
-          result = capabilityFailureResult(`capability discovery failed: ${errorMessage(error)}.`);
-        }
-        result = appendLazyModelOnlyAdvisory(pi, configFor(ctx), result, ctx.sessionManager.getBranch());
-        if (result.unavailable !== undefined && result.unavailable.length > 0
-            && (result.status === "partial" || result.status === "failed")) {
-          const names = result.unavailable.map((entry) => entry.name);
-          ctx.ui.notify(
-            `Capability: ${names.length} selected tool${names.length === 1 ? "" : "s"} could not be enabled in this session: ${names.join(", ")}.`,
-            "warning",
-          );
-        }
-        const delta = capabilityToolDelta(result, previouslyActive);
-        const withInterfaces = supplySelectedToolInterfaces(delta, pi);
-        const projected = interfaceSources === null ? withInterfaces : capabilityModelResult(withInterfaces, interfaceSources);
-        const publicResult = capabilityPublicResult(projected);
-        return {
-          content: [{ type: "text", text: JSON.stringify(publicResult) }],
-          details: result,
-          isError: result.status === "failed",
-        };
-      });
+          const withInterfaces = supplySelectedToolInterfaces(capabilityToolDelta(result, run.previouslyActive), pi);
+          const access = createToolAccessView(pi, branch);
+          const projected = run.activation === undefined ? withInterfaces : capabilityModelResult(withInterfaces, capabilityInterfaceSources(
+            run.activation.active, declaredTools,
+            createEligibleToolCatalog(pi, { blocked: tool => access.blocked(tool.name) }).names.has('codemode'),
+            lazySelectedNames(pi, config, run.activation.active, branch),
+          ));
+          return {
+            content: [{ type: 'text', text: JSON.stringify(capabilityPublicResult(projected)) }],
+            details: result,
+            isError: result.status === 'failed',
+          };
+        });
+      } finally {
+        explicitRuns -= 1;
+      }
     },
   });
+  return port;
 }
 
-function cancelled(signal: AbortSignal | undefined, contextSignal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true || contextSignal?.aborted === true;
+function backgroundDiscoveryDelta(
+  result: CapabilityDiscoveryResult,
+  branch: readonly SessionEntry[],
+  additions: ReadonlySet<string>,
+): CapabilityDiscoveryResult {
+  const knownRefs = new Set<string>();
+  for (const { result: memory } of discoveryRecords(branch)) {
+    for (const hit of [...memory.skills, ...memory.tools, ...memory.mcp]) {
+      if (hit.ref !== undefined) knownRefs.add(hit.ref);
+    }
+  }
+  const delta = retainSelectedToolMembers(result, additions).result;
+  const isNew = (hit: { readonly ref?: string }): boolean => hit.ref !== undefined && !knownRefs.has(hit.ref);
+  return {
+    ...delta,
+    tools: delta.tools.filter(hit => hit.kind === 'tool' || hit.tools?.length || isNew(hit)),
+    mcp: delta.mcp.filter(hit => hit.kind === 'tool' || hit.tools?.length || isNew(hit)),
+    skills: result.skills.filter(isNew),
+  };
 }
 
 function cancelledBeforePublication(result: CapabilityDiscoveryResult): CapabilityDiscoveryResult {

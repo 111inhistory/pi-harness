@@ -352,6 +352,7 @@ export function presetVersionChanges(
     changes.push(`codemode: ${recordedCodemode} -> ${candidateCodemode}`);
   }
   if (recorded.instructions !== plan.instructions) changes.push('instructions: changed');
+  if (JSON.stringify(recorded.hooks) !== JSON.stringify(plan.hooks)) changes.push('hooks: changed');
   return changes;
 }
 

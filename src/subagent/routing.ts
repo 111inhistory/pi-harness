@@ -96,6 +96,7 @@ export function validateRoutingConfig(value: unknown): RoutingConfig {
         if (!filled(candidate)) invalid('candidate preset names must be non-empty');
         normalized[label] = candidate;
       } else {
+        if (record(candidate)?.hooks !== undefined) invalid('roles[' + index + '].candidates.' + label + ': temporary Presets cannot declare Hooks');
         const parsed = validatePreset(candidate);
         if ('errors' in parsed) invalid('roles[' + index + '].candidates.' + label + ': ' + parsed.errors.join('; '));
         normalized[label] = parsed.preset;

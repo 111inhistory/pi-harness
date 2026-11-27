@@ -21,6 +21,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parse } from 'smol-toml';
+import { normalizeHookRules, type HookRules } from '../hooks/config.ts';
 
 /** Thinking levels Pi understands, including `off`. */
 export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -45,6 +46,7 @@ export interface PresetConfig {
   readonly tools?: readonly string[];
   readonly codemode?: { readonly mode: CodemodeMode };
   readonly instructions?: string;
+  readonly hooks?: HookRules;
 }
 
 /** The merged, name-keyed preset catalog. */
@@ -112,7 +114,7 @@ function isCodemodeMode(value: unknown): value is CodemodeMode {
 export function validatePreset(raw: unknown): { preset: PresetConfig } | { errors: readonly string[] } {
   if (!isRecord(raw)) return { errors: ['preset must be an object'] };
   const errors: string[] = [];
-  const known = new Set(['description', 'model', 'thinkingLevel', 'tools', 'codemode', 'instructions']);
+  const known = new Set(['description', 'model', 'thinkingLevel', 'tools', 'codemode', 'instructions', 'hooks']);
   for (const key of Object.keys(raw)) {
     if (!known.has(key)) errors.push(`unknown field "${key}"`);
   }
@@ -163,6 +165,15 @@ export function validatePreset(raw: unknown): { preset: PresetConfig } | { error
     else instructions = raw['instructions'];
   }
 
+  let hooks: HookRules | undefined;
+  if (raw.hooks !== undefined) {
+    try {
+      const normalized = normalizeHookRules(raw.hooks);
+      if (Object.keys(normalized).length > 0) hooks = normalized;
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
   if (errors.length > 0) return { errors };
   return {
     preset: {
@@ -172,6 +183,7 @@ export function validatePreset(raw: unknown): { preset: PresetConfig } | { error
       ...(tools === undefined ? {} : { tools }),
       ...(codemode === undefined ? {} : { codemode }),
       ...(instructions === undefined ? {} : { instructions }),
+      ...(hooks === undefined ? {} : { hooks }),
     },
   };
 }

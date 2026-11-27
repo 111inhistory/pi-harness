@@ -58,14 +58,14 @@ function inheritedSystemPrompt(snapshot: InheritedSnapshot): string | null {
 
 export async function openInternalSession(
   pi: ExtensionAPI,
-  service: { readonly agentDir: string },
-  ctx: ExtensionToolContext,
+  service: { readonly agentDir: string; readonly projectTrusted: boolean },
+  ctx: Pick<ExtensionToolContext, 'cwd' | 'modelRegistry' | 'sessionManager'>,
   request: CapabilityOpenSessionRequest,
   snapshot: InheritedSnapshot,
   lazyNames: ReadonlySet<string>,
 ): Promise<CapabilityRunSession> {
   const cwd = ctx.cwd;
-  const settings = internalSettings(pi, ctx.isProjectTrusted());
+  const settings = internalSettings(pi, service.projectTrusted);
   const modelRuntime = parentModelRuntime(ctx.modelRegistry, "capability discovery");
   const inheritedPrompt = inheritedSystemPrompt(snapshot);
   const retrievalNames = new Set(request.customTools.map(tool => tool.name));
