@@ -27,7 +27,22 @@
       ],
       "tests": [
         "test/typed/hooks-sdk.test.ts",
-        "test/typed/hooks-classifier-sdk.test.ts"
+        "test/typed/hooks-classifier-sdk.test.ts",
+        "test/typed/hooks-stats.test.ts"
+      ]
+    },
+    {
+      "id": "hooks.rpc-inspection",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### Hook 查询"
+        }
+      ],
+      "tests": [
+        "test/typed/harness-rpc-application.test.ts",
+        "test/typed/harness-rpc-schema.test.ts"
       ]
     },
     {

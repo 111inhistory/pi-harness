@@ -1,0 +1,29 @@
+{
+  "valid": true,
+  "preset": "fixture",
+  "classifierConfigured": false,
+  "rules": [
+    {
+      "id": "check",
+      "source": "project",
+      "on": "tool_result",
+      "hasWhen": true,
+      "classifyKind": null,
+      "actionTypes": [
+        "injectHint"
+      ],
+      "hasRepeat": false,
+      "observeOnly": false,
+      "muted": true,
+      "active": false
+    }
+  ],
+  "disabled": [
+    "tombstone"
+  ],
+  "muted": [
+    "check",
+    "missing"
+  ],
+  "warnings": []
+}

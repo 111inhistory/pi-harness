@@ -20,9 +20,20 @@ test('Hook Stats bounds rule IDs and rejects reports from a retired session', as
   assert.equal(report.split('\n').filter(line => line.startsWith('Hook rule-')).length, 64);
   assert.match(report, /Other Hook IDs: matched=6/);
   assert.doesNotMatch(report, /rule-69/);
+  first({ type: 'classifier-result', outcome: 'answered', durationMs: 2.7 });
+  const copy = bind.snapshot();
+  assert.ok(copy);
+  assert.equal(copy.classifier.durationMs, 3);
+  copy.classifier.outcomes.answered = 10;
+  copy.rules[0]!.matched = 99;
+  copy.tools[0]!.calls = 99;
+  assert.equal(bind.snapshot()?.classifier.outcomes.answered, 1);
+  assert.equal(bind.snapshot()?.rules[0]?.matched, 1);
+  assert.equal(bind.snapshot()?.tools[0]?.calls, 0);
 
   lifecycle.get('session_shutdown')!();
   assert.equal(bind.capture(), undefined);
+  assert.equal(bind.snapshot(), undefined);
   lifecycle.get('session_start')!();
   first({ type: 'hook', id: 'retired-rule', outcome: 'failed' });
   bind.capture()?.({ type: 'hook', id: 'current-rule', outcome: 'suppressed' });

@@ -1,0 +1,81 @@
+{
+  "rules": [
+    {
+      "id": "check",
+      "matched": 2,
+      "committed": 1,
+      "observed": 0,
+      "suppressed": 0,
+      "timeout": 0,
+      "stale": 1,
+      "failed": 0
+    }
+  ],
+  "otherHooks": {
+    "matched": 0,
+    "committed": 0,
+    "observed": 0,
+    "suppressed": 0,
+    "timeout": 0,
+    "stale": 0,
+    "failed": 0
+  },
+  "tools": [
+    {
+      "category": "shell",
+      "calls": 0,
+      "failures": 0,
+      "nested": 0,
+      "truncated": 0
+    },
+    {
+      "category": "file",
+      "calls": 1,
+      "failures": 0,
+      "nested": 0,
+      "truncated": 0
+    },
+    {
+      "category": "search",
+      "calls": 0,
+      "failures": 0,
+      "nested": 0,
+      "truncated": 0
+    },
+    {
+      "category": "codemode",
+      "calls": 0,
+      "failures": 0,
+      "nested": 0,
+      "truncated": 0
+    },
+    {
+      "category": "mcp",
+      "calls": 0,
+      "failures": 0,
+      "nested": 0,
+      "truncated": 0
+    },
+    {
+      "category": "other",
+      "calls": 0,
+      "failures": 0,
+      "nested": 0,
+      "truncated": 0
+    }
+  ],
+  "classifier": {
+    "attempts": 1,
+    "durationMs": 7,
+    "inputTokens": 20,
+    "outputTokens": 3,
+    "outcomes": {
+      "not_in_catalog": 0,
+      "answered": 1,
+      "unavailable": 0,
+      "transient": 0,
+      "failed": 0,
+      "aborted": 0
+    }
+  }
+}

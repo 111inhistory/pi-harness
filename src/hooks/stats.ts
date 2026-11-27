@@ -19,7 +19,10 @@ export type HookStatSink = (event: HookStat) => void;
 export interface HookStatsBinding {
   capture(): HookStatSink | undefined;
   render(): string | undefined;
+  snapshot(): HookStatsSnapshot | undefined;
 }
+
+export type HookStatsSnapshot = ReturnType<ReturnType<typeof createSessionStats>['snapshot']>;
 
 /** The optional observer is outside the action and repeat commit paths. */
 export function emitHookStat(sink: HookStatSink | undefined, event: HookStat): void {
@@ -93,7 +96,15 @@ function createSessionStats() {
     if (lines.length === 1) lines.push('No tool or Hook observations yet.');
     return lines.join('\n');
   }
-  return { record, render };
+  function snapshot() {
+    return {
+      rules: [...rules].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([id, counts]) => ({ id, ...counts })),
+      otherHooks: { ...otherRules },
+      tools: [...tools].map(([category, counts]) => ({ category, ...counts })),
+      classifier: { ...classifier, durationMs: Math.round(classifier.durationMs), outcomes: { ...classifier.outcomes } },
+    };
+  }
+  return { record, render, snapshot };
 }
 
 /** Captured sinks are fenced by session identity; stale completions cannot write to a new session. */
@@ -104,6 +115,7 @@ export function installHookStats(pi: ExtensionAPI): HookStatsBinding {
   pi.on('session_shutdown', () => { epoch += 1; session = undefined; });
   return {
     render: () => session?.render(),
+    snapshot: () => session?.snapshot(),
     capture() {
       if (session === undefined) return undefined;
       const expectedEpoch = epoch;

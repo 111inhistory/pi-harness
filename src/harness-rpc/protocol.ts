@@ -84,6 +84,8 @@ export const RPC_METHODS = {
   streamUnsubscribe: 'stream.unsubscribe',
   presetsCatalog: 'presets.catalog',
   presetsCurrent: 'presets.current',
+  hooksCurrent: 'hooks.current',
+  hooksStats: 'hooks.stats',
   presetsApply: 'presets.apply',
   presetsClear: 'presets.clear',
   approvalsList: 'approvals.list',

@@ -100,6 +100,8 @@ export function createRouter(deps: RouterDeps, main?: MainPort): RpcHandler {
     [RPC_METHODS.streamUnsubscribe]: (params, connection) => ({ removed: connection.removeSubscription(params.subscription) }),
     [RPC_METHODS.presetsCatalog]: () => application().presetsCatalog(),
     [RPC_METHODS.presetsCurrent]: () => application().presetsCurrent(),
+    [RPC_METHODS.hooksCurrent]: () => application().hooksCurrent(),
+    [RPC_METHODS.hooksStats]: () => application().hooksStats(),
     [RPC_METHODS.presetsApply]: params => application().presetsApply(params),
     [RPC_METHODS.presetsClear]: () => application().presetsClear(),
     [RPC_METHODS.approvalsList]: () => application().approvalsList(),

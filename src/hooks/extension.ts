@@ -10,6 +10,7 @@ import { clipText } from '../text-output.ts';
 import { extractBranchToolObservations, installToolObservation, type ToolObservation } from '../tool-observation.ts';
 import { canClassifyForBranch, classifiedActions, hookQuestion, HOOK_QUESTION } from './classify.ts';
 import { isHookId, mergeHookLayers, readHookLayers, type HookAction, type HookRule, type HookRules } from './config.ts';
+import { exposeHookInspection, inspectHooks } from './inspection.ts';
 import { applyHookOverride, HOOK_OVERRIDE_RECORD, restoreHookOverrides, type HookOverride } from './override.ts';
 import { buildHookClassifierSlice, type HookClassifierSubject, type HookClassifierSources, type HookClassifierToolFact } from './projection.ts';
 import { HOOK_HINT_MESSAGE, HOOK_REPEAT_RECORD, readHintReceipts, restoreRepeat, type HookReceipt } from './repeat.ts';
@@ -146,6 +147,10 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
   });
   let lastLayerError: unknown;
   let closed = false;
+  exposeHookInspection(pi, {
+    current: ctx => closed ? undefined : inspectHooks(ctx, () => layers.read(ctx).value, configFor(ctx).classifier.models.length > 0),
+    stats: () => stats?.snapshot(),
+  });
   let eligible = new Map<string, { readonly key: string; readonly token: symbol }>();
   const running = new Map<string, { readonly controller: AbortController; readonly requiresTurn: boolean }>();
   let branchState: {

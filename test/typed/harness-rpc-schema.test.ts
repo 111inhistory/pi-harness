@@ -465,6 +465,8 @@ test('envelopes and all method requests validate', () => {
     [RPC_METHODS.streamUnsubscribe]: { id: 'r', method: RPC_METHODS.streamUnsubscribe, params: { subscription: 's' } },
     [RPC_METHODS.presetsCatalog]: { id: 'r', method: RPC_METHODS.presetsCatalog },
     [RPC_METHODS.presetsCurrent]: { id: 'r', method: RPC_METHODS.presetsCurrent },
+    [RPC_METHODS.hooksCurrent]: { id: 'r', method: RPC_METHODS.hooksCurrent },
+    [RPC_METHODS.hooksStats]: { id: 'r', method: RPC_METHODS.hooksStats },
     [RPC_METHODS.presetsApply]: { id: 'r', method: RPC_METHODS.presetsApply, params: { name: 'fast' } },
     [RPC_METHODS.presetsClear]: { id: 'r', method: RPC_METHODS.presetsClear },
     [RPC_METHODS.approvalsList]: { id: 'r', method: RPC_METHODS.approvalsList },

@@ -23,6 +23,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import { validateMethodResult } from "../../src/harness-rpc/contract.ts";
+import { configLifecycleFor } from "../../src/config-lifecycle.ts";
+import capabilityExtension from "../../extensions/capability.ts";
 import { harnessRpcTarget } from "../../src/harness-rpc/discovery.ts";
 import { PRESET_STATE_RECORD } from "../../src/preset/state.ts";
 import { installHarnessSession } from "../../src/session/application.ts";
@@ -157,7 +159,7 @@ interface ApplicationFixture {
   readonly controller: ShellApprovalController;
 }
 
-async function startApplication(t: test.TestContext): Promise<ApplicationFixture> {
+async function startApplication(t: test.TestContext, hooks = false): Promise<ApplicationFixture> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), "harness-rpc-application-"));
   const agentDir = path.join(cwd, "agent");
   const socketDir = path.join(cwd, "uds");
@@ -200,12 +202,13 @@ async function startApplication(t: test.TestContext): Promise<ApplicationFixture
   const extensionErrors: unknown[] = [];
   const settingsManager = SettingsManager.inMemory({
     retry: { enabled: false }, compaction: { enabled: false }, cacheWarming: "off",
-  });
+  }, { projectTrusted: true });
   const resourceLoader = new DefaultResourceLoader({
     cwd, agentDir, settingsManager,
     noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
     extensionFactories: [
       { name: "shell-preflight", factory: shellPreflightExtension },
+      ...(hooks ? [{ name: "capability", factory: capabilityExtension }] : []),
       { name: "harness-session", factory(pi) {
         api = pi;
         access = installHarnessSession(pi);
@@ -259,6 +262,65 @@ async function startApplication(t: test.TestContext): Promise<ApplicationFixture
   }
 }
 
+test("Hook inspection is cold, redacted and bound to the current branch on the real socket", async t => {
+  const { cwd, client, session, api } = await startApplication(t, true);
+  const global = path.join(cwd, "agent", "hooks.toml");
+  const project = path.join(cwd, ".pi", "hooks.toml");
+  await mkdir(path.dirname(project));
+  await writeFile(global, `version = 1
+[hooks.main]
+on = 'before_agent_start'
+actions = [{ type = 'injectHint', text = 'REDACT_FIXTURE_HINT' }]
+[hooks.hidden]
+on = 'before_agent_start'
+actions = [{ type = 'injectHint', text = 'ANOTHER_FIXTURE_HINT' }]
+[hooks.classified]
+on = 'tool_result'
+when = "tool == 'read'"
+classify = { kind = 'choice', question = 'REDACT_FIXTURE_QUESTION', choices = ['first', 'second'] }
+[hooks.classified.onChoice]
+first = [{ type = 'injectHint', text = 'FIRST_FIXTURE_HINT' }]
+second = [{ type = 'injectHint', text = 'SECOND_FIXTURE_HINT' }]
+`);
+  await writeFile(project, 'version = "REDACT_FIXTURE_VERSION"\n');
+  const leaf = session.sessionManager.getLeafId();
+  assert.deepEqual(await client.request("hooks.current"), {
+    valid: false, preset: null, classifierConfigured: false, rules: [], disabled: [], muted: [],
+    warnings: [{ scope: "project", code: "version_invalid" }],
+  });
+
+  await writeFile(project, "version = 1\n[hooks.hidden]\nenabled = false\n");
+  await configLifecycleFor(api).refreshLeaves(session.extensionRunner.createContext());
+  const current = await client.request("hooks.current");
+  assert.equal(validateMethodResult("hooks.current", current).ok, true);
+  assert.deepEqual(current, {
+    valid: true, preset: null, classifierConfigured: false, disabled: ["hidden"], muted: [],
+    rules: [
+      { id: "classified", source: "global", on: "tool_result", hasWhen: true, classifyKind: "choice",
+        actionTypes: ["injectHint"], hasRepeat: false, observeOnly: false, muted: false, active: false },
+      { id: "main", source: "global", on: "before_agent_start", hasWhen: false, classifyKind: null,
+        actionTypes: ["injectHint"], hasRepeat: false, observeOnly: false, muted: false, active: true },
+    ], warnings: [{ scope: "global", id: "classified", code: "classifier_unconfigured" }],
+  });
+  const stats = asRecord(await client.request("hooks.stats"));
+  assert.equal(validateMethodResult("hooks.stats", stats).ok, true);
+  assert.deepEqual(stats?.["rules"], []);
+  assert.deepEqual(asArray(stats?.["tools"]).map(row => asRecord(row)?.["category"]), ["shell", "file", "search", "codemode", "mcp", "other"]);
+  assert.equal(session.sessionManager.getLeafId(), leaf, "cold inspection and stats append nothing and do not wake the model");
+
+  await writeFile(project, "version = 2\n");
+  await configLifecycleFor(api).refreshLeaves(session.extensionRunner.createContext());
+  assert.deepEqual(await client.request("hooks.current"), current, "a failed refresh retains the visible snapshot");
+  const anchor = session.sessionManager.appendMessage({ role: "user", content: "Branch anchor", timestamp: Date.now() });
+  await session.prompt("/hooks mute main");
+  await session.prompt("/hooks mute missing");
+  const muted = asRecord(await client.request("hooks.current"));
+  assert.deepEqual(muted?.["muted"], ["main", "missing"]);
+  assert.equal(asRecord(asArray(muted?.["rules"])[1])?.["active"], false);
+  await session.navigateTree(anchor);
+  assert.deepEqual(await client.request("hooks.current"), current, "the same socket reflects the rebound branch");
+});
+
 function presetEntries(session: AgentSession): JsonObject[] {
   return session.sessionManager.getBranch()
     .filter((entry): entry is Extract<typeof entry, { type: "custom" }> =>
@@ -268,6 +330,9 @@ function presetEntries(session: AgentSession): JsonObject[] {
 
 test("preset RPC apply/clear records the same branch state and tool selection as the session", { timeout: 20000 }, async (t) => {
   const fixture = await startApplication(t);
+  for (const method of ["hooks.current", "hooks.stats"]) {
+    await assert.rejects(fixture.client.request(method), (error: unknown) => error instanceof RpcFailure && error.code === "unavailable");
+  }
   const catalog = asRecord(await fixture.client.request("presets.catalog"));
   assert.ok(catalog);
   const presets = asArray(catalog["presets"]).map(asRecord);
