@@ -21,7 +21,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { parse, stringify } from 'smol-toml';
-import { resolveHarnessConfig, type ClassifierModelRef } from '../../src/harness-config.ts';
+import { HARNESS_CONFIG_VERSION, harnessConfigBody, resolveHarnessConfig, type ClassifierModelRef } from '../../src/harness-config.ts';
 import { RoutingConfigError, validateRoutingConfig, type RoutingConfig } from '../../src/subagent/routing.ts';
 
 export const BACKUP_SUFFIX = '.pre-routing-v4';
@@ -209,8 +209,9 @@ export function planRoutingV4Migration(rawAgentDir: string): RoutingV4Plan {
     harnessBefore = readFileSync(harnessPath);
     const parsedJson: unknown = JSON.parse(harnessBefore.toString('utf8'));
     if (!isPlainRecord(parsedJson)) throw new Error(`${harnessPath}: must contain a JSON object`);
-    existingModels = resolveHarnessConfig([{ source: harnessPath, value: parsedJson }]).classifier.models;
-    harnessParsed = parsedJson;
+    // The offline converter can be run before the separate Harness migration.
+    harnessParsed = Object.hasOwn(parsedJson, 'version') ? harnessConfigBody(parsedJson, harnessPath) : parsedJson;
+    existingModels = resolveHarnessConfig([{ source: harnessPath, value: harnessParsed }]).classifier.models;
   }
 
   if (routingParsed.version === 4) {
@@ -244,12 +245,13 @@ export function planRoutingV4Migration(rawAgentDir: string): RoutingV4Plan {
       ? harnessParsed.classifier
       : {};
     const nextHarnessObj: Record<string, unknown> = {
+      version: HARNESS_CONFIG_VERSION,
       ...(harnessParsed ?? {}),
       classifier: { ...existingClassifier, models: [classifier] },
     };
     const nextHarnessText = `${JSON.stringify(nextHarnessObj, null, 2)}\n`;
     const reparsedHarness = JSON.parse(nextHarnessText) as Record<string, unknown>;
-    const resolvedNext = resolveHarnessConfig([{ source: harnessPath, value: reparsedHarness }]);
+    const resolvedNext = resolveHarnessConfig([{ source: harnessPath, value: harnessConfigBody(reparsedHarness, harnessPath) }]);
     assert.deepStrictEqual(resolvedNext.classifier.models, [classifier]);
     for (const [key, value] of Object.entries(harnessParsed ?? {})) {
       if (key !== 'classifier') assert.deepStrictEqual(reparsedHarness[key], value);

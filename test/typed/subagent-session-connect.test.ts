@@ -267,6 +267,7 @@ async function sdkFixture(t: TestContext, options: { blacklist?: boolean } = {})
   // the refusal case proves the honest failure instead of an implicit grant.
   if (options.blacklist === true) {
     await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
+      version: 1,
       capability: { blacklist: ['msg_write'] },
     }));
   }

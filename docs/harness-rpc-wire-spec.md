@@ -165,7 +165,7 @@ await runRpcMode(runtime); // SDK 循环安装自己的 normal setRebindSession 
 - 客户端维护 `id → 待处理请求` 映射。普通请求的响应通常按受理顺序到达，但控制请求可能乱序；客户端必须按 `id` 关联，不按位置。
 - `id` 用字符串最稳妥。JSON 数字是 IEEE-754 双精度：超过 2^53 的整数、`-0` 等值在解析/回显时可能不精确；需要精确关联时使用字符串。
 - 请求缺少合法 `id` 或 `method`：返回 `invalid_request`；`id` 无法确定时为 `null`。`id` 合法但 `method` 未知：返回 `method_not_found` 并回显 `id`。
-- 结构有效性分两层：`RpcRequest` 只要求 `id`／`method`／可选 `params`；未知 `method` 是结构有效的通用请求，dispatch 返回 `method_not_found`。`MethodRequest` 是严格 schema，只接受 41 个已实现方法；未知方法在严格校验中失败。不要把“严格 schema 不匹配”误报为“帧结构非法”。
+- 结构有效性分两层：`RpcRequest` 只要求 `id`／`method`／可选 `params`；未知 `method` 是结构有效的通用请求，dispatch 返回 `method_not_found`。`MethodRequest` 是严格 schema，只接受已实现的方法；未知方法在严格校验中失败。不要把“严格 schema 不匹配”误报为“帧结构非法”。
 - 所有方法校验对象参数；数组、字符串等返回 `invalid_request`。无参方法接受对象、缺失或 `null`，对象中的额外字段不参与操作；`params:null` 等价于缺失。
 - 协议没有请求级取消、超时或重试。客户端断开只解除观察，不取消子任务、不关闭 Pi。
 - 控制输入的结果未知时（异常、超时、断连），不得自动重发；断连不证明输入未入队。

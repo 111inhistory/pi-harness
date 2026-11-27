@@ -117,7 +117,8 @@ test('CLI migrates sparse harness.json + v3 routing, preserves unrelated fields,
 
   // harness.json remains sparse and passes production loader.
   const rawNextHarness = JSON.parse(readFileSync(harnessPath, 'utf8')) as Record<string, unknown>;
-  assert.deepEqual(Object.keys(rawNextHarness).sort(), ['classifier', 'shell', 'subagent']);
+  assert.deepEqual(Object.keys(rawNextHarness).sort(), ['classifier', 'shell', 'subagent', 'version']);
+  assert.equal(rawNextHarness.version, 1);
   assert.deepEqual(rawNextHarness.subagent, { maxDepth: 1 });
   assert.deepEqual(rawNextHarness.shell, { preflight: false });
   assert.deepEqual(
@@ -175,6 +176,7 @@ test('creates minimal harness.json when absent, accepts empty models, and skips 
     assert.deepEqual(backups, [`${routing}${BACKUP_SUFFIX}`]);
     assert.equal(existsSync(`${harness}${BACKUP_SUFFIX}`), false);
     assert.deepEqual(JSON.parse(readFileSync(harness, 'utf8')), {
+      version: 1,
       classifier: { models: [{ provider: 'fake-provider', id: 'fake-classifier' }] },
     });
     assert.ok(rollbackCommandsFor(plan.changes).some((cmd) => cmd === `rm -- ${shellQuote(harness)}`));

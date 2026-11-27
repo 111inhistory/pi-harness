@@ -724,6 +724,46 @@ export const PresetsCurrentResultSchema = Type.Object({
   changes: stringArray(description('One short summary per differing field or tool-name delta; empty when current, missing or unresolvable.')),
 }, { additionalProperties: false });
 
+const hookId = Type.String({ pattern: '^[a-z][a-z0-9-]{0,63}$' });
+const hookSource = Type.Union([Type.Literal('global'), Type.Literal('preset'), Type.Literal('project')]);
+const hookAction = Type.Union([Type.Literal('injectHint'), Type.Literal('injectSection'), Type.Literal('activate'), Type.Literal('discoverCapability')]);
+const hookRuleSummary = Type.Object({
+  id: hookId, source: hookSource,
+  on: Type.Union([Type.Literal('before_agent_start'), Type.Literal('tool_result')]),
+  hasWhen: Type.Boolean(),
+  classifyKind: nullable(Type.Union([Type.Literal('bool'), Type.Literal('score'), Type.Literal('choice')])),
+  actionTypes: Type.Array(hookAction, { uniqueItems: true }),
+  hasRepeat: Type.Boolean(), observeOnly: Type.Boolean(), muted: Type.Boolean(), active: Type.Boolean(),
+}, { additionalProperties: false });
+const hookWarning = Type.Object({
+  scope: hookSource, id: Type.Optional(hookId),
+  code: Type.Union([Type.Literal('version_invalid'), Type.Literal('layer_invalid'), Type.Literal('when_invalid'), Type.Literal('classifier_unconfigured')]),
+}, { additionalProperties: false });
+export const HooksCurrentResultSchema = Type.Object({
+  valid: Type.Boolean(), preset: nullable(Type.String()), classifierConfigured: Type.Boolean(),
+  rules: Type.Array(hookRuleSummary), disabled: Type.Array(hookId), muted: Type.Array(hookId), warnings: Type.Array(hookWarning),
+}, { additionalProperties: false });
+
+const hookCount = Type.Integer({ minimum: 0 });
+const hookCounters = {
+  matched: hookCount, committed: hookCount, observed: hookCount, suppressed: hookCount,
+  timeout: hookCount, stale: hookCount, failed: hookCount,
+};
+const hookToolStats = Type.Object({
+  category: Type.Union([Type.Literal('shell'), Type.Literal('file'), Type.Literal('search'), Type.Literal('codemode'), Type.Literal('mcp'), Type.Literal('other')]),
+  calls: hookCount, failures: hookCount, nested: hookCount, truncated: hookCount,
+}, { additionalProperties: false });
+export const HooksStatsResultSchema = Type.Object({
+  rules: Type.Array(Type.Object({ id: hookId, ...hookCounters }, { additionalProperties: false }), { maxItems: 64 }),
+  otherHooks: Type.Object(hookCounters, { additionalProperties: false }),
+  tools: Type.Array(hookToolStats, { minItems: 6, maxItems: 6 }),
+  classifier: Type.Object({
+    attempts: hookCount, durationMs: hookCount, inputTokens: Type.Number({ minimum: 0 }), outputTokens: Type.Number({ minimum: 0 }),
+    outcomes: Type.Object({ not_in_catalog: hookCount, answered: hookCount, unavailable: hookCount,
+      transient: hookCount, failed: hookCount, aborted: hookCount }, { additionalProperties: false }),
+  }, { additionalProperties: false }),
+}, { additionalProperties: false });
+
 export const PresetApplyParamsSchema = Type.Object({
   name: Type.String({ minLength: 1 }),
   expectedVersion: Type.Optional(Type.String({
@@ -1101,6 +1141,8 @@ export const SHARED_CONTRACT_DEFS = {
   PresetsCatalogResult: PresetsCatalogResultSchema,
   PresetSnapshot: PresetSnapshotSchema,
   PresetsCurrentResult: PresetsCurrentResultSchema,
+  HooksCurrentResult: HooksCurrentResultSchema,
+  HooksStatsResult: HooksStatsResultSchema,
   PresetApplyParams: PresetApplyParamsSchema,
   PresetIssueSeverity: PresetIssueSeveritySchema,
   PresetIssueKind: PresetIssueKindSchema,
@@ -1268,6 +1310,14 @@ export const HARNESS_RPC_CONTRACT = {
   [RPC_METHODS.presetsCurrent]: defineMethod({
     description: 'Read the active branch preset snapshot and compare it with the current catalog candidate without writing branch state.',
     params: 'NoParams', result: 'PresetsCurrentResult', paramsRequired: false,
+  }),
+  [RPC_METHODS.hooksCurrent]: defineMethod({
+    description: 'Inspect the effective Hook rules and branch mute state without exposing configuration text.',
+    params: 'NoParams', result: 'HooksCurrentResult', paramsRequired: false,
+  }),
+  [RPC_METHODS.hooksStats]: defineMethod({
+    description: 'Read bounded in-memory Hook, tool and classifier counters for the active session.',
+    params: 'NoParams', result: 'HooksStatsResult', paramsRequired: false,
   }),
   [RPC_METHODS.presetsApply]: defineMethod({
     description: 'Resolve and apply a named preset as one atomic version, optionally refusing a stale expectedVersion before any write.',

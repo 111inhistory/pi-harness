@@ -58,6 +58,7 @@ interface RootServiceOptions {
    * always passes the snapshot resolved for its session.
    */
   readonly config?: HarnessConfig;
+  configCurrent?(): boolean;
   ownsContext(): boolean;
 }
 
@@ -171,7 +172,7 @@ export class RootService implements ManagedWriteHost {
     this.shell = new AsyncShellHost({
       mainAddress: () => mainAddress,
       accepting: () => this.active,
-      wake: (actorId) => this.runner.wake(actorId),
+      wake: (actorId) => { if (this.#canAdmit()) return this.runner.wake(actorId); },
       deliver: (actorId, result) => this.#shellResult(actorId, result),
       cancel: cancelTask,
     });
@@ -212,7 +213,7 @@ export class RootService implements ManagedWriteHost {
     this.runner = new NativeJobRunner({
       root: {
         get storageError() { return owner.#failure; },
-        get canStartJob() { return owner.active; },
+        get canStartJob() { return owner.#canAdmit(); },
         get mayPersist() { return owner.#mayPersist(); },
       },
       config: { harness: this.#options.config }, actors: this.actors, sessions,
@@ -249,7 +250,7 @@ export class RootService implements ManagedWriteHost {
       deliverMessage: (input) => this.#delivery.toAgent(input),
       deliverToMain: (message) => this.#delivery.toMain(message),
       onEvent: (event) => this.#event(event),
-      onChildrenSettled: (agentId) => this.runner.wake(agentId),
+      onChildrenSettled: (agentId) => { if (this.#canAdmit()) return this.runner.wake(agentId); },
       prepareInherited: ({ agentId, snapshot }) => {
         if (!this.#store.durable) return { ...snapshot, entries: copyInheritedEntries(snapshot.entries) };
         if (!Array.isArray(snapshot.entries)) throw new SubagentError('invalid_state', 'The captured seed has no native entries.');
@@ -261,7 +262,7 @@ export class RootService implements ManagedWriteHost {
     this.#delivery = new NativeDeliveryRouter({
       runner: this.runner,
       ownsContext: () => this.#mayPersist(),
-      canWake: () => this.active,
+      canWake: () => this.#canAdmit(),
       activateReply: () => this.#activateReplyTool(),
       sendToMain: (message, triggerTurn) => this.#acceptMainDelivery(message, triggerTurn),
     });
@@ -286,6 +287,13 @@ export class RootService implements ManagedWriteHost {
   get maxDepth(): number { return this.#options.config.subagent.maxDepth; }
   get active(): boolean { return this.#phase === 'open' && this.#failure === null && this.#options.ownsContext(); }
   get closed(): boolean { return this.#phase === 'detached'; }
+
+  #canAdmit(): boolean { return this.active && this.#options.configCurrent?.() !== false; }
+
+  #assertAdmission(): void {
+    this.assertOperational();
+    if (!this.#canAdmit()) throw new SubagentError('runtime_closed', 'The root configuration scope changed. Use /reload.');
+  }
 
   /** Current ownership permits inspection and cancellation after a write failure. */
   assertCurrent(): void {
@@ -353,7 +361,7 @@ export class RootService implements ManagedWriteHost {
   }
 
   async create(batch: unknown, options: SubagentSurfaceCreateOptions, ctx: ExtensionContext): Promise<CreatedBatch> {
-    this.assertOperational();
+    this.#assertAdmission();
     this.#registry = ctx.modelRegistry;
     const creation = { ready: [] as { agentId: string; ready: Promise<void> }[] };
     let created: CreatedBatch;
@@ -447,7 +455,7 @@ export class RootService implements ManagedWriteHost {
   }
 
   sendMessage(command: Parameters<SubagentRuntime['sendMessage']>[0]) {
-    this.assertOperational();
+    this.#assertAdmission();
     return this.runtime.sendMessage(command);
   }
 
@@ -489,12 +497,13 @@ export class RootService implements ManagedWriteHost {
 
   /** Admit one external message frame; the root owns sender and target binding. */
   async #deliver(input: { from: string; to: string; content: string }): Promise<MessageReceipt | BroadcastReceipt> {
-    this.assertOperational();
+    this.#assertAdmission();
     const to = parseAddress(input.to);
     if (to === null || to.session !== deriveSessionUid(this.sessionId)) {
       throw new SubagentError('cross_session_target', 'An external frame may only address this session.');
     }
     const bound = await this.#bindSender(input.from);
+    this.#assertAdmission();
     if (bound.external !== undefined && (to.kind !== 'actor' || to.key !== MAIN_ACTOR)) {
       throw new SubagentError('invalid_target', 'Cross-session messages are Main-to-Main only.');
     }
@@ -533,7 +542,7 @@ export class RootService implements ManagedWriteHost {
       details: { source: 'host', result },
     };
     if (actorId === MAIN_ACTOR) {
-      await this.#options.api.sendMessage(message, { triggerTurn: true, deliverAs: 'steer' });
+      await this.#options.api.sendMessage(message, { triggerTurn: this.#canAdmit(), deliverAs: 'steer' });
       return;
     }
     const job = this.runtime.jobs().jobs.find(item => item.agentId === actorId && item.status === 'running');
@@ -599,7 +608,7 @@ export class RootService implements ManagedWriteHost {
 
   async #handoffMain(message: DeliveryCustomMessage, triggerTurn: boolean): Promise<void> {
     if (!this.#mayPersist()) throw new SubagentError('runtime_closed', 'The original root no longer owns this delivery.');
-    await this.#options.api.sendMessage(message, { triggerTurn: triggerTurn && this.active, deliverAs: 'steer' });
+    await this.#options.api.sendMessage(message, { triggerTurn: triggerTurn && this.#canAdmit(), deliverAs: 'steer' });
   }
 
   #flushMainDeliveries(): void {

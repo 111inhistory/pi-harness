@@ -3,8 +3,7 @@
  * reference named Presets or carry temporary definitions using the same schema.
  */
 
-import { readFileSync } from 'node:fs';
-import { parse } from 'smol-toml';
+import { readConfigDocument } from '../config-storage.ts';
 import { DEFAULT_HARNESS_CONFIG, type ClassifierModelRef, type RoutingRetryConfig } from '../harness-config.ts';
 import { runClassifier } from '../classifier-client.ts';
 import { composeAssignment } from './prompt.ts';
@@ -163,13 +162,10 @@ function validateConfig(value: unknown): RoutingConfig {
 /** Read the explicit Pi user config for each new Fresh route; no bundled fallback. */
 export function loadSubagentRoutingConfig(path: string | undefined): RoutingConfig {
   if (!filled(path)) throw invalidConfigError("configPath must name the Pi user's subagent-routing.toml");
-  let parsed: unknown;
-  try {
-    parsed = parse(readFileSync(path, "utf8"));
-  } catch (error) {
-    throw invalidConfigError(`cannot read ${path}: ${messageOf(error)}`);
-  }
-  return validateConfig(parsed);
+  const document = readConfigDocument(path, 'toml');
+  if (document.status === 'missing') throw invalidConfigError(`cannot read ${path}: file is missing`);
+  if (document.status !== 'ok') throw invalidConfigError(`cannot read ${path}: ${messageOf(document.error)}`);
+  return validateConfig(document.value);
 }
 
 

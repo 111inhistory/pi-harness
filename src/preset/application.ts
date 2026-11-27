@@ -40,6 +40,7 @@ import {
   presetBaselineAdditions,
   restorePresetSnapshot,
   PRESET_STATE_RECORD,
+  PRESET_STATE_COMMITTED,
   PRESET_STATE_VERSION,
   type PresetSnapshot,
   type PresetToolSelection,
@@ -193,6 +194,7 @@ export function createPresetApplyHost(host: PresetSessionHost): PresetApplyHost 
           ? {}
           : { baselineAdditions: record.baselineAdditions }),
       });
+      host.pi.events?.emit(PRESET_STATE_COMMITTED, undefined);
     },
     recordedSnapshot: () => restorePresetSnapshot(host.getBranch()),
     contextToken: () => contextTokenOf(host.getBranch()),

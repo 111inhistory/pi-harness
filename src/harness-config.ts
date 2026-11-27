@@ -1,7 +1,8 @@
 /** Resolve external Harness settings once per root, then share typed values. */
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { getAgentDir, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { configLifecycleFor, createSyncSlotToken, type ConfigContext } from './config-lifecycle.ts';
+import { configPaths, readConfigDocument, requireConfigVersion, type ConfigLocation, type ConfigScope } from './config-storage.ts';
 import type { BudgetProfile } from './subagent/job-budget.ts';
 import { promptString } from './prompt-text.ts';
 
@@ -203,13 +204,20 @@ function requireNewBudget(value: unknown, source: string, field: string): void {
 
 /** Last layer that wrote each numeric field, for relation error messages. */
 type FieldOrigins = Map<string, number>;
+const GLOBAL_ONLY_FIELDS = new Set([
+  'classifier', 'shell.approval', 'btw', 'codemode', 'capability.search',
+  'subagent.routingRetry', 'subagent.inheritedToolWaitMs',
+]);
 
 /** The default shape is also the field schema; special nodes are explicit. */
-function mergeNode(base: object, value: unknown, source: string, field: string, origins: FieldOrigins, layer: number): Record<string, unknown> {
+function mergeNode(base: object, value: unknown, source: string, field: string, origins: FieldOrigins, layer: number, scope: ConfigScope): Record<string, unknown> {
   const patch = object(value, source, field);
   const merged: Record<string, unknown> = { ...base };
   for (const [key, item] of Object.entries(patch)) {
     const child = field === '' ? key : `${field}.${key}`;
+    if (scope === 'project' && GLOBAL_ONLY_FIELDS.has(child)) {
+      throw new HarnessConfigError(source, child, 'is only allowed in global configuration.');
+    }
     if (child === 'shell.approval.mode') {
       if (item !== 'ask' && item !== 'auto' && item !== 'yolo') throw new HarnessConfigError(source, child, 'must be ask, auto, or yolo.');
       merged[key] = item;
@@ -255,7 +263,7 @@ function mergeNode(base: object, value: unknown, source: string, field: string, 
       if (!Array.isArray(item) || item.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
         throw new HarnessConfigError(source, child, 'must be an array of non-empty tool name patterns.');
       }
-      merged[key] = [...item];
+      merged[key] = scope === 'project' ? [...new Set([...(merged[key] as readonly string[]), ...item])] : [...item];
       origins.set(child, layer);
     } else if (child === 'capability.lazySchemas') {
       // Whole-list replacement: the project layer overrides, never appends to, the
@@ -271,7 +279,7 @@ function mergeNode(base: object, value: unknown, source: string, field: string, 
       const previous = merged[key];
       if (previous === undefined) requireNewBudget(item, source, child);
       const profile = previous === undefined ? DEFAULT_HARNESS_CONFIG.subagent.budgetsByDepth[1]! : object(previous, source, child);
-      merged[key] = mergeNode(profile, item, source, child, origins, layer);
+      merged[key] = mergeNode(profile, item, source, child, origins, layer, scope);
     } else if (!Object.hasOwn(merged, key)) {
       throw new HarnessConfigError(source, child, 'is unknown.');
     } else {
@@ -284,7 +292,7 @@ function mergeNode(base: object, value: unknown, source: string, field: string, 
         if (typeof item !== 'boolean') throw new HarnessConfigError(source, child, 'must be a boolean.');
         merged[key] = item;
         origins.set(child, layer);
-      } else merged[key] = mergeNode(previous as object, item, source, child, origins, layer);
+      } else merged[key] = mergeNode(previous as object, item, source, child, origins, layer, scope);
     }
   }
   return merged;
@@ -328,71 +336,66 @@ function validateRelations(config: HarnessConfig, origins: FieldOrigins, sources
   }
 }
 
-export interface HarnessConfigLayer { readonly value: unknown; readonly source: string }
+export interface HarnessConfigLayer { readonly value: unknown; readonly source: string; readonly scope?: ConfigScope }
 
 /** Apply text patches in layer order, rather than merging patch objects. */
 export function resolveHarnessConfig(layers: readonly HarnessConfigLayer[] = []): HarnessConfig {
   let config = DEFAULT_HARNESS_CONFIG;
   const origins: FieldOrigins = new Map();
   for (const [index, layer] of layers.entries()) {
-    config = mergeNode(config, layer.value, layer.source, '', origins, index) as unknown as HarnessConfig;
+    config = mergeNode(config, layer.value, layer.source, '', origins, index, layer.scope ?? 'global') as unknown as HarnessConfig;
   }
   validateRelations(config, origins, layers.map((layer) => layer.source));
   return config;
 }
 
-export interface LoadHarnessConfigOptions {
-  readonly cwd: string;
-  readonly agentDir: string;
-  readonly projectTrusted: boolean;
+export type LoadHarnessConfigOptions = ConfigLocation;
+export const HARNESS_CONFIG_VERSION = 1;
+
+export function harnessConfigBody(value: unknown, source: string): Record<string, unknown> {
+  const document = requireConfigVersion(value, HARNESS_CONFIG_VERSION);
+  if (document.ok) return document.body;
+  if (document.reason === 'not_object') throw new HarnessConfigError(source, '', 'must contain a JSON object.');
+  throw new HarnessConfigError(source, 'version', `must be ${document.expected}. Run the offline config v1 migration for unversioned files.`);
 }
 
-export function loadHarnessConfig({ cwd, agentDir, projectTrusted }: LoadHarnessConfigOptions): HarnessConfig {
-  const files = [path.join(agentDir, 'harness.json'), ...(projectTrusted ? [path.join(cwd, '.pi', 'harness.json')] : [])];
+export function loadHarnessConfig(location: LoadHarnessConfigOptions): HarnessConfig {
   const layers: HarnessConfigLayer[] = [];
-  for (const file of files) {
-    let text: string;
-    try { text = readFileSync(file, 'utf8'); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
-      throw error;
-    }
-    let value: unknown;
-    try { value = JSON.parse(text); }
-    catch { throw new HarnessConfigError(file, '', 'must contain valid JSON.'); }
-    layers.push({ source: file, value });
+  for (const { path: file, scope } of configPaths(location, 'harness.json', 'global-and-project')) {
+    const document = readConfigDocument(file, 'json');
+    if (document.status === 'missing') continue;
+    if (document.status === 'read_error') throw document.error;
+    if (document.status === 'parse_error') throw new HarnessConfigError(file, '', 'must contain valid JSON.');
+    layers.push({ source: file, scope, value: harnessConfigBody(document.value, file) });
   }
   return resolveHarnessConfig(layers);
 }
 
-export type HarnessConfigProvider = (ctx: ExtensionContext) => HarnessConfig;
+export type HarnessConfigProvider = (ctx: ConfigContext) => HarnessConfig;
 type ConfigHost = Pick<ExtensionAPI, 'on'> & { readonly events?: ExtensionAPI['events'] };
-const providers = new WeakMap<ConfigHost, HarnessConfigProvider>();
 const CONFIG_CHANNEL = 'pi-harness:config-provider';
 interface ConfigExchange { provider?: HarnessConfigProvider }
+const localProviders = new WeakMap<ConfigHost, HarnessConfigProvider>();
+
+const HARNESS_SLOT = createSyncSlotToken({ name: 'harness.json', load: ctx =>
+  loadHarnessConfig({ cwd: ctx.cwd, agentDir: getAgentDir(), projectTrusted: ctx.isProjectTrusted() }),
+});
 
 /** One provider per SDK surface; child surfaces receive their root's snapshot. */
 export function harnessConfigFor(pi: ConfigHost, fixed?: HarnessConfig): HarnessConfigProvider {
-  const existing = providers.get(pi);
-  if (existing) return existing;
+  const local = pi.events === undefined ? localProviders.get(pi) : undefined;
+  if (local !== undefined) return local;
   // Entry points have distinct APIs; their resource loader's native bus is shared.
   const exchange: ConfigExchange = {};
   pi.events?.emit(CONFIG_CHANNEL, exchange);
-  if (exchange.provider) {
-    providers.set(pi, exchange.provider);
-    return exchange.provider;
+  if (exchange.provider !== undefined) return exchange.provider;
+  let provider: HarnessConfigProvider;
+  if (fixed !== undefined) provider = () => fixed;
+  else {
+    const slot = configLifecycleFor(pi).bindSyncSlot(HARNESS_SLOT);
+    provider = ctx => slot.read(ctx).value;
   }
-  let cached: HarnessConfig | undefined = fixed;
-  const provider: HarnessConfigProvider = fixed
-    ? () => fixed
-    : (ctx) => cached ??= loadHarnessConfig({ cwd: ctx.cwd, agentDir: getAgentDir(), projectTrusted: ctx.isProjectTrusted() });
-  if (!fixed) {
-    const reset = (): void => { cached = undefined; };
-    pi.on('session_start', reset);
-    pi.on('session_tree', reset);
-    pi.on('session_shutdown', reset);
-  }
-  providers.set(pi, provider);
+  if (pi.events === undefined) localProviders.set(pi, provider);
   pi.events?.on(CONFIG_CHANNEL, data => { (data as ConfigExchange).provider = provider; });
   return provider;
 }

@@ -18,9 +18,7 @@
  * snapshot can keep running and report why it cannot be updated.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
-import { parse } from 'smol-toml';
+import { configPaths, readConfigDocument, requireConfigVersion, type ConfigLocation } from '../config-storage.ts';
 import { normalizeHookRules, type HookRules } from '../hooks/config.ts';
 
 /** Thinking levels Pi understands, including `off`. */
@@ -63,11 +61,7 @@ export interface LoadedPresets {
 /** Read one config file, returning `undefined` when it does not exist. */
 export type PresetFileReader = (filePath: string) => string | undefined;
 
-export interface LoadPresetsOptions {
-  readonly cwd: string;
-  readonly agentDir: string;
-  /** A project `.pi/presets.toml` loads only when the project is trusted. */
-  readonly projectTrusted: boolean;
+export interface LoadPresetsOptions extends ConfigLocation {
   /** Test seam; defaults to the real filesystem. */
   readonly read?: PresetFileReader;
 }
@@ -82,9 +76,6 @@ export class PresetConfigError extends Error {
     this.source = source;
   }
 }
-
-const defaultReader: PresetFileReader = (filePath) =>
-  existsSync(filePath) ? readFileSync(filePath, 'utf8') : undefined;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null) return false;
@@ -188,15 +179,26 @@ export function validatePreset(raw: unknown): { preset: PresetConfig } | { error
   };
 }
 
+export const PRESET_CONFIG_VERSION = 1;
+
 /** Validate one presets document into a name-keyed map plus warnings. */
 export function validatePresetDocument(source: string, document: unknown): {
   catalog: Map<string, PresetConfig>; warnings: string[]; invalidNames: Set<string>;
 } {
-  if (!isRecord(document)) throw new PresetConfigError(source, 'top level must be an object');
+  const versioned = requireConfigVersion(document, PRESET_CONFIG_VERSION);
+  if (!versioned.ok) {
+    if (versioned.reason === 'not_object') throw new PresetConfigError(source, 'top level must be a table');
+    throw new PresetConfigError(source, `version must be ${versioned.expected}. Run the offline config v1 migration for unversioned files.`);
+  }
+  for (const key of Object.keys(versioned.body)) {
+    if (key !== 'presets') throw new PresetConfigError(source, `unknown top-level key: ${key}`);
+  }
+  const presets = versioned.body.presets === undefined ? {} : versioned.body.presets;
+  if (!isRecord(presets)) throw new PresetConfigError(source, 'presets must be a table');
   const catalog = new Map<string, PresetConfig>();
   const invalidNames = new Set<string>();
   const warnings: string[] = [];
-  for (const [name, raw] of Object.entries(document)) {
+  for (const [name, raw] of Object.entries(presets)) {
     if (!nonEmptyString(name)) {
       warnings.push(`${source}: ignoring an empty preset name`);
       continue;
@@ -220,22 +222,18 @@ export function validatePresetDocument(source: string, document: unknown): {
  * observing later file edits.
  */
 export function loadPresets(options: LoadPresetsOptions): LoadedPresets {
-  const read = options.read ?? defaultReader;
   const presets = new Map<string, PresetConfig>();
   const invalidNames = new Set<string>();
   const warnings: string[] = [];
   let invalidDocument = false;
   const load = (filePath: string): void => {
     try {
-      const text = read(filePath);
-      if (text === undefined) return;
-      let document: unknown;
-      try {
-        document = parse(text);
-      } catch (error) {
-        throw new PresetConfigError(filePath, `invalid TOML (${error instanceof Error ? error.message : String(error)})`);
-      }
-      const parsed = validatePresetDocument(filePath, document);
+      const document = readConfigDocument(filePath, 'toml', options.read);
+      if (document.status === 'missing') return;
+      if (document.status === 'read_error') throw document.error;
+      if (document.status === 'parse_error') throw new PresetConfigError(filePath,
+        `invalid TOML (${document.error instanceof Error ? document.error.message : String(document.error)})`);
+      const parsed = validatePresetDocument(filePath, document.value);
       warnings.push(...parsed.warnings);
       for (const name of parsed.invalidNames) {
         presets.delete(name);
@@ -254,9 +252,6 @@ export function loadPresets(options: LoadPresetsOptions): LoadedPresets {
     }
   };
 
-  const globalPath = path.join(options.agentDir, 'presets.toml');
-  load(globalPath);
-  const projectPath = path.join(options.cwd, '.pi', 'presets.toml');
-  if (options.projectTrusted) load(projectPath);
+  for (const { path } of configPaths(options, 'presets.toml', 'global-and-project')) load(path);
   return { presets, warnings, invalidNames, invalidDocument };
 }

@@ -192,6 +192,7 @@ export async function createSdkFixture(options: SdkFixtureOptions): Promise<SdkF
     // Fresh routing takes classifier candidates from harness.json; keep the
     // fixture independent of the developer's real user config.
     await fsp.writeFile(path.join(agentDir, "harness.json"), JSON.stringify({
+      version: 1,
       classifier: { models: [{ provider: "openrouter", id: "~typesafe/jev-latest" }] },
       ...options.config,
     }));

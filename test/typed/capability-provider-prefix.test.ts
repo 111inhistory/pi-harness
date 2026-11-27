@@ -114,6 +114,7 @@ async function scenario(options: {
   let session: AgentSession | undefined;
   try {
     await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
+      version: 1,
       capability: { blacklist: [TOOL] },
     }));
     const runtime = await ModelRuntime.create({

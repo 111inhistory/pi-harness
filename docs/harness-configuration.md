@@ -15,7 +15,13 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 
 缺少文件时使用前一层值。普通对象按字段合并；提示词段落按后文的替换与追加顺序应用。未知字段、类型错误、无效数值或不完整的新深度 Budget 会报错，消息包含来源和字段路径。无效配置不静默回退。
 
-一个根服务使用一份配置快照。子会话使用同一份快照，不按子目录重新读取配置。修改文件不会改变已运行 Job 的计数、期限或活跃名额。重启 Pi 是明确的生效方式；会话开始或树切换创建新根服务时重新解析。本文不承诺编辑文件立即生效。
+每份存在的 `harness.json` 都必须声明顶层 `"version": 1`。Harness 独立校验两层文件的版本，再合并设置。项目层不能声明 `classifier`、`shell.approval`、`btw`、`codemode`、`capability.search`、`subagent.routingRetry` 或 `subagent.inheritedToolWaitMs`。即使配置块为空，Harness 也会拒绝项目层的这些字段。
+
+**迁移旧文件。** 停止 Pi 后，执行 `npm run migrate:config-v1 -- --agent-dir DIR [--project-dir DIR]` 预检；确认后添加 `--apply`。若项目文件包含仅限全局的字段，脚本报告违规路径且不写入。迁移逐文件替换，生成 `.pre-config-v1` 备份并拒绝覆盖同名备份。若中途失败，先检查原文件与备份，再决定是否继续。
+
+一个根服务使用一份配置快照。子会话使用同一份快照。Main 的 Harness、Hook 文件、Shell 规则和 Shell 环境缓存按会话、工作目录与项目信任状态隔离；同一范围内切换分支会保留缓存。使用 `/reload` 或开始新会话可读取编辑后的配置。修改文件不会改变已运行 Job 的计数、期限或活跃名额。
+
+`/config reload` 只刷新已安装的 `hooks.toml` 和 Shell 规则文件。命令逐项报告 `updated`、`unchanged`、`failed` 或 `skipped`。审批关闭或没有配置规则文件时，跳过 Shell 规则读取。读取或校验失败时，同一范围内已有的有效快照继续使用；没有有效快照时，该项不可用。命令不锁定文件，外部编辑器分步保存可能导致本次刷新失败。若工作目录或项目信任状态改变，原根拒绝创建和唤醒 Subagent，使用 `/reload` 重建根配置。
 
 `subagent-routing.toml` 仍在每次新建 Fresh Subagent 时实时重读，不因 Harness 参数快照而改变。提示词资产的 ESM 缓存规则仍见[提示词说明](../prompts/README.md)。
 
@@ -42,6 +48,7 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 
 ```json
 {
+  "version": 1,
   "subagent": {
     "maxDepth": 3,
     "budgetsByDepth": {
@@ -84,7 +91,7 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 | `shell.approval.enabled` | `false` | 启用 Shell 权限审批 |
 | `shell.approval.mode` | `auto` | 没有分支模式记录时的默认值：`ask`、`auto` 或 `yolo` |
 | `shell.approval.command` | `[]` | 静态判断程序及参数数组；空数组表示交给后续审批 |
-| `shell.approval.ruleFiles` | `[]` | 传给静态判断程序的规则文件路径列表；相对路径相对于定义该层的 `harness.json` 所在目录解析，多层配置按数组整层替换（不跨层拼接）。规则在根会话首次需要时读取并缓存，修改规则文件在 `/reload` 或创建新根配置快照后生效；读取失败直接阻止命令，未启用或处于 YOLO 模式跳过读取。 |
+| `shell.approval.ruleFiles` | `[]` | 传给静态判断程序的规则文件路径列表。相对路径基于全局 `harness.json` 所在目录。规则在首次需要时读取并缓存。用 `/config reload` 刷新后续审批使用的规则；在途审批保留原规则和模式。首次读取失败时阻止命令；审批关闭或处于 YOLO 模式时，命令执行路径跳过读取。 |
 | `shell.approval.commandTimeoutMs` | `10000` | 静态判断程序超时，单位毫秒 |
 | `shell.approval.manualTimeoutMs` | `30000` | 人工界面显示后的审批期限，单位毫秒 |
 | `shell.approval.notificationUrl` | `""` | 人工审批展示时发送 JSON POST 的 HTTP(S) URL，空字符串关闭 |
@@ -105,6 +112,7 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 
 ```json
 {
+  "version": 1,
   "subagent": {
     "prompts": {
       "common": {
@@ -128,19 +136,23 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 
 ## Hooks
 
-Main 读取 `<agentDir>/hooks.toml`、当前分支已应用的 Preset Hook 快照，以及受信项目的 `.pi/hooks.toml`。三层按此顺序合成，同 ID 整条替换；`enabled = false` 可关闭低层规则。合成后按 ID 字典序执行，单条规则内的 `actions` 保留声明顺序。全局与项目文件在会话加载时读取；修改后使用 `/reload`。Preset 的非空 `hooks` 随应用写入分支快照并参与版本哈希，`/preset` 会提示版本变动。
+Main 读取 `<agentDir>/hooks.toml`、当前分支已应用的 Preset Hook 快照，以及受信项目的 `.pi/hooks.toml`。三层按此顺序合成，同 ID 整条替换；`enabled = false` 可关闭低层规则。合成后按 ID 字典序执行，单条规则内的 `actions` 保留声明顺序。全局与项目文件按需读取；修改后用 `/config reload` 刷新。Preset 的非空 `hooks` 随应用写入分支快照并参与版本哈希，`/preset` 会提示版本变动。
+
+每份独立的 `hooks.toml` 声明顶层 `version = 1`，规则放在 `[hooks.<id>]` 下。只声明版本时规则集为空。旧的无版本 TOML 可用 `migrate:config-v1` 离线迁移。
 
 ```toml
-[prefer-read]
+version = 1
+
+[hooks.prefer-read]
 on = "tool_result"
 when = '''tool == 'bash' && shellStandalone(input.command, ['sed', 'head', 'tail'])'''
 actions = [{ type = "injectHint", text = "Use read to inspect file contents." }]
-[prefer-read.repeat]
+[hooks.prefer-read.repeat]
 maxTriggers = 1
 resetOnCompaction = true
 ```
 
-Preset 在 `[<name>.hooks.<rule-id>]` 下使用同一规则结构。`before_agent_start` 可匹配用户输入 `prompt`；`tool_result` 可匹配 `tool`、`nested`、`input.<path>`、`result.isError`、`result.truncated`、`result.errorKind`、`result.output` 和 `result.outputChars`。两类均可匹配 `model.provider`、`model.id`、`preset` 及 `turn.modelCalls`、`turn.toolCalls`、`turn.nestedToolCalls`、`turn.toolErrors`。比较不做隐式类型转换；未知值在 `when` 中保持未知，只有布尔真触发。辅助函数包括 `contains`、`exists`、`regex`、`inWorkspace`、`shellStandalone` 和 `shellHasCommand`。Shell 匹配只识别可确认的 POSIX 简单命令，不能当作权限检查。`regex` 使用线性匹配，模式最多 256 字符且不支持 `{…}` 重复语法；只开放 `i`、`m` 两个 flags。
+Preset 在 `[presets.<name>.hooks.<rule-id>]` 下使用同一规则结构。`before_agent_start` 可匹配用户输入 `prompt`；`tool_result` 可匹配 `tool`、`nested`、`input.<path>`、`result.isError`、`result.truncated`、`result.errorKind`、`result.output` 和 `result.outputChars`。两类均可匹配 `model.provider`、`model.id`、`preset` 及 `turn.modelCalls`、`turn.toolCalls`、`turn.nestedToolCalls`、`turn.toolErrors`。比较不做隐式类型转换；未知值在 `when` 中保持未知，只有布尔真触发。辅助函数包括 `contains`、`exists`、`regex`、`inWorkspace`、`shellStandalone` 和 `shellHasCommand`。Shell 匹配只识别可确认的 POSIX 简单命令，不能当作权限检查。`regex` 使用线性匹配，模式最多 256 字符且不支持 `{…}` 重复语法；只开放 `i`、`m` 两个 flags。
 
 - `injectHint` 接受 `text` 与可选 `display`，默认隐藏；嵌套工具命中的提示合并到顶层已执行工具结果边界。
 - `injectSection` 只用于独立的 `before_agent_start` 规则，接受 `text`，不与 `repeat`、其他动作或完整自定义提示词共用。
@@ -154,17 +166,19 @@ Preset 在 `[<name>.hooks.<rule-id>]` 下使用同一规则结构。`before_agen
 `classify` 规则在 `when` 命中后使用 `classifier.models` 的有序候选。候选为空时，会话加载会提示并跳过分类规则，其余规则仍可运行。每会话最多两个异步 Hook，每轮最多四次实际 SDK 分类器调用；同 ID 同时只运行一次，资源槽在底层清理完成后释放。
 
 ```toml
-[classify-review]
+version = 1
+
+[hooks.classify-review]
 on = "tool_result"
 when = "tool == 'read'"
 
-[classify-review.classify]
+[hooks.classify-review.classify]
 kind = "choice"
 question = "Choose implementation when the observed file is an implementation file, otherwise other."
 choices = ["implementation", "other"]
 include = ["result"]
 
-[classify-review.onChoice]
+[hooks.classify-review.onChoice]
 implementation = [{ type = "injectHint", text = "Check the public contract before editing the implementation." }]
 ```
 
@@ -174,7 +188,9 @@ implementation = [{ type = "injectHint", text = "Check the public contract befor
 
 ### 会话统计
 
-Main 的 `/hook-stats` 显示当前会话的规则匹配、动作受理、跳过及失败计数，以及工具类别、已知截断、分类器尝试、耗时和 token 用量。它只保留配置的 Hook ID、固定类别和计数；归入 `Other Hook IDs` 的规则不单独保留 ID。统计随会话加载重置，保留在内存中，无需配置。
+Main 的 `/hooks stats` 显示当前会话的规则匹配、动作受理、跳过及失败计数，以及工具类别、已知截断、分类器尝试、耗时和 token 用量。它只保留配置的 Hook ID、固定类别和计数；归入 `Other Hook IDs` 的规则不单独保留 ID。统计随会话加载重置，保留在内存中，无需配置。
+
+会话空闲时，用 `/hooks mute ID` 静音当前分支上的规则。用 `/hooks unmute ID` 取消该 ID 的静音，用 `/hooks reset` 清除当前分支上的全部静音。三者都记录分支增量。取消静音不会启用被 TOML 的 `enabled = false` 禁用的规则。刷新后的新规则从下一轮开始匹配；删除、修改或静音规则会立即撤销该规则尚未提交的动作。已经交给 SDK 的消息保留。
 
 ## Capability
 
@@ -190,7 +206,7 @@ Main 的 `/hook-stats` 显示当前会话的规则匹配、动作受理、跳过
 
 ### 默认禁用种子
 
-`capability.blacklist` 默认为空数组，提供启动默认黑名单。支持精确工具名、工具组引用与名字前缀（如 `mcp__prod__*`）。后一层配置整体替换前一层，不做合并。
+`capability.blacklist` 默认为空数组，提供启动默认黑名单。支持精确工具名、工具组引用与名字前缀（如 `mcp__prod__*`）。受信项目可以追加禁止项；合并保留全局条目的顺序并去重。项目层的空数组保留全局黑名单。
 
 当前会话按「基线白名单 > 黑名单 > 普通按需激活／发现」计算可用性。`base add` 与 Preset 正项可覆盖本会话的配置、Preset 或分支黑名单，但不删除禁止记录；移除白名单后禁止重新生效。普通 activate、发现和跨会话 connect 不能自行覆盖有效禁止。用户可通过 `/capability blacklist remove <target>` 在当前分支解除同目标的配置默认项；当前 Preset 的禁止记录仍独立存在。祖先禁止、角色／深度与 SDK 限制是外层约束，不能通过子会话白名单绕过。具体行为见[工具权限管理](interface-contract.md#工具权限管理)。
 
@@ -241,10 +257,11 @@ mode = "only"
 
 工具配置使用现有 Preset 的 `tools` 修饰语法；基线为子会话自己的默认工具与扩展。显式最终减项作为该 Actor 的执行作用域 denial，后续激活不能绕过；SDK 注册排除只承载固定深度限制，祖先权限与深度限制仍生效。模型、thinking、工具、Codemode 与 Preset 指引通过公共 Preset 解析和应用路径设置，结果与所选定义保存在原生分支和 Actor 身份中；续跑不重新选择或读取变更后的 Preset。子会话不执行 Main 的 `--preset` 启动标志。
 
-**决策模型。** 在 `harness.json` 中按顺序配置 `classifier.models`，每项只包含非空 `provider` 和 `id`。项目配置整体替换全局列表，默认列表为空；未配置时 Fresh 路由给出明确错误。列表在根会话配置加载时确定，修改后通过 `/reload` 或新根会话生效。路由定义和 Preset 仍在每次创建 Fresh Agent 时重读。
+**决策模型。** 在全局 `harness.json` 中按顺序配置 `classifier.models`，每项只包含非空 `provider` 和 `id`。默认列表为空；未配置时 Fresh 路由给出明确错误。列表在根会话配置加载时确定，修改后通过 `/reload` 或新根会话生效。路由定义和 Preset 仍在每次创建 Fresh Agent 时重读。
 
 ```json
 {
+  "version": 1,
   "classifier": {
     "models": [{ "provider": "fake-provider", "id": "fake-classifier" }]
   }
@@ -319,7 +336,7 @@ npm run migrate:config-toml -- subagent-routing.json
 
 ## 模型 Preset
 
-模型 Preset 使用独立配置文件，不写在 `harness.json`：全局 agent 目录的 `presets.toml`，以及受信项目的 `.pi/presets.toml`；项目同名项整体覆盖全局。顶层直接使用 `[<name>]`，名称含点或空格时使用引号键（如 `['fast.v2']`），`instructions` 可使用多行字符串；示例见 [`config/presets.toml`](../config/presets.toml)。每项字段：
+模型 Preset 使用全局 agent 目录的 `presets.toml` 与受信项目的 `.pi/presets.toml`。项目同名项整体覆盖全局。每份文件声明顶层 `version = 1`，再在 `[presets.<name>]` 下定义条目。名称含点或空格时使用引号键，例如 `[presets.'fast.v2']`。`instructions` 可使用多行字符串。旧的无版本 TOML 使用本页的 `migrate:config-v1` 离线迁移；迁移将旧表放进 `presets` 容器，原格式和注释保留在备份中。示例见 [`config/presets.toml`](../config/presets.toml)。每项字段：
 
 | 字段 | 含义 |
 | --- | --- |

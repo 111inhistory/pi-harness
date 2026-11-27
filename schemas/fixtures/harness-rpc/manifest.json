@@ -2,6 +2,27 @@
   "description": "Language-neutral valid/invalid fixtures for the Harness RPC wire protocol. Paths are relative to this directory.",
   "fixtures": [
     {
+      "path": "valid/hooks-current-result.json",
+      "kind": "frame",
+      "schema": "HooksCurrentResult",
+      "valid": true,
+      "conformance": ["payload"]
+    },
+    {
+      "path": "valid/hooks-stats-result.json",
+      "kind": "frame",
+      "schema": "HooksStatsResult",
+      "valid": true,
+      "conformance": ["payload"]
+    },
+    {
+      "path": "invalid/hooks-warning-with-raw-detail.json",
+      "kind": "frame",
+      "schema": "HooksCurrentResult",
+      "valid": false,
+      "conformance": ["payload"]
+    },
+    {
       "path": "valid/request-harness-info.json",
       "kind": "frame",
       "schema": "MethodRequest",

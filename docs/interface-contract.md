@@ -493,6 +493,8 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 | `harness.info` | 协议版本、会话标识与进程标识 |
 | `main.*` | SDK 状态、输入准入、中断、压缩、导航、reload、新建、切换、fork 和观察；preflight 区分 handled、queued、started，不等待整次运行完成 |
 | `presets.catalog/current/apply/clear` | 共享 Preset 配置、分支快照及应用／清除结果，保持稀疏选择语义 |
+| `hooks.current` | 当前有效 Hook 结构、禁用规则、分支静音及脱敏配置诊断 |
+| `hooks.stats` | 当前会话的 Hook、工具和分类器计数快照 |
 | `approvals.list/get/respond/subscribe` | 真实审批队列和首次有效决定，保持超时、取消、无消费者时拒绝及退役释放 |
 | `sessions.list/connect` | 共享会话目录与联系操作，联系和发送相互独立 |
 | `tools.catalog`、`tools.detail` | 当前作用域目录与详情，报告 registered、eligible、active、managed 和 permission；禁用项保留，供用户管理 |
@@ -507,8 +509,15 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 | `history.read` | 读取指定 Job 的原生历史区间；running Job 返回已产生区间与 live 端，首个 Job 的 `null` start 是合法边界（按分支开头读取），memory-only 会话明确报告历史不可用 |
 | `stream.subscribe`、`stream.unsubscribe` | 订阅或解除指定 Job 的子会话执行流；订阅响应携带读取边界（状态、轮次、历史区间、已产生消息与当前 `partial`），事件携带订阅、根会话、Agent 与 Job 归属 |
 
-- 公开参数、结果、校验和生成 schema 关联于 `src/harness-rpc/contract.ts`，编译时核对 41 个方法的覆盖及结果类型。SDK 事件与历史保留不透明载荷。领域错误保留 code、message 和 detail；登记后的启动失败以 `start_failed` 和 detail 中的 registered／failures 报告，不能视为整批未创建。查询与回执不额外写入 Main 对话，操作自身仍保留业务记录。
+- 公开参数、结果、校验和生成 schema 关联于 `src/harness-rpc/contract.ts`，编译时核对方法覆盖及结果类型。SDK 事件与历史保留不透明载荷。领域错误保留 code、message 和 detail；登记后的启动失败以 `start_failed` 和 detail 中的 registered／failures 报告，不能视为整批未创建。查询与回执不额外写入 Main 对话，操作自身仍保留业务记录。
 - 子任务操作使用当前领域绑定；Root 过渡期间拒绝访问旧服务。SDK Main 控制独立于 Subagent 健康状态；后续回调受绑定代次围栏隔离。
+
+### Hook 查询
+
+`hooks.current` 与 `hooks.stats` 都不接收参数。当前会话未安装 Hook 查询时返回 `unavailable`。两者不写分支、不唤醒模型、不发 UI 通知。
+
+- `hooks.current` 读取当前分支的 Preset 与静音记录，复用 Hook 文件快照。首次查询可加载文件。规则按 ID 排序，`active` 表示可参与执行，`muted` 表示分支静音。`disabled` 列出合并后被文件或 Preset 禁用的 ID；`muted` 包含已无规则定义的历史 ID。文件层无效时返回 `valid: false`，`rules` 和 `disabled` 为空；刷新失败而旧快照仍有效时继续返回旧快照。`warnings` 只含层级、可用的规则 ID 和诊断码。响应不含配置路径、规则表达式、动作正文或分类问题。
+- `hooks.stats` 返回当前会话的计数快照：按 ID 排序的最多 64 条规则、其余规则的合计、固定六类工具和分类器计数。分类耗时按毫秒取整。会话切换后从新会话读取，查询不清零。
 
 ### 执行流
 

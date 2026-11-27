@@ -51,17 +51,19 @@ const ACTIVATE_TURN = 'ACTIVATE_TURN: run one outer probe.';
 const HELD_TOOL = 'held_tool';
 
 const heldHooks = `
-[held-hint]
+version = 1
+[hooks.held-hint]
 on = 'tool_result'
 when = '''tool == 'hint_probe' && turn.toolCalls == 1'''
 classify = { kind = 'bool', question = '${HELD_QUESTION}' }
 actions = [{ type = 'injectHint', text = '${HELD_HINT}' }]
-[held-hint.repeat]
+[hooks.held-hint.repeat]
 maxTriggers = 1
 `;
 
 const staleHooks = `
-[stale-hint]
+version = 1
+[hooks.stale-hint]
 on = 'tool_result'
 when = '''tool == 'stale_probe' && turn.toolCalls == 1'''
 classify = { kind = 'bool', question = '${STALE_QUESTION}' }
@@ -69,7 +71,8 @@ actions = [{ type = 'injectHint', text = '${STALE_HINT}' }]
 `;
 
 const activateHooks = `
-[deferred-activate]
+version = 1
+[hooks.deferred-activate]
 on = 'tool_result'
 when = '''tool == 'activate_probe' && turn.toolCalls == 1'''
 classify = { kind = 'bool', question = '${ACTIVATE_QUESTION}' }
@@ -180,6 +183,7 @@ async function startFixture(options: FixtureOptions): Promise<Fixture> {
     // fixture must publish at least one catalog model even though the transport
     // below is scripted.
     await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
+      version: 1,
       classifier: { models: [CLASSIFIER] },
     }));
     await writeFile(path.join(agentDir, 'hooks.toml'), options.hooks);
@@ -368,12 +372,12 @@ test('a passive hint rides the next executed outer result and consumes repeat ac
     assert.deepEqual(fixture.scriptErrors, []);
     assert.deepEqual(fixture.errors, []);
 
-    const command = fixture.session.extensionRunner.getCommand('hook-stats');
+    const command = fixture.session.extensionRunner.getCommand('hooks');
     assert.ok(command);
     const ctx = fixture.session.extensionRunner.createCommandContext();
     const lines: string[] = [];
     const beforeStats = fixture.session.sessionManager.getLeafId();
-    await command.handler('', { ...ctx, ui: { ...ctx.ui, notify: text => lines.push(text) } });
+    await command.handler('stats', { ...ctx, ui: { ...ctx.ui, notify: text => lines.push(text) } });
     const [stats] = lines;
     assert.match(stats ?? '', /Classifier: calls=1/);
     assert.match(stats ?? '', /Tools other: calls=3/);
@@ -455,7 +459,9 @@ test('a hint-only classifier answer that arrives after settlement is cancelled',
   }
 });
 
-test('a branch-only classifier answer activates after settlement without waking the run', async () => {
+for (const muteThenUnmute of [false, true]) test(muteThenUnmute
+  ? 'mute then unmute after settlement revokes a previously admitted classifier answer'
+  : 'a branch-only classifier answer activates after settlement without waking the run', async () => {
   const fixture = await startFixture({
     hooks: activateHooks,
     questions: [ACTIVATE_QUESTION],
@@ -478,13 +484,20 @@ test('a branch-only classifier answer activates after settlement without waking 
     assert.equal(call.signal?.aborted, false,
       'a branch-only classifier outlives the turn so its commit is not lost');
     assert.equal(fixture.session.getActiveToolNames().includes(HELD_TOOL), false);
+    if (muteThenUnmute) {
+      await fixture.session.prompt('/hooks mute deferred-activate');
+      await fixture.session.prompt('/hooks unmute deferred-activate');
+      const deltas = fixture.session.sessionManager.getBranch().flatMap(entry =>
+        entry.type === 'custom' && entry.customType === 'harness-hook-override' ? [entry.data] : []);
+      assert.deepEqual(deltas, [
+        { version: 1, op: 'mute', id: 'deferred-activate' }, { version: 1, op: 'unmute', id: 'deferred-activate' },
+      ]);
+    }
     const entries = fixture.session.sessionManager.getBranch().length;
 
     await fixture.release(ACTIVATE_QUESTION);
-    assert.equal(fixture.session.getActiveToolNames().includes(HELD_TOOL), true,
-      'the post-settle answer activates its branch-scoped target');
-    assert.ok(fixture.session.sessionManager.getBranch().length > entries,
-      'the activation is recorded on the branch');
+    assert.equal(fixture.session.getActiveToolNames().includes(HELD_TOOL), !muteThenUnmute);
+    assert.equal(fixture.session.sessionManager.getBranch().length > entries, !muteThenUnmute);
     assert.equal(hookHints(fixture.session).length, 0);
     assert.equal(fixture.requests.length, 2, 'a branch-only commit does not wake the session');
     assert.deepEqual(fixture.errors, []);

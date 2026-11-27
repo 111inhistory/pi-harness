@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { checkShellSyntax, type ShellPreflightResult } from "../shell-preflight.ts";
 import { harnessConfigFor } from '../harness-config.ts';
+import { ConfigStaleError, configLifecycleFor, createAsyncSlotToken, createSyncSlotToken } from '../config-lifecycle.ts';
 import { argumentCompletionProvider } from '../autocomplete.ts';
 import { isManagedShell, publishShellCheck, type ShellCheck } from './bridge.ts';
 import { runShellPolicy } from './command.ts';
@@ -58,13 +59,13 @@ function savedPermissionMode(ctx: ExtensionContext): ShellPermissionMode | undef
 }
 
 interface ShellConfiguration { executable: string; prefix: string | undefined }
-type ConfigurationCache = Map<string, ShellConfiguration>;
+type ConfigurationCache = Partial<Record<'bash' | 'powershell', { readonly key: string; readonly value: ShellConfiguration }>>;
 type PreflightResult = ShellPreflightResult | { ok: false; code: 'preflight_error'; toolName: string; diagnostic: string };
 
 function bashConfiguration(ctx: ExtensionContext, configurationCache: ConfigurationCache): ShellConfiguration {
-  const cacheKey = `bash\u0000${ctx.cwd}\u0000${ctx.isProjectTrusted()}`;
-  const cached = configurationCache.get(cacheKey);
-  if (cached) return cached;
+  const cacheKey = `${ctx.cwd}\u0000${ctx.isProjectTrusted()}`;
+  const cached = configurationCache.bash;
+  if (cached?.key === cacheKey) return cached.value;
 
   const settings = SettingsManager.create(ctx.cwd, getAgentDir(), {
     projectTrusted: ctx.isProjectTrusted(),
@@ -74,19 +75,19 @@ function bashConfiguration(ctx: ExtensionContext, configurationCache: Configurat
     executable: shell.shell,
     prefix: settings.getShellCommandPrefix(),
   };
-  configurationCache.set(cacheKey, configuration);
+  configurationCache.bash = { key: cacheKey, value: configuration };
   return configuration;
 }
 
 function commandConfiguration(toolName: string, ctx: ExtensionContext, configurationCache: ConfigurationCache): ShellConfiguration {
   if (toolName === "powershell") {
-    const key = `powershell\u0000${ctx.cwd}\u0000${ctx.isProjectTrusted()}`;
-    const cached = configurationCache.get(key);
-    if (cached) return cached;
+    const key = `${ctx.cwd}\u0000${ctx.isProjectTrusted()}`;
+    const cached = configurationCache.powershell;
+    if (cached?.key === key) return cached.value;
 
     const settings = SettingsManager.create(ctx.cwd, getAgentDir(), { projectTrusted: ctx.isProjectTrusted() });
     const configuration = { executable: getPowerShellConfig().shell, prefix: settings.getShellCommandPrefix() };
-    configurationCache.set(key, configuration);
+    configurationCache.powershell = { key, value: configuration };
     return configuration;
   }
   return bashConfiguration(ctx, configurationCache);
@@ -121,10 +122,22 @@ async function preflight(toolName: string, command: unknown, ctx: ExtensionConte
 }
 
 
+const SHELL_RULE_SLOT = createAsyncSlotToken<readonly string[]>({
+  name: 'shell approval rules', refreshable: true,
+  equals: (a, b) => a.length === b.length && a.every((rule, index) => rule === b[index]),
+});
+const SHELL_ENV_SLOT = createSyncSlotToken<ConfigurationCache>({ name: 'shell environment', load: () => ({}) });
+
 /** Shared optional entrypoint: syntax and approval have independent configuration. */
 export default function shellPreflightExtension(pi: ExtensionAPI): void {
-  const configurationCache: ConfigurationCache = new Map();
   const configFor = harnessConfigFor(pi);
+  const lifecycle = configLifecycleFor(pi);
+  const environment = lifecycle.bindSyncSlot(SHELL_ENV_SLOT);
+  const ruleSources = lifecycle.bindAsyncSlot(SHELL_RULE_SLOT,
+    ctx => loadShellRuleFiles(configFor(ctx).shell.approval.ruleFiles), ctx => {
+      const approval = configFor(ctx).shell.approval;
+      return approval.enabled && approval.ruleFiles.length > 0;
+    });
   let rootContext: ExtensionContext | undefined;
   let lifetime = new AbortController();
   const notifyManualApproval = (request: ShellApprovalRequest): void => {
@@ -164,7 +177,6 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
   });
   let mode: ShellPermissionMode | undefined;
   let autocompleteInstalled = false;
-  let ruleSources: Promise<readonly string[]> | undefined;
 
   const status = (ctx: ExtensionContext): void => {
     const config = configFor(ctx).shell.approval;
@@ -188,19 +200,23 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
       lifetime = new AbortController();
       createManualApproval();
     }
-    configurationCache.clear();
     status(ctx);
   };
 
   const check: ShellCheck = async (tool, command, ctx, source, waiting, callerSignal, plan) => {
     const root = rootContext ?? ctx;
     const ownerLifetime = lifetime;
-    const signal = AbortSignal.any([ownerLifetime.signal, ...(ctx.signal ? [ctx.signal] : []), ...(callerSignal ? [callerSignal] : [])]);
+    if (ownerLifetime.signal.aborted) return 'Shell approval cancelled.';
+    const scopeCurrent = lifecycle.captureScope(root);
+    const signal = AbortSignal.any([ownerLifetime.signal, lifecycle.scopeSignal(root),
+      ...(ctx.signal ? [ctx.signal] : []), ...(callerSignal ? [callerSignal] : [])]);
+    const cancelled = () => signal.aborted || !scopeCurrent();
     const shell = configFor(root).shell;
+    const approval = shell.approval;
+    const selected = mode ?? approval.mode;
     if (tool === 'job_send' || tool === 'job_key') {
-      if (signal.aborted) return 'Input not sent: approval cancelled.';
-      const approval = shell.approval;
-      if (!approval.enabled || (mode ?? approval.mode) === 'yolo') return null;
+      if (cancelled()) return 'Input not sent: approval cancelled.';
+      if (!approval.enabled || selected === 'yolo') return null;
       // Terminal input has no reliable shell syntax; review the exact payload,
       // including the separate Enter action, without interpreting it as argv.
       const preview = JSON.stringify(command).replace(/[\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu,
@@ -212,17 +228,22 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
           reason: 'Terminal input can submit commands to the running program.',
           timeoutSeconds: approval.manualTimeoutMs / 1000, signal,
         });
-        if (signal.aborted) return 'Input not sent: approval cancelled.';
+        if (cancelled()) return 'Input not sent: approval cancelled.';
         return result.approved ? null : `Input not sent: manual approval denied (${result.reason}).`;
       } finally { waiting?.(false); }
     }
+    if (cancelled()) return 'Command not executed: approval cancelled.';
+    // Begin the eligible rule read before the first suspension. A concurrent
+    // refresh may publish a newer snapshot while this approval keeps its own.
+    const rulesRead = approval.enabled && selected !== 'yolo' && approval.ruleFiles.length > 0
+      ? ruleSources.read(root).then(snapshot => ({ rules: snapshot.value }), (error: unknown) => ({ error }))
+      : undefined;
+    const configurationCache = environment.read(root).value;
     if (shell.preflight) {
       const result = plan === undefined ? await preflight(tool, command, ctx, configurationCache) : await checkShellSyntax(plan);
       if (!result.ok) return failureReason(result);
     }
-    if (signal.aborted) return 'Command not executed: approval cancelled.';
-    const approval = shell.approval;
-    const selected = mode ?? approval.mode;
+    if (cancelled()) return 'Command not executed: approval cancelled.';
     if (!approval.enabled || selected === 'yolo') return null;
     if (typeof command !== 'string') return 'Command not executed: command must be a string.';
     const target = plan ?? (() => {
@@ -237,7 +258,7 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
       shell: action.shell, command: action.command, cwd: action.cwd, platform: action.platform,
       rejectTerminalInput: true,
     });
-    if (signal.aborted) return 'Command not executed: approval cancelled.';
+    if (cancelled()) return 'Command not executed: approval cancelled.';
     if (extracted.kind === 'terminal-input') return 'Command not executed: use job_send or job_key for terminal input.';
     // Ordinary shell commands retain their original syntax. Only pi-job calls
     // replace the wrapper with actual argv; every sibling remains represented.
@@ -246,20 +267,20 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
       ? extracted.actions.map(item => ({ ...action, cwd: item.cwd, argv: item.argv }))
       : [action];
     if (candidates.length === 0) return null;
-    let rules: readonly string[];
-    try {
-      rules = await (ruleSources ??= loadShellRuleFiles(approval.ruleFiles));
-    } catch (error) {
-      if (signal.aborted) return 'Command not executed: approval cancelled.';
+    const pinned = await rulesRead;
+    if (cancelled()) return 'Command not executed: approval cancelled.';
+    if (pinned !== undefined && 'error' in pinned) {
+      const { error } = pinned;
+      if (error instanceof ConfigStaleError) return 'Command not executed: approval cancelled.';
       const reason = error instanceof Error ? error.message : String(error);
       root.ui.notify(`Rule file error: ${sanitizeTerminalText(reason)}`, 'error');
       return 'Command not executed: ' + reason;
     }
-    if (signal.aborted) return 'Command not executed: approval cancelled.';
+    const rules = pinned?.rules ?? [];
     const needsReview: string[] = [];
     for (const candidate of candidates) {
       const decision = await runShellPolicy(approval.command, { ...candidate, rules }, signal, approval.commandTimeoutMs);
-      if (signal.aborted) return 'Command not executed: approval cancelled.';
+      if (cancelled()) return 'Command not executed: approval cancelled.';
       if (decision.decision === 'deny') return 'Command not executed: ' + decision.reason;
       if (decision.decision === 'review') needsReview.push(decision.reason);
     }
@@ -276,8 +297,8 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
         action: { ...action, reason: decisionReason },
         context: { branch: ctx.sessionManager.getBranch() }, signal,
       });
-      if (signal.aborted) {
-        if (!ownerLifetime.signal.aborted) status(root);
+      if (cancelled()) {
+        if (!ownerLifetime.signal.aborted && scopeCurrent()) status(root);
         return 'Command not executed: approval cancelled.';
       }
       const summary = sanitizeTerminalText(truncateToWidth(sanitizeTerminalText(action.command), 100));
@@ -304,14 +325,13 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
         reason: decisionReason, timeoutSeconds: approval.manualTimeoutMs / 1000, signal,
       });
     } finally { waiting?.(false); }
-    if (!ownerLifetime.signal.aborted) status(root);
-    if (signal.aborted) return 'Command not executed: approval cancelled.';
+    if (cancelled()) return 'Command not executed: approval cancelled.';
+    status(root);
     return result.approved ? null : 'Command not executed: Manual approval denied (' + result.reason + ').';
   };
   publishShellCheck(pi, check);
   pi.on('session_start', (_event, ctx) => {
     mode = savedPermissionMode(ctx);
-    ruleSources = undefined;
     activate(ctx);
     if (!autocompleteInstalled) {
       autocompleteInstalled = true;
@@ -320,14 +340,18 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
   });
   pi.on('session_tree', (_event, ctx) => {
     mode = savedPermissionMode(ctx);
-    ruleSources = undefined;
     activate(ctx);
   });
   pi.on('agent_start', (_event, ctx) => activate(ctx));
   pi.on('session_before_tree', cancel);
   pi.on('session_before_switch', cancel);
   pi.on('session_before_fork', cancel);
-  pi.on('session_shutdown', (_event, ctx) => { cancel(); ctx.ui.setStatus('shell-permission', undefined); });
+  pi.on('session_shutdown', (_event, ctx) => {
+    cancel();
+    mode = undefined;
+    rootContext = undefined;
+    ctx.ui.setStatus('shell-permission', undefined);
+  });
   pi.on('tool_call', async (event, ctx) => {
     if (event.toolName !== 'bash' && event.toolName !== 'powershell') return;
     if (isManagedShell(pi, event.toolName)) return;
@@ -339,7 +363,7 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
     const signal = lifetime.signal;
     const windows = process.platform === 'win32';
     if (!configFor(ctx).shell.preflight) return windows ? { operations: createLocalPowerShellOperations() } : undefined;
-    const result = await preflight(windows ? 'powershell' : 'bash', event.command, ctx, configurationCache);
+    const result = await preflight(windows ? 'powershell' : 'bash', event.command, ctx, environment.read(ctx).value);
     if (signal.aborted) return { result: { output: 'Command not executed: session changed.', exitCode: 2, cancelled: true, truncated: false } };
     if (result.ok) return windows ? { operations: createLocalPowerShellOperations() } : undefined;
     return { result: { output: failureReason(result), exitCode: 2, cancelled: false, truncated: false } };

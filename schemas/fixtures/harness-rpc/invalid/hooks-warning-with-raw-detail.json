@@ -1,0 +1,15 @@
+{
+  "valid": false,
+  "preset": null,
+  "classifierConfigured": false,
+  "rules": [],
+  "disabled": [],
+  "muted": [],
+  "warnings": [
+    {
+      "scope": "global",
+      "code": "version_invalid",
+      "detail": "Raw fixture details are not part of the wire contract."
+    }
+  ]
+}

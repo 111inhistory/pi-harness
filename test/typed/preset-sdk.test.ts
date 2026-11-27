@@ -160,7 +160,7 @@ async function bootPresetSession(
   options: { defaultTools?: string[]; withCapability?: boolean; requests?: unknown[] } = {},
 ): Promise<PresetSession> {
   await mkdir(agentDir, { recursive: true });
-  await writeFile(path.join(agentDir, 'presets.toml'), stringify(presets));
+  await writeFile(path.join(agentDir, 'presets.toml'), stringify({ version: 1, presets }));
   const { runtime, model } = await offlineRuntime(cwd, options.requests);
   const settingsManager = SettingsManager.inMemory({
     defaultTools: options.defaultTools ?? ['read', 'bash', 'edit', 'write', 'capability', oldDefault],

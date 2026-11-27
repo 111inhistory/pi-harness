@@ -69,6 +69,7 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
   runtime.getAuth = async () => ({ auth: { apiKey: 'offline-fixture' }, env: {} });
   runtime.hasConfiguredAuth = () => true;
   await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
+    version: 1,
     classifier: { models: [{ provider: 'openrouter', id: '~typesafe/jev-latest' }] },
   }));
   await writeFile(path.join(agentDir, 'subagent-routing.toml'), stringify({
@@ -81,9 +82,12 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
     }],
   }));
   await writeFile(path.join(agentDir, 'presets.toml'), stringify({
-    'nested-worker': {
-      model: { provider: faux.provider.id, id: model.id }, thinkingLevel: 'low',
-      tools: ['-bash', '+msg_write'], codemode: { mode: 'only' }, instructions: 'PRESET_NESTED_GUIDANCE',
+    version: 1,
+    presets: {
+      'nested-worker': {
+        model: { provider: faux.provider.id, id: model.id }, thinkingLevel: 'low',
+        tools: ['-bash', '+msg_write'], codemode: { mode: 'only' }, instructions: 'PRESET_NESTED_GUIDANCE',
+      },
     },
   }));
   runtime.classify = async (classifier, context) => {
@@ -254,6 +258,7 @@ test('child-only tools are usable when not denied, while root prefix/namespace/s
   runtime.hasConfiguredAuth = () => true;
 
   await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
+    version: 1,
     classifier: { models: [{ provider: 'openrouter', id: '~typesafe/jev-latest' }] },
     capability: { blacklist: ['startup_blocked_*'] },
   }));
@@ -267,8 +272,11 @@ test('child-only tools are usable when not denied, while root prefix/namespace/s
     }],
   }));
   await writeFile(path.join(agentDir, 'presets.toml'), stringify({
-    worker: {
-      model: { provider: faux.provider.id, id: model.id }, thinkingLevel: 'low',
+    version: 1,
+    presets: {
+      worker: {
+        model: { provider: faux.provider.id, id: model.id }, thinkingLevel: 'low',
+      },
     },
   }));
   // Register child-only tools in an extension loaded by the Fresh child (not on Main's noExtensions: true loader).

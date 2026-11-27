@@ -28,7 +28,7 @@ const cwd = await mkdtemp(path.join(tmpdir(), "reply-manual-"));
 const agentDir = path.join(cwd, "agent");
 const socketRoot = path.join(cwd, "uds");
 await mkdir(agentDir, { recursive: true });
-await writeFile(path.join(agentDir, "harness.json"), JSON.stringify({ capability: { blacklist: ["msg_write"] } }));
+await writeFile(path.join(agentDir, "harness.json"), JSON.stringify({ version: 1, capability: { blacklist: ["msg_write"] } }));
 const previousAgentDir = process.env["PI_CODING_AGENT_DIR"];
 const previousSocketDir = process.env["PI_SUBAGENT_SOCKET_DIR"];
 process.env["PI_CODING_AGENT_DIR"] = agentDir;

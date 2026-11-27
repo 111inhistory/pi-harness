@@ -74,6 +74,7 @@ async function start(options: { manual?: readonly string[] } = {}): Promise<Fixt
   const toolsFile = path.join(cwd, 'tools.json');
   await writeFile(toolsFile, JSON.stringify([{ name: 'stable' }, { name: 'secret' }]));
   await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
+    version: 1,
     ...(options.manual === undefined ? {} : { capability: { blacklist: [...options.manual] } }),
   }));
   await writeFile(path.join(agentDir, 'mcp.json'), JSON.stringify({

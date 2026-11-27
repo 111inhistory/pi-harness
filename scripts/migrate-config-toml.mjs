@@ -4,7 +4,7 @@ import { lstatSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { parse, stringify } from 'smol-toml';
-import { validatePresetDocument } from '../src/preset/config.ts';
+import { PRESET_CONFIG_VERSION, validatePresetDocument } from '../src/preset/config.ts';
 import { assertRoutingCandidateOrder, validateLegacyRoutingConfig } from './lib/routing-v4-migration.ts';
 
 const usage = 'Usage: npm run migrate:config-toml -- [--apply] <presets.json|subagent-routing.json>...\n'
@@ -24,7 +24,10 @@ function plan(file) {
   try {
     const legacy = JSON.parse(readFileSync(source, 'utf8'));
     const routing = basename(source) === 'subagent-routing.json';
-    const expected = routing ? validateLegacyRoutingConfig(legacy) : validatePresets(source, legacy);
+    const expected = routing ? validateLegacyRoutingConfig(legacy) : {
+      version: PRESET_CONFIG_VERSION,
+      presets: validatePresets(source, { version: PRESET_CONFIG_VERSION, presets: legacy }),
+    };
     const output = stringify(expected);
     const reparsed = parse(output);
     if (routing) {
@@ -32,7 +35,7 @@ function plan(file) {
       assert.deepStrictEqual(actual, expected, 'TOML changed the configuration semantics');
       assertRoutingCandidateOrder(expected, actual);
     } else {
-      assert.deepStrictEqual(validatePresets(source, reparsed), expected, 'TOML changed the configuration semantics');
+      assert.deepStrictEqual(validatePresets(source, reparsed), expected.presets, 'TOML changed the configuration semantics');
     }
     return { source, target: source.replace(/\.json$/, '.toml'), output };
   } catch (error) {

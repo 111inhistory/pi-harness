@@ -44,11 +44,16 @@ interface SetupOptions {
   syncFails?: boolean;
 }
 
+/** Write a presets document in the current v1 format: `version = 1` plus the container table. */
+function writePresets(file: string, presets: Record<string, unknown>): void {
+  writeFileSync(file, stringify({ version: 1, presets }));
+}
+
 function setup(options: SetupOptions = {}): Harness {
   const agentDir = mkdtempSync(path.join(tmpdir(), 'preset-agent-'));
   const cwd = mkdtempSync(path.join(tmpdir(), 'preset-cwd-'));
   process.env['PI_CODING_AGENT_DIR'] = agentDir;
-  if (options.presets) writeFileSync(path.join(agentDir, 'presets.toml'), stringify(options.presets));
+  if (options.presets) writePresets(path.join(agentDir, 'presets.toml'), options.presets);
 
   const caps: Captured = { commands: {}, handlers: {} };
   const branch: unknown[] = [];
@@ -304,7 +309,7 @@ test('version prompts are TUI-only and skipping applies to the candidate seen on
   const h = setup({ presets: { writer: { instructions: 'v1' } } });
   await applyOnStart(h, 'writer');
   const file = path.join(process.env['PI_CODING_AGENT_DIR']!, 'presets.toml');
-  writeFileSync(file, stringify({ writer: { instructions: 'v2' } }));
+  writePresets(file, { writer: { instructions: 'v2' } });
   let prompts = 0;
   let useUpdate = false;
   (h.ctx.ui as { select: unknown }).select = async (_title: string, choices: string[]) => {
@@ -321,7 +326,7 @@ test('version prompts are TUI-only and skipping applies to the candidate seen on
   assert.deepEqual(h.calls.appended.slice(before).map(entry => entry.customType), ['preset-version-skipped']);
   await h.fire('session_start', { reason: 'resume' });
   assert.equal(prompts, 1);
-  writeFileSync(file, stringify({ writer: { instructions: 'v3' } }));
+  writePresets(file, { writer: { instructions: 'v3' } });
   useUpdate = true;
   await h.fire('session_start', { reason: 'resume' });
   assert.equal(prompts, 2);
@@ -335,10 +340,10 @@ test('tree marks invalid and missing Presets and the picker can clear an empty c
   const h = setup({ presets: { writer: { instructions: 'v1' } } });
   await applyOnStart(h, 'writer');
   const file = path.join(process.env['PI_CODING_AGENT_DIR']!, 'presets.toml');
-  writeFileSync(file, stringify({ writer: { instructions: false } }));
+  writePresets(file, { writer: { instructions: false } });
   await h.fire('session_tree', {});
   assert.equal(h.calls.status.at(-1), 'preset:writer (invalid)');
-  writeFileSync(file, '');
+  writePresets(file, {});
   await h.fire('session_tree', {});
   assert.equal(h.calls.status.at(-1), 'preset:writer (missing)');
   (h.ctx.ui as { select: unknown }).select = async (_title: string, choices: string[]) => {

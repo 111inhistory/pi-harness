@@ -1,7 +1,6 @@
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { parse } from 'smol-toml';
+import { createHash } from 'node:crypto';
 import { parseToolTarget } from '../capability/targets.ts';
+import { configPaths, readConfigDocument, requireConfigVersion, type ConfigLocation, type ConfigScope } from '../config-storage.ts';
 import type { HookClassifierInclude } from './projection.ts';
 import { compileWhen, type WhenTrigger } from './when.ts';
 
@@ -153,12 +152,25 @@ function isDeferredAction(action: HookAction): action is DeferredAction {
   return action.type !== 'injectSection';
 }
 
+export function isHookId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(value);
+}
+
+class HookWhenError extends Error {
+  readonly id: string;
+
+  constructor(id: string, cause: unknown) {
+    super(`${id}.when: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.id = id;
+  }
+}
+
 export function normalizeHookRules(value: unknown, validateWhen = true): HookRules {
   const entries = Object.entries(table(value, 'hooks')).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
   if (entries.length > 32) throw new Error('a Hook layer may define at most 32 rules');
   const rules: Record<string, HookRules[string]> = Object.create(null);
   for (const [id, value] of entries) {
-    if (!/^[a-z][a-z0-9-]{0,63}$/.test(id)) throw new Error(`invalid Hook id: ${id}`);
+    if (!isHookId(id)) throw new Error(`invalid Hook id: ${id}`);
     const raw = fields(value, ['enabled', 'description', 'on', 'when', 'repeat', 'timeoutMs', 'actions', 'classify', 'onChoice'], id);
     if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') throw new Error(`${id}.enabled must be boolean`);
     if (raw.description !== undefined) boundedText(raw.description, 500, `${id}.description`);
@@ -170,7 +182,7 @@ export function normalizeHookRules(value: unknown, validateWhen = true): HookRul
     const when = raw.when === undefined ? undefined : boundedText(raw.when, 4096, `${id}.when`);
     if (validateWhen && when !== undefined) {
       try { compileWhen(when, raw.on); }
-      catch (error) { throw new Error(`${id}.when: ${error instanceof Error ? error.message : String(error)}`); }
+      catch (error) { throw new HookWhenError(id, error); }
     }
     let repeat: HookRepeat | undefined;
     if (raw.repeat !== undefined) {
@@ -218,23 +230,81 @@ export function normalizeHookRules(value: unknown, validateWhen = true): HookRul
   return rules;
 }
 
-export function readHookLayer(directory: string): HookRules {
-  const file = path.join(directory, 'hooks.toml');
-  try {
-    return normalizeHookRules(parse(readFileSync(file, 'utf8')));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
-    throw new Error(`${file}: ${error instanceof Error ? error.message : String(error)}`);
+export const HOOK_CONFIG_VERSION = 1;
+
+export class HookConfigError extends Error {
+  readonly code: 'version_invalid' | 'layer_invalid' | 'when_invalid';
+  readonly id: string | undefined;
+
+  constructor(file: string, code: HookConfigError['code'], reason: string, id?: string) {
+    super(`${file}: ${reason}`);
+    this.name = 'HookConfigError';
+    this.code = code;
+    this.id = id;
   }
 }
 
-export function mergeHookLayers(...layers: readonly HookRules[]): readonly (readonly [string, HookRule])[] {
-  const merged = new Map<string, HookRule>();
-  for (const layer of layers) {
+export function validateHookDocument(file: string, value: unknown): HookRules {
+  const document = requireConfigVersion(value, HOOK_CONFIG_VERSION);
+  if (!document.ok) {
+    if (document.reason === 'not_object') throw new HookConfigError(file, 'layer_invalid', 'top level must be a table');
+    throw new HookConfigError(file, 'version_invalid', `version must be ${document.expected}. Run the offline config v1 migration for unversioned files.`);
+  }
+  try {
+    fields(document.body, ['hooks'], 'config');
+    return normalizeHookRules(document.body.hooks === undefined ? {} : document.body.hooks);
+  } catch (error) {
+    if (error instanceof HookWhenError) throw new HookConfigError(file, 'when_invalid', error.message, error.id);
+    throw new HookConfigError(file, 'layer_invalid', error instanceof Error ? error.message : String(error));
+  }
+}
+
+export function readHookLayer(file: string): { readonly rules: HookRules; readonly digest: string | null } {
+  const document = readConfigDocument(file, 'toml');
+  if (document.status === 'missing') return { rules: {}, digest: null };
+  if (document.status !== 'ok') throw new HookConfigError(file, 'layer_invalid',
+    document.error instanceof Error ? document.error.message : String(document.error));
+  return { rules: validateHookDocument(file, document.value), digest: createHash('sha256').update(document.text).digest('hex') };
+}
+
+export class HookLayerError extends Error {
+  readonly scope: ConfigScope;
+  readonly code: HookConfigError['code'];
+  readonly id: string | undefined;
+
+  constructor(scope: ConfigScope, error: unknown) {
+    super(error instanceof Error ? error.message : String(error), { cause: error });
+    this.name = 'HookLayerError';
+    this.scope = scope;
+    this.code = error instanceof HookConfigError ? error.code : 'layer_invalid';
+    this.id = error instanceof HookConfigError ? error.id : undefined;
+  }
+}
+
+export function readHookLayers(location: ConfigLocation) {
+  const layers = { global: { rules: {} as HookRules, digest: null as string | null }, project: { rules: {} as HookRules, digest: null as string | null } };
+  for (const { scope, path } of configPaths(location, 'hooks.toml', 'global-and-project')) {
+    try { layers[scope] = readHookLayer(path); }
+    catch (error) { throw new HookLayerError(scope, error); }
+  }
+  return layers;
+}
+
+const HOOK_SOURCES = ['global', 'preset', 'project'] as const;
+export type HookSource = typeof HOOK_SOURCES[number];
+
+export function hookLayerWinners(global: HookRules, preset: HookRules, project: HookRules) {
+  const layers = { global, preset, project };
+  const merged = new Map<string, { readonly source: HookSource; readonly rule: HookRules[string] }>();
+  for (const source of HOOK_SOURCES) {
+    const layer = layers[source];
     for (const [id, rule] of Object.entries(layer)) {
-      if ('enabled' in rule) merged.delete(id);
-      else merged.set(id, rule);
+      merged.set(id, { source, rule });
     }
   }
   return [...merged].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+}
+
+export function mergeHookLayers(global: HookRules, preset: HookRules, project: HookRules): readonly (readonly [string, HookRule])[] {
+  return hookLayerWinners(global, preset, project).flatMap(([id, { rule }]) => 'enabled' in rule ? [] : [[id, rule] as const]);
 }

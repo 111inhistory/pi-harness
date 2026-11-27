@@ -1,5 +1,6 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { harnessConfigFor, type HarnessConfigProvider } from '../harness-config.ts';
+import { configLifecycleFor } from '../config-lifecycle.ts';
 import { ServiceLifecycle } from './service-lifecycle.ts';
 import { RootService } from '../subagent/root-service.ts';
 import { SubagentError } from '../subagent/runtime.ts';
@@ -21,6 +22,11 @@ export function installHarnessSession(api: ExtensionAPI): HarnessSessionApplicat
   // its own session reset listeners must be in place before this service starts
   // activating. Every service of one Pi surface shares that snapshot.
   const configFor = harnessConfigFor(api);
+  const configLifecycle = configLifecycleFor(api);
+  function captureConfig(ctx: ExtensionContext) {
+    return { value: configFor(ctx), current: configLifecycle.captureScope(ctx) };
+  }
+  let configSnapshot: ReturnType<typeof captureConfig> | undefined;
   const agentDir = getAgentDir();
   const idsByRoot = new Map<string, Set<string>>();
   const lifecycle = new ServiceLifecycle<RootService>({ retire: (service) => service.retire() });
@@ -64,12 +70,14 @@ export function installHarnessSession(api: ExtensionAPI): HarnessSessionApplicat
       const id = ctx.sessionManager.getSessionId();
       let allocatedIds = idsByRoot.get(id);
       if (allocatedIds === undefined) { allocatedIds = new Set(); idsByRoot.set(id, allocatedIds); }
+      const snapshot = configSnapshot ??= captureConfig(ctx);
       const service = new RootService({
         api,
         context: ctx,
         agentDir,
         allocatedIds,
-        config: configFor(ctx),
+        config: snapshot.value,
+        configCurrent: snapshot.current,
         ownsContext: () => epoch === ownEpoch,
       });
       await service.initialize();
@@ -99,6 +107,7 @@ export function installHarnessSession(api: ExtensionAPI): HarnessSessionApplicat
   };
 
   api.on('session_start', async (_event, ctx) => {
+    configSnapshot = undefined;
     epoch += 1;
     const service = await activate(ctx);
     await armRpc(ctx, service);
@@ -123,6 +132,7 @@ export function installHarnessSession(api: ExtensionAPI): HarnessSessionApplicat
   api.on('session_before_switch', async (_event, ctx) => beforeTransition(ctx));
   api.on('session_before_fork', async (_event, ctx) => beforeTransition(ctx));
   api.on('session_shutdown', async (event, ctx) => {
+    configSnapshot = undefined;
     transitionPending = true;
     try {
       suspendRpc();

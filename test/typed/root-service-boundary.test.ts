@@ -54,6 +54,7 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
   assert.ok(model);
   if (packageRegistration) {
     await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
+      version: 1,
       classifier: { models: [{ provider: model.provider, id: model.id }] },
     }), 'utf8');
     await writeFile(path.join(agentDir, 'subagent-routing.toml'), stringify({

@@ -4,6 +4,7 @@ import {
 } from '../../preset/application.ts';
 import type { PresetApplyOutcome as DomainPresetApplyOutcome } from '../../preset/apply.ts';
 import { shellApprovalController } from '../../shell-approval/extension.ts';
+import { hookInspection } from '../../hooks/inspection.ts';
 import type { RootService } from '../../subagent/root-service.ts';
 import type { MethodParams, MethodResult } from '../contract.ts';
 import type { PresetSnapshot } from '../../preset/state.ts';
@@ -60,6 +61,18 @@ export function buildApplicationPort(api: ExtensionAPI, ctx: ExtensionContext, r
     return value;
   };
   return {
+    hooksCurrent(): MethodResult<'hooks.current'> {
+      assertSession();
+      const result = hookInspection(api)?.current(ctx);
+      if (result === undefined) throw new RpcRequestError(RPC_ERROR.unavailable, 'Hooks are not available in this session.');
+      return result;
+    },
+    hooksStats(): MethodResult<'hooks.stats'> {
+      assertSession();
+      const result = hookInspection(api)?.stats();
+      if (result === undefined) throw new RpcRequestError(RPC_ERROR.unavailable, 'Hook statistics are not available in this session.');
+      return result;
+    },
     presetsCatalog(): MethodResult<'presets.catalog'> {
       assertSession();
       const loaded = catalog();

@@ -1,22 +1,24 @@
 
-[fast]
+version = 1
+
+[presets.fast]
 description = "日常模型配置（示例，使用合成占位数据）"
 thinkingLevel = "medium"
 tools = ["+codemode", "-bash"]
 instructions = "该模型的专属调用指引（示例）。"
 
-[fast.model]
+[presets.fast.model]
 provider = "fake-provider"
 id = "fast-model"
 
-[fast.codemode]
+[presets.fast.codemode]
 mode = "only"
 
-[deep]
+[presets.deep]
 description = "深度推理（示例）"
 thinkingLevel = "high"
 tools = ["+write", "+edit"]
 
-[deep.model]
+[presets.deep.model]
 provider = "fake-provider"
 id = "deep-model"
