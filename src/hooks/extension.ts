@@ -10,7 +10,7 @@ import { clipText } from '../text-output.ts';
 import { extractBranchToolObservations, installToolObservation, type ToolObservation } from '../tool-observation.ts';
 import { canClassifyForBranch, classifiedActions, hookQuestion, HOOK_QUESTION } from './classify.ts';
 import { isHookId, mergeHookLayers, readHookLayers, type HookAction, type HookRule, type HookRules } from './config.ts';
-import { exposeHookInspection, inspectHooks } from './inspection.ts';
+import { exposeHookInspection, inspectHooks, type HookOverrideResult } from './inspection.ts';
 import { applyHookOverride, HOOK_OVERRIDE_RECORD, restoreHookOverrides, type HookOverride } from './override.ts';
 import { buildHookClassifierSlice, type HookClassifierSubject, type HookClassifierSources, type HookClassifierToolFact } from './projection.ts';
 import { HOOK_HINT_MESSAGE, HOOK_REPEAT_RECORD, readHintReceipts, restoreRepeat, type HookReceipt } from './repeat.ts';
@@ -150,6 +150,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
   exposeHookInspection(pi, {
     current: ctx => closed ? undefined : inspectHooks(ctx, () => layers.read(ctx).value, configFor(ctx).classifier.models.length > 0),
     stats: () => stats?.snapshot(),
+    override: changeOverride,
   });
   let eligible = new Map<string, { readonly key: string; readonly token: symbol }>();
   const running = new Map<string, { readonly controller: AbortController; readonly requiresTurn: boolean }>();
@@ -247,6 +248,24 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
   pi.on('session_shutdown', () => { closed = true; invalidateBranch(); });
   pi.on('session_start', () => { closed = false; lastLayerError = undefined; invalidateBranch(); });
 
+  function changeOverride(ctx: ExtensionContext, delta: HookOverride): HookOverrideResult | undefined {
+    if (closed || !ctx.isIdle()) return undefined;
+    const epoch = capability.branchEpoch();
+    const leaf = ctx.sessionManager.getLeafId();
+    const muted = restoreHookOverrides(ctx.sessionManager.getBranch());
+    const changed = applyHookOverride(muted, delta);
+    if (!changed) return { changed, muted: [...muted].sort() };
+    if (closed || !ctx.isIdle() || epoch !== capability.branchEpoch() || leaf !== ctx.sessionManager.getLeafId()) return undefined;
+    pi.appendEntry(HOOK_OVERRIDE_RECORD, delta);
+    if (branchState?.scopeCurrent()) {
+      applyHookOverride(branchState.muted, delta);
+      branchState.matcherChanged = true;
+      const snapshot = layers.peek(ctx);
+      if (snapshot !== undefined) updateEligibility(snapshot.value, branchState.presetHooks, muted);
+    }
+    return { changed, muted: [...muted].sort() };
+  }
+
   pi.registerCommand('hooks', {
     description: 'Inspect Hook statistics or mute Hooks on this branch',
     handler: async (args, ctx) => {
@@ -262,27 +281,12 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
         ctx.ui.notify('Usage: /hooks stats | mute ID | unmute ID | reset', 'info');
         return;
       }
-      if (closed || !ctx.isIdle()) {
+      const result = changeOverride(ctx, delta);
+      if (result === undefined) {
         ctx.ui.notify('Wait for the session to become idle before changing Hook overrides.', 'warning');
         return;
       }
-      const epoch = capability.branchEpoch();
-      const leaf = ctx.sessionManager.getLeafId();
-      const branch = ctx.sessionManager.getBranch();
-      const muted = restoreHookOverrides(branch);
-      if (!applyHookOverride(muted, delta)) {
-        ctx.ui.notify('Hook overrides unchanged.', 'info');
-        return;
-      }
-      if (closed || !ctx.isIdle() || epoch !== capability.branchEpoch() || leaf !== ctx.sessionManager.getLeafId()) return;
-      pi.appendEntry(HOOK_OVERRIDE_RECORD, delta);
-      if (branchState?.scopeCurrent()) {
-        applyHookOverride(branchState.muted, delta);
-        branchState.matcherChanged = true;
-        const snapshot = layers.peek(ctx);
-        if (snapshot !== undefined) updateEligibility(snapshot.value, branchState.presetHooks, muted);
-      }
-      ctx.ui.notify('Hook overrides updated.', 'info');
+      ctx.ui.notify(result.changed ? 'Hook overrides updated.' : 'Hook overrides unchanged.', 'info');
     },
   });
 

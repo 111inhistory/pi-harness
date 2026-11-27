@@ -725,6 +725,8 @@ export const PresetsCurrentResultSchema = Type.Object({
 }, { additionalProperties: false });
 
 const hookId = Type.String({ pattern: '^[a-z][a-z0-9-]{0,63}$' });
+const hookIdParams = Type.Object({ id: hookId }, { additionalProperties: true });
+const hookOverrideResult = Type.Object({ changed: Type.Boolean(), muted: Type.Array(hookId, { uniqueItems: true }) }, { additionalProperties: false });
 const hookSource = Type.Union([Type.Literal('global'), Type.Literal('preset'), Type.Literal('project')]);
 const hookAction = Type.Union([Type.Literal('injectHint'), Type.Literal('injectSection'), Type.Literal('activate'), Type.Literal('discoverCapability')]);
 const hookRuleSummary = Type.Object({
@@ -1152,6 +1154,8 @@ export const SHARED_CONTRACT_DEFS = {
   PresetSnapshot: PresetSnapshotSchema,
   PresetsCurrentResult: PresetsCurrentResultSchema,
   HooksCurrentResult: HooksCurrentResultSchema,
+  HookIdParams: hookIdParams,
+  HookOverrideResult: hookOverrideResult,
   HooksStatsResult: HooksStatsResultSchema,
   PresetApplyParams: PresetApplyParamsSchema,
   PresetIssueSeverity: PresetIssueSeveritySchema,
@@ -1327,6 +1331,18 @@ export const HARNESS_RPC_CONTRACT = {
   [RPC_METHODS.hooksCurrent]: defineMethod({
     description: 'Inspect the effective Hook rules and branch mute state without exposing configuration text.',
     params: 'NoParams', result: 'HooksCurrentResult', paramsRequired: false,
+  }),
+  [RPC_METHODS.hooksMute]: defineMethod({
+    description: 'Mute a Hook ID on the active branch while the session is idle.',
+    params: 'HookIdParams', result: 'HookOverrideResult', paramsRequired: true,
+  }),
+  [RPC_METHODS.hooksUnmute]: defineMethod({
+    description: 'Clear one branch Hook mute while the session is idle.',
+    params: 'HookIdParams', result: 'HookOverrideResult', paramsRequired: true,
+  }),
+  [RPC_METHODS.hooksReset]: defineMethod({
+    description: 'Clear all branch Hook mutes while the session is idle.',
+    params: 'NoParams', result: 'HookOverrideResult', paramsRequired: false,
   }),
   [RPC_METHODS.hooksStats]: defineMethod({
     description: 'Read bounded in-memory Hook, tool and classifier counters for the active session.',

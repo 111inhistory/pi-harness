@@ -5,6 +5,7 @@ import {
 import type { PresetApplyOutcome as DomainPresetApplyOutcome } from '../../preset/apply.ts';
 import { shellApprovalController, shellPermissionModes } from '../../shell-approval/extension.ts';
 import { hookInspection } from '../../hooks/inspection.ts';
+import type { HookOverride } from '../../hooks/override.ts';
 import type { RootService } from '../../subagent/root-service.ts';
 import type { MethodParams, MethodResult } from '../contract.ts';
 import type { PresetSnapshot } from '../../preset/state.ts';
@@ -66,7 +67,18 @@ export function buildApplicationPort(api: ExtensionAPI, ctx: ExtensionContext, r
     if (port === undefined) throw new RpcRequestError(RPC_ERROR.unavailable, 'Shell permission modes are not available in this session.');
     return port;
   };
+  const changeHookOverride = (delta: HookOverride): MethodResult<'hooks.mute'> => {
+    assertSession();
+    const port = hookInspection(api);
+    if (port === undefined) throw new RpcRequestError(RPC_ERROR.unavailable, 'Hooks are not available in this session.');
+    const result = port.override(ctx, delta);
+    if (result === undefined) throw new RpcRequestError(RPC_ERROR.notReady, 'The branch is not ready for Hook overrides.');
+    return result;
+  };
   return {
+    hooksMute: ({ id }: MethodParams<'hooks.mute'>) => changeHookOverride({ version: 1, op: 'mute', id }),
+    hooksUnmute: ({ id }: MethodParams<'hooks.unmute'>) => changeHookOverride({ version: 1, op: 'unmute', id }),
+    hooksReset: () => changeHookOverride({ version: 1, op: 'reset' }),
     hooksCurrent(): MethodResult<'hooks.current'> {
       assertSession();
       const result = hookInspection(api)?.current(ctx);

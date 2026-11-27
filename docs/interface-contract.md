@@ -495,6 +495,7 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 | `presets.catalog/current/apply/clear` | 共享 Preset 配置、分支快照及应用／清除结果，保持稀疏选择语义 |
 | `hooks.current` | 当前有效 Hook 结构、禁用规则、分支静音及脱敏配置诊断 |
 | `hooks.stats` | 当前会话的 Hook、工具和分类器计数快照 |
+| `hooks.mute/unmute/reset` | 写入当前分支的 Hook 静音增量 |
 | `approvals.list/get/respond/subscribe` | 真实审批队列和首次有效决定，保持超时、取消、无消费者时拒绝及退役释放 |
 | `approvals.mode.get/set` | 读取 Shell 审批模式，或为当前分支固定后续请求使用的模式 |
 | `sessions.list/connect` | 共享会话目录与联系操作，联系和发送相互独立 |
@@ -525,6 +526,12 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 
 - `hooks.current` 读取当前分支的 Preset 与静音记录，复用 Hook 文件快照。首次查询可加载文件。规则按 ID 排序，`active` 表示可参与执行，`muted` 表示分支静音。`disabled` 列出合并后被文件或 Preset 禁用的 ID；`muted` 包含已无规则定义的历史 ID。文件层无效时返回 `valid: false`，`rules` 和 `disabled` 为空；刷新失败而旧快照仍有效时继续返回旧快照。`warnings` 只含层级、可用的规则 ID 和诊断码。响应不含配置路径、规则表达式、动作正文或分类问题。
 - `hooks.stats` 返回当前会话的计数快照：按 ID 排序的最多 64 条规则、其余规则的合计、固定六类工具和分类器计数。分类耗时按毫秒取整。会话切换后从新会话读取，查询不清零。
+
+### Hook 静音
+
+`hooks.mute` 和 `hooks.unmute` 接收 `{ id }`。`hooks.reset` 无参数。三种方法均返回 `{ changed, muted }`，其中 `muted` 按 ID 的 ASCII 顺序排列。会话必须空闲；分支无法写入时返回 `not_ready`。未安装 Hooks 时返回 `unavailable`。
+
+客户端可静音尚未定义的 ID。`hooks.unmute` 和 `hooks.reset` 只清除分支静音。TOML 中的 `enabled = false` 仍然生效。重复设置相同状态时，方法返回 `changed: false`，不追加记录。静音会撤销旧规则的待提交动作；取消静音只授权后续匹配。
 
 ### 执行流
 

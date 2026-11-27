@@ -17,6 +17,7 @@ import test from "node:test";
 import { stringify } from "smol-toml";
 
 import { fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import {
   createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
   type AgentSession, type ExtensionAPI,
@@ -157,6 +158,7 @@ interface ApplicationFixture {
   readonly api: ExtensionAPI;
   readonly client: RpcClient;
   readonly controller: ShellApprovalController;
+  readonly runtime: ModelRuntime;
   readonly permissionStatuses: readonly (string | undefined)[];
 }
 
@@ -264,7 +266,7 @@ async function startApplication(t: test.TestContext, hooks = false, approvalMode
     client = await RpcClient.connect(target.address);
     const controller = shellApprovalController(api);
     assert.ok(controller, "the real Shell approval extension provides its controller");
-    return { cwd, session, root, api, client, controller, permissionStatuses };
+    return { cwd, session, root, api, client, controller, permissionStatuses, runtime };
   } catch (error) {
     await cleanup();
     throw error;
@@ -322,12 +324,57 @@ second = [{ type = 'injectHint', text = 'SECOND_FIXTURE_HINT' }]
   assert.deepEqual(await client.request("hooks.current"), current, "a failed refresh retains the visible snapshot");
   const anchor = session.sessionManager.appendMessage({ role: "user", content: "Branch anchor", timestamp: Date.now() });
   await session.prompt("/hooks mute main");
-  await session.prompt("/hooks mute missing");
+  assert.deepEqual(await client.request('hooks.mute', { id: 'missing', future: true }), { changed: true, muted: ['main', 'missing'] });
+  const mutedLeaf = session.sessionManager.getLeafId();
+  assert.deepEqual(await client.request('hooks.mute', { id: 'missing' }), { changed: false, muted: ['main', 'missing'] });
+  assert.equal(session.sessionManager.getLeafId(), mutedLeaf);
   const muted = asRecord(await client.request("hooks.current"));
   assert.deepEqual(muted?.["muted"], ["main", "missing"]);
   assert.equal(asRecord(asArray(muted?.["rules"])[1])?.["active"], false);
+  assert.deepEqual(await client.request('hooks.mute', { id: 'hidden' }), { changed: true, muted: ['hidden', 'main', 'missing'] });
+  assert.deepEqual(await client.request('hooks.unmute', { id: 'hidden' }), { changed: true, muted: ['main', 'missing'] });
+  assert.deepEqual(asRecord(await client.request('hooks.current'))?.['disabled'], ['hidden']);
+  assert.deepEqual(await client.request('hooks.reset'), { changed: true, muted: [] });
+  assert.deepEqual(await client.request('hooks.reset'), { changed: false, muted: [] });
   await session.navigateTree(anchor);
   assert.deepEqual(await client.request("hooks.current"), current, "the same socket reflects the rebound branch");
+});
+
+test('Hook writes refuse a busy Main on the real socket', async t => {
+  const { client, session, runtime } = await startApplication(t, true);
+  const release = deferred();
+  let streaming = false;
+  runtime.streamSimple = model => {
+    const stream = new AssistantMessageEventStream();
+    streaming = true;
+    void release.promise.then(() => {
+      stream.push({ type: 'done', reason: 'stop', message: {
+        role: 'assistant', api: model.api, provider: model.provider, model: model.id,
+        content: [{ type: 'text', text: 'Done' }], stopReason: 'stop', timestamp: Date.now(),
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      } });
+      stream.end();
+    });
+    return stream;
+  };
+  const turn = session.prompt('Hold this fixture turn.');
+  try {
+    await Promise.race([
+      waitFor(() => streaming, { label: 'held Main request' }),
+      turn.then(() => { throw new Error('Main settled before the model request.'); }),
+    ]);
+    assert.equal(session.isIdle, false);
+    const leaf = session.sessionManager.getLeafId();
+    for (const method of ['hooks.mute', 'hooks.unmute', 'hooks.reset']) {
+      await assert.rejects(client.request(method, method === 'hooks.reset' ? undefined : { id: 'fixture' }),
+        (error: unknown) => error instanceof RpcFailure && error.code === 'not_ready');
+    }
+    assert.equal(session.sessionManager.getLeafId(), leaf);
+  } finally {
+    release.resolve();
+    await turn;
+  }
 });
 
 function presetEntries(session: AgentSession): JsonObject[] {

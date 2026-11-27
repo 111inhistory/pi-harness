@@ -1,0 +1,5 @@
+{
+  "id": "mute-hook",
+  "method": "hooks.mute",
+  "params": { "id": "fixture-hook" }
+}
