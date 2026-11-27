@@ -6,6 +6,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { parse, stringify } from 'smol-toml';
 import { HARNESS_CONFIG_VERSION, harnessConfigBody, resolveHarnessConfig } from '../src/harness-config.ts';
+import { HOOK_CONFIG_VERSION, validateHookDocument } from '../src/hooks/config.ts';
 import { PRESET_CONFIG_VERSION, validatePresetDocument } from '../src/preset/config.ts';
 
 const BACKUP = '.pre-config-v1';
@@ -33,21 +34,21 @@ function planHarness(file, scope) {
 function presetCatalog(file, document) {
   const { catalog, warnings } = validatePresetDocument(file, document);
   if (warnings.length > 0) throw new Error(warnings.join('\n'));
-  return catalog;
+  return [...catalog];
 }
 
-function planPresets(file) {
+function planToml(file, container, version, validate) {
   const stat = regularFile(file);
   if (stat === undefined) return undefined;
   const before = readFileSync(file);
   const value = parse(before.toString('utf8'));
-  // A legacy document can have a Preset named "version", but the entry is a table.
+  // In a legacy document a rule or Preset named "version" must be a table.
   const alreadyVersioned = Object.hasOwn(value, 'version') && (typeof value.version !== 'object' || value.version === null);
-  const document = alreadyVersioned ? value : { version: PRESET_CONFIG_VERSION, presets: value };
-  const catalog = presetCatalog(file, document);
+  const document = alreadyVersioned ? value : { version, [container]: value };
+  const expected = validate(file, document);
   if (alreadyVersioned) return undefined;
   const after = stringify(document);
-  assert.deepStrictEqual([...presetCatalog(file, parse(after))], [...catalog], `${file}: TOML changed preset semantics`);
+  assert.deepStrictEqual(validate(file, parse(after)), expected, `${file}: TOML changed configuration semantics`);
   return { file, stat, before, after };
 }
 
@@ -94,8 +95,11 @@ try {
     if (values['project-dir']) roots.push({ dir: path.resolve(values['project-dir'], '.pi'), scope: 'project' });
     const harness = roots.map(({ dir, scope }) => planHarness(path.join(dir, 'harness.json'), scope)).filter(Boolean);
     resolveHarnessConfig(harness.map(({ file, scope, body }) => ({ source: file, scope, value: body })));
-    const presets = roots.map(({ dir }) => planPresets(path.join(dir, 'presets.toml')));
-    const changes = [...harness, ...presets].filter(plan => plan?.after !== undefined);
+    const leaves = roots.flatMap(({ dir }) => [
+      planToml(path.join(dir, 'presets.toml'), 'presets', PRESET_CONFIG_VERSION, presetCatalog),
+      planToml(path.join(dir, 'hooks.toml'), 'hooks', HOOK_CONFIG_VERSION, validateHookDocument),
+    ]);
+    const changes = [...harness, ...leaves].filter(plan => plan?.after !== undefined);
     for (const { file } of changes) {
       if (regularFile(file + BACKUP) !== undefined) throw new Error(`${file + BACKUP}: backup already exists; keep it and resolve the conflict before applying`);
       console.log(`${values.apply ? 'Will migrate' : 'Would migrate'} ${file}`);

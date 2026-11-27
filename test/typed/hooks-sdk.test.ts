@@ -19,28 +19,30 @@ const PRESET_SECTION = `<hook-section>\n${PRESET}\n</hook-section>`;
 const PEER_WAKE = 'Peer wake';
 
 const globalHooks = `
-[start]
+version = 1
+
+[hooks.start]
 on = 'before_agent_start'
 actions = [{ type = 'injectHint', text = '${START}' }]
-[start.repeat]
+[hooks.start.repeat]
 maxTriggers = 1
 
-[override]
+[hooks.override]
 on = 'before_agent_start'
 actions = [{ type = 'injectHint', text = 'GLOBAL_SHOULD_NOT_APPEAR' }]
 
-[nested-result]
+[hooks.nested-result]
 on = 'tool_result'
 when = '''tool == 'command_probe' && nested && contains(input.command, 'read fixture') && turn.modelCalls >= 1'''
 actions = [{ type = 'injectHint', text = '${NESTED}' }]
-[nested-result.repeat]
+[hooks.nested-result.repeat]
 maxTriggers = 1
 
-[nested-duplicate]
+[hooks.nested-duplicate]
 on = 'tool_result'
 when = '''tool == 'command_probe' && nested'''
 actions = [{ type = 'injectHint', text = '${NESTED}', display = true }]
-[nested-duplicate.repeat]
+[hooks.nested-duplicate.repeat]
 maxTriggers = 1
 `;
 
@@ -54,7 +56,7 @@ test('Main Hook delivers coalesced nested hints in the next native request and r
     await mkdir(agentDir);
     await mkdir(path.join(cwd, '.pi'));
     await writeFile(path.join(agentDir, 'hooks.toml'), globalHooks);
-    await writeFile(path.join(cwd, '.pi', 'hooks.toml'), '[override]\nenabled = false\n');
+    await writeFile(path.join(cwd, '.pi', 'hooks.toml'), 'version = 1\n[hooks.override]\nenabled = false\n');
     const provider = fauxProvider({ models: [{ id: 'hook-fixture' }] });
     const model = provider.models[0]!;
     const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });

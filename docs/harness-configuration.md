@@ -136,12 +136,16 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 
 Main 读取 `<agentDir>/hooks.toml`、当前分支已应用的 Preset Hook 快照，以及受信项目的 `.pi/hooks.toml`。三层按此顺序合成，同 ID 整条替换；`enabled = false` 可关闭低层规则。合成后按 ID 字典序执行，单条规则内的 `actions` 保留声明顺序。全局与项目文件在会话加载时读取；修改后使用 `/reload`。Preset 的非空 `hooks` 随应用写入分支快照并参与版本哈希，`/preset` 会提示版本变动。
 
+每份独立的 `hooks.toml` 声明顶层 `version = 1`，规则放在 `[hooks.<id>]` 下。只声明版本时规则集为空。旧的无版本 TOML 可用 `migrate:config-v1` 离线迁移。
+
 ```toml
-[prefer-read]
+version = 1
+
+[hooks.prefer-read]
 on = "tool_result"
 when = '''tool == 'bash' && shellStandalone(input.command, ['sed', 'head', 'tail'])'''
 actions = [{ type = "injectHint", text = "Use read to inspect file contents." }]
-[prefer-read.repeat]
+[hooks.prefer-read.repeat]
 maxTriggers = 1
 resetOnCompaction = true
 ```
@@ -160,17 +164,19 @@ Preset 在 `[presets.<name>.hooks.<rule-id>]` 下使用同一规则结构。`bef
 `classify` 规则在 `when` 命中后使用 `classifier.models` 的有序候选。候选为空时，会话加载会提示并跳过分类规则，其余规则仍可运行。每会话最多两个异步 Hook，每轮最多四次实际 SDK 分类器调用；同 ID 同时只运行一次，资源槽在底层清理完成后释放。
 
 ```toml
-[classify-review]
+version = 1
+
+[hooks.classify-review]
 on = "tool_result"
 when = "tool == 'read'"
 
-[classify-review.classify]
+[hooks.classify-review.classify]
 kind = "choice"
 question = "Choose implementation when the observed file is an implementation file, otherwise other."
 choices = ["implementation", "other"]
 include = ["result"]
 
-[classify-review.onChoice]
+[hooks.classify-review.onChoice]
 implementation = [{ type = "injectHint", text = "Check the public contract before editing the implementation." }]
 ```
 

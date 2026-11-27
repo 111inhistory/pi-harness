@@ -1,7 +1,6 @@
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { parse } from 'smol-toml';
 import { parseToolTarget } from '../capability/targets.ts';
+import { readConfigDocument, requireConfigVersion } from '../config-storage.ts';
 import type { HookClassifierInclude } from './projection.ts';
 import { compileWhen, type WhenTrigger } from './when.ts';
 
@@ -218,14 +217,39 @@ export function normalizeHookRules(value: unknown, validateWhen = true): HookRul
   return rules;
 }
 
+export const HOOK_CONFIG_VERSION = 1;
+
+export class HookConfigError extends Error {
+  readonly code: 'version_invalid' | 'layer_invalid';
+
+  constructor(file: string, code: HookConfigError['code'], reason: string) {
+    super(`${file}: ${reason}`);
+    this.name = 'HookConfigError';
+    this.code = code;
+  }
+}
+
+export function validateHookDocument(file: string, value: unknown): HookRules {
+  const document = requireConfigVersion(value, HOOK_CONFIG_VERSION);
+  if (!document.ok) {
+    if (document.reason === 'not_object') throw new HookConfigError(file, 'layer_invalid', 'top level must be a table');
+    throw new HookConfigError(file, 'version_invalid', `version must be ${document.expected}. Run the offline config v1 migration for unversioned files.`);
+  }
+  try {
+    fields(document.body, ['hooks'], 'config');
+    return normalizeHookRules(document.body.hooks === undefined ? {} : document.body.hooks);
+  } catch (error) {
+    throw new HookConfigError(file, 'layer_invalid', error instanceof Error ? error.message : String(error));
+  }
+}
+
 export function readHookLayer(directory: string): HookRules {
   const file = path.join(directory, 'hooks.toml');
-  try {
-    return normalizeHookRules(parse(readFileSync(file, 'utf8')));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
-    throw new Error(`${file}: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  const document = readConfigDocument(file, 'toml');
+  if (document.status === 'missing') return {};
+  if (document.status !== 'ok') throw new HookConfigError(file, 'layer_invalid',
+    document.error instanceof Error ? document.error.message : String(document.error));
+  return validateHookDocument(file, document.value);
 }
 
 export function mergeHookLayers(...layers: readonly HookRules[]): readonly (readonly [string, HookRule])[] {

@@ -51,17 +51,19 @@ const ACTIVATE_TURN = 'ACTIVATE_TURN: run one outer probe.';
 const HELD_TOOL = 'held_tool';
 
 const heldHooks = `
-[held-hint]
+version = 1
+[hooks.held-hint]
 on = 'tool_result'
 when = '''tool == 'hint_probe' && turn.toolCalls == 1'''
 classify = { kind = 'bool', question = '${HELD_QUESTION}' }
 actions = [{ type = 'injectHint', text = '${HELD_HINT}' }]
-[held-hint.repeat]
+[hooks.held-hint.repeat]
 maxTriggers = 1
 `;
 
 const staleHooks = `
-[stale-hint]
+version = 1
+[hooks.stale-hint]
 on = 'tool_result'
 when = '''tool == 'stale_probe' && turn.toolCalls == 1'''
 classify = { kind = 'bool', question = '${STALE_QUESTION}' }
@@ -69,7 +71,8 @@ actions = [{ type = 'injectHint', text = '${STALE_HINT}' }]
 `;
 
 const activateHooks = `
-[deferred-activate]
+version = 1
+[hooks.deferred-activate]
 on = 'tool_result'
 when = '''tool == 'activate_probe' && turn.toolCalls == 1'''
 classify = { kind = 'bool', question = '${ACTIVATE_QUESTION}' }
