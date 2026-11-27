@@ -12,6 +12,7 @@ import { canClassifyForBranch, classifiedActions, hookQuestion, HOOK_QUESTION } 
 import { mergeHookLayers, readHookLayer, type HookAction, type HookRule, type HookRules } from './config.ts';
 import { buildHookClassifierSlice, type HookClassifierSubject, type HookClassifierSources, type HookClassifierToolFact } from './projection.ts';
 import { HOOK_HINT_MESSAGE, HOOK_REPEAT_RECORD, readHintReceipts, restoreRepeat, type HookReceipt } from './repeat.ts';
+import { emitHookStat, toolCategory, type HookOutcome, type HookStatsBinding } from './stats.ts';
 import { compileWhen, evaluateWhen, type CompiledWhen, type WhenContext } from './when.ts';
 
 const MAX_HINT_BYTES = 8192;
@@ -34,6 +35,7 @@ interface HintBatch {
   readonly receipts: readonly HookReceipt[];
   readonly discoveryRuns: readonly Promise<unknown>[];
   readonly acceptedRules: ReadonlySet<string>;
+  readonly hintRules: ReadonlySet<string>;
 }
 
 interface DeferredCommit {
@@ -70,7 +72,7 @@ function recoverTurn(branch: readonly SessionEntry[]): Counters | undefined {
   return turn;
 }
 
-function observationResult(observation: ToolObservation): NonNullable<WhenContext['result']> {
+function observationResult(observation: ToolObservation, truncated = observationTruncated(observation)): NonNullable<WhenContext['result']> {
   let chars = 0;
   let textParts = 0;
   const parts: string[] = [];
@@ -83,6 +85,14 @@ function observationResult(observation: ToolObservation): NonNullable<WhenContex
   const errorKind = error?.kind === 'script'
     ? error.name === 'SyntaxError' ? 'script_syntax_error' : 'script_error'
     : error?.kind;
+  return {
+    isError: observation.isError, ...(truncated === undefined ? {} : { truncated }),
+    ...(errorKind === undefined ? {} : { errorKind }),
+    outputChars: chars, ...(chars > 8192 ? {} : { output: parts.join('\n') }),
+  };
+}
+
+function observationTruncated(observation: ToolObservation): boolean | undefined {
   const structured = observation.structuredContent;
   const shellTruncated = (observation.toolName === 'bash' || observation.toolName === 'powershell')
     && typeof structured === 'object' && structured !== null && 'truncated' in structured
@@ -91,12 +101,7 @@ function observationResult(observation: ToolObservation): NonNullable<WhenContex
   const nativeTruncation = typeof details === 'object' && details !== null && 'truncation' in details ? details.truncation : undefined;
   const nativeTruncated = typeof nativeTruncation === 'object' && nativeTruncation !== null && 'truncated' in nativeTruncation
     && typeof nativeTruncation.truncated === 'boolean' ? nativeTruncation.truncated : undefined;
-  const truncated = observation.codemode?.truncated ?? shellTruncated ?? nativeTruncated;
-  return {
-    isError: observation.isError, ...(truncated === undefined ? {} : { truncated }),
-    ...(errorKind === undefined ? {} : { errorKind }),
-    outputChars: chars, ...(chars > 8192 ? {} : { output: parts.join('\n') }),
-  };
+  return observation.codemode?.truncated ?? shellTruncated ?? nativeTruncated;
 }
 
 function classifierResultSource(observation: ToolObservation): HookClassifierSources {
@@ -126,7 +131,7 @@ function ruleIdentity(id: string, rule: HookRule): string {
 }
 
 /** The Main adapter owns rule state; the narrow Capability port owns execution and publication. */
-export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookPort): void {
+export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookPort, stats?: HookStatsBinding): void {
   const configFor = harnessConfigFor(pi);
   let global: HookRules = {};
   let project: HookRules = {};
@@ -155,6 +160,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
     producingModel?: NonNullable<WhenContext['model']>;
   } | undefined;
 
+  const recordOutcome = (id: string, outcome: HookOutcome) => emitHookStat(stats?.(), { type: 'hook', id, outcome });
   const invalidateBranch = (): void => {
     branchState = undefined;
     turnState = undefined;
@@ -194,6 +200,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
 
   pi.on('agent_settled', (_event, ctx) => {
     if (turnState !== undefined) advanceBranch(ctx, true);
+    for (const id of turnState?.passiveHints.keys() ?? []) recordOutcome(id, 'stale');
     turnState = undefined;
     for (const task of running.values()) if (task.requiresTurn) task.controller.abort();
   });
@@ -303,7 +310,8 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
   function runBatch(hits: Iterable<MatchedRule>, ctx: ExtensionContext, canDeliverHint: () => boolean): HintBatch {
     const discoveryRuns: Promise<unknown>[] = [];
     const acceptedRules = new Set<string>();
-    if (branchState === undefined) return { hints: [], receipts: [], discoveryRuns, acceptedRules };
+    const hintRules = new Set<string>();
+    if (branchState === undefined) return { hints: [], receipts: [], discoveryRuns, acceptedRules, hintRules };
     const branch = branchState;
     const turn = turnState;
     const userTurn = branch.userTurn + Number(turn?.awaitingStartUser === true);
@@ -315,14 +323,31 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
       const epoch = deferred?.branchEpoch ?? capability.branchEpoch();
       const { rule, key } = effective;
       if (rule.classify !== undefined && deferred === undefined) continue;
-      if (deferred !== undefined && !branch.rules.some(rule => rule.key === key)) continue;
-      if (!deferred?.repeatAlreadyAccepted && !branch.repeat.allows(key, userTurn, turn?.pendingHints.get(key))) continue;
+      if (rule.actions[0]?.type === 'injectSection') continue;
+      if (deferred === undefined) recordOutcome(effective.id, 'matched');
+      if (deferred !== undefined && (!branch.rules.some(rule => rule.key === key) || epoch !== capability.branchEpoch())) {
+        recordOutcome(effective.id, 'stale');
+        continue;
+      }
+      if (deferred !== undefined && performance.now() >= deferred.deadline) {
+        recordOutcome(effective.id, 'timeout');
+        continue;
+      }
+      if (!deferred?.repeatAlreadyAccepted && !branch.repeat.allows(key, userTurn, turn?.pendingHints.get(key))) {
+        recordOutcome(effective.id, 'suppressed');
+        continue;
+      }
       const timeoutMs = Math.min(120_000, configFor(ctx).hooks.timeoutMs, rule.timeoutMs ?? Infinity);
       const deadline = deferred?.deadline ?? performance.now() + timeoutMs;
       let actionAccepted = false;
       let receiptRecorded = false;
+      let failed = false;
       const accept = (kind: 'hint' | 'action'): void => {
-        if (kind === 'action') acceptedRules.add(key);
+        if (kind === 'hint' && !deferred?.repeatAlreadyAccepted) hintRules.add(effective.id);
+        if (kind === 'action' && !acceptedRules.has(key)) {
+          acceptedRules.add(key);
+          recordOutcome(effective.id, 'committed');
+        }
         if (rule.repeat === undefined || deferred?.repeatAlreadyAccepted) return;
         if (receiptRecorded) return;
         const receipt = { key, turn: userTurn };
@@ -380,6 +405,8 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
             }
           }
         } catch (error) {
+          failed = true;
+          recordOutcome(effective.id, 'failed');
           ctx.ui.notify(`Hooks: ${effective.id}: ${error instanceof Error ? error.message : String(error)}`, 'error');
           if (actionAccepted && !receiptRecorded) {
             receipts.delete(key);
@@ -387,8 +414,11 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
           }
         }
       }
+      if (!failed && !acceptedRules.has(key) && !hintRules.has(effective.id) && !deferred?.repeatAlreadyAccepted) {
+        recordOutcome(effective.id, (deferred?.actions ?? rule.actions).length === 0 ? 'observed' : 'suppressed');
+      }
     }
-    return { hints: [...hints.values()], receipts: [...receipts.values()], discoveryRuns, acceptedRules };
+    return { hints: [...hints.values()], receipts: [...receipts.values()], discoveryRuns, acceptedRules, hintRules };
   }
 
   function hintMessage({ hints, receipts }: HintBatch, ctx: ExtensionContext) {
@@ -407,11 +437,14 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
     const turn = turnState;
     const { id, key, rule } = hit.rule;
     const classify = rule.classify;
-    if (branch === undefined || turn === undefined || classify === undefined || hit.classification === undefined
-        || ctx.signal?.aborted || running.size >= MAX_ASYNC_HOOKS || running.has(id) || turn.passiveHints.has(id)
-        || turn.attempts >= MAX_TURN_ATTEMPTS) return;
+    if (branch === undefined || turn === undefined || classify === undefined || hit.classification === undefined) return;
+    const sink = stats?.();
+    const report = (outcome: HookOutcome) => emitHookStat(sink, { type: 'hook', id, outcome });
+    report('matched');
+    if (ctx.signal?.aborted || running.size >= MAX_ASYNC_HOOKS || running.has(id) || turn.passiveHints.has(id)
+        || turn.attempts >= MAX_TURN_ATTEMPTS) { report('suppressed'); return; }
     const userTurn = branch.userTurn + Number(turn.awaitingStartUser);
-    if (!branch.repeat.allows(key, userTurn, turn.pendingHints.get(key))) return;
+    if (!branch.repeat.allows(key, userTurn, turn.pendingHints.get(key))) { report('suppressed'); return; }
 
     const config = configFor(ctx);
     const duration = Math.min(120_000, config.hooks.timeoutMs, rule.timeoutMs ?? Infinity);
@@ -444,11 +477,20 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
         debitAttempt() {
           if (turnState !== turn || turn.attempts >= MAX_TURN_ATTEMPTS || performance.now() >= deadline) throw ATTEMPT_REFUSED;
           turn.attempts += 1;
+          emitHookStat(sink, { type: 'classifier-start' });
         },
+        ...(sink === undefined ? {} : { onAttempt: attempt => emitHookStat(sink, {
+          type: 'classifier-result', outcome: attempt.outcome, durationMs: attempt.durationMs,
+          ...(attempt.usage === undefined ? {} : { inputTokens: attempt.usage.input, outputTokens: attempt.usage.output }),
+        }) }),
       });
-      if (outcome.outcome !== 'answered' || signal.aborted || performance.now() >= deadline || capability.branchEpoch() !== branchEpoch) return;
+      if (performance.now() >= deadline) { report('timeout'); return; }
+      if (signal.aborted || capability.branchEpoch() !== branchEpoch) { report('stale'); return; }
+      if (outcome.outcome !== 'answered') { report('failed'); return; }
       const actions = classifiedActions(rule, outcome.result.answers);
-      if (actions === undefined || actions.length === 0 || !bindBranch(ctx, 'commit')?.rules.some(entry => entry.key === key)) return;
+      if (actions === undefined) { report('failed'); return; }
+      if (actions.length === 0) { report('observed'); return; }
+      if (!bindBranch(ctx, 'commit')?.rules.some(entry => entry.key === key)) { report('stale'); return; }
       const next = (actions: readonly HookAction[], repeatAlreadyAccepted = false): MatchedRule => ({
         rule: hit.rule, seed: hit.seed,
         deferred: { actions, deadline, signal, branchEpoch, ...(repeatAlreadyAccepted ? { repeatAlreadyAccepted: true } : {}) },
@@ -458,10 +500,15 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
       const commits = branchActions.length > 0 ? runBatch([next(branchActions)], ctx, () => false) : undefined;
       if (hints.length > 0 && turnState === turn && turn.compactions === compactions) {
         turn.passiveHints.set(id, next(hints, commits?.acceptedRules.has(key)));
+      } else if (hints.length > 0 && commits === undefined) {
+        report('stale');
       }
       if (commits !== undefined) await Promise.allSettled(commits.discoveryRuns);
     };
     void run().catch(error => {
+      if (performance.now() >= deadline) report('timeout');
+      else if (signal.aborted || capability.branchEpoch() !== branchEpoch || turnState !== turn) report('stale');
+      else report(error === ATTEMPT_REFUSED ? 'suppressed' : 'failed');
       if (error !== ATTEMPT_REFUSED && !signal.aborted && capability.branchEpoch() === branchEpoch) {
         ctx.ui.notify(`Hooks: ${id}: classifier failed.`, 'warning');
       }
@@ -473,6 +520,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
 
   const acceptHintHandoff = (batch: HintBatch): void => {
     if (turnState === undefined) return;
+    for (const id of batch.hintRules) recordOutcome(id, 'committed');
     for (const receipt of batch.receipts) {
       const pending = turnState.pendingHints.get(receipt.key);
       if (pending === undefined) turnState.pendingHints.set(receipt.key, [receipt]);
@@ -491,10 +539,12 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
       for (const { rule } of hits) {
         const section = rule.rule.actions[0];
         if (section?.type !== 'injectSection') continue;
+        recordOutcome(rule.id, 'matched');
         const bytes = Buffer.byteLength(section.text, 'utf8');
-        if (sectionBytes + bytes > MAX_HINT_BYTES) continue;
+        if (sectionBytes + bytes > MAX_HINT_BYTES) { recordOutcome(rule.id, 'suppressed'); continue; }
         sections[`hook-${rule.id}`] = section.text;
         sectionBytes += bytes;
+        recordOutcome(rule.id, 'committed');
       }
     }
     applySystemPromptSections(target, sections, Object.keys(target).filter(key => key.startsWith('hook-')));
@@ -534,6 +584,11 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
   });
 
   installToolObservation(pi, (observation, _event, ctx) => {
+    const truncated = observationTruncated(observation);
+    if (stats !== undefined && observation.status !== 'cancelled' && observation.status !== 'unfinished') {
+      emitHookStat(stats(), { type: 'tool', category: toolCategory(observation.toolName), failed: observation.isError,
+        nested: observation.isNested, ...(truncated === undefined ? {} : { truncated }) });
+    }
     if (branchState === undefined || turnState === undefined || ctx.signal?.aborted) return;
     const branch = branchState;
     const state = turnState;
@@ -553,7 +608,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
     branch.recentTools.push({ toolName, isNested, status, isError, source,
       ...(preview === undefined ? {} : { inputPreview: preview.text, inputPreviewClipped: preview.truncated }) });
     for (const match of matches('tool_result', {
-      tool: observation.toolName, nested: observation.isNested, result: observationResult(observation),
+      tool: observation.toolName, nested: observation.isNested, result: observationResult(observation, truncated),
       ...(observation.input === undefined ? {} : { input: observation.input }),
       ...(branch.bashIsPosix && observation.toolName === 'bash' ? { shell: 'posix' } : {}),
     }, ctx, observation.toolName, observation)) {

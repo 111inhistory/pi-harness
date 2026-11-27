@@ -172,6 +172,10 @@ implementation = [{ type = "injectHint", text = "Check the public contract befor
 - 分类规则不支持 `injectSection`。分类后的 `injectHint` 仅在同轮后续已执行的顶层工具结果边界投递，不主动唤醒模型；轮结束时丢弃待投递提示。`activate` 与 `discoverCapability` 可在原轮结束后向仍有效的分支静默提交。分类、候选切换、动作执行与等待提示投递共享同一个单调时限。
 - 分类默认仅发送结构化事实。`include` 可显式加入 `prompt`（仅启动事件）、`result`（仅工具结果）、`recentInputs`、`recentTools`、`recentToolPreviews`、`toolDirectory`。`recentInputs` 只含最近一次压缩后的用户输入与 peer 投递，最多三条；`recentTools` 最多六条轻量记录，另开 `recentToolPreviews` 才会附带少量允许的搜索参数文本。工具目录只有名称与简短描述。上下文 JSON 上限为 16 KiB（UTF-8），截断带 `clipped`。显式加入正文后，文本可能包含敏感信息，并可能发送给多个配置的分类供应商。
 
+### 会话统计
+
+Main 的 `/hook-stats` 显示当前会话的规则匹配、动作受理、跳过及失败计数，以及工具类别、已知截断、分类器尝试、耗时和 token 用量。它只保留配置的 Hook ID、固定类别和计数；归入 `Other Hook IDs` 的规则不单独保留 ID。统计随会话加载重置，保留在内存中，无需配置。
+
 ## Capability
 
 ### Budget 与进度

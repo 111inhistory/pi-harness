@@ -33,6 +33,7 @@ import {
 import capabilityExtension from '../../src/capability/extension.ts';
 import { installHookSurface } from '../../src/hooks/extension.ts';
 import { HOOK_HINT_MESSAGE, readHintReceipts } from '../../src/hooks/repeat.ts';
+import { installHookStats } from '../../src/hooks/stats.ts';
 
 const CLASSIFIER = { provider: 'openrouter', id: '~typesafe/jev-latest' } as const;
 
@@ -272,7 +273,7 @@ async function startFixture(options: FixtureOptions): Promise<Fixture> {
       cwd, agentDir, settingsManager,
       noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
       extensionFactories: [{ name: 'hooks-classifier-fixture', factory(pi) {
-        installHookSurface(pi, capabilityExtension(pi));
+        installHookSurface(pi, capabilityExtension(pi), installHookStats(pi));
         const probe = (name: string, label: string, defaultActive = true) => pi.registerTool({
           name, label, description: `Fixture probe ${name}`, defaultActive,
           parameters: { type: 'object', properties: {} } as never,
@@ -366,6 +367,20 @@ test('a passive hint rides the next executed outer result and consumes repeat ac
     assert.equal(hookHints(fixture.session).length, 1);
     assert.deepEqual(fixture.scriptErrors, []);
     assert.deepEqual(fixture.errors, []);
+
+    const command = fixture.session.extensionRunner.getCommand('hook-stats');
+    assert.ok(command);
+    const ctx = fixture.session.extensionRunner.createCommandContext();
+    const lines: string[] = [];
+    const beforeStats = fixture.session.sessionManager.getLeafId();
+    await command.handler('', { ...ctx, ui: { ...ctx.ui, notify: text => lines.push(text) } });
+    const [stats] = lines;
+    assert.match(stats ?? '', /Classifier: calls=1/);
+    assert.match(stats ?? '', /Tools other: calls=3/);
+    assert.match(stats ?? '', /Hook held-hint: matched=2 committed=1 suppressed=1/);
+    assert.doesNotMatch(stats ?? '', /HELD_PASSIVE_HINT|hint_probe|REPEAT_TURN|Does the held result/);
+    assert.equal(fixture.session.sessionManager.getLeafId(), beforeStats);
+    assert.equal(fixture.requests.length, 5);
   } finally {
     await fixture.dispose();
   }

@@ -30,6 +30,7 @@ interface ClassifierRequest {
   readonly retryDelayMs: (attempt: number) => number;
   /** Reserve one physical SDK attempt, or throw the caller's budget refusal. */
   readonly debitAttempt: () => void;
+  readonly onAttempt?: (attempt: ClassifierAttempt) => void;
 }
 
 function unavailable(error: unknown): boolean {
@@ -37,15 +38,19 @@ function unavailable(error: unknown): boolean {
   return error.status === 401 || error.status === 403 || error.status === 404;
 }
 
-export async function runClassifier({ registry, models, context, signal, maxAttemptsPerModel, retryDelayMs, debitAttempt }: ClassifierRequest): Promise<ClassifierRun> {
+export async function runClassifier({ registry, models, context, signal, maxAttemptsPerModel, retryDelayMs, debitAttempt, onAttempt }: ClassifierRequest): Promise<ClassifierRun> {
   const attempts: ClassifierAttempt[] = [];
+  const record = (attempt: ClassifierAttempt): void => {
+    attempts.push(attempt);
+    try { onAttempt?.(attempt); } catch { /* Observation must not affect classifier routing. */ }
+  };
   let lastFailure: { model: ClassifierModelRef; errorMessage: string } | undefined;
   const aborted = (): ClassifierRun => ({ outcome: 'aborted', attempts });
   for (const ref of models) {
     if (signal?.aborted) return aborted();
     const model = registry.findOfType('classifier', ref.provider, ref.id);
     if (!model) {
-      attempts.push({ model: ref, outcome: 'not_in_catalog', durationMs: 0 });
+      record({ model: ref, outcome: 'not_in_catalog', durationMs: 0 });
       continue;
     }
     for (let attempt = 1; attempt <= maxAttemptsPerModel; attempt++) {
@@ -62,19 +67,19 @@ export async function runClassifier({ registry, models, context, signal, maxAtte
       }
       const entry = { model: ref, durationMs: performance.now() - started, ...(result?.usage ? { usage: result.usage } : {}) };
       if (signal?.aborted || result?.stopReason === 'aborted') {
-        attempts.push({ ...entry, outcome: 'aborted' });
+        record({ ...entry, outcome: 'aborted' });
         return aborted();
       }
       if (result?.stopReason === 'stop') {
         const actual = { provider: result.provider, id: result.model };
-        attempts.push({ ...entry, model: actual, outcome: 'answered' });
+        record({ ...entry, model: actual, outcome: 'answered' });
         return { outcome: 'answered', model: actual, result, attempts };
       }
       const errorMessage = result?.errorMessage ?? (failure instanceof Error ? failure.message
         : failure === undefined ? 'the classifier returned no usable result' : String(failure));
       lastFailure = { model: ref, errorMessage };
       if (unavailable(failure)) {
-        attempts.push({ ...entry, outcome: 'unavailable' });
+        record({ ...entry, outcome: 'unavailable' });
         break;
       }
       // The SDK transient predicate only reads these two fields.
@@ -82,10 +87,10 @@ export async function runClassifier({ registry, models, context, signal, maxAtte
         { stopReason: 'error', errorMessage },
       );
       if (!transient) {
-        attempts.push({ ...entry, outcome: 'failed' });
+        record({ ...entry, outcome: 'failed' });
         return { outcome: 'failed', ...lastFailure, attempts };
       }
-      attempts.push({ ...entry, outcome: 'transient' });
+      record({ ...entry, outcome: 'transient' });
       if (attempt < maxAttemptsPerModel) {
         try {
           await delay(retryDelayMs(attempt), undefined, { signal });
