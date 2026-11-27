@@ -16,6 +16,7 @@
 - **Phase 1 独立分支**：从干净 `51987a1` 在 `/code/.worktree/` 创建独立 worktree 与分支，基于原锁定 SDK 独立通过 `npm run check`。
 - **依赖锁定集成**：两条线均会修改 `package.json` 与 `package-lock.json`；集成时基于最终 `package.json` 重生成 `package-lock.json`，并在 Pi 1.6.1 上复跑全量 `npm run check`。
 - **活会话隔离**：实施过程不改动正在运行的 Pi 进程所用 launcher 与 `node_modules`，也不并行覆盖主 checkout。
+- **协作分工**：生产实现与分支集成由实现侧会话统一主导，设计／评审侧负责方案与契约文档对齐、接口复核及代码／测试审查，不并行开发同一生产模块。
 - **Phase 3 切片顺序**：按强依赖顺序分 5 片推进与验收，前一片不得引用后一片模块：
   1. **Slice 3A**：中性 `ToolObservation` 事实源（含 Codemode 原生 `details` 类型化事实与真实 SDK 验证）；
   2. **Slice 3B**：Capability 窄内部端口（含跨轮／代次围栏）；
@@ -185,10 +186,53 @@ Global、Preset、Trusted Project 三层采用同一套以 `hookId` 为键的表
 - 不使用 `[[<name>.hooks]]` 数组表，不在规则表内重复声明 `id` 字段，不引入 `rules` 包装层或 Preset 级默认配置块。
 - **求值与执行顺序**：合并后的有效规则严格按 **`hookId` ASCII 字典序**执行。
 - 仅单条规则内的 `actions` 为数组。
-- **`when` 三值逻辑与安全辅助函数**：`when` 表达式按三值逻辑求值（`true`／`false`／`unknown`；缺失历史嵌套事实等不可判定输入返回 `unknown`，仅 `true` 视为命中）。内置受控只读辅助函数（不执行外部命令、不依赖易错裸正则）：
-  - `shellStandalone(cmd, verbs)`：匹配顶层非管道段的独立 POSIX 简单命令；
-  - `shellHasCommand(cmd, verbs)`：同时检查顶层管道各段；`verbs` 列表仅允许字面量（例如对 `git diff | head`，`shellStandalone` 与 `shellHasCommand` 分别为 `false`／`true`）；遇到动态或未支持的 shell 语法，或超出解析预算时，均返回 `unknown`；
-  - `inWorkspace(path)`：仅按 `cwd` 做词法路径包含判定（不做磁盘或符号链接 I/O）。
+- **生效边界与路由约束**：Hook 运行单位为单个 SDK `AgentSession`（按 `ExtensionAPI` + `SessionManager` 独立装配，不跨 session 共享状态）；首版仅 Main 装配主动 Hook，普通 Subagent 仅保留观测事实，内部检索与 `/btw` 不装配。`subagent-routing.toml` 内的内联临时 preset 明确拒绝声明 `hooks` 字段。
+
+#### 规则语法、触发器与动作参数
+
+- **规则键与字段白名单**：`hookId` 须匹配 `^[a-z][a-z0-9-]{0,63}$`（单层最多 32 条）；字段白名单为 `enabled`、`description`（上限 500 UTF-8 字节）、`on`、`when`（上限 4096 UTF-8 字节）、`repeat`、`timeoutMs`、`actions`。高层局部屏蔽下层规则只需写 `{ enabled = false }`（可选 `description`）。
+- **触发器 `on`**：
+  - `before_agent_start`：本轮模型调用开始前触发；
+  - `tool_result`：已执行工具完成后触发（含顶层调用与 `codemode` 嵌套调用；嵌套命中沿父 `toolCallId` 汇入外层顶层 `tool_result` 边界按规则去重后统一执行与扣减）。首版不虚构 `tool_call` 拦截事件。
+- **动作数组 `actions`**（单规则最多 8 项；省略或空数组即 Observe-only）：
+  - `{ type = "injectHint", text, display? }`：`text` 非空且 `<= 4000` UTF-8 字节；`display` 为可选布尔值。同步 `before_agent_start`／`tool_result` 可用，异步由 Slice 3D passive 队列投递；
+  - `{ type = "injectSection", text }`：`text` 非空且 `<= 4000` UTF-8 字节；仅限独立的同步 `before_agent_start` 规则使用，且不得与其他动作、`repeat` 或 `timeoutMs` 组合；
+  - `{ type = "activate", targets }`：`targets` 为 1–32 个显式目标（工具名、`mcp://<server>` 或 `namespace://<name>`，拒绝前缀通配）；
+  - `{ type = "discoverCapability", hint? }`：可选非空 `hint`（`<= 500` UTF-8 字节）。
+
+```toml
+[prefer-read]
+description = "单命令文件读取提示使用 read 工具（示例）"
+on = "tool_result"
+when = "tool == 'bash' && shellStandalone(input.command, ['cat', 'head', 'tail'])"
+repeat = { maxTriggers = 3, cooldownTurns = 2, resetOnCompaction = true }
+actions = [
+  { type = "injectHint", text = "读取工作区内文件时优先使用 read 工具。" }
+]
+
+[disable-example]
+enabled = false
+```
+
+#### `when` 表达式契约、`turn.*` 计数与安全辅助函数
+
+- **编译期强校验与 Kleene 三值逻辑**：`compileWhen(source, on)` 在配置加载期校验语法、节点／深度／源码预算与字段触发域归属（跨触发域字段编译期直接拒收）。求值仅沿 own properties 访问有界普通路径、不做隐式类型转换，按 Kleene 三值逻辑返回 `true`／`false`／`unknown`（缺失字段、缺失历史嵌套事实或类型不匹配返回 `unknown`，仅顶层为 `true` 视为命中）。
+- **可用字段白名单**（`cwd` 仅作内部辅助环境，不暴露 `cwd`、`callId`、`status` 或原始 `codemode`／Capability 目录）：
+  - **通用字段**：`model.provider`、`model.id`、`preset`（当前 Preset 名称字符串）、`turn.modelCalls`、`turn.toolCalls`、`turn.nestedToolCalls`、`turn.toolErrors`；
+  - **仅 `before_agent_start`**：`prompt`；
+  - **仅 `tool_result`**：`tool`（工具名字符串）、`nested`（boolean）、`input.<path>`、`result.isError`、`result.truncated`、`result.errorKind`、`result.output`、`result.outputChars`。
+- **`turn.*` 步数累加器与锚点边界**：
+  - 由每 SDK 会话的小型增量累加器维护，锚定到触发本轮的最近真实 `user` 消息或后台／跨会话 `agent-delivery` 唤醒条目（同轮 `steer` 与 Hook 自身 `injectHint` 不重置锚点），且**不跨越最近一次成功 `compaction`**；
+  - 被拒绝或取消的调用不计入 `turn.toolErrors`；live 观测与分支恢复按 call／entry ID 去重；
+  - 经 `/tree`／`/fork`／reload 恢复后，若历史缺少类型化嵌套事实，`turn.nestedToolCalls` 保持缺失（表达式求值为 `unknown`），绝不静默伪造为 `0`；
+  - 首版暂省 `turn.consecutiveToolErrors`、`index` 与 `byTool`。
+- **首版 6 个受控只读辅助函数**（零 I/O、零外部命令；其余扩展函数延后按实际规则需求评估）：
+  - `contains(str, substr)`：字符串子串包含判定；
+  - `exists(input.<path>)`：检查 `input` 对应路径是否存在（非 `undefined`）；
+  - `regex(str, pattern[, flags])`：仅接受编译期常量模式与受限标志，采用无回溯线性时间正则引擎（如无依赖纯 JS 线性引擎 `re2js`，固定版本并限制 pattern／input 长度与计数重复上限）；
+  - `inWorkspace(path)`：按宿主路径语义基于内部 `cwd` 做纯词法包含判定（零磁盘或符号链接 I/O）；
+  - `shellStandalone(cmd, verbs)`：仅匹配顶层非管道／非链式的单一简单 POSIX 命令；管道／链式返回 `false`；动态展开、命令替换、子 shell、未支持语法或超预算返回 `unknown`；
+  - `shellHasCommand(cmd, verbs)`：检查顶层管道与链式各段，任一干净段命中返回 `true`，未命中且含动态／未支持语法或超预算返回 `unknown`；`verbs` 列表仅允许编译期字面量（例如对 `git diff | head`，`shellStandalone` 与 `shellHasCommand` 分别为 `false`／`true`）。
 - **`repeat` 节流三字段**：`repeat = { maxTriggers?, cooldownTurns?, resetOnCompaction? }`。配置多项时，触发次数与冷却轮数须**同时满足**；仅在压缩成功时同时重置两项计数；只配置 `resetOnCompaction = true` 而未指定 `maxTriggers` 或 `cooldownTurns` 视为非法配置。
 - **Observe-only 语义**：通过“无匹配动作（未配置或空 `actions`）”自然表达，不新增独立 `shadow` 布尔开关。Observe-only 规则命中后**不消耗 `repeat` 预算**，但若触发分类器，仍消耗物理尝试与并发预算。
 
@@ -233,9 +277,9 @@ Global、Preset、Trusted Project 三层采用同一套以 `hookId` 为键的表
 
 - **硬总上限**：**16 KiB UTF-8**（含最终序列化开销）。
 - **默认白名单（零正文）**：默认仅发送结构与枚举元数据——`model`、`preset`、`tool`、`nested` 摘要、枚举状态与计数。文本正文与工具目录必须显式 **opt-in**。
-- **试点分段上限**（后续结合样例与压测校准，不一次性暴露全部旋钮）：
-  - `recentInputs`：opt-in，默认最多 `N = 3` 条，单条 `<= 1 KiB`；
-  - `recentTools`：最多 `K = 6` 条，`preview <= 256 B`；
+- **试点分段上限与历史范围**（后续结合样例与压测校准，不一次性暴露全部旋钮）：
+  - `recentInputs`：opt-in，**仅合并 `user` 与 `peer`（`agent-delivery`）两类输入**（不包含 `assistant` 正文或任意 `custom` 条目，且不跨越最近一次成功 `compaction`），按时序取最近 `N = 3` 条，单条 `<= 1 KiB`；
+  - `recentTools`：复用每会话累加器的有界 ring buffer，最多 `K = 6` 条极简工具摘要（`{ tool, isError, errorKind, inputPreview }`），`preview <= 256 B`；
   - `prompt`／`result`：各 `<= 2 KiB`；
   - 工具目录列表：每列表 `<= 32` 项，单条 `description <= 160 B`；
   - 任何字段发生截断均显式附加 `clipped` 标记（遵循 `LESSONS.md` L008）。
@@ -243,6 +287,9 @@ Global、Preset、Trusted Project 三层采用同一套以 `hookId` 为键的表
   - 分类器输入仅接受枚举与显式白名单字段，**禁止**传入工具 JSON Schema、图片、任意 custom payload、路径凭据；
   - `bash`／`codemode`／MCP 工具参数默认不传；
   - 显式提示配置者：开启文本类字段 opt-in 后，系统无法保证文本不含敏感信息，且该文本会发送至候选分类器供应商。
+- **分类器题型与动作分发**：
+  - 支持 `bool`、`score`、`choice` 三类受控题型，问题与上下文切片由规则显式声明（支持同模型同切片多问批处理）；
+  - `choice` 题型通过 `onChoice` 将枚举答案映射到对应动作数组；任意畸形、越界或非预期答案按 fail closed 丢弃，不执行动作也不扣减 `repeat`。
 
 ### 4.5 Slice 3E：脱敏 Stats
 
