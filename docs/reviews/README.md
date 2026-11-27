@@ -9,6 +9,7 @@
 | [RPC 与权限审计及改写计划](rpc-permission-audit.md) | 已复现缺陷、功能冻结、历史共享、兼容性清理、分阶段改写与解除冻结条件 |
 | [异步 Shell 平台验收记录](async-shell-platform-acceptance.md) | Linux 与原生 Windows 的全量离线验收基线与限制 |
 | [Preset 版本、会话工具基线与分支切换演进提案](preset-tool-baseline-proposal.md) | Preset `contentHash` 原子升级、单条目 v2 与离线迁移、四层覆盖、`/tree` 静默同步及命令补全；已定稿待实施 |
+| [配置存储版本化、生命周期统一、叶子刷新与 Hook 只读 RPC 提案](config-lifecycle-versioning-hooks-rpc-proposal.md) | 四份顶层配置显式版本化与容器表、作用域收紧、统一宿主生命周期内核、`/config reload`、10 项竞态闭环、`/hooks` 分支静音与只读 v1 RPC；已定稿待实施 |
 | [Preset／Routing TOML 迁移、共享 Classifier 与 Hook 架构演进提案](preset-toml-classifier-hooks-proposal.md) | `presets.toml`／`subagent-routing.toml` 迁移、共享 `classifier.models` 与 `classifier-client`、三层 Hook、Defer 分类器、单调 deadline 与安全切片；已定稿 |
 | [Capability 业务 API 与继承检索提案](capability-api-proposal.md) | 复用业务操作供 RPC 与内部模块调用，明确继承检索装配边界；方向性提案，接口设计待完善 |
 | [Capability 启用与缓存边界](capability-enable-cache.md) | 请求前缀稳定性、提供方转换分档与未解决限制 |
