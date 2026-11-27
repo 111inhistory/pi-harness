@@ -93,6 +93,7 @@ function harnessConfig(options: {
       : budgetProfile(2, 8);
   }
   return {
+    version: 1,
     subagent: {
       maxDepth: options.maxDepth,
       maxActiveSubagents: options.maxActiveSubagents,
@@ -171,7 +172,7 @@ async function startScenario(options: ScenarioOptions): Promise<Scenario> {
     classifier: { models: [{ provider: 'openrouter', id: '~typesafe/jev-latest' }] },
     ...options.config.global,
   }));
-  await writeFile(projectPath, JSON.stringify(options.config.project));
+  await writeFile(projectPath, JSON.stringify({ version: 1, ...options.config.project }));
 
   const oldAgentDir = process.env['PI_CODING_AGENT_DIR'];
   const oldSocketDir = process.env['PI_SUBAGENT_SOCKET_DIR'];

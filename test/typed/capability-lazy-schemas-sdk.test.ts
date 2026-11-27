@@ -25,7 +25,7 @@ test('only mode + lazySchemas keeps matched group names but withholds only the s
   await mkdir(agentDir, { recursive: true });
   // One group ref (MCP server) and one exact tool ref: both withhold the same way,
   // and the exact ref must not touch peers of the tool's namespace.
-  await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({ capability: { lazySchemas: ['mcp://big', 'tool://fixture-report'] } }));
+  await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({ version: 1, capability: { lazySchemas: ['mcp://big', 'tool://fixture-report'] } }));
   let session: AgentSession | undefined;
   let pi: ExtensionAPI | undefined;
   const calls: { server: string; arguments: unknown }[] = [];

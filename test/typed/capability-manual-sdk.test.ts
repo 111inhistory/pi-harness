@@ -102,6 +102,7 @@ test('full SDK: blacklisted tools stay unreachable until the user overrides the 
   const errors: unknown[] = [];
   try {
     await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
+      version: 1,
       capability: { blacklist: [...MANUAL_TOOLS] },
     }));
     const pidFile = path.join(cwd, 'mcp.pid');
@@ -308,6 +309,7 @@ test('full SDK: blacklisted tools stay unreachable until the user overrides the 
     const childPidFile = path.join(cwd, 'mcp-child.pid');
     await mkdir(childAgentDir);
     await writeFile(path.join(childAgentDir, 'harness.json'), JSON.stringify({
+      version: 1,
       capability: { blacklist: [...MANUAL_TOOLS] },
     }));
     await writeFile(path.join(childAgentDir, 'mcp.json'), JSON.stringify({

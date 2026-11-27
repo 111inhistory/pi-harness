@@ -94,9 +94,9 @@ test('ruleFiles relative paths resolve relative to defining harness.json layer d
   ]);
 });
 
-test('ruleFiles array overrides across layers rather than concatenating', () => {
+test('ruleFiles array overrides in global layers rather than concatenating', () => {
   const globalSource = path.join('/agent', 'harness.json');
-  const projectSource = path.join('/workspace', 'project', '.pi', 'harness.json');
+  const overridingSource = path.join('/other-agent', 'harness.json');
 
   const composed = resolveHarnessConfig([
     {
@@ -110,23 +110,23 @@ test('ruleFiles array overrides across layers rather than concatenating', () => 
       },
     },
     {
-      source: projectSource,
+      source: overridingSource,
       value: {
         shell: {
           approval: {
-            ruleFiles: ['project.rules'],
+            ruleFiles: ['override.rules'],
           },
         },
       },
     },
   ]);
 
-  // Project layer completely replaces global layer
+  // The later global layer replaces the entire list.
   assert.deepEqual(composed.shell.approval.ruleFiles, [
-    path.resolve(path.dirname(projectSource), 'project.rules'),
+    path.resolve(path.dirname(overridingSource), 'override.rules'),
   ]);
 
-  // Empty array in project layer clears inherited ruleFiles
+  // An empty list in a global layer clears earlier ruleFiles.
   const cleared = resolveHarnessConfig([
     {
       source: globalSource,
@@ -139,7 +139,7 @@ test('ruleFiles array overrides across layers rather than concatenating', () => 
       },
     },
     {
-      source: projectSource,
+      source: overridingSource,
       value: {
         shell: {
           approval: {

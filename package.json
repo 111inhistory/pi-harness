@@ -34,6 +34,7 @@
     "migrate:tool-permissions": "node --import tsx scripts/migrate-tool-permissions.mjs",
     "migrate:preset-state": "node --import tsx scripts/migrate-preset-state-v2.mjs",
     "migrate:config-toml": "node --import tsx scripts/migrate-config-toml.mjs",
+    "migrate:config-v1": "node --import tsx scripts/migrate-config-v1.mjs",
     "migrate:routing-v4": "node --import tsx scripts/migrate-routing-v4.mjs",
     "check:rpc-schema": "node --import tsx scripts/check-rpc-schema.mjs",
     "schema:rpc": "node --import tsx scripts/check-rpc-schema.mjs --write",

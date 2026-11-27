@@ -15,6 +15,10 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 
 缺少文件时使用前一层值。普通对象按字段合并；提示词段落按后文的替换与追加顺序应用。未知字段、类型错误、无效数值或不完整的新深度 Budget 会报错，消息包含来源和字段路径。无效配置不静默回退。
 
+每份存在的 `harness.json` 都必须声明顶层 `"version": 1`。Harness 独立校验两层文件的版本，再合并设置。项目层不能声明 `classifier`、`shell.approval`、`btw`、`codemode`、`capability.search`、`subagent.routingRetry` 或 `subagent.inheritedToolWaitMs`。即使配置块为空，Harness 也会拒绝项目层的这些字段。
+
+**迁移旧文件。** 停止 Pi 后，执行 `npm run migrate:config-v1 -- --agent-dir DIR [--project-dir DIR]` 预检；确认后添加 `--apply`。若项目文件包含仅限全局的字段，脚本报告违规路径且不写入。迁移逐文件替换，生成 `.pre-config-v1` 备份并拒绝覆盖同名备份。若中途失败，先检查原文件与备份，再决定是否继续。
+
 一个根服务使用一份配置快照。子会话使用同一份快照，不按子目录重新读取配置。修改文件不会改变已运行 Job 的计数、期限或活跃名额。重启 Pi 是明确的生效方式；会话开始或树切换创建新根服务时重新解析。本文不承诺编辑文件立即生效。
 
 `subagent-routing.toml` 仍在每次新建 Fresh Subagent 时实时重读，不因 Harness 参数快照而改变。提示词资产的 ESM 缓存规则仍见[提示词说明](../prompts/README.md)。
@@ -42,6 +46,7 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 
 ```json
 {
+  "version": 1,
   "subagent": {
     "maxDepth": 3,
     "budgetsByDepth": {
@@ -84,7 +89,7 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 | `shell.approval.enabled` | `false` | 启用 Shell 权限审批 |
 | `shell.approval.mode` | `auto` | 没有分支模式记录时的默认值：`ask`、`auto` 或 `yolo` |
 | `shell.approval.command` | `[]` | 静态判断程序及参数数组；空数组表示交给后续审批 |
-| `shell.approval.ruleFiles` | `[]` | 传给静态判断程序的规则文件路径列表；相对路径相对于定义该层的 `harness.json` 所在目录解析，多层配置按数组整层替换（不跨层拼接）。规则在根会话首次需要时读取并缓存，修改规则文件在 `/reload` 或创建新根配置快照后生效；读取失败直接阻止命令，未启用或处于 YOLO 模式跳过读取。 |
+| `shell.approval.ruleFiles` | `[]` | 传给静态判断程序的规则文件路径列表。相对路径基于全局 `harness.json` 所在目录。规则在根会话首次需要时读取并缓存，修改规则文件在 `/reload` 或创建新根配置快照后生效；读取失败直接阻止命令，未启用或处于 YOLO 模式跳过读取。 |
 | `shell.approval.commandTimeoutMs` | `10000` | 静态判断程序超时，单位毫秒 |
 | `shell.approval.manualTimeoutMs` | `30000` | 人工界面显示后的审批期限，单位毫秒 |
 | `shell.approval.notificationUrl` | `""` | 人工审批展示时发送 JSON POST 的 HTTP(S) URL，空字符串关闭 |
@@ -105,6 +110,7 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 
 ```json
 {
+  "version": 1,
   "subagent": {
     "prompts": {
       "common": {
@@ -190,7 +196,7 @@ Main 的 `/hook-stats` 显示当前会话的规则匹配、动作受理、跳过
 
 ### 默认禁用种子
 
-`capability.blacklist` 默认为空数组，提供启动默认黑名单。支持精确工具名、工具组引用与名字前缀（如 `mcp__prod__*`）。后一层配置整体替换前一层，不做合并。
+`capability.blacklist` 默认为空数组，提供启动默认黑名单。支持精确工具名、工具组引用与名字前缀（如 `mcp__prod__*`）。受信项目可以追加禁止项；合并保留全局条目的顺序并去重。项目层的空数组保留全局黑名单。
 
 当前会话按「基线白名单 > 黑名单 > 普通按需激活／发现」计算可用性。`base add` 与 Preset 正项可覆盖本会话的配置、Preset 或分支黑名单，但不删除禁止记录；移除白名单后禁止重新生效。普通 activate、发现和跨会话 connect 不能自行覆盖有效禁止。用户可通过 `/capability blacklist remove <target>` 在当前分支解除同目标的配置默认项；当前 Preset 的禁止记录仍独立存在。祖先禁止、角色／深度与 SDK 限制是外层约束，不能通过子会话白名单绕过。具体行为见[工具权限管理](interface-contract.md#工具权限管理)。
 
@@ -241,10 +247,11 @@ mode = "only"
 
 工具配置使用现有 Preset 的 `tools` 修饰语法；基线为子会话自己的默认工具与扩展。显式最终减项作为该 Actor 的执行作用域 denial，后续激活不能绕过；SDK 注册排除只承载固定深度限制，祖先权限与深度限制仍生效。模型、thinking、工具、Codemode 与 Preset 指引通过公共 Preset 解析和应用路径设置，结果与所选定义保存在原生分支和 Actor 身份中；续跑不重新选择或读取变更后的 Preset。子会话不执行 Main 的 `--preset` 启动标志。
 
-**决策模型。** 在 `harness.json` 中按顺序配置 `classifier.models`，每项只包含非空 `provider` 和 `id`。项目配置整体替换全局列表，默认列表为空；未配置时 Fresh 路由给出明确错误。列表在根会话配置加载时确定，修改后通过 `/reload` 或新根会话生效。路由定义和 Preset 仍在每次创建 Fresh Agent 时重读。
+**决策模型。** 在全局 `harness.json` 中按顺序配置 `classifier.models`，每项只包含非空 `provider` 和 `id`。默认列表为空；未配置时 Fresh 路由给出明确错误。列表在根会话配置加载时确定，修改后通过 `/reload` 或新根会话生效。路由定义和 Preset 仍在每次创建 Fresh Agent 时重读。
 
 ```json
 {
+  "version": 1,
   "classifier": {
     "models": [{ "provider": "fake-provider", "id": "fake-classifier" }]
   }

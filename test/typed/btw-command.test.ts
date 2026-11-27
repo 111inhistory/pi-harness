@@ -39,7 +39,7 @@ async function agentRoot(t: TestContext): Promise<string> {
 
 async function writeHarnessConfig(agentDir: string, value: unknown): Promise<void> {
   await mkdir(agentDir, { recursive: true });
-  await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify(value), 'utf8');
+  await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({ version: 1, ...(value as Record<string, unknown>) }), 'utf8');
 }
 
 function fixture(

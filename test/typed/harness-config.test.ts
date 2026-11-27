@@ -29,9 +29,9 @@ async function tempRoots(t: TestContext): Promise<TempRoots> {
   return { agentDir, cwd };
 }
 
-async function writeJson(file: string, value: unknown): Promise<void> {
+async function writeJson(file: string, value: Record<string, unknown>): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, JSON.stringify(value), 'utf8');
+  await writeFile(file, JSON.stringify({ version: 1, ...value }), 'utf8');
 }
 
 /** `getAgentDir()` reads this key, so provider tests can point it at a temp root. */
@@ -629,7 +629,7 @@ test('capability.lazySchemas rejects non-list and empty ref values', () => {
   }
 });
 
-test('classifier.models defaults to empty and replaces as a whole list across layers', async (t) => {
+test('only global files may configure classifier.models', async (t) => {
   const { agentDir, cwd } = await tempRoots(t);
   assert.deepEqual(DEFAULT_HARNESS_CONFIG.classifier.models, []);
   assert.deepEqual(loadHarnessConfig({ cwd, agentDir, projectTrusted: true }).classifier.models, []);
@@ -643,12 +643,37 @@ test('classifier.models defaults to empty and replaces as a whole list across la
   await writeJson(path.join(cwd, '.pi', 'harness.json'), {
     classifier: { models: [{ provider: 'fake-provider', id: 'fake-project' }] },
   });
-  const trusted = loadHarnessConfig({ cwd, agentDir, projectTrusted: true });
-  assert.deepEqual(trusted.classifier.models, [{ provider: 'fake-provider', id: 'fake-project' }],
-    'the trusted project list replaces the global list rather than appending to it');
+  assert.throws(() => loadHarnessConfig({ cwd, agentDir, projectTrusted: true }),
+    (error: unknown) => error instanceof HarnessConfigError && error.field === 'classifier');
   const untrusted = loadHarnessConfig({ cwd, agentDir, projectTrusted: false });
   assert.deepEqual(untrusted.classifier.models, [{ provider: 'fake-provider', id: 'fake-primary' }],
     'an untrusted project list is ignored');
+});
+
+test('every existing layer must declare the current Harness version', async (t) => {
+  const { agentDir, cwd } = await tempRoots(t);
+  const file = path.join(cwd, '.pi', 'harness.json');
+  await writeJson(path.join(agentDir, 'harness.json'), {});
+  for (const old of ['{}', '{"version":0}', '{"version":"1"}', '{"version":2}']) {
+    await writeFile(file, old, 'utf8');
+    assert.throws(() => loadHarnessConfig({ cwd, agentDir, projectTrusted: true }),
+      (error: unknown) => error instanceof HarnessConfigError && error.source === file && error.field === 'version');
+  }
+});
+
+test('project layers reject global-only nodes even when empty and append blacklist patterns once', () => {
+  const denied = [
+    ['classifier', { classifier: {} }], ['shell.approval', { shell: { approval: { ruleFiles: [] } } }],
+    ['btw', { btw: {} }], ['codemode', { codemode: {} }], ['capability.search', { capability: { search: {} } }],
+    ['subagent.routingRetry', { subagent: { routingRetry: {} } }],
+    ['subagent.inheritedToolWaitMs', { subagent: { inheritedToolWaitMs: 10 } }],
+  ] as const;
+  for (const [field, value] of denied) expectError(resolveError([{ source: 'project', scope: 'project', value }]), 'project', field);
+  const global = { source: 'global', value: { capability: { blacklist: ['global-a', 'global-b'] } } };
+  const project = (blacklist: string[]): HarnessConfigLayer => ({ source: 'project', scope: 'project', value: { capability: { blacklist } } });
+  assert.deepEqual(resolveHarnessConfig([global, project([])]).capability.blacklist, ['global-a', 'global-b']);
+  assert.deepEqual(resolveHarnessConfig([global, project(['global-b', 'local-a', 'global-a', 'local-a', 'local-b'])]).capability.blacklist,
+    ['global-a', 'global-b', 'local-a', 'local-b']);
 });
 
 test('classifier.models rejects non-list and malformed model identities', () => {

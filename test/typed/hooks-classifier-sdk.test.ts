@@ -180,6 +180,7 @@ async function startFixture(options: FixtureOptions): Promise<Fixture> {
     // fixture must publish at least one catalog model even though the transport
     // below is scripted.
     await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
+      version: 1,
       classifier: { models: [CLASSIFIER] },
     }));
     await writeFile(path.join(agentDir, 'hooks.toml'), options.hooks);
