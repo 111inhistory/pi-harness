@@ -36,6 +36,8 @@ npm run install:async-shell
 
 受管 `bash`／`powershell` 保留 SDK 的 `outputSchema`，并向 `codemode` 等程序化调用方返回统一的 `structuredContent`：`output` 为本次交付的过滤输出（最多 1 MiB，不含截断尾注），并包含 `truncated`、`full_output_path`（截断、转后台或 `internal_error` 时）、`exit_code`（运行中或未产生退出码时为 `null`）、`wall_time_seconds`、`status`，以及显式后台或自动转后台时的 `job_id`。非零退出在 `codemode` 中 resolve 该对象而不抛错；脚本用 `status === 'running'` 与 `job_id` 判断是否已转后台。`structuredContent` 只服务程序化调用方，不进入模型正文或持久化历史。
 
+原生执行回退会透传 Pi 的 `full_output_error`：输出已截断、且 SDK 无法保存完整输出时，该字段给出保存失败原因。
+
 Windows 非 PTY 后端使用 Job Object：先确认运行器已经加入，再启动命令；停止时确认 Job 内进程全部退出。系统禁止加入 Job Object 时启动失败，不退回到无管控执行。依赖 stdin 传入命令的 Shell（如旧版 WSL Bash）保留原生前台传输方式，但不能启动受管 Job。未安装 Go 后端或宿主不可用时，普通调用仍可使用 SDK 前台执行；显式后台或 PTY 请求则报错。
 
 ### 独立 CLI

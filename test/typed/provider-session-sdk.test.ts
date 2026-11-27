@@ -612,26 +612,46 @@ test('Azure Responses has no managed effort encoder and changes the top-level ef
   assert.deepEqual(low.input, high.input);
 });
 
-test('Codex Responses preserves the input prefix and changes only the opted-in effort marker', async () => {
+test('Codex Responses pins the initial effort and keeps the completed call prefix across an opted-in switch', async () => {
   const inherited: Message[] = [system('BASE'), user('TASK')];
-  const capture = (reasoningEffort: 'low' | 'high', supportsMidConvoEffort: boolean) => capturePayload<ResponsesPayload>((onPayload) => streamCodexResponses(
+  const capture = (reasoningEffort: 'low' | 'high', supportsMidConvoEffort: boolean, messages = inherited) => capturePayload<ResponsesPayload>((onPayload) => streamCodexResponses(
     codexResponsesModel({ supportsMidConvoEffort }),
-    context(inherited),
+    context(messages),
     { apiKey: codexToken(), fetch: offlineFetch, onPayload, reasoningEffort },
   ));
 
   const low = await capture('low', true);
   const high = await capture('high', true);
-  assert.deepEqual(configurationEfforts(low), ['low']);
-  assert.deepEqual(configurationEfforts(high), ['high']);
-  assert.equal(responsesReasoningEffort(low), 'medium');
-  assert.equal(responsesReasoningEffort(high), 'medium');
-  const unmanaged = await capture('high', false);
+  assert.deepEqual(configurationUpdates(low), []);
+  assert.deepEqual(configurationUpdates(high), []);
+  assert.equal(responsesReasoningEffort(low), 'low');
+  assert.equal(responsesReasoningEffort(high), 'high');
+  assert.deepEqual(low.input, high.input);
+  assert.equal(records(low.input)[0]?.role, 'developer');
+
+  const model = codexResponsesModel({ supportsMidConvoEffort: true });
+  const continued: Message[] = [...inherited, {
+    role: 'assistant', api: model.api, provider: model.provider, model: model.id,
+    content: [{ type: 'toolCall', id: 'call_fixture|fc_fixture', name: 'fixture', arguments: {} }],
+    providerThinkingLevel: 'low', stopReason: 'toolUse', timestamp: 2,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+  }, {
+    role: 'toolResult', toolCallId: 'call_fixture|fc_fixture', toolName: 'fixture',
+    content: [{ type: 'text', text: 'done' }], isError: false, timestamp: 3,
+  }];
+  const unchanged = await capture('low', true, continued);
+  const switched = await capture('high', true, continued);
+  const unmanaged = await capture('high', false, continued);
+  assert.deepEqual(configurationUpdates(unchanged), []);
+  assert.deepEqual(configurationEfforts(switched), ['high']);
+  assert.equal(responsesReasoningEffort(switched), 'low');
   assert.deepEqual(configurationUpdates(unmanaged), []);
   assert.equal(responsesReasoningEffort(unmanaged), 'high');
-  assert.equal(records(low.input)[0]?.role, 'developer');
-  assert.deepEqual(records(low.input).slice(0, -1), unmanaged.input);
-  assert.deepEqual(records(high.input).slice(0, -1), unmanaged.input);
+  assert.deepEqual(records(switched.input).slice(0, -1), unchanged.input);
+  assert.deepEqual(unchanged.input, unmanaged.input);
+  assert.deepEqual(records(unchanged.input).find((item) => item.type === 'function_call'), {
+    type: 'function_call', id: 'fc_fixture', call_id: 'call_fixture', name: 'fixture', status: 'completed', arguments: '{}',
+  });
 });
 
 test('Anthropic managed effort keeps its top-level effort and changes the tail marker', async () => {

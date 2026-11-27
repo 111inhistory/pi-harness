@@ -21,6 +21,7 @@ import { readTailFile } from '../text-output.ts';
 const jobId = Type.String({ pattern: '^job_[0-9a-f]{8}$' });
 const shellOutput = Type.Object({
   output: Type.String(), truncated: Type.Boolean(), full_output_path: Type.Optional(Type.String()),
+  full_output_error: Type.Optional(Type.String()),
   exit_code: Type.Union([Type.Number(), Type.Null()]), wall_time_seconds: Type.Number(),
   status: Type.Union([Type.Literal('running'), Type.Literal('completed'), Type.Literal('failed'),
     Type.Literal('timed_out'), Type.Literal('cancelled'), Type.Literal('internal_error')]),

@@ -57,29 +57,29 @@ const DEFS = {
 /**
  * Pinned upstream types used by the opaque payloads. These are the installed
  * versions the protocol was tested against; the paths are package-relative and
- * the line numbers are for the installed 1.6.0 artifacts.
+ * the line numbers are for the installed 1.6.1 artifacts.
  */
 export const HARNESS_RPC_UPSTREAM = {
   packages: {
-    '@earendil-works/pi-coding-agent': '1.6.0',
-    '@earendil-works/pi-agent-core': '1.6.0',
-    '@earendil-works/pi-ai': '1.6.0',
+    '@earendil-works/pi-coding-agent': '1.6.1',
+    '@earendil-works/pi-agent-core': '1.6.1',
+    '@earendil-works/pi-ai': '1.6.1',
   },
   types: {
     AgentSessionEvent: {
-      package: '@earendil-works/pi-coding-agent', version: '1.6.0',
+      package: '@earendil-works/pi-coding-agent', version: '1.6.1',
       definition: 'dist/core/agent-session.d.ts:49', export: 'dist/index.d.ts:3',
     },
-    AgentMessage: { package: '@earendil-works/pi-agent-core', version: '1.6.0', definition: 'dist/types.d.ts:322' },
-    AssistantMessage: { package: '@earendil-works/pi-ai', version: '1.6.0', definition: 'dist/types.d.ts:382' },
-    AssistantMessageEvent: { package: '@earendil-works/pi-ai', version: '1.6.0', definition: 'dist/types.d.ts:592' },
-    Usage: { package: '@earendil-works/pi-ai', version: '1.6.0', definition: 'dist/types.d.ts:292' },
+    AgentMessage: { package: '@earendil-works/pi-agent-core', version: '1.6.1', definition: 'dist/types.d.ts:322' },
+    AssistantMessage: { package: '@earendil-works/pi-ai', version: '1.6.1', definition: 'dist/types.d.ts:385' },
+    AssistantMessageEvent: { package: '@earendil-works/pi-ai', version: '1.6.1', definition: 'dist/types.d.ts:600' },
+    Usage: { package: '@earendil-works/pi-ai', version: '1.6.1', definition: 'dist/types.d.ts:295' },
     ToolInfo: {
-      package: '@earendil-works/pi-coding-agent', version: '1.6.0',
+      package: '@earendil-works/pi-coding-agent', version: '1.6.1',
       definition: 'dist/core/extensions/types.d.ts:1622', export: 'dist/index.d.ts:8',
     },
     FileEntry: {
-      package: '@earendil-works/pi-coding-agent', version: '1.6.0',
+      package: '@earendil-works/pi-coding-agent', version: '1.6.1',
       definition: 'dist/core/session-manager.d.ts:130', export: 'dist/index.d.ts:21',
     },
   },

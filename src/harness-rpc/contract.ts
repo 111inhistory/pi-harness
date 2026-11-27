@@ -490,7 +490,7 @@ export const NativeSessionEventSchema = Type.Object({
   type: Type.String({ minLength: 1 }),
 }, {
   additionalProperties: true,
-  description: 'Pi AgentSessionEvent from @earendil-works/pi-coding-agent@1.6.0 (dist/core/agent-session.d.ts:49). Except message_update, the native event passes through unchanged; assistant message_update drops the top-level message and assistantMessageEvent.partial, keeps usage, and toolcall_start adds id/toolName when resolvable.',
+  description: 'Pi AgentSessionEvent from @earendil-works/pi-coding-agent@1.6.1 (dist/core/agent-session.d.ts:49). Except message_update, the native event passes through unchanged; assistant message_update drops the top-level message and assistantMessageEvent.partial, keeps usage, and toolcall_start adds id/toolName when resolvable.',
 });
 
 export const HistoryReadResultSchema = Type.Union([
