@@ -21,6 +21,8 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 
 一个根服务使用一份配置快照。子会话使用同一份快照。Main 的 Harness、Hook 文件、Shell 规则和 Shell 环境缓存按会话、工作目录与项目信任状态隔离；同一范围内切换分支会保留缓存。使用 `/reload` 或开始新会话可读取编辑后的配置。修改文件不会改变已运行 Job 的计数、期限或活跃名额。
 
+`/config reload` 只刷新已安装的 `hooks.toml` 和 Shell 规则文件。命令逐项报告 `updated`、`unchanged`、`failed` 或 `skipped`。审批关闭或没有配置规则文件时，跳过 Shell 规则读取。读取或校验失败时，同一范围内已有的有效快照继续使用；没有有效快照时，该项不可用。命令不锁定文件，外部编辑器分步保存可能导致本次刷新失败。若工作目录或项目信任状态改变，原根拒绝创建和唤醒 Subagent，使用 `/reload` 重建根配置。
+
 `subagent-routing.toml` 仍在每次新建 Fresh Subagent 时实时重读，不因 Harness 参数快照而改变。提示词资产的 ESM 缓存规则仍见[提示词说明](../prompts/README.md)。
 
 ## Subagent
@@ -89,7 +91,7 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 | `shell.approval.enabled` | `false` | 启用 Shell 权限审批 |
 | `shell.approval.mode` | `auto` | 没有分支模式记录时的默认值：`ask`、`auto` 或 `yolo` |
 | `shell.approval.command` | `[]` | 静态判断程序及参数数组；空数组表示交给后续审批 |
-| `shell.approval.ruleFiles` | `[]` | 传给静态判断程序的规则文件路径列表。相对路径基于全局 `harness.json` 所在目录。规则在根会话首次需要时读取并缓存，修改规则文件在 `/reload` 或创建新根配置快照后生效；读取失败直接阻止命令，未启用或处于 YOLO 模式跳过读取。 |
+| `shell.approval.ruleFiles` | `[]` | 传给静态判断程序的规则文件路径列表。相对路径基于全局 `harness.json` 所在目录。规则在首次需要时读取并缓存。用 `/config reload` 刷新后续审批使用的规则；在途审批保留原规则和模式。首次读取失败时阻止命令；审批关闭或处于 YOLO 模式时，命令执行路径跳过读取。 |
 | `shell.approval.commandTimeoutMs` | `10000` | 静态判断程序超时，单位毫秒 |
 | `shell.approval.manualTimeoutMs` | `30000` | 人工界面显示后的审批期限，单位毫秒 |
 | `shell.approval.notificationUrl` | `""` | 人工审批展示时发送 JSON POST 的 HTTP(S) URL，空字符串关闭 |
@@ -134,7 +136,7 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 
 ## Hooks
 
-Main 读取 `<agentDir>/hooks.toml`、当前分支已应用的 Preset Hook 快照，以及受信项目的 `.pi/hooks.toml`。三层按此顺序合成，同 ID 整条替换；`enabled = false` 可关闭低层规则。合成后按 ID 字典序执行，单条规则内的 `actions` 保留声明顺序。全局与项目文件在会话加载时读取；修改后使用 `/reload`。Preset 的非空 `hooks` 随应用写入分支快照并参与版本哈希，`/preset` 会提示版本变动。
+Main 读取 `<agentDir>/hooks.toml`、当前分支已应用的 Preset Hook 快照，以及受信项目的 `.pi/hooks.toml`。三层按此顺序合成，同 ID 整条替换；`enabled = false` 可关闭低层规则。合成后按 ID 字典序执行，单条规则内的 `actions` 保留声明顺序。全局与项目文件按需读取；修改后用 `/config reload` 刷新。Preset 的非空 `hooks` 随应用写入分支快照并参与版本哈希，`/preset` 会提示版本变动。
 
 每份独立的 `hooks.toml` 声明顶层 `version = 1`，规则放在 `[hooks.<id>]` 下。只声明版本时规则集为空。旧的无版本 TOML 可用 `migrate:config-v1` 离线迁移。
 

@@ -326,7 +326,7 @@ test("completions offer verbs, session connect targets and target sugar without 
   assert.deepEqual(await values("list --id sub_"), ["list --id sub_1", "list --id sub_2"]);
 });
 
-test("the harness extension registers the subagent command", () => {
+test("the harness extension registers each root command once", () => {
   const names: string[] = [];
   const api = {
     on: () => {},
@@ -334,7 +334,7 @@ test("the harness extension registers the subagent command", () => {
     registerCommand: (name: string) => { names.push(name); },
   } as unknown as ExtensionAPI;
   subagentExtension(api);
-  assert.deepEqual(names, ["subagent"]);
+  assert.deepEqual(names, ["subagent", "config"]);
 });
 
 test("sessions lists live sessions with their managed Main address and native name", async () => {

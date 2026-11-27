@@ -33,6 +33,7 @@ interface Scope {
   readonly cwd: string;
   readonly trusted: boolean;
   readonly caches: Map<object, Cache<unknown>>;
+  readonly controller: AbortController;
 }
 interface Refreshable {
   refresh(ctx: ConfigContext, scope: Scope): Promise<ConfigRefreshResult>;
@@ -50,7 +51,9 @@ export function createConfigLifecycle() {
     const trusted = ctx.isProjectTrusted();
     if (scope?.cwd !== ctx.cwd || scope.trusted !== trusted) {
       scope?.caches.clear();
-      scope = { cwd: ctx.cwd, trusted, caches: new Map() };
+      const previous = scope;
+      scope = { cwd: ctx.cwd, trusted, caches: new Map(), controller: new AbortController() };
+      previous?.controller.abort();
     }
     return scope;
   }
@@ -165,6 +168,7 @@ export function createConfigLifecycle() {
   return {
     bindSyncSlot, bindAsyncSlot,
     get generation() { return generation; },
+    scopeSignal(ctx: ConfigContext): AbortSignal { return current(ctx).controller.signal; },
     captureScope(ctx: ConfigContext): () => boolean {
       const owner = current(ctx);
       return () => !closed && scope === owner && owner.cwd === ctx.cwd && owner.trusted === ctx.isProjectTrusted();
@@ -173,7 +177,9 @@ export function createConfigLifecycle() {
       generation += 1;
       closed = shutdown;
       scope?.caches.clear();
+      const previous = scope;
       scope = undefined;
+      previous?.controller.abort();
     },
     async refreshLeaves(ctx: ConfigContext): Promise<readonly ConfigRefreshResult[]> {
       const owner = current(ctx);

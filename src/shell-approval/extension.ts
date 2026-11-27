@@ -206,12 +206,17 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
   const check: ShellCheck = async (tool, command, ctx, source, waiting, callerSignal, plan) => {
     const root = rootContext ?? ctx;
     const ownerLifetime = lifetime;
-    const signal = AbortSignal.any([ownerLifetime.signal, ...(ctx.signal ? [ctx.signal] : []), ...(callerSignal ? [callerSignal] : [])]);
+    if (ownerLifetime.signal.aborted) return 'Shell approval cancelled.';
+    const scopeCurrent = lifecycle.captureScope(root);
+    const signal = AbortSignal.any([ownerLifetime.signal, lifecycle.scopeSignal(root),
+      ...(ctx.signal ? [ctx.signal] : []), ...(callerSignal ? [callerSignal] : [])]);
+    const cancelled = () => signal.aborted || !scopeCurrent();
     const shell = configFor(root).shell;
+    const approval = shell.approval;
+    const selected = mode ?? approval.mode;
     if (tool === 'job_send' || tool === 'job_key') {
-      if (signal.aborted) return 'Input not sent: approval cancelled.';
-      const approval = shell.approval;
-      if (!approval.enabled || (mode ?? approval.mode) === 'yolo') return null;
+      if (cancelled()) return 'Input not sent: approval cancelled.';
+      if (!approval.enabled || selected === 'yolo') return null;
       // Terminal input has no reliable shell syntax; review the exact payload,
       // including the separate Enter action, without interpreting it as argv.
       const preview = JSON.stringify(command).replace(/[\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu,
@@ -223,18 +228,22 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
           reason: 'Terminal input can submit commands to the running program.',
           timeoutSeconds: approval.manualTimeoutMs / 1000, signal,
         });
-        if (signal.aborted) return 'Input not sent: approval cancelled.';
+        if (cancelled()) return 'Input not sent: approval cancelled.';
         return result.approved ? null : `Input not sent: manual approval denied (${result.reason}).`;
       } finally { waiting?.(false); }
     }
+    if (cancelled()) return 'Command not executed: approval cancelled.';
+    // Begin the eligible rule read before the first suspension. A concurrent
+    // refresh may publish a newer snapshot while this approval keeps its own.
+    const rulesRead = approval.enabled && selected !== 'yolo' && approval.ruleFiles.length > 0
+      ? ruleSources.read(root).then(snapshot => ({ rules: snapshot.value }), (error: unknown) => ({ error }))
+      : undefined;
     const configurationCache = environment.read(root).value;
     if (shell.preflight) {
       const result = plan === undefined ? await preflight(tool, command, ctx, configurationCache) : await checkShellSyntax(plan);
       if (!result.ok) return failureReason(result);
     }
-    if (signal.aborted) return 'Command not executed: approval cancelled.';
-    const approval = shell.approval;
-    const selected = mode ?? approval.mode;
+    if (cancelled()) return 'Command not executed: approval cancelled.';
     if (!approval.enabled || selected === 'yolo') return null;
     if (typeof command !== 'string') return 'Command not executed: command must be a string.';
     const target = plan ?? (() => {
@@ -249,7 +258,7 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
       shell: action.shell, command: action.command, cwd: action.cwd, platform: action.platform,
       rejectTerminalInput: true,
     });
-    if (signal.aborted) return 'Command not executed: approval cancelled.';
+    if (cancelled()) return 'Command not executed: approval cancelled.';
     if (extracted.kind === 'terminal-input') return 'Command not executed: use job_send or job_key for terminal input.';
     // Ordinary shell commands retain their original syntax. Only pi-job calls
     // replace the wrapper with actual argv; every sibling remains represented.
@@ -258,20 +267,20 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
       ? extracted.actions.map(item => ({ ...action, cwd: item.cwd, argv: item.argv }))
       : [action];
     if (candidates.length === 0) return null;
-    let rules: readonly string[];
-    try {
-      rules = (await ruleSources.read(root)).value;
-    } catch (error) {
-      if (signal.aborted || error instanceof ConfigStaleError) return 'Command not executed: approval cancelled.';
+    const pinned = await rulesRead;
+    if (cancelled()) return 'Command not executed: approval cancelled.';
+    if (pinned !== undefined && 'error' in pinned) {
+      const { error } = pinned;
+      if (error instanceof ConfigStaleError) return 'Command not executed: approval cancelled.';
       const reason = error instanceof Error ? error.message : String(error);
       root.ui.notify(`Rule file error: ${sanitizeTerminalText(reason)}`, 'error');
       return 'Command not executed: ' + reason;
     }
-    if (signal.aborted) return 'Command not executed: approval cancelled.';
+    const rules = pinned?.rules ?? [];
     const needsReview: string[] = [];
     for (const candidate of candidates) {
       const decision = await runShellPolicy(approval.command, { ...candidate, rules }, signal, approval.commandTimeoutMs);
-      if (signal.aborted) return 'Command not executed: approval cancelled.';
+      if (cancelled()) return 'Command not executed: approval cancelled.';
       if (decision.decision === 'deny') return 'Command not executed: ' + decision.reason;
       if (decision.decision === 'review') needsReview.push(decision.reason);
     }
@@ -288,8 +297,8 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
         action: { ...action, reason: decisionReason },
         context: { branch: ctx.sessionManager.getBranch() }, signal,
       });
-      if (signal.aborted) {
-        if (!ownerLifetime.signal.aborted) status(root);
+      if (cancelled()) {
+        if (!ownerLifetime.signal.aborted && scopeCurrent()) status(root);
         return 'Command not executed: approval cancelled.';
       }
       const summary = sanitizeTerminalText(truncateToWidth(sanitizeTerminalText(action.command), 100));
@@ -316,8 +325,8 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
         reason: decisionReason, timeoutSeconds: approval.manualTimeoutMs / 1000, signal,
       });
     } finally { waiting?.(false); }
-    if (!ownerLifetime.signal.aborted) status(root);
-    if (signal.aborted) return 'Command not executed: approval cancelled.';
+    if (cancelled()) return 'Command not executed: approval cancelled.';
+    status(root);
     return result.approved ? null : 'Command not executed: Manual approval denied (' + result.reason + ').';
   };
   publishShellCheck(pi, check);
