@@ -1,9 +1,12 @@
 #!/usr/bin/env node
+import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { closeSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
+import { parse, stringify } from 'smol-toml';
 import { HARNESS_CONFIG_VERSION, harnessConfigBody, resolveHarnessConfig } from '../src/harness-config.ts';
+import { PRESET_CONFIG_VERSION, validatePresetDocument } from '../src/preset/config.ts';
 
 const BACKUP = '.pre-config-v1';
 
@@ -25,6 +28,27 @@ function planHarness(file, scope) {
   const document = alreadyVersioned ? value : { version: HARNESS_CONFIG_VERSION, ...value };
   const body = harnessConfigBody(document, file);
   return { file, scope, stat, before, body, after: alreadyVersioned ? undefined : `${JSON.stringify(document, null, 2)}\n` };
+}
+
+function presetCatalog(file, document) {
+  const { catalog, warnings } = validatePresetDocument(file, document);
+  if (warnings.length > 0) throw new Error(warnings.join('\n'));
+  return catalog;
+}
+
+function planPresets(file) {
+  const stat = regularFile(file);
+  if (stat === undefined) return undefined;
+  const before = readFileSync(file);
+  const value = parse(before.toString('utf8'));
+  // A legacy document can have a Preset named "version", but the entry is a table.
+  const alreadyVersioned = Object.hasOwn(value, 'version') && (typeof value.version !== 'object' || value.version === null);
+  const document = alreadyVersioned ? value : { version: PRESET_CONFIG_VERSION, presets: value };
+  const catalog = presetCatalog(file, document);
+  if (alreadyVersioned) return undefined;
+  const after = stringify(document);
+  assert.deepStrictEqual([...presetCatalog(file, parse(after))], [...catalog], `${file}: TOML changed preset semantics`);
+  return { file, stat, before, after };
 }
 
 function verifyOriginal(change) {
@@ -66,10 +90,12 @@ try {
     console.log('Usage: npm run migrate:config-v1 -- --agent-dir DIR [--project-dir DIR] [--apply]');
   } else {
     if (!values['agent-dir']) throw new Error('--agent-dir is required');
-    const plans = [planHarness(path.resolve(values['agent-dir'], 'harness.json'), 'global')];
-    if (values['project-dir']) plans.push(planHarness(path.resolve(values['project-dir'], '.pi', 'harness.json'), 'project'));
-    resolveHarnessConfig(plans.filter(Boolean).map(({ file, scope, body }) => ({ source: file, scope, value: body })));
-    const changes = plans.filter(plan => plan?.after !== undefined);
+    const roots = [{ dir: path.resolve(values['agent-dir']), scope: 'global' }];
+    if (values['project-dir']) roots.push({ dir: path.resolve(values['project-dir'], '.pi'), scope: 'project' });
+    const harness = roots.map(({ dir, scope }) => planHarness(path.join(dir, 'harness.json'), scope)).filter(Boolean);
+    resolveHarnessConfig(harness.map(({ file, scope, body }) => ({ source: file, scope, value: body })));
+    const presets = roots.map(({ dir }) => planPresets(path.join(dir, 'presets.toml')));
+    const changes = [...harness, ...presets].filter(plan => plan?.after !== undefined);
     for (const { file } of changes) {
       if (regularFile(file + BACKUP) !== undefined) throw new Error(`${file + BACKUP}: backup already exists; keep it and resolve the conflict before applying`);
       console.log(`${values.apply ? 'Will migrate' : 'Would migrate'} ${file}`);

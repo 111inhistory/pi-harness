@@ -43,9 +43,11 @@ function load(files: Record<string, string>, projectTrusted = true) {
   return loadPresets({ cwd, agentDir, projectTrusted, read: readerFrom(files) });
 }
 
+const presetDocument = (presets: Record<string, unknown>) => stringify({ version: 1, presets });
+
 test('loads global presets', () => {
   const { presets, warnings } = load({
-    [globalPath]: stringify({ fast: { model: { provider: 'p', id: 'm' }, thinkingLevel: 'low' } }),
+    [globalPath]: presetDocument({ fast: { model: { provider: 'p', id: 'm' }, thinkingLevel: 'low' } }),
   });
   assert.equal(warnings.length, 0);
   const fast = presets.get('fast');
@@ -56,8 +58,8 @@ test('loads global presets', () => {
 
 test('project preset replaces a same-named global preset wholesale', () => {
   const { presets } = load({
-    [globalPath]: stringify({ fast: { thinkingLevel: 'low', tools: ['+read'] } }),
-    [projectPath]: stringify({ fast: { instructions: 'project' } }),
+    [globalPath]: presetDocument({ fast: { thinkingLevel: 'low', tools: ['+read'] } }),
+    [projectPath]: presetDocument({ fast: { instructions: 'project' } }),
   });
   const fast = presets.get('fast');
   assert.ok(fast);
@@ -69,8 +71,8 @@ test('project preset replaces a same-named global preset wholesale', () => {
 
 test('project preset is ignored when the project is not trusted', () => {
   const { presets } = load({
-    [globalPath]: stringify({ fast: { thinkingLevel: 'low' } }),
-    [projectPath]: stringify({ fast: { thinkingLevel: 'high' } }),
+    [globalPath]: presetDocument({ fast: { thinkingLevel: 'low' } }),
+    [projectPath]: presetDocument({ fast: { thinkingLevel: 'high' } }),
   }, false);
   assert.equal(presets.get('fast')?.thinkingLevel, 'low');
 });
@@ -106,10 +108,29 @@ test('a presets.json document is not a runtime fallback', () => {
   assert.equal(presets.size, 0, 'the loader only requests presets.toml');
 });
 
+test('Preset container reserves only the root and verifies each loaded document', () => {
+  for (const invalid of ['', '[fast]', 'version = 2', 'version = 1\n[fast]', 'version = 1\npresets = []']) {
+    const { invalidDocument, presets } = load({ [globalPath]: presetDocument({ fast: {} }), [projectPath]: invalid });
+    assert.equal(invalidDocument, true, invalid);
+    assert.equal(presets.size, 0, 'an invalid project document may shadow every global claim');
+  }
+  const { invalidDocument, presets } = load({ [globalPath]: `
+version = 1
+[presets.version.hooks.start]
+on = 'before_agent_start'
+actions = [{ type = 'injectHint', text = 'Inspect first.' }]
+` });
+  assert.equal(invalidDocument, false);
+  assert.deepEqual(presets.get('version')?.hooks?.start, {
+    on: 'before_agent_start', actions: [{ type: 'injectHint', text: 'Inspect first.' }],
+  });
+  assert.equal(load({ [globalPath]: 'version = 1' }).invalidDocument, false);
+});
+
 test('invalid trusted project entries shadow the same global name without hiding valid neighbors', () => {
   const { presets, invalidNames, invalidDocument } = load({
-    [globalPath]: stringify({ fast: {}, light: {} }),
-    [projectPath]: stringify({ fast: { tools: false } }),
+    [globalPath]: presetDocument({ fast: {}, light: {} }),
+    [projectPath]: presetDocument({ fast: { tools: false } }),
   });
   assert.equal(invalidDocument, false);
   assert.deepEqual([...invalidNames], ['fast']);
@@ -119,8 +140,8 @@ test('invalid trusted project entries shadow the same global name without hiding
 test('invalid entries are skipped with warnings', () => {
   const { presets, warnings } = load({
     // A TOML date parses to a TomlDate object, which is not a Preset record.
-    [globalPath]: 'dated = 1979-05-27\n'
-      + stringify({ bad: { thinkingLevel: 'low', surprise: true }, good: { thinkingLevel: 'high' } }),
+    [globalPath]: 'version = 1\n[presets]\ndated = 1979-05-27\n'
+      + '[presets.bad]\nthinkingLevel = "low"\nsurprise = true\n[presets.good]\nthinkingLevel = "high"\n',
   });
   assert.equal(presets.has('dated'), false);
   assert.equal(presets.has('bad'), false);
@@ -130,13 +151,13 @@ test('invalid entries are skipped with warnings', () => {
 });
 
 test('a malformed model field is rejected', () => {
-  const { presets, warnings } = load({ [globalPath]: stringify({ bad: { model: { provider: 'p' } } }) });
+  const { presets, warnings } = load({ [globalPath]: presetDocument({ bad: { model: { provider: 'p' } } }) });
   assert.equal(presets.has('bad'), false);
   assert.ok(warnings.some((warning) => warning.includes('model.provider')));
 });
 
 test('an invalid codemode mode is rejected', () => {
-  const { presets, warnings } = load({ [globalPath]: stringify({ bad: { codemode: { mode: 'both' } } }) });
+  const { presets, warnings } = load({ [globalPath]: presetDocument({ bad: { codemode: { mode: 'both' } } }) });
   assert.equal(presets.has('bad'), false);
   assert.ok(warnings.some((warning) => warning.includes('codemode.mode')));
 });

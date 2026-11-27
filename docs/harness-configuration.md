@@ -146,7 +146,7 @@ maxTriggers = 1
 resetOnCompaction = true
 ```
 
-Preset 在 `[<name>.hooks.<rule-id>]` 下使用同一规则结构。`before_agent_start` 可匹配用户输入 `prompt`；`tool_result` 可匹配 `tool`、`nested`、`input.<path>`、`result.isError`、`result.truncated`、`result.errorKind`、`result.output` 和 `result.outputChars`。两类均可匹配 `model.provider`、`model.id`、`preset` 及 `turn.modelCalls`、`turn.toolCalls`、`turn.nestedToolCalls`、`turn.toolErrors`。比较不做隐式类型转换；未知值在 `when` 中保持未知，只有布尔真触发。辅助函数包括 `contains`、`exists`、`regex`、`inWorkspace`、`shellStandalone` 和 `shellHasCommand`。Shell 匹配只识别可确认的 POSIX 简单命令，不能当作权限检查。`regex` 使用线性匹配，模式最多 256 字符且不支持 `{…}` 重复语法；只开放 `i`、`m` 两个 flags。
+Preset 在 `[presets.<name>.hooks.<rule-id>]` 下使用同一规则结构。`before_agent_start` 可匹配用户输入 `prompt`；`tool_result` 可匹配 `tool`、`nested`、`input.<path>`、`result.isError`、`result.truncated`、`result.errorKind`、`result.output` 和 `result.outputChars`。两类均可匹配 `model.provider`、`model.id`、`preset` 及 `turn.modelCalls`、`turn.toolCalls`、`turn.nestedToolCalls`、`turn.toolErrors`。比较不做隐式类型转换；未知值在 `when` 中保持未知，只有布尔真触发。辅助函数包括 `contains`、`exists`、`regex`、`inWorkspace`、`shellStandalone` 和 `shellHasCommand`。Shell 匹配只识别可确认的 POSIX 简单命令，不能当作权限检查。`regex` 使用线性匹配，模式最多 256 字符且不支持 `{…}` 重复语法；只开放 `i`、`m` 两个 flags。
 
 - `injectHint` 接受 `text` 与可选 `display`，默认隐藏；嵌套工具命中的提示合并到顶层已执行工具结果边界。
 - `injectSection` 只用于独立的 `before_agent_start` 规则，接受 `text`，不与 `repeat`、其他动作或完整自定义提示词共用。
@@ -326,7 +326,7 @@ npm run migrate:config-toml -- subagent-routing.json
 
 ## 模型 Preset
 
-模型 Preset 使用独立配置文件，不写在 `harness.json`：全局 agent 目录的 `presets.toml`，以及受信项目的 `.pi/presets.toml`；项目同名项整体覆盖全局。顶层直接使用 `[<name>]`，名称含点或空格时使用引号键（如 `['fast.v2']`），`instructions` 可使用多行字符串；示例见 [`config/presets.toml`](../config/presets.toml)。每项字段：
+模型 Preset 使用全局 agent 目录的 `presets.toml` 与受信项目的 `.pi/presets.toml`。项目同名项整体覆盖全局。每份文件声明顶层 `version = 1`，再在 `[presets.<name>]` 下定义条目。名称含点或空格时使用引号键，例如 `[presets.'fast.v2']`。`instructions` 可使用多行字符串。旧的无版本 TOML 使用本页的 `migrate:config-v1` 离线迁移；迁移将旧表放进 `presets` 容器，原格式和注释保留在备份中。示例见 [`config/presets.toml`](../config/presets.toml)。每项字段：
 
 | 字段 | 含义 |
 | --- | --- |

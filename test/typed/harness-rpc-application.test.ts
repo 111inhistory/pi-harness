@@ -179,16 +179,19 @@ async function startApplication(t: test.TestContext): Promise<ApplicationFixture
   runtime.getAuth = async () => ({ auth: { apiKey: "offline-fixture" }, env: {} });
   runtime.hasConfiguredAuth = () => true;
   await writeFile(path.join(agentDir, "presets.toml"), stringify({
-    "rpc-apply": {
-      tools: ["+read", "-write"],
-      codemode: { mode: "only" },
-      instructions: "RPC_PRESET_INSTRUCTION",
-    },
-    "rpc-gated": {
-      model: { provider: model.provider, id: model.id },
-      thinkingLevel: "low",
-      tools: ["+read", "-write"],
-      instructions: "RPC_GATED_INSTRUCTION",
+    version: 1,
+    presets: {
+      "rpc-apply": {
+        tools: ["+read", "-write"],
+        codemode: { mode: "only" },
+        instructions: "RPC_PRESET_INSTRUCTION",
+      },
+      "rpc-gated": {
+        model: { provider: model.provider, id: model.id },
+        thinkingLevel: "low",
+        tools: ["+read", "-write"],
+        instructions: "RPC_GATED_INSTRUCTION",
+      },
     },
   }));
 
@@ -314,7 +317,7 @@ test("preset RPC apply/clear records the same branch state and tool selection as
     "rpc-apply": { tools: ["+read", "-write"], instructions: "RPC_PRESET_INSTRUCTION_V2" },
     "rpc-gated": { tools: ["+read", "-write"], instructions: "RPC_GATED_INSTRUCTION" },
   };
-  await writeFile(path.join(agentDir, "presets.toml"), stringify(updatedPresets));
+  await writeFile(path.join(agentDir, "presets.toml"), stringify({ version: 1, presets: updatedPresets }));
   const branchBeforeOutdated = fixture.session.sessionManager.getBranch().length;
   const outdatedWire = await fixture.client.request("presets.current");
   assert.equal(validateMethodResult("presets.current", outdatedWire).ok, true, "real outdated comparison matches the published schema");
@@ -363,7 +366,7 @@ test("preset RPC apply/clear records the same branch state and tool selection as
   assert.equal(presetEntries(fixture.session).length, entries.length + 1, "an idempotent re-apply writes nothing");
 
   // A name the loader rejects is unresolvable, not missing, and cannot be applied.
-  await writeFile(path.join(agentDir, "presets.toml"), stringify({ "rpc-apply": { tools: 123 } }));
+  await writeFile(path.join(agentDir, "presets.toml"), stringify({ version: 1, presets: { "rpc-apply": { tools: 123 } } }));
   const branchBeforeInvalid = fixture.session.sessionManager.getBranch().length;
   const invalid = asRecord(await fixture.client.request("presets.current"));
   assert.equal(asRecord(invalid?.["preset"])?.["name"], "rpc-apply");
