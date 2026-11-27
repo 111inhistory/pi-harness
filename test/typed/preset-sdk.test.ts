@@ -171,7 +171,7 @@ async function bootPresetSession(
     cwd, agentDir, settingsManager,
     noExtensions: true, noSkills: true, noContextFiles: true, noPromptTemplates: true, noThemes: true,
     extensionFactories: [
-      ...(options.withCapability === false ? [] : [{ name: 'capability', factory: capabilityExtension }]),
+      ...(options.withCapability === false ? [] : [{ name: 'capability', factory: (pi: ExtensionAPI) => { capabilityExtension(pi); } }]),
       { name: 'preset', factory: presetExtension },
       { name: 'preset-tools-fixture', factory(pi) {
         api = pi;

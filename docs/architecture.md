@@ -148,6 +148,8 @@ Fork 读取记录中的绝对 `sessionFile`，首次写外部文件时复制到�
 
 Capability 通过共享执行句柄创建内部 SDK 会话，不要求公开 Subagent 工具激活。公共会话与检索会话共用 ModelRuntime 桥和 Budget 截止计时，但保留不同业务规则：Subagent 交付任务结果，Capability 交付验证过的 refs。
 
+Capability 的内部端口提供本会话的工具快照、显式激活和后台检索。显式工具和后台检索共用检索、发布前权限复核和先记录再激活的流程。后台检索绑定分支代次；树导航、Fork、会话切换或关闭撤销发布权，当前轮结束不撤销。同一 Capability 实例只接受一个后台检索；显式 `capability` 调用取消在途后台检索。取消后的后台槽等内部会话清理完成才释放。完成结果只提交新增 ref，提交不主动启动 Main 轮次。
+
 Capability 与 Subagent 共用 `provider-session.ts` 的能力判断。Responses、Anthropic 与 Chat Completions 的工具和消息编码使用 Pi 原生 provider；Chat Completions 只有在两个明确的 compat 位开启时采用新增工具协议，同名 schema 替换仍可能重建前缀。详情见[Provider 传输行为](provider-transports.md)。Capability 沿用捕获的 thinking level。检索会话保留非 manual 的继承声明，由 tool-call hook 和无父执行句柄的占位工具阻止执行；同时按 `capability.lazySchemas` 将命中组的声明一并排除，避免内部检索重发大型 schema。生效 Codemode 模式由 `capability/codemode-mode.ts` 读取分支上的预设覆盖（回退到 Pi 设置），只改变声明投影，不改变启用集合或授权。Main 与普通 Subagent 在成功压缩后淘汰本窗口未使用的发现成员，重建工具 checkpoint，并在当前请求的指引快照中提供本次淘汰通知；内部检索与 `/btw` 不独立执行淘汰。
 
 Inherited 与检索会话保留独立本地 Session ID，Responses 请求仅替换原生默认 `prompt_cache_key` 为继承标识；既有自定义 key 与最终 payload hook 优先。`harness-cache-identity` 原生 custom 条目保存分支缓存标识，支持嵌套继承、恢复和续跑。Fresh 默认沿用自己的标识。观察器仅将有效非空字符串 key 写入 lineage；请求暂时使用 `cacheRetention: none` 或最终 payload 缺少 key 不改变继承身份。仅显式记录或安装 `key: null` 才持续禁用，最终 payload hook 仍可覆盖当前请求。Main 通过共享 ModelRuntime 桥观察本会话所有 provider payload hooks 完成后的最终 key，并写入当前分支；会话导航、关闭与已中止请求的围栏阻止晚到写入。观察范围限定于所属会话，摘要和其他会话不计入 Main 请求。
