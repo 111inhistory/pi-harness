@@ -902,6 +902,27 @@ export const ApprovalsEventSchema = Type.Object({
 // Session peers
 // ---------------------------------------------------------------------------
 
+const shellAgentId = Type.String({ minLength: 1, maxLength: 64 });
+const shellJobFields = {
+  jobId: Type.String({ pattern: '^job_[0-9a-f]{8}$' }), agentId: shellAgentId, pty: Type.Boolean(),
+  shell: nullable(Type.String()), cwd: nullable(Type.String()), command: nullable(Type.String({ maxLength: 4096 })),
+  commandTruncated: Type.Boolean(), pid: Type.Integer({ minimum: 1 }), startedAt: Type.Integer({ minimum: 0 }),
+  logPath: Type.String({ minLength: 1 }),
+};
+const shellJobSummary = Type.Object(shellJobFields, { additionalProperties: false });
+const shellJobsSubscribeParams = Type.Object({ agentId: Type.Optional(shellAgentId) }, { additionalProperties: true });
+const shellJobsSubscribeResult = Type.Object({
+  subscription: Type.String({ minLength: 1 }), jobs: Type.Array(shellJobSummary),
+}, { additionalProperties: false });
+const shellEventFields = { kind: Type.Literal('shell_job'), rootSessionId: Type.String({ minLength: 1 }), ...shellJobFields };
+export const ShellJobEventSchema = Type.Union([
+  Type.Object({ ...shellEventFields, phase: Type.Literal('backgrounded') }, { additionalProperties: false }),
+  Type.Object({ ...shellEventFields, phase: Type.Literal('finished'), finishedAt: Type.Integer({ minimum: 0 }),
+    status: Type.Union([Type.Literal('completed'), Type.Literal('failed'), Type.Literal('internal_error'), Type.Literal('cancelled'), Type.Literal('timed_out')]),
+    exitCode: nullable(Type.Integer()), truncated: Type.Boolean(),
+  }, { additionalProperties: false }),
+]);
+
 export const LiveSessionSchema = Type.Object({
   sessionId: Type.String({ minLength: 1 }),
   uid: Type.String({ minLength: 1 }),
@@ -1177,6 +1198,9 @@ export const SHARED_CONTRACT_DEFS = {
   ShellApprovalRespondResult: ShellApprovalRespondResultSchema,
   ApprovalsSubscribeResult: ApprovalsSubscribeResultSchema,
   ApprovalsEvent: ApprovalsEventSchema,
+  ShellJobsSubscribeParams: shellJobsSubscribeParams,
+  ShellJobsSubscribeResult: shellJobsSubscribeResult,
+  ShellJobEvent: ShellJobEventSchema,
   LiveSession: LiveSessionSchema,
   SessionsListResult: SessionsListResultSchema,
   SessionsConnectParams: SessionsConnectParamsSchema,
@@ -1315,6 +1339,10 @@ export const HARNESS_RPC_CONTRACT = {
   [RPC_METHODS.streamSubscribe]: defineMethod({
     description: 'Subscribe to a Job live event stream and capture a consistent boundary snapshot.',
     params: 'JobIdParams', result: 'StreamSubscribeResult', paramsRequired: true,
+  }),
+  [RPC_METHODS.shellJobsSubscribe]: defineMethod({
+    description: 'Observe background Shell Jobs in the active root with an initial snapshot and optional Actor filter.',
+    params: 'ShellJobsSubscribeParams', result: 'ShellJobsSubscribeResult', paramsRequired: false,
   }),
   [RPC_METHODS.streamUnsubscribe]: defineMethod({
     description: 'Detach a subscription from the current RPC connection.',
@@ -1500,6 +1528,7 @@ export type ApprovalsGetResult = DeepReadonly<Static<typeof ApprovalsGetResultSc
 export type ShellApprovalRespondResult = DeepReadonly<Static<typeof ShellApprovalRespondResultSchema>>;
 export type ApprovalsSubscribeResult = DeepReadonly<Static<typeof ApprovalsSubscribeResultSchema>>;
 export type ApprovalsEvent = DeepReadonly<Static<typeof ApprovalsEventSchema>>;
+export type ShellJobEvent = DeepReadonly<Static<typeof ShellJobEventSchema>>;
 export type LiveSession = DeepReadonly<Static<typeof LiveSessionSchema>>;
 export type SessionsListResult = DeepReadonly<Static<typeof SessionsListResultSchema>>;
 export type SessionConnect = DeepReadonly<Static<typeof SessionConnectSchema>>;

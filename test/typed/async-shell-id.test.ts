@@ -32,7 +32,7 @@ test('host task lookup and retirement retain the assigned root when ambient stat
   const id = 'job_11111111';
   const directory = taskDirectory(id, env.PI_ASYNC_SHELL_ROOT);
   await host.receive('Main', {
-    kind: 'async-shell', agentId: 'Main', operation: 'register', id, directory, pid: process.pid,
+    kind: 'async-shell', agentId: 'Main', operation: 'register', id, directory, pid: process.pid, pty: true,
     token: env.PI_ASYNC_SHELL_TOKEN,
   });
   await host.release('Main');

@@ -5,7 +5,7 @@ import os from 'node:os';
 import fs from 'node:fs/promises';
 import { SessionManager, type ExtensionAPI, type ExtensionToolContext, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { installAsyncShellSurface } from '../../src/async-shell/surface.ts';
-import { AsyncShellHost } from '../../src/async-shell/host.ts';
+import { AsyncShellHost, type ShellJobObservation } from '../../src/async-shell/host.ts';
 import type { ShellResult } from '../../src/async-shell/protocol.ts';
 
 const id = 'job_11111111';
@@ -31,7 +31,7 @@ function fixture(options: { deliver?: () => Promise<void>; cancel?: () => Promis
   });
   const frame = (owner: string) => ({
     kind: 'async-shell', agentId: owner, token: host.environment(owner).PI_ASYNC_SHELL_TOKEN,
-    operation: 'register', id, directory, pid: process.pid,
+    operation: 'register', id, directory, pid: process.pid, pty: true,
   });
   return { host, events, frame };
 }
@@ -56,11 +56,18 @@ test('completion stays owned until its result is queued, then releases the same 
 test('an internal error stops waiting, delivers its reminder, and retains the existing cleanup lease', async () => {
   const gate = deferred();
   const { host, events, frame } = fixture({ cancel: () => gate.promise });
+  const observations: ShellJobObservation[] = [];
+  host.observe(undefined, () => { throw new Error('broken observer'); });
+  host.observe('sub_1', event => observations.push(event));
   const register = frame('sub_1');
   await host.receive('sub_1', register);
   const failure = { ...result, status: 'internal_error', exitCode: null,
     message: 'Cleanup is best effort; do not assume the command has stopped or cleanup is complete.' };
   await host.receive('sub_1', { ...register, operation: 'complete', notify: true, result: failure });
+  assert.deepEqual(observations.map(event => event.phase === 'finished' ? event.status : event.phase), ['backgrounded', 'internal_error']);
+  const snapshot = host.observe('sub_1', () => {});
+  assert.deepEqual(snapshot.jobs, []);
+  snapshot.unsubscribe();
   assert.equal(host.hasPending('sub_1'), false, 'the model can act on the error without waiting for another result');
   assert.deepEqual(events, ['deliver:sub_1', 'wake:sub_1'], 'reporting the error does not start automatic recovery');
   const release = host.release('sub_1');
@@ -68,16 +75,24 @@ test('an internal error stops waiting, delivers its reminder, and retains the ex
   assert.throws(() => host.environment('sub_1'), /still retiring/);
   gate.resolve();
   await release;
+  assert.equal(observations.length, 2, 'cleanup does not repeat an internal-error observation');
   await host.close();
 });
 
 test('a synchronous result releases its task without another completion message', async () => {
   const { host, events, frame } = fixture();
   const register = frame('Main');
-  await host.receive('Main', register);
+  const observed: ShellJobObservation[] = [];
+  const watcher = host.observe('Main', event => observed.push(event));
+  await host.receive('Main', { ...register, pty: false });
+  assert.equal(observed[0]?.phase, 'backgrounded');
+  assert.equal(observed[0]?.command, null);
+  assert.equal(observed[0]?.pty, false, 'direct managed registration supplies the actual backend type');
   await host.receive('Main', { ...register, operation: 'complete', notify: false, result });
   assert.equal(host.hasPending('Main'), false);
   assert.deepEqual(events, ['wake:Main']);
+  assert.deepEqual(observed.map(event => event.phase), ['backgrounded', 'finished']);
+  watcher.unsubscribe();
   await host.close();
 });
 
@@ -142,11 +157,14 @@ test('failed result handoff is never replayed and does not retain a phantom task
 
 test('cleanup failure keeps the execution fenced instead of authorizing a replacement', async () => {
   const { host, frame } = fixture({ cancel: async () => { throw new Error('monitor still alive'); } });
+  const observed: ShellJobObservation[] = [];
+  host.observe(undefined, event => observed.push(event));
   await host.receive('sub_1', frame('sub_1'));
   await assert.rejects(host.release('sub_1'), /did not all stop/);
   assert.throws(() => host.environment('sub_1'), /still retiring/);
   assert.equal(host.hasPending('sub_1'), true);
   await assert.rejects(host.close(), /did not retire all tasks/);
+  assert.deepEqual(observed.map(event => event.phase === 'finished' ? event.status : event.phase), ['backgrounded', 'internal_error']);
 });
 
 test('native shell still executes when callback IPC is unavailable and clears inherited leases', async t => {

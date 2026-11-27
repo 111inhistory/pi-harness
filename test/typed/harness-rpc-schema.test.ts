@@ -463,6 +463,7 @@ test('envelopes and all method requests validate', () => {
     [RPC_METHODS.historyRead]: { id: 'r', method: RPC_METHODS.historyRead, params: { jobId: 'j' } },
     [RPC_METHODS.streamSubscribe]: { id: 'r', method: RPC_METHODS.streamSubscribe, params: { jobId: 'j' } },
     [RPC_METHODS.streamUnsubscribe]: { id: 'r', method: RPC_METHODS.streamUnsubscribe, params: { subscription: 's' } },
+    [RPC_METHODS.shellJobsSubscribe]: { id: 'r', method: RPC_METHODS.shellJobsSubscribe, params: { agentId: 'main' } },
     [RPC_METHODS.presetsCatalog]: { id: 'r', method: RPC_METHODS.presetsCatalog },
     [RPC_METHODS.presetsCurrent]: { id: 'r', method: RPC_METHODS.presetsCurrent },
     [RPC_METHODS.hooksCurrent]: { id: 'r', method: RPC_METHODS.hooksCurrent },

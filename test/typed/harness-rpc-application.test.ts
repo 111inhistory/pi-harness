@@ -9,10 +9,12 @@
  */
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from 'node:url';
 import test from "node:test";
 import { stringify } from "smol-toml";
 
@@ -23,7 +25,8 @@ import {
   type AgentSession, type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 
-import { validateMethodResult } from "../../src/harness-rpc/contract.ts";
+import { ShellJobEventSchema, validateMethodResult } from "../../src/harness-rpc/contract.ts";
+import { Value } from 'typebox/value';
 import { configLifecycleFor } from "../../src/config-lifecycle.ts";
 import capabilityExtension from "../../extensions/capability.ts";
 import { harnessRpcTarget } from "../../src/harness-rpc/discovery.ts";
@@ -174,8 +177,10 @@ async function startApplication(t: test.TestContext, hooks = false, approvalMode
 
   const previousAgentDir = process.env["PI_CODING_AGENT_DIR"];
   const previousSocketDir = process.env["PI_SUBAGENT_SOCKET_DIR"];
+  const previousShellRoot = process.env['PI_ASYNC_SHELL_ROOT'];
   process.env["PI_CODING_AGENT_DIR"] = agentDir;
   process.env["PI_SUBAGENT_SOCKET_DIR"] = socketDir;
+  process.env['PI_ASYNC_SHELL_ROOT'] = path.join(cwd, 'shell');
 
   const runtime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,
@@ -239,6 +244,8 @@ async function startApplication(t: test.TestContext, hooks = false, approvalMode
     else process.env["PI_CODING_AGENT_DIR"] = previousAgentDir;
     if (previousSocketDir === undefined) delete process.env["PI_SUBAGENT_SOCKET_DIR"];
     else process.env["PI_SUBAGENT_SOCKET_DIR"] = previousSocketDir;
+    if (previousShellRoot === undefined) delete process.env['PI_ASYNC_SHELL_ROOT'];
+    else process.env['PI_ASYNC_SHELL_ROOT'] = previousShellRoot;
     await rm(cwd, { recursive: true, force: true });
   };
   t.after(cleanup);
@@ -374,6 +381,62 @@ test('Hook writes refuse a busy Main on the real socket', async t => {
   } finally {
     release.resolve();
     await turn;
+  }
+});
+
+test('Shell Job subscription snapshots live jobs and receives background and terminal metadata on the real socket', {
+  skip: process.platform === 'win32', timeout: 20000,
+}, async t => {
+  const { cwd, root, session, client } = await startApplication(t);
+  const cli = path.join(cwd, 'pi-job');
+  const build = spawnSync(process.execPath, [fileURLToPath(new URL('../../scripts/build-async-shell.mjs', import.meta.url)), cli], { encoding: 'utf8' });
+  assert.equal(build.status, 0, `the async-shell CLI must build: ${build.stderr}`);
+  const previousCli = process.env['PI_ASYNC_SHELL_CLI'];
+  process.env['PI_ASYNC_SHELL_CLI'] = cli;
+  t.after(() => {
+    if (previousCli === undefined) delete process.env['PI_ASYNC_SHELL_CLI'];
+    else process.env['PI_ASYNC_SHELL_CLI'] = previousCli;
+  });
+  const leaf = session.sessionManager.appendMessage({ role: 'user', content: 'Shell fixture anchor', timestamp: Date.now() });
+  const first = asRecord(await client.request('shell.jobs.subscribe', { agentId: 'main', future: true }));
+  assert.equal(validateMethodResult('shell.jobs.subscribe', first).ok, true);
+  assert.deepEqual(first?.['jobs'], []);
+  const filtered = asRecord(await client.request('shell.jobs.subscribe', { agentId: 'sub_99' }));
+  assert.deepEqual(filtered?.['jobs'], []);
+  const bash = session.getToolDefinition('bash');
+  assert.ok(bash);
+  const run = (id: string, command: string, background = false) => bash.execute(id, { command, background, timeout: 10 },
+    undefined, undefined, session.extensionRunner.createToolContext(id, undefined));
+
+  await run('foreground', 'printf foreground');
+  assert.deepEqual(client.events, []);
+  const command = 'while [ ! -f finish-shell-fixture ]; do sleep 0.02; done; printf background';
+  try {
+    await run('background', command, true);
+    const start = asRecord(await waitFor(() => client.events[0], { label: 'Shell backgrounded event' }));
+    assert.equal(Value.Check(ShellJobEventSchema, start), true);
+    assert.equal(start?.['phase'], 'backgrounded');
+    assert.equal(start?.['rootSessionId'], root.sessionId);
+    assert.equal(start?.['agentId'], 'main');
+    assert.equal(start?.['command'], command);
+    assert.equal(start?.['pty'], false);
+    const live = asRecord(await client.request('shell.jobs.subscribe'));
+    const [job] = asArray(live?.['jobs']);
+    assert.equal(asRecord(job)?.['jobId'], start?.['jobId']);
+    assert.equal(asRecord(job)?.['logPath'], start?.['logPath']);
+    await client.request('stream.unsubscribe', { subscription: live?.['subscription'] });
+    await writeFile(path.join(cwd, 'finish-shell-fixture'), 'finish');
+    const terminal = asRecord(await waitFor(() => client.events[1], { label: 'Shell finished event' }));
+    assert.equal(Value.Check(ShellJobEventSchema, terminal), true);
+    assert.equal(terminal?.['phase'], 'finished');
+    assert.equal(terminal?.['jobId'], start?.['jobId']);
+    assert.equal(terminal?.['status'], 'completed');
+    assert.equal(terminal?.['exitCode'], 0);
+    assert.equal(client.events.length, 2);
+    await session.navigateTree(leaf);
+    assert.deepEqual(asRecord(await client.request('shell.jobs.subscribe'))?.['jobs'], []);
+  } finally {
+    await writeFile(path.join(cwd, 'finish-shell-fixture'), 'finish');
   }
 });
 

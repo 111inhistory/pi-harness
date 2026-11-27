@@ -82,6 +82,7 @@ export const RPC_METHODS = {
   historyRead: 'history.read',
   streamSubscribe: 'stream.subscribe',
   streamUnsubscribe: 'stream.unsubscribe',
+  shellJobsSubscribe: 'shell.jobs.subscribe',
   presetsCatalog: 'presets.catalog',
   presetsCurrent: 'presets.current',
   hooksCurrent: 'hooks.current',

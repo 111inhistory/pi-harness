@@ -148,6 +148,16 @@ export function buildApplicationPort(api: ExtensionAPI, ctx: ExtensionContext, r
       return clearPresetFromSession(host);
     },
     approvalsList(): MethodResult<'approvals.list'> { return { items: controller().list() }; },
+    shellJobsSubscribe(params: MethodParams<'shell.jobs.subscribe'>, connection: RpcConnection): MethodResult<'shell.jobs.subscribe'> {
+      assertSession();
+      let unsubscribe: (() => void) | undefined;
+      const subscription = connection.addSubscription(() => unsubscribe?.(), 'root');
+      const observation = root.shell.observe(params.agentId, event => {
+        connection.pushEvent(subscription, { kind: 'shell_job', rootSessionId: root.sessionId, ...event });
+      });
+      unsubscribe = observation.unsubscribe;
+      return { subscription, jobs: observation.jobs };
+    },
     approvalsModeGet(): MethodResult<'approvals.mode.get'> { return permissionModes().get(ctx); },
     approvalsModeSet(params: MethodParams<'approvals.mode.set'>): MethodResult<'approvals.mode.set'> {
       const result = permissionModes().set(ctx, params.mode);

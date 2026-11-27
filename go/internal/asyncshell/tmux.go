@@ -578,7 +578,7 @@ func createTask(options CreateTaskOptions) ShellResult {
 	}
 
 	if options.Callback != nil {
-		r := sendFrame(*options.Callback, AsyncShellRegisterFrame{Kind: AsyncShellKind, AgentID: options.Callback.AgentID, Token: options.Callback.Token, Operation: "register", ID: id, Directory: dir, PID: os.Getpid(), CallID: options.CallID})
+		r := sendFrame(*options.Callback, AsyncShellRegisterFrame{Kind: AsyncShellKind, AgentID: options.Callback.AgentID, Token: options.Callback.Token, Operation: "register", ID: id, Directory: dir, PID: os.Getpid(), CallID: options.CallID, PTY: !options.Pipe})
 		if r != nil {
 			state := taskState{ID: id, Status: StatusFailed, ExitCode: nil, CreatedAt: createdAt, FinalizedAt: int64Ptr(nowMs())}
 			appendPrivateFile(paths.Filtered, []byte("async-shell: "+messageOf(r)+"\n"))

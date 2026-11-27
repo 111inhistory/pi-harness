@@ -69,6 +69,7 @@ sha256sum --check schemas/SHA256SUMS
 | `history.read` | `JobIdParams` | `HistoryReadResult` |
 | `stream.subscribe` | `JobIdParams` | `StreamSubscribeResult` |
 | `stream.unsubscribe` | `StreamUnsubscribeParams` | `StreamUnsubscribeResult` |
+| `shell.jobs.subscribe` | `ShellJobsSubscribeParams` | `ShellJobsSubscribeResult` |
 | `presets.catalog` | `NoParams` | `PresetsCatalogResult` |
 | `presets.current` | `NoParams` | `PresetsCurrentResult` |
 | `hooks.current` | `NoParams` | `HooksCurrentResult` |

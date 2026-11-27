@@ -54,7 +54,7 @@ function alignUtf8Forward(bytes: Buffer, from: number): number {
 }
 
 /** Keep at most `maxBytes` from the start, without splitting a UTF-8 sequence. */
-function sliceUtf8Head(text: string, maxBytes: number): string {
+export function sliceUtf8Head(text: string, maxBytes: number): string {
   const bytes = Buffer.from(text, 'utf8');
   if (bytes.length <= maxBytes) return text;
   let end = Math.max(0, maxBytes);

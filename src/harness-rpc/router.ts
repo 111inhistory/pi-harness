@@ -101,6 +101,7 @@ export function createRouter(deps: RouterDeps, main?: MainPort): RpcHandler {
     [RPC_METHODS.presetsCatalog]: () => application().presetsCatalog(),
     [RPC_METHODS.presetsCurrent]: () => application().presetsCurrent(),
     [RPC_METHODS.hooksCurrent]: () => application().hooksCurrent(),
+    [RPC_METHODS.shellJobsSubscribe]: (params, connection) => application().shellJobsSubscribe(params, connection),
     [RPC_METHODS.hooksMute]: params => application().hooksMute(params),
     [RPC_METHODS.hooksUnmute]: params => application().hooksUnmute(params),
     [RPC_METHODS.hooksReset]: () => application().hooksReset(),

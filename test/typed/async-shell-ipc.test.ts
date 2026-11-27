@@ -38,7 +38,7 @@ test('async shell callbacks share the root main endpoint and cannot target sibli
   const frame = {
     kind: 'async-shell', agentId: 'sub_1', operation: 'register', id: 'job_11111111',
     token: environment.PI_ASYNC_SHELL_TOKEN,
-    directory: taskDirectory('job_11111111'), pid: process.pid,
+    directory: taskDirectory('job_11111111'), pid: process.pid, pty: true,
   };
   // The same token presented under another Actor's name cannot claim the lease.
   await assert.rejects(writeSocket(main, { ...frame, agentId: 'sub_2' }), /no longer owns/);

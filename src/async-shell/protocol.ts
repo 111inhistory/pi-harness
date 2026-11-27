@@ -61,6 +61,7 @@ export interface AsyncShellRegisterFrame {
   readonly id: string;
   readonly directory: string;
   readonly pid: number;
+  readonly pty: boolean;
   readonly callId?: string;
 }
 
@@ -192,8 +193,10 @@ export function validateAsyncShellFrame(value: unknown): AsyncShellFrame {
     if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
       throw new AsyncShellFrameError("pid must be a positive integer.");
     }
+    const pty = value['pty'];
+    if (typeof pty !== 'boolean') throw new AsyncShellFrameError('pty must be a boolean.');
     const callId = value['callId'];
-    return { kind: ASYNC_SHELL_KIND, agentId, token, operation, id, directory, pid,
+    return { kind: ASYNC_SHELL_KIND, agentId, token, operation, id, directory, pid, pty,
       ...(callId === undefined ? {} : { callId: text(callId, 'callId', MAX_TOKEN_CHARS) }) };
   }
   if (operation === "complete") {

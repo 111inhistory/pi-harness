@@ -510,6 +510,7 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 | `message.send` | 按完整逻辑地址投递、续跑或广播，返回领域回执与逐接收者结果；广播与子节点选择排除发送者，跨会话只允许 Main 到对方 `:main`，其他来源拒绝 |
 | `history.read` | 读取指定 Job 的原生历史区间；running Job 返回已产生区间与 live 端，首个 Job 的 `null` start 是合法边界（按分支开头读取），memory-only 会话明确报告历史不可用 |
 | `stream.subscribe`、`stream.unsubscribe` | 订阅或解除指定 Job 的子会话执行流；订阅响应携带读取边界（状态、轮次、历史区间、已产生消息与当前 `partial`），事件携带订阅、根会话、Agent 与 Job 归属 |
+| `shell.jobs.subscribe` | 读取当前根的活跃后台 Shell Job，并订阅后续变化 |
 
 - 公开参数、结果、校验和生成 schema 关联于 `src/harness-rpc/contract.ts`，编译时核对方法覆盖及结果类型。SDK 事件与历史保留不透明载荷。领域错误保留 code、message 和 detail；登记后的启动失败以 `start_failed` 和 detail 中的 registered／failures 报告，不能视为整批未创建。查询与回执不额外写入 Main 对话，操作自身仍保留业务记录。
 - 子任务操作使用当前领域绑定；Root 过渡期间拒绝访问旧服务。SDK Main 控制独立于 Subagent 健康状态；后续回调受绑定代次围栏隔离。
@@ -532,6 +533,14 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 `hooks.mute` 和 `hooks.unmute` 接收 `{ id }`。`hooks.reset` 无参数。三种方法均返回 `{ changed, muted }`，其中 `muted` 按 ID 的 ASCII 顺序排列。会话必须空闲；分支无法写入时返回 `not_ready`。未安装 Hooks 时返回 `unavailable`。
 
 客户端可静音尚未定义的 ID。`hooks.unmute` 和 `hooks.reset` 只清除分支静音。TOML 中的 `enabled = false` 仍然生效。重复设置相同状态时，方法返回 `changed: false`，不追加记录。静音会撤销旧规则的待提交动作；取消静音只授权后续匹配。
+
+### Shell Job 观察
+
+`shell.jobs.subscribe` 接收可选的 `{ agentId }`。宿主在同一次操作中返回 `{ subscription, jobs }` 并安装订阅。`jobs` 只含当前根中已转后台且还未结束的 Shell Job。客户端用 `stream.unsubscribe` 退订。根退役时宿主解除订阅；客户端连接到新根后可重新订阅。
+
+事件的 `kind` 为 `shell_job`，并带 `rootSessionId`。`phase` 为 `backgrounded` 或 `finished`。普通前台命令不产生事件。采用受管环境直接启动 `pi-job` 时，注册表示宿主已接纳启动，进程可能尚未开始。此时 `shell`、`cwd` 和 `command` 为 `null`。`pid` 是登记进程的 PID，`startedAt` 和 `finishedAt` 是 Unix 毫秒时间。
+
+事件不含 stdout 或 stderr。`command` 最多 4 KiB（UTF-8），`commandTruncated` 标记省略，`logPath` 指向完整日志。`finished` 携带 `status`、`exitCode` 和 `truncated`。`internal_error` 可以结束观察，底层资源仍可能由原根保留并清理。新订阅不补发已结束的 Job。
 
 ### 执行流
 

@@ -953,6 +953,21 @@
       ]
     },
     {
+      "id": "async-shell.rpc-observation",
+      "kind": "design",
+      "docs": [
+        {
+          "path": "docs/interface-contract.md",
+          "heading": "### Shell Job 观察"
+        }
+      ],
+      "tests": [
+        "test/typed/async-shell-host.test.ts",
+        "test/typed/async-shell-observation-start.test.ts",
+        "test/typed/harness-rpc-application.test.ts"
+      ]
+    },
+    {
       "id": "capability.tool-permission",
       "kind": "design",
       "docs": [

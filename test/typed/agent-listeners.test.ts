@@ -124,7 +124,7 @@ test('an async shell frame is routed by its named Actor and never enters message
 
   const address = formatMainEndpointPath(sessionDirectory(root));
   const frame = { kind: 'async-shell', agentId: 'sub_1', token: 'token-a', operation: 'register',
-    id: 'job_11111111', directory: path.join(root, 'job_11111111'), pid: process.pid };
+    id: 'job_11111111', directory: path.join(root, 'job_11111111'), pid: process.pid, pty: true };
   await writeSocket(address, frame);
   assert.deepEqual(shell, [{ actorId: 'sub_1', frame }]);
   assert.deepEqual(delivered, [], 'a shell callback never becomes an Agent message');
