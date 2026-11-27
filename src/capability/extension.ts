@@ -153,6 +153,8 @@ export interface CapabilityHookPort {
   }): ReturnType<typeof activateToolTargets> | undefined;
   discover(ctx: ExtensionContext, request: {
     readonly branchEpoch: number; readonly seed: string; readonly signal?: AbortSignal;
+    /** A monotonic deadline, using the same performance clock as the caller. */
+    readonly deadline?: number;
   }): { readonly accepted: true; readonly done: Promise<'published' | 'empty' | 'failed' | 'cancelled'> }
     | { readonly accepted: false; readonly reason: 'suppressed' | 'cancelled' };
 }
@@ -478,9 +480,11 @@ export default function capabilityExtension(
     ctx: ExtensionContext,
     signal: AbortSignal,
     expectedEpoch: number,
-    invocation: { readonly toolCallId: string } | { readonly seed: string },
+    invocation: { readonly toolCallId: string } | { readonly seed: string; readonly deadline?: number },
   ) => {
-    const isCurrent = (): boolean => !closed && branchEpoch === expectedEpoch && !signal.aborted;
+    const deadline = 'deadline' in invocation ? invocation.deadline : undefined;
+    const isCurrent = (): boolean => !closed && branchEpoch === expectedEpoch && !signal.aborted
+      && (deadline === undefined || performance.now() < deadline);
     let result: CapabilityDiscoveryResult;
     let previouslyActive = new Set<string>();
     let activation: Activation | undefined;
@@ -518,6 +522,7 @@ export default function capabilityExtension(
         }
         // Persist before making selected tools visible. The epoch check and
         // these synchronous mutations share one event-loop boundary.
+        if (!isCurrent()) return { result: cancelledBeforePublication(result), previouslyActive, activation, published };
         try {
           appendDiscoveryRecord(pi as DiscoveryRecordWriter, toolCallId, result, result.coverage);
           published = true;
@@ -561,14 +566,16 @@ export default function capabilityExtension(
       return activateToolTargets(pi, pi, ctx.sessionManager.getBranch(), request.targets);
     },
     discover(ctx, request) {
-      if (closed || branchEpoch !== request.branchEpoch || request.signal?.aborted) return { accepted: false, reason: 'cancelled' };
+      if (closed || branchEpoch !== request.branchEpoch || request.signal?.aborted
+          || (request.deadline !== undefined && performance.now() >= request.deadline)) return { accepted: false, reason: 'cancelled' };
       if (!discovery || background !== undefined || explicitRuns > 0) return { accepted: false, reason: 'suppressed' };
       const controller = new AbortController();
       background = controller;
       const done = (async () => {
         const clipped = clipText(request.seed, { maxLines: 80, maxBytes: 4096 }, 'head-tail');
         const { result, published } = await manager.run([controller.signal, request.signal], signal =>
-          runDiscovery(ctx, signal, request.branchEpoch, { seed: clipped.text }));
+          runDiscovery(ctx, signal, request.branchEpoch, { seed: clipped.text,
+            ...(request.deadline === undefined ? {} : { deadline: request.deadline }) }));
         if (result.endReason === 'cancelled') return 'cancelled';
         if (result.status === 'failed') return 'failed';
         return published ? 'published' : 'empty';

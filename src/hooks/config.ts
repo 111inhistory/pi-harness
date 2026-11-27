@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parse } from 'smol-toml';
 import { parseToolTarget } from '../capability/targets.ts';
+import type { HookClassifierInclude } from './projection.ts';
 import { compileWhen, type WhenTrigger } from './when.ts';
 
 export type HookTrigger = WhenTrigger;
@@ -18,12 +19,26 @@ export type HookAction =
   | { readonly type: 'activate'; readonly targets: readonly string[] }
   | { readonly type: 'discoverCapability'; readonly hint?: string };
 
+const HOOK_SLICE_FIELDS = ['prompt', 'result', 'recentInputs', 'recentTools', 'recentToolPreviews', 'toolDirectory'] as const satisfies readonly HookClassifierInclude[];
+type DeferredAction = Exclude<HookAction, { type: 'injectSection' }>;
+interface ClassifierPrompt {
+  readonly question: string;
+  readonly include: readonly HookClassifierInclude[];
+}
+export type HookClassification = ClassifierPrompt & (
+  | { readonly kind: 'bool' }
+  | { readonly kind: 'score'; readonly minScore: number }
+  | { readonly kind: 'choice'; readonly choices: readonly string[] }
+);
+
 export interface HookRule {
   readonly on: HookTrigger;
   readonly when?: string;
   readonly repeat?: HookRepeat;
   readonly timeoutMs?: number;
   readonly actions: readonly HookAction[];
+  readonly classify?: HookClassification;
+  readonly onChoice?: Readonly<Record<string, readonly DeferredAction[]>>;
 }
 
 export type HookRules = Readonly<Record<string, HookRule | { readonly enabled: false }>>;
@@ -90,13 +105,61 @@ function action(value: unknown, where: string): HookAction {
   }
 }
 
+function classification(value: unknown, trigger: HookTrigger, where: string): HookClassification {
+  const raw = fields(value, ['kind', 'question', 'include', 'minScore', 'choices'], where);
+  const question = boundedText(raw.question, 1000, `${where}.question`);
+  const include: HookClassifierInclude[] = [];
+  if (raw.include !== undefined) {
+    if (!Array.isArray(raw.include) || raw.include.length > HOOK_SLICE_FIELDS.length) throw new Error(`${where}.include must be a list of projection fields`);
+    for (const item of raw.include) {
+      const field = HOOK_SLICE_FIELDS.find(field => item === field);
+      if (field === undefined || (field === 'result' && trigger === 'before_agent_start') || (field === 'prompt' && trigger === 'tool_result')) {
+        throw new Error(`${where}.include contains an unavailable field for ${trigger}`);
+      }
+      if (include.includes(field)) throw new Error(`${where}.include contains a duplicate field`);
+      include.push(field);
+    }
+    include.sort();
+  }
+  if (raw.kind !== 'score' && raw.minScore !== undefined) throw new Error(`${where}.minScore requires kind = 'score'`);
+  if (raw.kind !== 'choice' && raw.choices !== undefined) throw new Error(`${where}.choices requires kind = 'choice'`);
+  switch (raw.kind) {
+    case 'bool': return { kind: 'bool', question, include };
+    case 'score': {
+      const minScore = raw.minScore;
+      if (typeof minScore !== 'number' || !Number.isFinite(minScore) || minScore < 0 || minScore > 1) throw new Error(`${where}.minScore must be from 0 to 1`);
+      return { kind: 'score', question, include, minScore };
+    }
+    case 'choice': {
+      if (!Array.isArray(raw.choices) || raw.choices.length < 1 || raw.choices.length > 16) throw new Error(`${where}.choices requires 1 to 16 names`);
+      const choices = raw.choices.map((item: unknown) => {
+        const name = boundedText(item, 64, `${where}.choices`);
+        if (!/^[a-z][a-z0-9_-]*$/.test(name)) throw new Error(`${where}.choices contains an invalid name`);
+        return name;
+      });
+      if (new Set(choices).size !== choices.length) throw new Error(`${where}.choices contains duplicate names`);
+      return { kind: 'choice', question, include, choices };
+    }
+    default: throw new Error(`${where}.kind must be bool, score, or choice`);
+  }
+}
+
+function actionsOf(value: unknown, where: string): HookAction[] {
+  if (!Array.isArray(value) || value.length > 8) throw new Error(`${where} must be an array of at most 8 actions`);
+  return value.map((item: unknown, index) => action(item, `${where}.${index}`));
+}
+
+function isDeferredAction(action: HookAction): action is DeferredAction {
+  return action.type !== 'injectSection';
+}
+
 export function normalizeHookRules(value: unknown, validateWhen = true): HookRules {
   const entries = Object.entries(table(value, 'hooks')).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
   if (entries.length > 32) throw new Error('a Hook layer may define at most 32 rules');
   const rules: Record<string, HookRules[string]> = Object.create(null);
   for (const [id, value] of entries) {
     if (!/^[a-z][a-z0-9-]{0,63}$/.test(id)) throw new Error(`invalid Hook id: ${id}`);
-    const raw = fields(value, ['enabled', 'description', 'on', 'when', 'repeat', 'timeoutMs', 'actions'], id);
+    const raw = fields(value, ['enabled', 'description', 'on', 'when', 'repeat', 'timeoutMs', 'actions', 'classify', 'onChoice'], id);
     if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') throw new Error(`${id}.enabled must be boolean`);
     if (raw.description !== undefined) boundedText(raw.description, 500, `${id}.description`);
     if (raw.enabled === false && Object.keys(raw).every(key => key === 'enabled' || key === 'description')) {
@@ -125,9 +188,23 @@ export function normalizeHookRules(value: unknown, validateWhen = true): HookRul
       }
     }
     const timeoutMs = optionalInteger(raw.timeoutMs, 120_000, `${id}.timeoutMs`);
-    const rawActions = raw.actions ?? [];
-    if (!Array.isArray(rawActions) || rawActions.length > 8) throw new Error(`${id}.actions must be an array of at most 8 actions`);
-    const actions = rawActions.map((item: unknown, index) => action(item, `${id}.actions.${index}`));
+    const actions = actionsOf(raw.actions === undefined ? [] : raw.actions, `${id}.actions`);
+    const classify = raw.classify === undefined ? undefined : classification(raw.classify, raw.on, `${id}.classify`);
+    let onChoice: HookRule['onChoice'];
+    if (raw.onChoice !== undefined) {
+      if (classify?.kind !== 'choice') throw new Error(`${id}.onChoice requires classify.kind = 'choice'`);
+      const mapped = fields(raw.onChoice, classify.choices, `${id}.onChoice`);
+      const normalized: Record<string, readonly DeferredAction[]> = Object.create(null);
+      for (const choice of classify.choices) {
+        if (!Object.hasOwn(mapped, choice)) continue;
+        const branch = actionsOf(mapped[choice], `${id}.onChoice.${choice}`);
+        if (!branch.every(isDeferredAction)) throw new Error(`${id}.onChoice cannot injectSection`);
+        normalized[choice] = branch;
+      }
+      if (Object.keys(normalized).length > 0) onChoice = normalized;
+    }
+    if (classify?.kind === 'choice' && actions.length > 0) throw new Error(`${id}: use onChoice for choice actions`);
+    if (classify !== undefined && !actions.every(isDeferredAction)) throw new Error(`${id}: classify cannot injectSection`);
     if (actions.some(item => item.type === 'injectSection')
         && (raw.on !== 'before_agent_start' || actions.length !== 1 || repeat !== undefined || timeoutMs !== undefined)) {
       throw new Error(`${id}: injectSection needs a dedicated before_agent_start rule without repeat or timeoutMs`);
@@ -135,6 +212,7 @@ export function normalizeHookRules(value: unknown, validateWhen = true): HookRul
     rules[id] = raw.enabled === false ? { enabled: false } : {
       on: raw.on, ...(when === undefined ? {} : { when }), ...(repeat === undefined ? {} : { repeat }),
       ...(timeoutMs === undefined ? {} : { timeoutMs }), actions,
+      ...(classify === undefined ? {} : { classify }), ...(onChoice === undefined ? {} : { onChoice }),
     };
   }
   return rules;

@@ -149,6 +149,29 @@ Preset 在 `[<name>.hooks.<rule-id>]` 下使用同一规则结构。`before_agen
 
 `repeat.maxTriggers` 和 `repeat.cooldownTurns` 必须同时满足（未设置的项不限）。冷却按分支持久化的真实用户输入推进；在运行中交付的用户消息也推进冷却，已有运行的 `turn.*` 统计仍沿用原起点。`resetOnCompaction = true` 在成功压缩后清空本规则的次数和冷却记录。提示的 repeat 记录随原生消息持久化；激活与发现按动作被接受的位置记账，即使触发动作时用户消息还未落盘。单条规则的总时限默认取 `harness.json` 的 `hooks.timeoutMs`（5,000 ms），可用规则的 `timeoutMs` 收紧，且 Capability 自身的预算仍可更早结束。
 
+### 后台分类
+
+`classify` 规则在 `when` 命中后使用 `classifier.models` 的有序候选。候选为空时，会话加载会提示并跳过分类规则，其余规则仍可运行。每会话最多两个异步 Hook，每轮最多四次实际 SDK 分类器调用；同 ID 同时只运行一次，资源槽在底层清理完成后释放。
+
+```toml
+[classify-review]
+on = "tool_result"
+when = "tool == 'read'"
+
+[classify-review.classify]
+kind = "choice"
+question = "Choose implementation when the observed file is an implementation file, otherwise other."
+choices = ["implementation", "other"]
+include = ["result"]
+
+[classify-review.onChoice]
+implementation = [{ type = "injectHint", text = "Check the public contract before editing the implementation." }]
+```
+
+- `bool` 在肯定概率大于 `0.5` 时选择 `actions`；`score` 在得分达到 `minScore` 时选择 `actions`，分数与阈值范围为 `[0, 1]`。`choice` 要求有序、唯一的 `choices`，并由 `onChoice` 映射到静态动作数组。未配置动作的合法答案只作观察。畸形答案不触发动作，也不消耗 `repeat`。
+- 分类规则不支持 `injectSection`。分类后的 `injectHint` 仅在同轮后续已执行的顶层工具结果边界投递，不主动唤醒模型；轮结束时丢弃待投递提示。`activate` 与 `discoverCapability` 可在原轮结束后向仍有效的分支静默提交。分类、候选切换、动作执行与等待提示投递共享同一个单调时限。
+- 分类默认仅发送结构化事实。`include` 可显式加入 `prompt`（仅启动事件）、`result`（仅工具结果）、`recentInputs`、`recentTools`、`recentToolPreviews`、`toolDirectory`。`recentInputs` 只含最近一次压缩后的用户输入与 peer 投递，最多三条；`recentTools` 最多六条轻量记录，另开 `recentToolPreviews` 才会附带少量允许的搜索参数文本。工具目录只有名称与简短描述。上下文 JSON 上限为 16 KiB（UTF-8），截断带 `clipped`。显式加入正文后，文本可能包含敏感信息，并可能发送给多个配置的分类供应商。
+
 ## Capability
 
 ### Budget 与进度

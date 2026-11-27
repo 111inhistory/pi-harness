@@ -459,6 +459,7 @@ async function runCapabilityLifecycleCase(mode: 'navigate' | 'shutdown' | 'cance
       assert.ok(hookPort);
       const { branchEpoch } = hookPort.snapshot(context);
       const request = { branchEpoch, seed: 'background seed' };
+      assert.deepEqual(hookPort.discover(context, { ...request, deadline: performance.now() - 1 }), { accepted: false, reason: 'cancelled' });
       const pending = hookPort.discover(context, request);
       assert.equal(pending.accepted, true);
       await waitFor(() => retrievalCalls >= 2, { label: 'held background retrieval model' });

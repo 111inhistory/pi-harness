@@ -2,22 +2,47 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { getAgentDir, SettingsManager, type ExtensionAPI, type ExtensionContext, type SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { CapabilityHookPort } from '../capability/extension.ts';
+import { runClassifier } from '../classifier-client.ts';
 import { harnessConfigFor } from '../harness-config.ts';
 import { PRESET_STATE_RECORD, restorePresetSnapshot } from '../preset/state.ts';
 import { applySystemPromptSections } from '../request-instructions.ts';
+import { clipText } from '../text-output.ts';
 import { extractBranchToolObservations, installToolObservation, type ToolObservation } from '../tool-observation.ts';
-import { mergeHookLayers, readHookLayer, type HookRule, type HookRules } from './config.ts';
+import { canClassifyForBranch, classifiedActions, hookQuestion, HOOK_QUESTION } from './classify.ts';
+import { mergeHookLayers, readHookLayer, type HookAction, type HookRule, type HookRules } from './config.ts';
+import { buildHookClassifierSlice, type HookClassifierSubject, type HookClassifierSources, type HookClassifierToolFact } from './projection.ts';
 import { HOOK_HINT_MESSAGE, HOOK_REPEAT_RECORD, readHintReceipts, restoreRepeat, type HookReceipt } from './repeat.ts';
 import { compileWhen, evaluateWhen, type CompiledWhen, type WhenContext } from './when.ts';
 
 const MAX_HINT_BYTES = 8192;
 const MAX_MATCH_PARENTS = 128;
+const MAX_ASYNC_HOOKS = 2;
+const MAX_TURN_ATTEMPTS = 4;
+const ATTEMPT_REFUSED = Symbol('hook classifier attempt refused');
 
 interface Counters { modelCalls: number; toolCalls: number; nestedToolCalls?: number; toolErrors: number }
 interface EffectiveRule { readonly id: string; readonly key: string; readonly rule: HookRule; readonly when?: CompiledWhen }
-interface MatchedRule { readonly rule: EffectiveRule; readonly seed: string }
+interface MatchedRule {
+  readonly rule: EffectiveRule;
+  readonly seed: string;
+  readonly classification?: { readonly subject: HookClassifierSubject; readonly sources: HookClassifierSources };
+  readonly deferred?: DeferredCommit;
+}
 interface Hint { readonly text: string; readonly display: boolean }
-interface HintBatch { readonly hints: readonly Hint[]; readonly receipts: readonly HookReceipt[] }
+interface HintBatch {
+  readonly hints: readonly Hint[];
+  readonly receipts: readonly HookReceipt[];
+  readonly discoveryRuns: readonly Promise<unknown>[];
+  readonly acceptedRules: ReadonlySet<string>;
+}
+
+interface DeferredCommit {
+  readonly actions: readonly HookAction[];
+  readonly deadline: number;
+  readonly signal: AbortSignal;
+  readonly branchEpoch: number;
+  readonly repeatAlreadyAccepted?: true;
+}
 
 function turnCounters(): Counters { return { modelCalls: 0, toolCalls: 0, nestedToolCalls: 0, toolErrors: 0 }; }
 
@@ -74,6 +99,23 @@ function observationResult(observation: ToolObservation): NonNullable<WhenContex
   };
 }
 
+function classifierResultSource(observation: ToolObservation): HookClassifierSources {
+  let result = '';
+  let clipped = false;
+  for (let index = (observation.content?.length ?? 0) - 1; index >= 0; index -= 1) {
+    const block = observation.content?.[index];
+    if (block?.type !== 'text' || block.text === '') continue;
+    const remaining = 4096 - result.length - Number(result.length > 0);
+    if (remaining <= 0) { clipped = true; break; }
+    let start = Math.max(0, block.text.length - remaining);
+    // Do not manufacture an unpaired low surrogate at the cut boundary.
+    if (start > 0 && (block.text.charCodeAt(start) & 0xfc00) === 0xdc00) start += 1;
+    result = block.text.slice(start) + (result.length > 0 ? `\n${result}` : '');
+    if (start !== 0) { clipped = true; break; }
+  }
+  return { result, resultClipped: clipped };
+}
+
 function posixBash(pi: ExtensionAPI): boolean {
   const shell = SettingsManager.inMemory(pi.getSettings()).getShellPath();
   return shell === undefined ? process.platform !== 'win32' : /(?:^|[\\/])(?:ba|da|z|k)?sh(?:\.exe)?$/i.test(shell);
@@ -90,39 +132,70 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
   let project: HookRules = {};
   let layerContext: { readonly cwd: string; readonly trusted: boolean } | undefined;
   let layersValid = true;
+  const running = new Map<string, { readonly controller: AbortController; readonly requiresTurn: boolean }>();
   let branchState: {
     readonly rules: readonly EffectiveRule[];
     readonly preset: string | undefined;
     userTurn: number;
     readonly repeat: ReturnType<typeof restoreRepeat>;
     readonly bashIsPosix: boolean;
+    readonly capturePreviews: boolean;
+    readonly recentTools: HookClassifierToolFact[];
+    recentToolsClipped: boolean;
     leaf: string | null;
   } | undefined;
   let turnState: {
     awaitingStartUser: boolean;
     counters: Counters | undefined;
     readonly pendingHints: Map<string, HookReceipt[]>;
+    readonly passiveHints: Map<string, MatchedRule>;
     readonly nested: Map<string, Map<string, MatchedRule>>;
+    attempts: number;
+    compactions: number;
     producingModel?: NonNullable<WhenContext['model']>;
   } | undefined;
 
-  const invalidateBranch = (): void => { branchState = undefined; turnState = undefined; };
-  pi.on('agent_settled', (_event, ctx) => {
-    const observedRun = turnState !== undefined;
+  const invalidateBranch = (): void => {
+    branchState = undefined;
     turnState = undefined;
-    if (!observedRun || branchState === undefined) return;
+    for (const task of running.values()) task.controller.abort();
+  };
+
+  function acceptPersistedHint(details: unknown): void {
+    if (branchState === undefined || turnState === undefined) return;
+    for (const receipt of readHintReceipts(details)) {
+      const pending = turnState.pendingHints.get(receipt.key);
+      const index = pending?.findIndex(candidate => candidate.turn === receipt.turn) ?? -1;
+      if (pending === undefined || index < 0) continue;
+      pending.splice(index, 1);
+      if (pending.length === 0) turnState.pendingHints.delete(receipt.key);
+      branchState.repeat.accept(receipt.key, receipt.turn);
+    }
+  }
+
+  function advanceBranch(ctx: ExtensionContext, observedRun: boolean): void {
+    const branch = branchState;
+    if (branch === undefined) return;
     const manager = ctx.sessionManager;
     const leaf = manager.getLeafId();
-    // Receipts and user entries were consumed live. A Preset applied by another
-    // component still forces the effective rule set to be rebuilt next run.
     let cursor = leaf;
-    while (cursor !== null && cursor !== branchState.leaf) {
+    while (cursor !== null && cursor !== branch.leaf) {
       const entry = manager.getEntry(cursor);
       if (entry === undefined || (entry.type === 'custom' && entry.customType === PRESET_STATE_RECORD)) break;
+      if (!observedRun && (entry.type === 'compaction' || (entry.type === 'message' && entry.message.role === 'user'))) break;
+      // SDK passive custom messages are persisted without extension message_end.
+      // A reservation already reconciled by message_end has no effect here.
+      if (entry.type === 'custom_message' && entry.customType === HOOK_HINT_MESSAGE) acceptPersistedHint(entry.details);
       cursor = entry.parentId;
     }
-    if (cursor === branchState.leaf) branchState.leaf = leaf;
+    if (cursor === branch.leaf) branch.leaf = leaf;
     else branchState = undefined;
+  }
+
+  pi.on('agent_settled', (_event, ctx) => {
+    if (turnState !== undefined) advanceBranch(ctx, true);
+    turnState = undefined;
+    for (const task of running.values()) if (task.requiresTurn) task.controller.abort();
   });
   pi.on('session_before_switch', invalidateBranch);
   pi.on('session_before_fork', invalidateBranch);
@@ -131,7 +204,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
   pi.on('session_shutdown', invalidateBranch);
   pi.on('session_start', () => { layerContext = undefined; invalidateBranch(); });
 
-  function bindBranch(ctx: ExtensionContext): typeof branchState {
+  function bindBranch(ctx: ExtensionContext, mode: 'start' | 'commit' = 'start'): typeof branchState {
     const trusted = ctx.isProjectTrusted();
     if (layerContext?.cwd !== ctx.cwd || layerContext.trusted !== trusted) {
       global = {};
@@ -151,24 +224,18 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
     if (!layersValid) return undefined;
     const manager = ctx.sessionManager;
     const leaf = manager.getLeafId();
-    if (branchState !== undefined) {
-      let cursor = leaf;
-      while (cursor !== branchState.leaf && cursor !== null) {
-        const entry = manager.getEntry(cursor);
-        if (entry === undefined || (entry.type === 'custom' && entry.customType === PRESET_STATE_RECORD)
-          || entry.type === 'compaction' || (entry.type === 'message' && entry.message.role === 'user')) break;
-        cursor = entry.parentId;
-      }
-      if (cursor === branchState.leaf) {
-        branchState.leaf = leaf;
-        return branchState;
-      }
-      branchState = undefined;
-    }
+    advanceBranch(ctx, mode === 'commit' && turnState !== undefined);
+    if (branchState !== undefined) return branchState;
     const branch = manager.getBranch();
     const snapshot = restorePresetSnapshot(branch);
     const rules: EffectiveRule[] = [];
+    let classifierUnavailable = false;
+    const hasClassifier = configFor(ctx).classifier.models.length > 0;
     for (const [id, rule] of mergeHookLayers(global, snapshot?.hooks ?? {}, project)) {
+      if (rule.classify !== undefined && !hasClassifier) {
+        classifierUnavailable = true;
+        continue;
+      }
       try {
         rules.push({ id, key: ruleIdentity(id, rule), rule,
           ...(rule.when === undefined ? {} : { when: compileWhen(rule.when, rule.on) }) });
@@ -176,8 +243,11 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
         ctx.ui.notify(`Hooks: ${id}: ${error instanceof Error ? error.message : String(error)}`, 'error');
       }
     }
+    if (classifierUnavailable) ctx.ui.notify('Hooks: classified rules require at least one classifier.models entry.', 'warning');
     const repeat = restoreRepeat(branch, new Map(rules.flatMap(entry => entry.rule.repeat === undefined ? [] : [[entry.key, entry.rule.repeat]])));
-    branchState = { rules, preset: snapshot?.name, repeat, userTurn: repeat.userTurn, bashIsPosix: posixBash(pi), leaf };
+    const capturePreviews = rules.some(({ rule }) => rule.classify?.include.includes('recentToolPreviews'));
+    branchState = { rules, preset: snapshot?.name, repeat, userTurn: repeat.userTurn,
+      bashIsPosix: posixBash(pi), recentTools: [], recentToolsClipped: false, capturePreviews, leaf };
     return branchState;
   }
 
@@ -187,11 +257,11 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
     turnState = {
       awaitingStartUser: origin === 'user',
       counters: origin === 'resume' ? recoverTurn(ctx.sessionManager.getBranch()) : turnCounters(),
-      pendingHints: new Map(), nested: new Map(),
+      pendingHints: new Map(), passiveHints: new Map(), nested: new Map(), attempts: 0, compactions: 0,
     };
   }
 
-  function matches(on: HookRule['on'], extras: Partial<WhenContext>, ctx: ExtensionContext, seed: string): MatchedRule[] {
+  function matches(on: HookRule['on'], extras: Partial<WhenContext>, ctx: ExtensionContext, seed: string, observation?: ToolObservation): MatchedRule[] {
     if (branchState === undefined || turnState === undefined) return [];
     const model = on === 'tool_result' && turnState.producingModel !== undefined ? turnState.producingModel
       : ctx.model !== undefined && ctx.model.api !== 'pi-virtual' ? { provider: ctx.model.provider, id: ctx.model.id }
@@ -202,28 +272,58 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
       ...(model === undefined ? {} : { model }),
       ...extras,
     };
-    return branchState.rules.flatMap(rule => rule.rule.on === on && (rule.when === undefined || evaluateWhen(rule.when, environment) === 'true')
-      ? [{ rule, seed }] : []);
+    const context = environment.result;
+    const subject: HookClassifierSubject = {
+      trigger: on,
+      ...(model === undefined ? {} : { model }),
+      ...(environment.preset === undefined ? {} : { preset: environment.preset }),
+      ...(environment.tool === undefined ? {} : { tool: environment.tool }),
+      ...(environment.nested === undefined ? {} : { nested: environment.nested }),
+      ...(environment.turn === undefined ? {} : { turn: { ...environment.turn } }),
+      ...(context === undefined ? {} : { result: {
+        ...(context.isError === undefined ? {} : { isError: context.isError }),
+        ...(context.truncated === undefined ? {} : { truncated: context.truncated }),
+        ...(context.errorKind === undefined ? {} : { errorKind: context.errorKind }),
+        ...(context.outputChars === undefined ? {} : { outputChars: context.outputChars }),
+      } }),
+    };
+    let resultSource: HookClassifierSources | undefined;
+    return branchState.rules.flatMap(rule => {
+      if (rule.rule.on !== on || (rule.when !== undefined && evaluateWhen(rule.when, environment) !== 'true')) return [];
+      const include = rule.rule.classify?.include;
+      if (include === undefined) return [{ rule, seed }];
+      const sources: HookClassifierSources = {
+        ...(include.includes('prompt') && environment.prompt !== undefined ? { prompt: environment.prompt } : {}),
+        ...(include.includes('result') && observation !== undefined ? (resultSource ??= classifierResultSource(observation)) : {}),
+      };
+      return [{ rule, seed, classification: { subject, sources } }];
+    });
   }
 
   function runBatch(hits: Iterable<MatchedRule>, ctx: ExtensionContext, canDeliverHint: () => boolean): HintBatch {
-    if (branchState === undefined || turnState === undefined || ctx.signal?.aborted) return { hints: [], receipts: [] };
+    const discoveryRuns: Promise<unknown>[] = [];
+    const acceptedRules = new Set<string>();
+    if (branchState === undefined) return { hints: [], receipts: [], discoveryRuns, acceptedRules };
     const branch = branchState;
     const turn = turnState;
-    const userTurn = branch.userTurn + Number(turn.awaitingStartUser);
+    const userTurn = branch.userTurn + Number(turn?.awaitingStartUser === true);
     const hints = new Map<string, Hint>();
     const receipts = new Map<string, HookReceipt>();
     let hintBytes = 0;
-    const epoch = capability.branchEpoch();
-    for (const { rule: effective, seed } of [...hits].sort((a, b) => a.rule.id < b.rule.id ? -1 : a.rule.id > b.rule.id ? 1 : 0)) {
+    for (const { rule: effective, seed, deferred } of [...hits].sort((a, b) => a.rule.id < b.rule.id ? -1 : a.rule.id > b.rule.id ? 1 : 0)) {
+      const signal = deferred?.signal ?? ctx.signal;
+      const epoch = deferred?.branchEpoch ?? capability.branchEpoch();
       const { rule, key } = effective;
-      if (!branch.repeat.allows(key, userTurn, turn.pendingHints.get(key))) continue;
+      if (rule.classify !== undefined && deferred === undefined) continue;
+      if (deferred !== undefined && !branch.rules.some(rule => rule.key === key)) continue;
+      if (!deferred?.repeatAlreadyAccepted && !branch.repeat.allows(key, userTurn, turn?.pendingHints.get(key))) continue;
       const timeoutMs = Math.min(120_000, configFor(ctx).hooks.timeoutMs, rule.timeoutMs ?? Infinity);
-      const deadline = performance.now() + timeoutMs;
+      const deadline = deferred?.deadline ?? performance.now() + timeoutMs;
       let actionAccepted = false;
       let receiptRecorded = false;
       const accept = (kind: 'hint' | 'action'): void => {
-        if (rule.repeat === undefined) return;
+        if (kind === 'action') acceptedRules.add(key);
+        if (rule.repeat === undefined || deferred?.repeatAlreadyAccepted) return;
         if (receiptRecorded) return;
         const receipt = { key, turn: userTurn };
         if (kind === 'hint') {
@@ -238,8 +338,8 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
         receiptRecorded = true;
         receipts.delete(key);
       };
-      for (const action of rule.actions) {
-        if (performance.now() >= deadline || ctx.signal?.aborted || branchState !== branch || turnState !== turn
+      for (const action of deferred?.actions ?? rule.actions) {
+        if (performance.now() >= deadline || signal?.aborted || branchState !== branch || (deferred === undefined && turnState !== turn)
           || capability.branchEpoch() !== epoch) break;
         try {
           if (action.type === 'injectHint') {
@@ -261,15 +361,20 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
           } else if (action.type === 'discoverCapability') {
             const remaining = Math.ceil(deadline - performance.now());
             if (remaining > 0) {
+              if (deferred === undefined && (running.size >= MAX_ASYNC_HOOKS || running.has(effective.id))) continue;
               const controller = new AbortController();
               const discovery = capability.discover(ctx, {
-                branchEpoch: epoch, seed: action.hint === undefined ? seed : `${seed}\n\n${action.hint}`,
-                signal: AbortSignal.any([controller.signal, AbortSignal.timeout(remaining)]),
+                branchEpoch: epoch, deadline, seed: action.hint === undefined ? seed : `${seed}\n\n${action.hint}`,
+                signal: deferred === undefined
+                  ? AbortSignal.any([controller.signal, AbortSignal.timeout(remaining)])
+                  : AbortSignal.any([controller.signal, AbortSignal.timeout(remaining), deferred.signal]),
               });
               if (!discovery.accepted) continue;
-              void discovery.done.catch(error => {
+              if (deferred === undefined) running.set(effective.id, { controller, requiresTurn: false });
+              const finished = discovery.done.catch(error => {
                 if (capability.branchEpoch() === epoch) ctx.ui.notify(`Hooks: ${effective.id}: ${error instanceof Error ? error.message : String(error)}`, 'error');
-              });
+              }).finally(() => { if (deferred === undefined) running.delete(effective.id); });
+              discoveryRuns.push(finished);
               try { accept('action'); }
               catch (error) { controller.abort(); throw error; }
             }
@@ -283,7 +388,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
         }
       }
     }
-    return { hints: [...hints.values()], receipts: [...receipts.values()] };
+    return { hints: [...hints.values()], receipts: [...receipts.values()], discoveryRuns, acceptedRules };
   }
 
   function hintMessage({ hints, receipts }: HintBatch, ctx: ExtensionContext) {
@@ -295,6 +400,75 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
     // SDK never persists must not silently consume a durable repeat allowance.
     return { customType: HOOK_HINT_MESSAGE, content: hints.map(hint => hint.text).join('\n\n'), display,
       ...(receipts.length === 0 ? {} : { details: { repeat: receipts } }) };
+  }
+
+  function startClassification(hit: MatchedRule, ctx: ExtensionContext): void {
+    const branch = branchState;
+    const turn = turnState;
+    const { id, key, rule } = hit.rule;
+    const classify = rule.classify;
+    if (branch === undefined || turn === undefined || classify === undefined || hit.classification === undefined
+        || ctx.signal?.aborted || running.size >= MAX_ASYNC_HOOKS || running.has(id) || turn.passiveHints.has(id)
+        || turn.attempts >= MAX_TURN_ATTEMPTS) return;
+    const userTurn = branch.userTurn + Number(turn.awaitingStartUser);
+    if (!branch.repeat.allows(key, userTurn, turn.pendingHints.get(key))) return;
+
+    const config = configFor(ctx);
+    const duration = Math.min(120_000, config.hooks.timeoutMs, rule.timeoutMs ?? Infinity);
+    const deadline = performance.now() + duration;
+    const branchEpoch = capability.branchEpoch();
+    const controller = new AbortController();
+    const requiresTurn = !canClassifyForBranch(rule);
+    const compactions = turn.compactions;
+    running.set(id, { controller, requiresTurn });
+    const signal = controller.signal;
+    const timeout = setTimeout(() => controller.abort(), duration);
+    timeout.unref();
+
+    const { subject, sources } = hit.classification;
+    const run = async (): Promise<void> => {
+      const state = buildHookClassifierSlice(subject, classify.include, {
+        ...sources,
+        branch: () => ctx.sessionManager.getBranch(),
+        recentTools: branch.recentTools,
+        recentToolsClipped: branch.recentToolsClipped,
+        toolDirectory: () => capability.snapshot(ctx),
+      });
+      const outcome = await runClassifier({
+        registry: ctx.modelRegistry,
+        models: config.classifier.models,
+        signal,
+        context: { state, questions: { [HOOK_QUESTION]: hookQuestion(classify) } },
+        maxAttemptsPerModel: 1,
+        retryDelayMs: () => 0,
+        debitAttempt() {
+          if (turnState !== turn || turn.attempts >= MAX_TURN_ATTEMPTS || performance.now() >= deadline) throw ATTEMPT_REFUSED;
+          turn.attempts += 1;
+        },
+      });
+      if (outcome.outcome !== 'answered' || signal.aborted || performance.now() >= deadline || capability.branchEpoch() !== branchEpoch) return;
+      const actions = classifiedActions(rule, outcome.result.answers);
+      if (actions === undefined || actions.length === 0 || !bindBranch(ctx, 'commit')?.rules.some(entry => entry.key === key)) return;
+      const next = (actions: readonly HookAction[], repeatAlreadyAccepted = false): MatchedRule => ({
+        rule: hit.rule, seed: hit.seed,
+        deferred: { actions, deadline, signal, branchEpoch, ...(repeatAlreadyAccepted ? { repeatAlreadyAccepted: true } : {}) },
+      });
+      const hints = actions.filter(action => action.type === 'injectHint');
+      const branchActions = actions.filter(action => action.type === 'activate' || action.type === 'discoverCapability');
+      const commits = branchActions.length > 0 ? runBatch([next(branchActions)], ctx, () => false) : undefined;
+      if (hints.length > 0 && turnState === turn && turn.compactions === compactions) {
+        turn.passiveHints.set(id, next(hints, commits?.acceptedRules.has(key)));
+      }
+      if (commits !== undefined) await Promise.allSettled(commits.discoveryRuns);
+    };
+    void run().catch(error => {
+      if (error !== ATTEMPT_REFUSED && !signal.aborted && capability.branchEpoch() === branchEpoch) {
+        ctx.ui.notify(`Hooks: ${id}: classifier failed.`, 'warning');
+      }
+    }).finally(() => {
+      clearTimeout(timeout);
+      running.delete(id);
+    });
   }
 
   const acceptHintHandoff = (batch: HintBatch): void => {
@@ -325,6 +499,7 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
     }
     applySystemPromptSections(target, sections, Object.keys(target).filter(key => key.startsWith('hook-')));
     if (event.messageType !== 'user') return undefined;
+    for (const hit of hits) startClassification(hit, ctx);
     const batch = runBatch(hits, ctx, () => !ctx.signal?.aborted);
     if (batch.hints.length === 0 || ctx.signal?.aborted) return undefined;
     const message = hintMessage(batch, ctx);
@@ -341,21 +516,21 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
       if (turnState.counters !== undefined) turnState.counters.modelCalls += 1;
       turnState.producingModel = { provider: event.message.provider, id: event.message.model };
     } else if (event.message.role === 'custom' && event.message.customType === HOOK_HINT_MESSAGE) {
-      for (const receipt of readHintReceipts(event.message.details)) {
-        const pending = turnState.pendingHints.get(receipt.key);
-        const index = pending?.findIndex(candidate => candidate.turn === receipt.turn) ?? -1;
-        if (pending === undefined || index < 0) continue;
-        pending.splice(index, 1);
-        if (pending.length === 0) turnState.pendingHints.delete(receipt.key);
-        branchState.repeat.accept(receipt.key, receipt.turn);
-      }
+      acceptPersistedHint(event.message.details);
     }
   });
-  pi.on('session_compact', () => {
+  pi.on('session_compact', (_event, ctx) => {
+    if (turnState !== undefined) advanceBranch(ctx, true);
     branchState?.repeat.compact();
+    if (branchState !== undefined) {
+      branchState.recentTools.length = 0;
+      branchState.recentToolsClipped = false;
+    }
     if (turnState === undefined) return;
     turnState.counters = turnCounters();
     turnState.nested.clear();
+    turnState.passiveHints.clear();
+    turnState.compactions += 1;
   });
 
   installToolObservation(pi, (observation, _event, ctx) => {
@@ -366,11 +541,22 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
     const inherited = state.nested.get(observation.callId) ?? new Map<string, MatchedRule>();
     state.nested.delete(observation.callId);
     if (observation.status === 'cancelled' || observation.status === 'unfinished') return;
+    const { toolName, isNested, status, isError, source } = observation;
+    if (branch.recentTools.length === 6) {
+      branch.recentTools.shift();
+      branch.recentToolsClipped = true;
+    }
+    // Limit previews to selected built-in search text. Never expose path
+    // arguments, arbitrary tool inputs, or any historical provider output.
+    const pattern = branch.capturePreviews && (toolName === 'grep' || toolName === 'find') ? observation.input?.['pattern'] : undefined;
+    const preview = typeof pattern === 'string' ? clipText(pattern, { maxBytes: 256, maxLines: 100 }, 'tail') : undefined;
+    branch.recentTools.push({ toolName, isNested, status, isError, source,
+      ...(preview === undefined ? {} : { inputPreview: preview.text, inputPreviewClipped: preview.truncated }) });
     for (const match of matches('tool_result', {
       tool: observation.toolName, nested: observation.isNested, result: observationResult(observation),
       ...(observation.input === undefined ? {} : { input: observation.input }),
       ...(branch.bashIsPosix && observation.toolName === 'bash' ? { shell: 'posix' } : {}),
-    }, ctx, observation.toolName)) {
+    }, ctx, observation.toolName, observation)) {
       if (!inherited.has(match.rule.id)) inherited.set(match.rule.id, match);
     }
     if (observation.parentCallId !== undefined) {
@@ -380,7 +566,18 @@ export function installHookSurface(pi: ExtensionAPI, capability: CapabilityHookP
       else if (state.nested.size < MAX_MATCH_PARENTS) state.nested.set(observation.parentCallId, inherited);
       return;
     }
-    const canDeliverHint = () => turnState === state && branchState === branch && !ctx.isIdle() && !ctx.signal?.aborted;
+    if (state.passiveHints.size > 0) bindBranch(ctx, 'commit');
+    const currentBranch = branchState;
+    const canDeliverHint = () => turnState === state && currentBranch !== undefined && branchState === currentBranch && !ctx.isIdle() && !ctx.signal?.aborted;
+    if (canDeliverHint() && state.passiveHints.size > 0) {
+      const passive = runBatch(state.passiveHints.values(), ctx, canDeliverHint);
+      state.passiveHints.clear();
+      if (passive.hints.length > 0 && canDeliverHint()) {
+        acceptHintHandoff(passive);
+        pi.sendMessage(hintMessage(passive, ctx), { triggerTurn: false });
+      }
+    }
+    for (const hit of inherited.values()) startClassification(hit, ctx);
     const batch = runBatch(inherited.values(), ctx, canDeliverHint);
     if (batch.hints.length > 0 && canDeliverHint()) {
       // Already-executed tool boundary; steering here rides the active SDK run.
