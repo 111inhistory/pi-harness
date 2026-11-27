@@ -126,6 +126,29 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 
 宿主身份、父节点地址、通信和自动交付说明继续由宿主装配。自定义字符串不展开变量、执行表达式或导入文件。Inherited 保留捕获的历史和基础 system prompt；替换可定制段落不替换整份历史提示词，也不按字符串查找删除祖先正文。
 
+## Hooks
+
+Main 读取 `<agentDir>/hooks.toml`、当前分支已应用的 Preset Hook 快照，以及受信项目的 `.pi/hooks.toml`。三层按此顺序合成，同 ID 整条替换；`enabled = false` 可关闭低层规则。合成后按 ID 字典序执行，单条规则内的 `actions` 保留声明顺序。全局与项目文件在会话加载时读取；修改后使用 `/reload`。Preset 的非空 `hooks` 随应用写入分支快照并参与版本哈希，`/preset` 会提示版本变动。
+
+```toml
+[prefer-read]
+on = "tool_result"
+when = '''tool == 'bash' && shellStandalone(input.command, ['sed', 'head', 'tail'])'''
+actions = [{ type = "injectHint", text = "Use read to inspect file contents." }]
+[prefer-read.repeat]
+maxTriggers = 1
+resetOnCompaction = true
+```
+
+Preset 在 `[<name>.hooks.<rule-id>]` 下使用同一规则结构。`before_agent_start` 可匹配用户输入 `prompt`；`tool_result` 可匹配 `tool`、`nested`、`input.<path>`、`result.isError`、`result.truncated`、`result.errorKind`、`result.output` 和 `result.outputChars`。两类均可匹配 `model.provider`、`model.id`、`preset` 及 `turn.modelCalls`、`turn.toolCalls`、`turn.nestedToolCalls`、`turn.toolErrors`。比较不做隐式类型转换；未知值在 `when` 中保持未知，只有布尔真触发。辅助函数包括 `contains`、`exists`、`regex`、`inWorkspace`、`shellStandalone` 和 `shellHasCommand`。Shell 匹配只识别可确认的 POSIX 简单命令，不能当作权限检查。`regex` 使用线性匹配，模式最多 256 字符且不支持 `{…}` 重复语法；只开放 `i`、`m` 两个 flags。
+
+- `injectHint` 接受 `text` 与可选 `display`，默认隐藏；嵌套工具命中的提示合并到顶层已执行工具结果边界。
+- `injectSection` 只用于独立的 `before_agent_start` 规则，接受 `text`，不与 `repeat`、其他动作或完整自定义提示词共用。
+- `activate` 以 `targets` 指定工具名、`mcp://server` 或 `namespace://name`；由 Capability 验证权限。
+- `discoverCapability` 可带短 `hint`，由 Capability 后台执行；轮结束后仍可向原分支静默提交，切分支则取消。
+
+`repeat.maxTriggers` 和 `repeat.cooldownTurns` 必须同时满足（未设置的项不限）。冷却按分支持久化的真实用户输入推进；在运行中交付的用户消息也推进冷却，已有运行的 `turn.*` 统计仍沿用原起点。`resetOnCompaction = true` 在成功压缩后清空本规则的次数和冷却记录。提示的 repeat 记录随原生消息持久化；激活与发现按动作被接受的位置记账，即使触发动作时用户消息还未落盘。单条规则的总时限默认取 `harness.json` 的 `hooks.timeoutMs`（5,000 ms），可用规则的 `timeoutMs` 收紧，且 Capability 自身的预算仍可更早结束。
+
 ## Capability
 
 ### Budget 与进度

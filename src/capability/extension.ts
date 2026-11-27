@@ -141,6 +141,7 @@ interface Activation {
 type DiscoveryRecordWriter = Parameters<typeof appendDiscoveryRecord>[0];
 
 export interface CapabilityHookPort {
+  branchEpoch(): number;
   snapshot(ctx: Pick<ExtensionContext, 'sessionManager'>): {
     readonly branchEpoch: number;
     readonly active: ReturnType<ExtensionAPI['getAllTools']>;
@@ -152,7 +153,8 @@ export interface CapabilityHookPort {
   }): ReturnType<typeof activateToolTargets> | undefined;
   discover(ctx: ExtensionContext, request: {
     readonly branchEpoch: number; readonly seed: string; readonly signal?: AbortSignal;
-  }): Promise<'published' | 'empty' | 'failed' | 'suppressed' | 'cancelled'>;
+  }): { readonly accepted: true; readonly done: Promise<'published' | 'empty' | 'failed' | 'cancelled'> }
+    | { readonly accepted: false; readonly reason: 'suppressed' | 'cancelled' };
 }
 
 function readToolsPrompt(): CapabilityToolsPrompt {
@@ -540,6 +542,7 @@ export default function capabilityExtension(
   };
 
   const port: CapabilityHookPort = {
+    branchEpoch: () => branchEpoch,
     snapshot(ctx) {
       const branch = ctx.sessionManager.getBranch();
       const access = createToolAccessView(pi, branch);
@@ -557,21 +560,22 @@ export default function capabilityExtension(
       if (closed || branchEpoch !== request.branchEpoch || request.signal?.aborted) return undefined;
       return activateToolTargets(pi, pi, ctx.sessionManager.getBranch(), request.targets);
     },
-    async discover(ctx, request) {
-      if (closed || branchEpoch !== request.branchEpoch || request.signal?.aborted) return 'cancelled';
-      if (!discovery || background !== undefined || explicitRuns > 0) return 'suppressed';
+    discover(ctx, request) {
+      if (closed || branchEpoch !== request.branchEpoch || request.signal?.aborted) return { accepted: false, reason: 'cancelled' };
+      if (!discovery || background !== undefined || explicitRuns > 0) return { accepted: false, reason: 'suppressed' };
       const controller = new AbortController();
       background = controller;
-      try {
+      const done = (async () => {
         const clipped = clipText(request.seed, { maxLines: 80, maxBytes: 4096 }, 'head-tail');
         const { result, published } = await manager.run([controller.signal, request.signal], signal =>
           runDiscovery(ctx, signal, request.branchEpoch, { seed: clipped.text }));
         if (result.endReason === 'cancelled') return 'cancelled';
         if (result.status === 'failed') return 'failed';
         return published ? 'published' : 'empty';
-      } finally {
+      })().finally(() => {
         background = undefined;
-      }
+      });
+      return { accepted: true, done };
     },
   };
 

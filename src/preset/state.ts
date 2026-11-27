@@ -51,6 +51,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { normalizeHookRules, type HookRules } from '../hooks/config.ts';
 import type { CodemodeMode, PresetModel, ThinkingLevelName } from './config.ts';
 
 /** `customType` of one applied-preset snapshot. */
@@ -78,6 +79,7 @@ export interface PresetSnapshot {
   readonly codemode?: { readonly mode: CodemodeMode };
   /** Resolved instruction text; null means the preset carried no instructions. */
   readonly instructions: string | null;
+  readonly hooks?: HookRules;
   /** Deterministic version of every semantic field above (see `presetContentHash`). */
   readonly contentHash: string;
   readonly toolSelection: PresetToolSelection;
@@ -115,6 +117,7 @@ export interface PresetVersionInput {
   readonly disabledTools?: readonly string[];
   readonly codemode?: { readonly mode: CodemodeMode };
   readonly instructions: string | null;
+  readonly hooks?: HookRules;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -142,6 +145,13 @@ function selectionPayload(selection: PresetToolSelection): Record<string, unknow
   return { kind: 'none' };
 }
 
+// Empty Hook configuration has no behavior and keeps the existing v2 hash.
+function hookFields(value: HookRules | undefined): { readonly hooks?: HookRules } {
+  if (value === undefined) return {};
+  const entries = Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  return entries.length === 0 ? {} : { hooks: Object.fromEntries(entries) };
+}
+
 /**
  * The preset's content version: a deterministic hash of its semantic fields.
  *
@@ -164,6 +174,7 @@ export function presetContentHash(input: PresetVersionInput): string {
     disabledTools: input.disabledTools === undefined ? null : sorted(input.disabledTools),
     codemode: input.codemode === undefined ? null : input.codemode.mode,
     instructions: input.instructions,
+    ...hookFields(input.hooks),
   };
   return createHash('sha256').update(JSON.stringify(payload), 'utf8').digest('hex');
 }
@@ -185,6 +196,7 @@ export function buildPresetSnapshot(input: PresetSnapshotInput): PresetSnapshot 
     ...(input.disabledTools === undefined ? {} : { disabledTools: [...input.disabledTools] }),
     ...(input.codemode === undefined ? {} : { codemode: { mode: input.codemode.mode } }),
     instructions: input.instructions,
+    ...hookFields(input.hooks),
     toolSelection,
     contentHash: presetContentHash({
       ...(input.model === undefined ? {} : { model: input.model }),
@@ -194,6 +206,7 @@ export function buildPresetSnapshot(input: PresetSnapshotInput): PresetSnapshot 
       ...(input.disabledTools === undefined ? {} : { disabledTools: input.disabledTools }),
       ...(input.codemode === undefined ? {} : { codemode: input.codemode }),
       instructions: input.instructions,
+      ...hookFields(input.hooks),
     }),
   };
 }
@@ -265,6 +278,11 @@ function parseSnapshot(raw: unknown, verifyHash: boolean): PresetSnapshot {
     codemode = { mode: rawCodemode['mode'] };
   }
   const toolSelection = parseSelection(raw['toolSelection']);
+  let hooks: HookRules | undefined;
+  if (raw.hooks !== undefined) {
+    try { hooks = normalizeHookRules(raw.hooks, false); }
+    catch (error) { malformed(`snapshot.hooks: ${error instanceof Error ? error.message : String(error)}`); }
+  }
   const snapshot: PresetSnapshot = {
     name,
     ...(model === undefined ? {} : { model }),
@@ -273,6 +291,7 @@ function parseSnapshot(raw: unknown, verifyHash: boolean): PresetSnapshot {
     ...(disabledTools === undefined ? {} : { disabledTools }),
     ...(codemode === undefined ? {} : { codemode }),
     instructions,
+    ...hookFields(hooks),
     toolSelection,
     contentHash,
   };
@@ -288,6 +307,7 @@ function parseSnapshot(raw: unknown, verifyHash: boolean): PresetSnapshot {
       ...(disabledTools === undefined ? {} : { disabledTools }),
       ...(codemode === undefined ? {} : { codemode }),
       instructions,
+      ...hookFields(hooks),
     });
     if (computed !== contentHash) {
       malformed(`snapshot.contentHash ${contentHash} does not match its contents (${computed})`);

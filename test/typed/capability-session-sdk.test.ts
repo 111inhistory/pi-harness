@@ -460,18 +460,19 @@ async function runCapabilityLifecycleCase(mode: 'navigate' | 'shutdown' | 'cance
       const { branchEpoch } = hookPort.snapshot(context);
       const request = { branchEpoch, seed: 'background seed' };
       const pending = hookPort.discover(context, request);
+      assert.equal(pending.accepted, true);
       await waitFor(() => retrievalCalls >= 2, { label: 'held background retrieval model' });
-      assert.equal(await hookPort.discover(context, request), 'suppressed');
+      assert.deepEqual(hookPort.discover(context, request), { accepted: false, reason: 'suppressed' });
       if (mode === 'background-navigate') {
         await session.navigateTree(anchor);
         assert.equal(hookPort.activate(context, { branchEpoch, targets: ['fixture_slides'] }), undefined);
       } else {
         await session.prompt('Complete the Main turn without tools.');
-        assert.equal(hookPort.snapshot(context).branchEpoch, branchEpoch, 'settling a turn keeps the branch lease');
+        assert.equal(hookPort.branchEpoch(), branchEpoch, 'settling a turn keeps the branch lease');
       }
       releaseHeldRetrieval?.();
       const expected = mode === 'background' ? 'published' : 'cancelled';
-      assert.equal(await pending, expected);
+      assert.equal(await pending.done, expected);
       assert.equal(session.getActiveToolNames().includes('fixture_slides'), mode === 'background');
       assert.equal(session.sessionManager.getBranch().filter(entry =>
         entry.type === 'custom' && entry.customType === CAPABILITY_DISCOVERY_RECORD).length, mode === 'background' ? 1 : 0);

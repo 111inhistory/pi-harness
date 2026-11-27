@@ -6,6 +6,7 @@ import type { PresetApplyOutcome as DomainPresetApplyOutcome } from '../../prese
 import { shellApprovalController } from '../../shell-approval/extension.ts';
 import type { RootService } from '../../subagent/root-service.ts';
 import type { MethodParams, MethodResult } from '../contract.ts';
+import type { PresetSnapshot } from '../../preset/state.ts';
 import type { RpcConnection } from '../transport.ts';
 import { RpcRequestError } from '../error.ts';
 import { RPC_ERROR } from '../protocol.ts';
@@ -19,12 +20,19 @@ function toRpcApplyOutcome(outcome: DomainPresetApplyOutcome): MethodResult<'pre
   return {
     applied: outcome.applied,
     unchanged: outcome.unchanged,
-    snapshot: outcome.snapshot,
+    snapshot: snapshotOnWire(outcome.snapshot),
     contentHash: outcome.snapshot?.contentHash ?? null,
     issues: [...outcome.issues],
     problems: outcome.problems.flatMap(problem =>
       problem.kind === 'version_mismatch' || problem.kind === 'context_changed' ? [] : [problem]),
   };
+}
+
+// Keep the v1 RPC shape independent of internal Hook definitions and prompt text.
+function snapshotOnWire(snapshot: PresetSnapshot | null) {
+  if (snapshot === null || snapshot.hooks === undefined) return snapshot;
+  const { hooks: _hooks, ...view } = snapshot;
+  return view;
 }
 
 /** Adapts existing session operations; all business state remains in its domain. */
@@ -55,7 +63,7 @@ export function buildApplicationPort(api: ExtensionAPI, ctx: ExtensionContext, r
     presetsCatalog(): MethodResult<'presets.catalog'> {
       assertSession();
       const loaded = catalog();
-      return { presets: [...loaded.presets].map(([name, config]) => ({ name, config })), warnings: loaded.warnings };
+      return { presets: [...loaded.presets].map(([name, { hooks: _hooks, ...config }]) => ({ name, config })), warnings: loaded.warnings };
     },
     presetsCurrent(): MethodResult<'presets.current'> {
       assertSession();
@@ -64,7 +72,7 @@ export function buildApplicationPort(api: ExtensionAPI, ctx: ExtensionContext, r
       const loaded = catalog();
       const view = currentPresetView(host, loaded);
       return {
-        preset: view.preset,
+        preset: snapshotOnWire(view.preset),
         status: view.status,
         currentVersion: view.currentVersion,
         changes: [...view.changes],

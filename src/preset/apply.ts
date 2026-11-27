@@ -237,6 +237,7 @@ export async function applyPresetPlan(
     ...(plan.disabledTools === undefined ? {} : { disabledTools: plan.disabledTools }),
     ...(plan.codemode === undefined ? {} : { codemode: plan.codemode }),
     instructions: plan.instructions,
+    ...(plan.hooks === undefined ? {} : { hooks: plan.hooks }),
     toolSelection: plan.toolSelection,
   });
 

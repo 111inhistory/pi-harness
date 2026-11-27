@@ -26,6 +26,7 @@ export interface CapabilitySearchLimits {
 }
 export interface HarnessConfig {
   readonly classifier: { readonly models: readonly ClassifierModelRef[] };
+  readonly hooks: { readonly timeoutMs: number };
   readonly subagent: {
     readonly maxDepth: number;
     /**
@@ -105,6 +106,7 @@ export interface HarnessConfig {
 
 export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
   classifier: { models: [] },
+  hooks: { timeoutMs: 5000 },
   subagent: {
     maxDepth: 2,
     // Prior aggregate allowance of four Fresh plus three Inherited children

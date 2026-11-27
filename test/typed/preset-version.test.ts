@@ -17,6 +17,7 @@ import {
   type PresetSessionHost,
 } from '../../src/preset/application.ts';
 import type { CodemodeMode, PresetConfig, ThinkingLevelName } from '../../src/preset/config.ts';
+import { normalizeHookRules } from '../../src/hooks/config.ts';
 import { applyToolModifiers, parseToolModifiers } from '../../src/preset/modifiers.ts';
 import { resolvePreset, type PresetApplyPlan } from '../../src/preset/resolve.ts';
 import {
@@ -82,6 +83,23 @@ const recordedFast = buildPresetSnapshot({
 });
 
 // ---- focused boundary checks ----
+
+test('the branch freezes nonempty Hooks without changing the legacy hash for empty Hooks', () => {
+  const noHooks = { name: 'hook-test', instructions: null };
+  const oldHash = 'a24e7ec5031e1d0b6c11b46ca4b27374188acf662182fd9a7f7c629d0fbe9be9';
+  assert.equal(buildPresetSnapshot(noHooks).contentHash, oldHash);
+  const empty = buildPresetSnapshot({ ...noHooks, hooks: {} });
+  assert.equal(empty.contentHash, oldHash);
+  assert.equal(Object.hasOwn(empty, 'hooks'), false);
+  const hooksFor = (text: string) => normalizeHookRules({ start: { on: 'before_agent_start', actions: [{ type: 'injectHint', text }] } });
+  const snapshot = buildPresetSnapshot({ ...noHooks, hooks: hooksFor('first') });
+  const branch = [presetEntry(snapshot)];
+  const result = currentPresetView(readOnlyHost(branch), { presets: new Map([['hook-test', { hooks: hooksFor('second') }]]) });
+  assert.notEqual(snapshot.contentHash, oldHash);
+  assert.equal(result.status, 'outdated');
+  assert.deepEqual(result.changes, ['hooks: changed']);
+  assert.deepEqual(result.preset?.hooks, snapshot.hooks);
+});
 
 test('absent, cleared, missing and unresolvable presets report exact status without writing', () => {
   assert.deepEqual(currentPresetView(readOnlyHost([]), { presets: new Map([['fast', fastConfig]]) }), {
