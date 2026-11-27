@@ -189,6 +189,10 @@ refs 去空白并去重；未知 ref 使本次提交整体拒绝，但不清除�
 
 ### 工具指引与缓存前缀
 
+**Codemode `only` 不保证缓存命中。** Pi 在此模式下隐藏已激活 `direct` 工具的独立声明。Harness 按当前激活集合生成 Codemode 目录。添加或移除工具可能改变 `codemode` 的声明描述，保留同一个工具名仍可能改变请求的缓存前缀。`[lazy]` 省略完整 schema，但目录仍可能随激活集合变化。实际缓存命中取决于供应商的请求编码与缓存规则。
+
+`only` 控制声明展示。已激活的工具仍在执行集合中。如果供应商转交模型对隐藏工具的直接调用，Pi 仍按当前参数、权限和会话资格执行检查。Harness 不要求调用来自 Codemode。`deferred` 和 `model-only` 工具可保留独立声明。
+
 静态工具指引通过 SDK 原生 `ToolDefinition.promptGuidelines` 提供；Capability 记忆、Preset 指令和动态指引在 `before_agent_start` 写入 `systemPromptOptions.sections`，由 SDK 比较并持久化更新。同 turn 的必要变化在外层工具结果边界合并为带内容的 `harness-context-sync` 消息，经 SDK 编码为 user。中途自动压缩或压缩后续跑会重新提供当前非空状态，即使业务状态未变，也不能漏掉被压缩丢弃的信息。未变的普通工具循环不注入尾部 developer 或 user。
 
 当前分支事实在重新打开、回退与继承后恢复当前状态。SDK 管理原生声明与 provider 编码；完整的强制提示词可抑制 Harness 系统段落，已持久化的 user 状态消息仍属于对话历史。Harness 不改写旧消息，不读取旧放置记录，不添加显式缓存断点，也不保证精确历史请求复现、全请求前缀连续性或服务端命中。权限与后端准入校验独立生效。
