@@ -470,6 +470,8 @@ test('envelopes and all method requests validate', () => {
     [RPC_METHODS.presetsApply]: { id: 'r', method: RPC_METHODS.presetsApply, params: { name: 'fast' } },
     [RPC_METHODS.presetsClear]: { id: 'r', method: RPC_METHODS.presetsClear },
     [RPC_METHODS.approvalsList]: { id: 'r', method: RPC_METHODS.approvalsList },
+    [RPC_METHODS.approvalsModeGet]: { id: 'r', method: RPC_METHODS.approvalsModeGet },
+    [RPC_METHODS.approvalsModeSet]: { id: 'r', method: RPC_METHODS.approvalsModeSet, params: { mode: 'auto' } },
     [RPC_METHODS.approvalsGet]: { id: 'r', method: RPC_METHODS.approvalsGet, params: { id: 'req-1' } },
     [RPC_METHODS.approvalsRespond]: { id: 'r', method: RPC_METHODS.approvalsRespond, params: { id: 'req-1', decision: 'allow' } },
     [RPC_METHODS.approvalsSubscribe]: { id: 'r', method: RPC_METHODS.approvalsSubscribe },

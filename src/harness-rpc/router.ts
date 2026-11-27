@@ -105,6 +105,8 @@ export function createRouter(deps: RouterDeps, main?: MainPort): RpcHandler {
     [RPC_METHODS.presetsApply]: params => application().presetsApply(params),
     [RPC_METHODS.presetsClear]: () => application().presetsClear(),
     [RPC_METHODS.approvalsList]: () => application().approvalsList(),
+    [RPC_METHODS.approvalsModeGet]: () => application().approvalsModeGet(),
+    [RPC_METHODS.approvalsModeSet]: params => application().approvalsModeSet(params),
     [RPC_METHODS.approvalsGet]: params => application().approvalsGet(params),
     [RPC_METHODS.approvalsRespond]: params => application().approvalsRespond(params),
     [RPC_METHODS.approvalsSubscribe]: (_params, connection) => application().approvalsSubscribe(connection),

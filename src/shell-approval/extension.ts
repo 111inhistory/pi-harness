@@ -36,13 +36,36 @@ const PERMISSION_MODES = [
 const PERMISSION_MODE_ENTRY = 'harness-shell-permission-mode';
 
 const APPROVAL_CONTROLLER = 'pi-harness:shell-approval-controller';
-interface ApprovalControllerExchange { controller?: ShellApprovalController }
+interface PermissionModeView {
+  readonly enabled: boolean;
+  readonly mode: ShellPermissionMode;
+  readonly source: 'config' | 'branch';
+  readonly defaultMode: ShellPermissionMode;
+  readonly autoFallbackToManual: boolean;
+}
+interface PermissionModeChange {
+  readonly mode: ShellPermissionMode;
+  readonly previousMode: ShellPermissionMode;
+  readonly changed: boolean;
+  readonly source: 'branch';
+}
+interface PermissionModePort {
+  get(ctx: ExtensionContext): PermissionModeView;
+  set(ctx: ExtensionContext, mode: ShellPermissionMode): PermissionModeChange | undefined;
+}
+interface ApprovalControllerExchange { controller?: ShellApprovalController; permissions?: PermissionModePort }
 
 /** Typed root integration point for the RPC assembly; it never exposes adapter state. */
 export function shellApprovalController(api: ExtensionAPI): ShellApprovalController | undefined {
   const exchange: ApprovalControllerExchange = {};
   api.events.emit(APPROVAL_CONTROLLER, exchange);
   return exchange.controller;
+}
+
+export function shellPermissionModes(api: ExtensionAPI): PermissionModePort | undefined {
+  const exchange: ApprovalControllerExchange = {};
+  api.events.emit(APPROVAL_CONTROLLER, exchange);
+  return exchange.permissions;
 }
 
 /** Read only the active branch; an invalid latest record falls back to config. */
@@ -173,19 +196,42 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
   createManualApproval();
   let manualActive = true;
   pi.events.on(APPROVAL_CONTROLLER, data => {
-    if (manualActive) (data as ApprovalControllerExchange).controller = manualController;
+    if (!manualActive) return;
+    const exchange = data as ApprovalControllerExchange;
+    exchange.controller = manualController;
+    exchange.permissions = permissions;
   });
   let mode: ShellPermissionMode | undefined;
   let autocompleteInstalled = false;
 
-  const status = (ctx: ExtensionContext): void => {
+  const permissionView = (ctx: ExtensionContext): PermissionModeView => {
     const config = configFor(ctx).shell.approval;
-    if (!config.enabled) return ctx.ui.setStatus('shell-permission', undefined);
     const selected = mode ?? config.mode;
+    return { enabled: config.enabled, mode: selected, defaultMode: config.mode, source: mode === undefined ? 'config' : 'branch',
+      autoFallbackToManual: config.enabled && selected === 'auto' &&
+        (!config.reviewer.enabled || Number(process.versions.node.split('.')[0]) < AUTO_REVIEW_MIN_NODE_MAJOR) };
+  };
+  const status = (ctx: ExtensionContext, view = permissionView(ctx)): void => {
+    if (!view.enabled) return ctx.ui.setStatus('shell-permission', undefined);
+    const selected = view.mode;
     const label = PERMISSION_MODES.find(item => item.value === selected)!.label;
     ctx.ui.setStatus('shell-permission', 'Permissions: ' + label +
-      (selected === 'auto' && (!config.reviewer.enabled || Number(process.versions.node.split('.')[0]) < AUTO_REVIEW_MIN_NODE_MAJOR)
-        ? ' (manual fallback)' : ''));
+      (view.autoFallbackToManual ? ' (manual fallback)' : ''));
+  };
+  const permissions: PermissionModePort = {
+    get: permissionView,
+    set(ctx, selected) {
+      const previous = permissionView(ctx);
+      if (!manualActive || !previous.enabled) return undefined;
+      const changed = mode !== selected;
+      if (changed) {
+        pi.appendEntry(PERMISSION_MODE_ENTRY, { version: 1, mode: selected });
+        mode = selected;
+      }
+      // The record is already committed: a presentation failure cannot make the write fail.
+      try { status(ctx); } catch { /* The committed mode remains observable through get(). */ }
+      return { mode: selected, previousMode: previous.mode, changed, source: 'branch' };
+    },
   };
   const cancel = (): void => {
     manualActive = false;
@@ -391,7 +437,10 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
           return;
         }
         const options = PERMISSION_MODES.map(item => `${item.label}: ${item.description}`);
+        const leaf = ctx.sessionManager.getLeafId();
+        const scopeCurrent = lifecycle.captureScope(ctx);
         const choice = await ctx.ui.select(`Shell permissions (current: ${current.label})`, options);
+        if (ownerLifetime.signal.aborted || !scopeCurrent() || leaf !== ctx.sessionManager.getLeafId()) return;
         const index = choice === undefined ? -1 : options.indexOf(choice);
         if (index < 0) return;
         selected = PERMISSION_MODES[index]!.value;
@@ -400,17 +449,13 @@ export default function shellPreflightExtension(pi: ExtensionAPI): void {
         ctx.ui.notify('Usage: /permissions ask|auto|yolo', 'warning'); return;
       }
       if (ownerLifetime.signal.aborted) return;
-      if (mode !== selected) {
-        try {
-          pi.appendEntry(PERMISSION_MODE_ENTRY, { version: 1, mode: selected });
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
-          ctx.ui.notify(`Could not save permissions: ${sanitizeTerminalText(reason)}`, 'error');
-          return;
-        }
+      try {
+        if (permissions.set(ctx, selected) === undefined) return;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(`Could not save permissions: ${sanitizeTerminalText(reason)}`, 'error');
+        return;
       }
-      mode = selected;
-      status(ctx);
       const label = PERMISSION_MODES.find(item => item.value === selected)!.label;
       ctx.ui.notify(`Permissions set to ${label}. Applies to subsequent requests.`, 'info');
     },

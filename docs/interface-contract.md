@@ -496,6 +496,7 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 | `hooks.current` | 当前有效 Hook 结构、禁用规则、分支静音及脱敏配置诊断 |
 | `hooks.stats` | 当前会话的 Hook、工具和分类器计数快照 |
 | `approvals.list/get/respond/subscribe` | 真实审批队列和首次有效决定，保持超时、取消、无消费者时拒绝及退役释放 |
+| `approvals.mode.get/set` | 读取 Shell 审批模式，或为当前分支固定后续请求使用的模式 |
 | `sessions.list/connect` | 共享会话目录与联系操作，联系和发送相互独立 |
 | `tools.catalog`、`tools.detail` | 当前作用域目录与详情，报告 registered、eligible、active、managed 和 permission；禁用项保留，供用户管理 |
 | `tools.activate`、`tools.deactivate` | 修改当前会话按需激活集合，与用户命令共用领域操作 |
@@ -511,6 +512,12 @@ Harness RPC 是现有领域操作的远程适配层。会话宿主拥有组合�
 
 - 公开参数、结果、校验和生成 schema 关联于 `src/harness-rpc/contract.ts`，编译时核对方法覆盖及结果类型。SDK 事件与历史保留不透明载荷。领域错误保留 code、message 和 detail；登记后的启动失败以 `start_failed` 和 detail 中的 registered／failures 报告，不能视为整批未创建。查询与回执不额外写入 Main 对话，操作自身仍保留业务记录。
 - 子任务操作使用当前领域绑定；Root 过渡期间拒绝访问旧服务。SDK Main 控制独立于 Subagent 健康状态；后续回调受绑定代次围栏隔离。
+
+### Shell 审批模式
+
+`approvals.mode.get` 无参数，返回配置默认值、当前模式及其来源。`autoFallbackToManual` 只在审批启用、当前模式为 `auto` 且审查器停用或 Node 版本不支持时为 `true`。审批停用时仍可读取；未安装 Shell 审批扩展时返回 `unavailable`。
+
+`approvals.mode.set` 接收 `{ mode }`，允许 `ask`、`auto`、`yolo`，返回 `{ mode, previousMode, changed, source }`。首次显式选择会写入分支，即使选择等于配置默认值。已有相同分支值时返回 `changed: false`。成功响应的 `source` 为 `branch`。模式变更只影响后续审批，无须等待当前轮结束。审批停用或扩展未安装时返回 `unavailable`。
 
 ### Hook 查询
 

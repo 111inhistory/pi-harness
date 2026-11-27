@@ -89,6 +89,8 @@ export const RPC_METHODS = {
   presetsApply: 'presets.apply',
   presetsClear: 'presets.clear',
   approvalsList: 'approvals.list',
+  approvalsModeGet: 'approvals.mode.get',
+  approvalsModeSet: 'approvals.mode.set',
   approvalsGet: 'approvals.get',
   approvalsRespond: 'approvals.respond',
   approvalsSubscribe: 'approvals.subscribe',

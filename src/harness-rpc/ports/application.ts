@@ -3,7 +3,7 @@ import {
   loadPresets, currentPresetView, applyPresetToSession, clearPresetFromSession,
 } from '../../preset/application.ts';
 import type { PresetApplyOutcome as DomainPresetApplyOutcome } from '../../preset/apply.ts';
-import { shellApprovalController } from '../../shell-approval/extension.ts';
+import { shellApprovalController, shellPermissionModes } from '../../shell-approval/extension.ts';
 import { hookInspection } from '../../hooks/inspection.ts';
 import type { RootService } from '../../subagent/root-service.ts';
 import type { MethodParams, MethodResult } from '../contract.ts';
@@ -59,6 +59,12 @@ export function buildApplicationPort(api: ExtensionAPI, ctx: ExtensionContext, r
     const value = shellApprovalController(api);
     if (value === undefined) throw new RpcRequestError(RPC_ERROR.unavailable, 'Shell approval is not available in this session.');
     return value;
+  };
+  const permissionModes = () => {
+    assertSession();
+    const port = shellPermissionModes(api);
+    if (port === undefined) throw new RpcRequestError(RPC_ERROR.unavailable, 'Shell permission modes are not available in this session.');
+    return port;
   };
   return {
     hooksCurrent(): MethodResult<'hooks.current'> {
@@ -130,6 +136,12 @@ export function buildApplicationPort(api: ExtensionAPI, ctx: ExtensionContext, r
       return clearPresetFromSession(host);
     },
     approvalsList(): MethodResult<'approvals.list'> { return { items: controller().list() }; },
+    approvalsModeGet(): MethodResult<'approvals.mode.get'> { return permissionModes().get(ctx); },
+    approvalsModeSet(params: MethodParams<'approvals.mode.set'>): MethodResult<'approvals.mode.set'> {
+      const result = permissionModes().set(ctx, params.mode);
+      if (result === undefined) throw new RpcRequestError(RPC_ERROR.unavailable, 'Shell approval is disabled.');
+      return result;
+    },
     approvalsGet(params: MethodParams<'approvals.get'>): MethodResult<'approvals.get'> {
       return { item: controller().get(params.id) ?? null };
     },

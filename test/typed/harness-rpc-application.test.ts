@@ -157,14 +157,18 @@ interface ApplicationFixture {
   readonly api: ExtensionAPI;
   readonly client: RpcClient;
   readonly controller: ShellApprovalController;
+  readonly permissionStatuses: readonly (string | undefined)[];
 }
 
-async function startApplication(t: test.TestContext, hooks = false): Promise<ApplicationFixture> {
+async function startApplication(t: test.TestContext, hooks = false, approvalModeEnabled?: boolean): Promise<ApplicationFixture> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), "harness-rpc-application-"));
   const agentDir = path.join(cwd, "agent");
   const socketDir = path.join(cwd, "uds");
   await mkdir(agentDir, { recursive: true });
   await mkdir(socketDir, { recursive: true, mode: 0o700 });
+  if (approvalModeEnabled !== undefined) await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
+    version: 1, shell: { approval: { enabled: approvalModeEnabled, mode: 'auto', reviewer: { enabled: false } } },
+  }));
 
   const previousAgentDir = process.env["PI_CODING_AGENT_DIR"];
   const previousSocketDir = process.env["PI_SUBAGENT_SOCKET_DIR"];
@@ -245,7 +249,12 @@ async function startApplication(t: test.TestContext, hooks = false): Promise<App
     session = created.session;
     // Bind the SDK extension runner in RPC mode before session_start so the
     // production assembly opens the Harness endpoint for this real session.
-    await session.bindExtensions({ mode: "rpc", onError: (error) => extensionErrors.push(error) });
+    const permissionStatuses: (string | undefined)[] = [];
+    await session.bindExtensions({ mode: "rpc", onError: (error) => extensionErrors.push(error),
+      uiContext: { ...session.extensionRunner.createContext().ui, setStatus(key, value) {
+        if (key === 'shell-permission') permissionStatuses.push(value);
+      } },
+    });
     assert.deepEqual(extensionErrors, []);
 
     const context = session.extensionRunner.createCommandContext();
@@ -255,7 +264,7 @@ async function startApplication(t: test.TestContext, hooks = false): Promise<App
     client = await RpcClient.connect(target.address);
     const controller = shellApprovalController(api);
     assert.ok(controller, "the real Shell approval extension provides its controller");
-    return { cwd, session, root, api, client, controller };
+    return { cwd, session, root, api, client, controller, permissionStatuses };
   } catch (error) {
     await cleanup();
     throw error;
@@ -521,6 +530,40 @@ test("Preset apply rechecks the Root epoch after a gated SDK model selection", {
   assert.deepEqual(presetEntries(fixture.session), [],
     "the rejected old apply must not write a Preset snapshot to the new branch");
   fixture.api.setModel = originalSetModel;
+});
+
+test('approval mode RPC pins the default and shares state and status with /permissions', async t => {
+  const { client, session, permissionStatuses } = await startApplication(t, false, true);
+  const inherited = { enabled: true, mode: 'auto', source: 'config', defaultMode: 'auto', autoFallbackToManual: true };
+  const originalLeaf = session.sessionManager.getLeafId();
+  assert.deepEqual(await client.request('approvals.mode.get'), inherited);
+  assert.equal(session.sessionManager.getLeafId(), originalLeaf);
+  assert.deepEqual(await client.request('approvals.mode.set', { mode: 'auto' }), {
+    mode: 'auto', previousMode: 'auto', changed: true, source: 'branch',
+  });
+  const pinned = session.sessionManager.getLeafId();
+  assert.notEqual(pinned, originalLeaf);
+  assert.deepEqual(await client.request('approvals.mode.set', { mode: 'auto' }), {
+    mode: 'auto', previousMode: 'auto', changed: false, source: 'branch',
+  });
+  assert.equal(session.sessionManager.getLeafId(), pinned);
+  assert.deepEqual(await client.request('approvals.mode.set', { mode: 'ask' }), {
+    mode: 'ask', previousMode: 'auto', changed: true, source: 'branch',
+  });
+  assert.equal(permissionStatuses.at(-1), 'Permissions: Ask');
+  await session.prompt('/permissions yolo');
+  assert.deepEqual(await client.request('approvals.mode.get'), { ...inherited, mode: 'yolo', source: 'branch', autoFallbackToManual: false });
+});
+
+test('disabled approval mode is readable but rejects mutation', async t => {
+  const { client, session } = await startApplication(t, false, false);
+  const leaf = session.sessionManager.getLeafId();
+  assert.deepEqual(await client.request('approvals.mode.get'), {
+    enabled: false, mode: 'auto', source: 'config', defaultMode: 'auto', autoFallbackToManual: false,
+  });
+  await assert.rejects(client.request('approvals.mode.set', { mode: 'ask' }), (error: unknown) =>
+    error instanceof RpcFailure && error.code === 'unavailable');
+  assert.equal(session.sessionManager.getLeafId(), leaf);
 });
 
 test("approval RPC observes and decides the live controller; unsubscribe, timeout and dispose stay fail-closed", { timeout: 20000 }, async (t) => {

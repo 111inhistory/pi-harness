@@ -828,6 +828,16 @@ export const PresetClearOutcomeSchema = Type.Object({
 
 export const ShellApprovalDecisionSchema = Type.Union([Type.Literal('allow'), Type.Literal('deny')]);
 
+const shellPermissionMode = Type.Union([Type.Literal('ask'), Type.Literal('auto'), Type.Literal('yolo')]);
+const approvalModeGetResult = Type.Object({
+  enabled: Type.Boolean(), mode: shellPermissionMode, source: Type.Union([Type.Literal('config'), Type.Literal('branch')]),
+  defaultMode: shellPermissionMode, autoFallbackToManual: Type.Boolean(),
+}, { additionalProperties: false });
+const approvalModeSetParams = Type.Object({ mode: shellPermissionMode }, { additionalProperties: true });
+const approvalModeSetResult = Type.Object({ mode: shellPermissionMode, previousMode: shellPermissionMode,
+  changed: Type.Boolean(), source: Type.Literal('branch'),
+}, { additionalProperties: false });
+
 export const ShellApprovalPendingStateSchema = Type.Union([Type.Literal('queued'), Type.Literal('active')]);
 
 export const ShellApprovalPendingSchema = Type.Object({
@@ -1151,6 +1161,9 @@ export const SHARED_CONTRACT_DEFS = {
   PresetApplyOutcome: PresetApplyOutcomeSchema,
   PresetClearOutcome: PresetClearOutcomeSchema,
   ShellApprovalDecision: ShellApprovalDecisionSchema,
+  ApprovalModeGetResult: approvalModeGetResult,
+  ApprovalModeSetParams: approvalModeSetParams,
+  ApprovalModeSetResult: approvalModeSetResult,
   ShellApprovalPendingState: ShellApprovalPendingStateSchema,
   ShellApprovalPending: ShellApprovalPendingSchema,
   ApprovalsListResult: ApprovalsListResultSchema,
@@ -1326,6 +1339,14 @@ export const HARNESS_RPC_CONTRACT = {
   [RPC_METHODS.presetsClear]: defineMethod({
     description: 'Clear the active preset from branch management without rolling back model/thinking/tools.',
     params: 'NoParams', result: 'PresetClearOutcome', paramsRequired: false,
+  }),
+  [RPC_METHODS.approvalsModeGet]: defineMethod({
+    description: 'Read the configured and branch-selected Shell approval mode.',
+    params: 'NoParams', result: 'ApprovalModeGetResult', paramsRequired: false,
+  }),
+  [RPC_METHODS.approvalsModeSet]: defineMethod({
+    description: 'Pin the Shell approval mode to the active branch for subsequent requests.',
+    params: 'ApprovalModeSetParams', result: 'ApprovalModeSetResult', paramsRequired: true,
   }),
   [RPC_METHODS.approvalsList]: defineMethod({
     description: 'List pending shell approval requests on the root approval controller.',
