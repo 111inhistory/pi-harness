@@ -1,7 +1,7 @@
 /**
  * Model preset extension.
  *
- * Composes the pure preset modules into a Pi extension: it loads `presets.json`
+ * Composes the pure preset modules into a Pi extension: it loads `presets.toml`
  * (global + trusted project), exposes `/preset` and the `--preset` startup flag,
  * applies model / thinking / tools live, records a resolved snapshot on the
  * branch, and renders its current instructions as request-local system sections.

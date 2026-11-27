@@ -23,6 +23,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { stringify } from 'smol-toml';
 
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
@@ -149,7 +150,7 @@ interface PresetSession {
 
 /**
  * Boot one real session with the capability and preset extensions, a fixture
- * tool registry and a private presets.json. Every tool is a local fixture; none
+ * tool registry and a private presets.toml. Every tool is a local fixture; none
  * of them executes.
  */
 async function bootPresetSession(
@@ -159,7 +160,7 @@ async function bootPresetSession(
   options: { defaultTools?: string[]; withCapability?: boolean; requests?: unknown[] } = {},
 ): Promise<PresetSession> {
   await mkdir(agentDir, { recursive: true });
-  await writeFile(path.join(agentDir, 'presets.json'), JSON.stringify(presets));
+  await writeFile(path.join(agentDir, 'presets.toml'), stringify(presets));
   const { runtime, model } = await offlineRuntime(cwd, options.requests);
   const settingsManager = SettingsManager.inMemory({
     defaultTools: options.defaultTools ?? ['read', 'bash', 'edit', 'write', 'capability', oldDefault],

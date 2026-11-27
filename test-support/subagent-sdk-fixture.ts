@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
+import { parse, stringify } from "smol-toml";
 import {
   createAgentSession, createCodemodeExtension, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -20,6 +21,7 @@ import { installResultRendering } from "../src/result-rendering.ts";
 import capabilityExtension from "../src/capability/extension.ts";
 import { RootService } from "../src/subagent/root-service.ts";
 import { deriveSessionUid } from "../src/ipc/socket.ts";
+import { validateRoutingConfig } from "../src/subagent/routing.ts";
 import {
   actorOf, createdItems, readTranscriptEvents,
   type FixtureActor, type FixtureChat, type FixtureClassification, type FixtureControls,
@@ -180,14 +182,19 @@ export async function createSdkFixture(options: SdkFixtureOptions): Promise<SdkF
     const fixtureModel: Model<Api> = model;
     // Isolated Pi user config: no dependency on the real user's routing file or
     // third-party Antigravity extension. All calls use the scripted runtime below.
-    const routing = JSON.parse(await fsp.readFile(new URL("../config/subagent-routing.json", import.meta.url), "utf8")) as FixtureRoutingConfig;
+    const routing = validateRoutingConfig(parse(await fsp.readFile(new URL("../config/subagent-routing.toml", import.meta.url), "utf8")));
     for (const role of routing.roles) for (const preset of Object.values(role.candidates)) {
       assert.notEqual(typeof preset, "string", "the shipped fixture uses temporary presets");
       Object.assign(preset, { model: { provider: fixtureModel.provider, id: fixtureModel.id } });
     }
     options.routing?.(routing);
-    await fsp.writeFile(path.join(agentDir, "subagent-routing.json"), JSON.stringify(routing));
-    await fsp.writeFile(path.join(agentDir, "harness.json"), JSON.stringify(options.config ?? {}));
+    await fsp.writeFile(path.join(agentDir, "subagent-routing.toml"), stringify(routing));
+    // Fresh routing takes classifier candidates from harness.json; keep the
+    // fixture independent of the developer's real user config.
+    await fsp.writeFile(path.join(agentDir, "harness.json"), JSON.stringify({
+      classifier: { models: [{ provider: "openrouter", id: "~typesafe/jev-latest" }] },
+      ...options.config,
+    }));
     const childManagers: WeakRef<SessionManager>[] = [];
     if (scenario === "memory-owners") SessionManager.open = (...args: Parameters<typeof originalSessionOpen>): SessionManager => {
       const manager = originalSessionOpen(...args);

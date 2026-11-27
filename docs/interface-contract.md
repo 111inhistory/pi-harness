@@ -246,7 +246,7 @@ RPC、用户命令、Preset 和发现发布复用工具管理领域操作。RPC 
 
 `extensions/preset.ts`（随包默认加载）提供模型切换、思考级别、模型专属指引和工具选择。
 
-**配置。** 读取全局 agent 目录的 `presets.json` 与受信项目的 `.pi/presets.json`，项目同名项整体覆盖全局。`tools` 支持 `+name`／`-name` 修饰符或纯裸名列表；两种方式混用会拒绝应用。修饰符叠加到有效启动基线，裸名列表替换该层；用户手动 base add／remove 保留。显式减项在当前 Preset 生命周期内禁止普通按需激活，可由分支手动 base add 覆盖。保留的按需工具继续由压缩淘汰策略管理。
+**配置。** 读取全局 agent 目录的 `presets.toml` 与受信项目的 `.pi/presets.toml`，项目同名项整体覆盖全局。只读取 TOML，不对同名 `.json` 回退。`tools` 支持 `+name`／`-name` 修饰符或纯裸名列表；两种方式混用会拒绝应用。修饰符叠加到有效启动基线，裸名列表替换该层；用户手动 base add／remove 保留。显式减项在当前 Preset 生命周期内禁止普通按需激活，可由分支手动 base add 覆盖。保留的按需工具继续由压缩淘汰策略管理。
 
 **入口。** `/preset` 打开选择器，`/preset NAME` 应用指定项，`/preset clear`（`none`／`off`）停止管理，`--preset NAME` 在启动时应用；状态栏显示当前 Preset。这些交互入口只作用于当前 Main。Fresh routing 显式选择命名或临时 Preset，复用配置解析、应用与指引投影；Inherited 保持捕获的模型与分支状态。
 
@@ -256,7 +256,7 @@ RPC、用户命令、Preset 和发现发布复用工具管理领域操作。RPC 
 
 **分支与清除。** `/tree` 静默刷新状态栏并同步目标分支的 Harness 工具差异；Pi 管理模型和思考级别恢复。`/preset clear` 可在配置不可读时运行，撤回 Preset 工具、黑名单、指引和 Codemode 贡献，保留用户手动工具选择、有效启动基线、模型与思考级别。Codemode 模式随 Preset 快照生效，并供原生 Codemode 与 `capability.lazySchemas` 读取。
 
-**离线迁移。** 旧 `preset-state` v1 使用 `npm run migrate:preset-state -- --session FILE` 预览转换。先关闭会话并备份，再使用 `--apply --offline`。迁移只读会话 JSONL，不读取 `presets.json`。旧展平工具数组转换为裸名替换；为保持分支工具成员，离线脚本在需要修正的位置插入标准 `capability-tool-base` 条目，将直接子节点挂到该条目下。已有条目 ID 保留。转换后逐分支核对工具成员，当前的禁止规则仍按 v2 契约执行。
+**离线迁移。** 旧 `preset-state` v1 使用 `npm run migrate:preset-state -- --session FILE` 预览转换。先关闭会话并备份，再使用 `--apply --offline`。迁移只读会话 JSONL，不读取 `presets.toml`。旧展平工具数组转换为裸名替换；为保持分支工具成员，离线脚本在需要修正的位置插入标准 `capability-tool-base` 条目，将直接子节点挂到该条目下。已有条目 ID 保留。转换后逐分支核对工具成员，当前的禁止规则仍按 v2 契约执行。
 
 迁移插入的增减与手动基线记录遵循相同规则；移除项也会进入声明清理流程。若在 `/tree` 直接选中修正条目之前的旧 Preset 节点，需选中后续修正条目才会应用这批增减。应用前保留的 `.pre-preset-v2` 文件是完整恢复点。
 
@@ -531,7 +531,7 @@ Bash／PowerShell 工具接受 `background` 和 `pty`，长时间运行的命令
 
 本节指引与其他 namespace、MCP 指引共用分支记录与增量更新规则；会话恢复重放已有正文和落点。
 
-工具提示词应表达上述使用流程和行为边界。提示词正文存放在 `prompts/`，通过 `src/prompt-text.ts` 的类型化缓存 getter 读取；执行代码保留数据装配、参数结构和权限判断。Shell 的逐次结果正文、截断说明与界面文案由执行代码按结果字段装配，不放入提示词资产；`prompts/async-shell.json` 只保存工具用途、参数指引和固定控制工具描述。角色说明来自 `subagent-routing.json`，候选偏好使用所引用或临时 Preset 的 description，不新增模板框架或静默回退正文。
+工具提示词应表达上述使用流程和行为边界。提示词正文存放在 `prompts/`，通过 `src/prompt-text.ts` 的类型化缓存 getter 读取；执行代码保留数据装配、参数结构和权限判断。Shell 的逐次结果正文、截断说明与界面文案由执行代码按结果字段装配，不放入提示词资产；`prompts/async-shell.json` 只保存工具用途、参数指引和固定控制工具描述。角色说明来自 `subagent-routing.toml`，候选偏好使用所引用或临时 Preset 的 description，不新增模板框架或静默回退正文。
 
 ### Subagent 提示词装配
 
@@ -545,7 +545,7 @@ Bash／PowerShell 工具接受 `background` 和 `pty`，长时间运行的命令
 | 信号控制 | tools 的 `signal.guideline` | 只随 `subagent_signal` 提供 |
 | 消息通信 | tools 的 `msg_write.guidelines` | 只随 `msg_write` 提供逻辑寻址、广播、唤醒、身份与报文格式规则，不包含创建或编排指引；延迟 schema 时保留工具专属指引 |
 | C：子会话身份与交付 | turns 的 `context` | 所有子会话的 `appendSystemPrompt`；替换自身与创建者的完整逻辑地址 |
-| D1：Fresh 职责 | `subagent-routing.json` 的角色说明 | Fresh 路由后注入，续跑保留已记录角色 |
+| D1：Fresh 职责 | `subagent-routing.toml` 的角色说明 | Fresh 路由后注入，续跑保留已记录角色 |
 | 共同工作指引 | `subagent.prompts.common`，内置为空 | Fresh 与 Inherited 的当前会话装配均追加一次非空正文 |
 | D2：Inherited 上下文定位 | `subagent.prompts.inherited`，默认来自 turns 的 `inheritedContext` | 仅 Inherited 会话额外注入，续跑及重新打开原生会话时仍按该 Actor 身份装配 |
 | E：活跃名额 | tools 的 `create.capacity` | 当 `subagent_create` 激活时通过 `promptGuidelines` 注入 `<rules>`；`{batches}`、`{subagents}`、`{inherited}` 按当前配置快照替换 |

@@ -11,6 +11,10 @@ export interface RoutingRetryConfig {
   readonly maxDelayMs: number;
   readonly jitterRatio: number;
 }
+export interface ClassifierModelRef {
+  readonly provider: string;
+  readonly id: string;
+}
 export interface CapabilitySearchLimits {
   readonly tools: number;
   readonly mcp: number;
@@ -21,6 +25,7 @@ export interface CapabilitySearchLimits {
   readonly skillBodyChars: number;
 }
 export interface HarnessConfig {
+  readonly classifier: { readonly models: readonly ClassifierModelRef[] };
   readonly subagent: {
     readonly maxDepth: number;
     /**
@@ -99,6 +104,7 @@ export interface HarnessConfig {
 }
 
 export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
+  classifier: { models: [] },
   subagent: {
     maxDepth: 2,
     // Prior aggregate allowance of four Fresh plus three Inherited children
@@ -230,6 +236,19 @@ function mergeNode(base: object, value: unknown, source: string, field: string, 
     } else if (child === 'shell.approval.reviewer.provider' || child === 'shell.approval.reviewer.model') {
       if (typeof item !== 'string' || item.trim() === '') throw new HarnessConfigError(source, child, 'must be a non-empty string.');
       merged[key] = item;
+    } else if (child === 'classifier.models') {
+      if (!Array.isArray(item)) throw new HarnessConfigError(source, child, 'must be an array of model identities.');
+      merged[key] = item.map((entry, index): ClassifierModelRef => {
+        const location = `${child}.${index}`;
+        const model = object(entry, source, location);
+        const { provider, id } = model;
+        if (Object.keys(model).some(name => name !== 'provider' && name !== 'id')
+            || typeof provider !== 'string' || provider.trim() === ''
+            || typeof id !== 'string' || id.trim() === '') {
+          throw new HarnessConfigError(source, location, 'must contain only a non-empty provider and id.');
+        }
+        return { provider, id };
+      });
     } else if (child === 'capability.blacklist') {
       if (!Array.isArray(item) || item.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
         throw new HarnessConfigError(source, child, 'must be an array of non-empty tool name patterns.');

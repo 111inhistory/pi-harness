@@ -37,7 +37,7 @@ Pi Harness 是基于 Pi SDK 构建的 Coding Agent Harness 扩展。项目核心
 
 ### 6. 模型 Preset（附加能力）
 
-- 通过 `presets.json` 预定义模型、思考级别、工具 `+/-` 修饰符、模型专属指引和 Codemode 模式；`/preset`、`--preset` 应用，`/preset clear` 停止管理。
+- 通过 `presets.toml` 预定义模型、思考级别、工具 `+/-` 修饰符、模型专属指引和 Codemode 模式；`/preset`、`--preset` 应用，`/preset clear` 停止管理。
 - 只作用于当前 Main 会话，不改变 Fresh／Inherited Subagent 路由；应用结果与快照写入当前分支以便恢复。
 
 ## 待交付与实验状态

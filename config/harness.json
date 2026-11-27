@@ -1,4 +1,5 @@
 {
+  "classifier": { "models": [] },
   "subagent": {
     "maxDepth": 2,
     "maxActiveBatches": 4,

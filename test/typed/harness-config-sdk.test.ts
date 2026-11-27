@@ -25,6 +25,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { stringify } from 'smol-toml';
 
 import {
   createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
@@ -164,7 +165,12 @@ async function startScenario(options: ScenarioOptions): Promise<Scenario> {
 
   const globalPath = path.join(agentDir, 'harness.json');
   const projectPath = path.join(cwd, '.pi', 'harness.json');
-  await writeFile(globalPath, JSON.stringify(options.config.global));
+  // The root snapshot supplies Fresh-routing candidates; keep the fixture
+  // independent of the developer's real user config.
+  await writeFile(globalPath, JSON.stringify({
+    classifier: { models: [{ provider: 'openrouter', id: '~typesafe/jev-latest' }] },
+    ...options.config.global,
+  }));
   await writeFile(projectPath, JSON.stringify(options.config.project));
 
   const oldAgentDir = process.env['PI_CODING_AGENT_DIR'];
@@ -183,9 +189,8 @@ async function startScenario(options: ScenarioOptions): Promise<Scenario> {
   runtime.getAuth = async () => ({ auth: { apiKey: 'offline-fixture' }, env: {} });
   runtime.hasConfiguredAuth = () => true;
 
-  await writeFile(path.join(agentDir, 'subagent-routing.json'), JSON.stringify({
-    version: 3,
-    classifier: { provider: 'openrouter', id: '~typesafe/jev-latest' },
+  await writeFile(path.join(agentDir, 'subagent-routing.toml'), stringify({
+    version: 4,
     instructions: { role: 'Select the executor role.', model: 'Select the only configured model.' },
     roles: [{
       id: 'executor',

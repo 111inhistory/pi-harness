@@ -82,7 +82,7 @@ Pi 会在用户设置的 `packages` 中登记该目录。更新仓库后，重�
 
 ### 配置独立子任务的模型
 
-独立开始的子任务（Fresh）需要 `subagent-routing.json`。将 [路由示例](config/subagent-routing.json) 作为模板，放入 Pi 用户目录，并把分类器、角色和候选 Preset 改成你实际可用的配置。候选可引用已有 Preset，也可内联同格式的临时定义；旧版配置的离线转换见[配置说明](docs/harness-configuration.md#fresh-routing-presets)。已有文件时直接编辑，不要覆盖自己的设置。
+独立开始的子任务（Fresh）需要 `subagent-routing.toml` 和 `harness.json` 中的 `classifier.models`。将 [路由示例](config/subagent-routing.toml) 作为模板，按实际需要配置角色和候选 Preset；候选可引用已有 Preset，也可内联临时定义。模型列表和旧版配置迁移见[配置说明](docs/harness-configuration.md#fresh-routing-presets)。
 
 Pi 用户目录默认为 `~/.pi/agent/`；设置 `PI_CODING_AGENT_DIR` 时使用指定目录。仓库示例不会在配置缺失时自动代替用户配置。
 
@@ -156,7 +156,7 @@ Schema 策略默认遵守配置与已有显式覆盖；需要覆盖时给目标�
 
 ### 切换模型 Preset
 
-在全局 agent 目录或受信项目 `.pi/` 放置 `presets.json`，每项可配置模型、thinking、工具 `+/-` 修饰符、专属指引和 Codemode 模式。命令：
+在全局 agent 目录或受信项目 `.pi/` 放置 `presets.toml`，每项可配置模型、thinking、工具 `+/-` 修饰符、专属指引和 Codemode 模式。命令：
 
 | 命令 | 用途 |
 | --- | --- |

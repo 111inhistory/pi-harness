@@ -8,8 +8,8 @@
  * cannot mutate a snapshot an apply already captured.
  *
  * Two files are layered, matching Pi's native preset/`defaultTools` convention:
- * the global `presets.json` under the agent directory, and a project
- * `.pi/presets.json` under the working directory. A project entry whose name
+ * the global `presets.toml` under the agent directory, and a project
+ * `.pi/presets.toml` under the working directory. A project entry whose name
  * matches a global entry replaces it wholesale; presets are never field-merged
  * across layers, so a project preset cannot inherit a surprising half of a
  * global one.
@@ -20,6 +20,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { parse } from 'smol-toml';
 
 /** Thinking levels Pi understands, including `off`. */
 export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -63,7 +64,7 @@ export type PresetFileReader = (filePath: string) => string | undefined;
 export interface LoadPresetsOptions {
   readonly cwd: string;
   readonly agentDir: string;
-  /** A project `.pi/presets.json` loads only when the project is trusted. */
+  /** A project `.pi/presets.toml` loads only when the project is trusted. */
   readonly projectTrusted: boolean;
   /** Test seam; defaults to the real filesystem. */
   readonly read?: PresetFileReader;
@@ -84,7 +85,9 @@ const defaultReader: PresetFileReader = (filePath) =>
   existsSync(filePath) ? readFileSync(filePath, 'utf8') : undefined;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  if (typeof value !== 'object' || value === null) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function nonEmptyString(value: unknown): value is string {
@@ -173,16 +176,10 @@ export function validatePreset(raw: unknown): { preset: PresetConfig } | { error
   };
 }
 
-/** Parse and validate one presets document into a name-keyed map plus warnings. */
-function parseDocument(source: string, text: string): {
+/** Validate one presets document into a name-keyed map plus warnings. */
+export function validatePresetDocument(source: string, document: unknown): {
   catalog: Map<string, PresetConfig>; warnings: string[]; invalidNames: Set<string>;
 } {
-  let document: unknown;
-  try {
-    document = JSON.parse(text);
-  } catch (error) {
-    throw new PresetConfigError(source, `invalid JSON (${error instanceof Error ? error.message : String(error)})`);
-  }
   if (!isRecord(document)) throw new PresetConfigError(source, 'top level must be an object');
   const catalog = new Map<string, PresetConfig>();
   const invalidNames = new Set<string>();
@@ -220,7 +217,13 @@ export function loadPresets(options: LoadPresetsOptions): LoadedPresets {
     try {
       const text = read(filePath);
       if (text === undefined) return;
-      const parsed = parseDocument(filePath, text);
+      let document: unknown;
+      try {
+        document = parse(text);
+      } catch (error) {
+        throw new PresetConfigError(filePath, `invalid TOML (${error instanceof Error ? error.message : String(error)})`);
+      }
+      const parsed = validatePresetDocument(filePath, document);
       warnings.push(...parsed.warnings);
       for (const name of parsed.invalidNames) {
         presets.delete(name);
@@ -239,9 +242,9 @@ export function loadPresets(options: LoadPresetsOptions): LoadedPresets {
     }
   };
 
-  const globalPath = path.join(options.agentDir, 'presets.json');
+  const globalPath = path.join(options.agentDir, 'presets.toml');
   load(globalPath);
-  const projectPath = path.join(options.cwd, '.pi', 'presets.json');
+  const projectPath = path.join(options.cwd, '.pi', 'presets.toml');
   if (options.projectTrusted) load(projectPath);
   return { presets, warnings, invalidNames, invalidDocument };
 }

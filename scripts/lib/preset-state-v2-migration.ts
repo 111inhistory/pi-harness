@@ -4,7 +4,7 @@
  * The runtime accepts only v2 records, so sessions written before the preset
  * version upgrade must be converted before they are opened again. This module is
  * the only code that understands the v1 shape: it never runs from a session
- * start or a request, and it never reads `presets.json`, because the branch
+ * start or a request, and it never reads `presets.toml`, because the branch
  * record already froze the resolved snapshot. A preset that has since been
  * renamed or deleted therefore converts losslessly.
  *
@@ -12,7 +12,7 @@
  * - A v1 snapshot is copied field for field, and its flattened `tools` become an
  *   explicit `toolSelection: { kind: 'replace' }`. The original `+`/`-` intent
  *   cannot be recovered from a flattened projection; re-applying the preset from
- *   `presets.json` restores modifier semantics through the normal upgrade path.
+ *   `presets.toml` restores modifier semantics through the normal upgrade path.
  *   The `contentHash` is derived by the shared `buildPresetSnapshot`.
  * - A v1 clear (`snapshot: null`) only relabelled the preset's base membership as
  *   ordinary branch membership, so the set itself did not change.
@@ -717,8 +717,8 @@ function prepare(file: string): Prepared {
   const inserted = nodeByEntryId.size;
   const warnings: string[] = [
     'Close Pi for this session before migrating, and keep the byte-exact backup output until the migrated session loads correctly.',
-    'Content hashes are derived from the recorded projection, not from the current presets.json: a migrated preset may report "outdated" until it is re-applied, and a preset that was deleted or renamed still converts losslessly.',
-    'Existing capability-tool-base records, child sessions and presets.json are not modified; only the inserted nodes are new base records.',
+    'Content hashes are derived from the recorded projection, not from the current presets.toml: a migrated preset may report "outdated" until it is re-applied, and a preset that was deleted or renamed still converts losslessly.',
+    'Existing capability-tool-base records, child sessions and presets.toml are not modified; only the inserted nodes are new base records.',
     'Pass --socket-root <dir> to let the tool refuse --apply while a managed session record names a live process for this session.',
     'Each Preset conversion or late baseline that needs a membership repair gets one standard capability-tool-base record. The new ID is deterministic; existing IDs are preserved, and direct children move beneath the repair.',
     'The inserted record is an ordinary manual base layer change: it appears in /capability base, its add names lift a root-local startup or preset ban as any preset-selected name does, and each of its remove names leaves a permanent compaction removal intent on that branch. Unlike a user /capability base remove, it deletes no dynamic discovery membership, so dynamic tools are still governed by their own records.',
