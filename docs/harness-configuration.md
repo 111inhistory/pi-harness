@@ -158,14 +158,10 @@ Harness 使用 `harness.json` 配置执行限额、检索参数和 Subagent 的�
 
 ### Fresh routing Presets
 
-`subagent-routing.toml` 使用 version 3。每个 role 只包含 `id`、角色 `instructions` 和 `candidates`。候选标签用于分类器选择；值为已有 Preset 名称，或遵循相同 schema 的临时 Preset：
+`subagent-routing.toml` 使用 version 4。每个 role 只包含 `id`、角色 `instructions` 和 `candidates`。候选标签用于分类器选择；值为已有 Preset 名称，或遵循相同 schema 的临时 Preset：
 
 ```toml
-version = 3
-
-[classifier]
-provider = "fake-provider"
-id = "fake-classifier"
+version = 4
 
 [instructions]
 role = "Select the role."
@@ -195,13 +191,35 @@ mode = "only"
 
 工具配置使用现有 Preset 的 `tools` 修饰语法；基线为子会话自己的默认工具与扩展。显式最终减项作为该 Actor 的执行作用域 denial，后续激活不能绕过；SDK 注册排除只承载固定深度限制，祖先权限与深度限制仍生效。模型、thinking、工具、Codemode 与 Preset 指引通过公共 Preset 解析和应用路径设置，结果与所选定义保存在原生分支和 Actor 身份中；续跑不重新选择或读取变更后的 Preset。子会话不执行 Main 的 `--preset` 启动标志。
 
-运行期只读取 `.toml`，不对同名 `.json` 做回退。已有 version 3 JSON 配置使用离线脚本预览转换：
+**决策模型。** 在 `harness.json` 中按顺序配置 `classifier.models`，每项只包含非空 `provider` 和 `id`。项目配置整体替换全局列表，默认列表为空；未配置时 Fresh 路由给出明确错误。列表在根会话配置加载时确定，修改后通过 `/reload` 或新根会话生效。路由定义和 Preset 仍在每次创建 Fresh Agent 时重读。
+
+```json
+{
+  "classifier": {
+    "models": [{ "provider": "fake-provider", "id": "fake-classifier" }]
+  }
+}
+```
+
+路由每道题按列表顺序尝试。目录中缺失的模型直接跳过；每次实际 SDK 调用消耗一份 Job 模型调用预算，SDK 内部重试关闭。当前模型的暂时错误耗尽 `subagent.routingRetry`，或 SDK 返回结构化不可用证据时，才尝试下一项。取消、预算耗尽和答案无效会结束本次路由。同一道题的任务与上下文可能被发送给多家候选供应商，应仅配置可接收这些数据的模型。
+
+**离线迁移。** 关闭 Pi 后，将 `subagent-routing.toml` v3 的 `[classifier]` 迁入同一目录的 `harness.json`，并将路由升级到 v4：
+
+```sh
+npm run migrate:routing-v4 -- --agent-dir /path/to/agent
+```
+
+默认只预检，确认后加 `--apply`。已有非空列表只有与旧模型精确匹配的单项才允许继续。脚本先备份需要替换的原文件，再依次写入 `harness.json` 和路由；双文件更新不是原子事务，失败时按脚本提示恢复。迁移完成后重启 Pi。
+
+如果配置仍是 JSON，先运行格式转换，再对 v3 TOML 执行上述离线迁移：
 
 ```sh
 npm run migrate:config-toml -- presets.json subagent-routing.json
 ```
 
 默认 dry-run，仅校验并输出转换后的目标路径，不写文件；确认后加 `--apply`。脚本只接受基名为 `presets.json` 或 `subagent-routing.json` 的输入，并以独占方式在相邻位置新建同名 `.toml`；目标已存在时拒绝覆盖，原 `.json` 保留不删。写出前会通过生产 validator、`smol-toml` 解析往返和规范化对象比对，覆盖多行文本、非 ASCII 与含点／空格的名称。
+
+两个迁移命令都会检查候选顺序，因为概率并列时按配置顺序选择。若混用命名引用和内联候选导致序列化会重排，脚本会停止；请按原顺序手动填写目标 TOML 后再验证。
 
 更旧的 version 2 路由配置（`models`、candidate `thinking` 和 role `enableTools`／`excludeTools`）不再被读取，先用旧脚本转换为 version 3 JSON，再执行上述 TOML 迁移：
 
@@ -210,7 +228,7 @@ node --import tsx scripts/migrate-subagent-routing.mjs subagent-routing-v2.json 
 npm run migrate:config-toml -- subagent-routing.json
 ```
 
-运行时不迁移配置。
+生产运行期只读取 v4 TOML。
 
 ### 搜索
 

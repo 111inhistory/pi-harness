@@ -784,6 +784,7 @@ export class RootService implements ManagedWriteHost {
       presets: loaded.presets,
       registry: this.#registry,
       configPath: path.join(this.#options.agentDir, 'subagent-routing.toml'),
+      models: this.#options.config.classifier.models,
       retry: this.#options.config.subagent.routingRetry,
     });
   }

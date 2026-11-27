@@ -1,8 +1,4 @@
-version = 3
-
-[classifier]
-provider = "openrouter"
-id = "~typesafe/jev-latest"
+version = 4
 
 [instructions]
 role = "Select the role whose responsibility and authority match the final deliverable requested in delegated_assignment. Use the complete task, including its scope, constraints, and acceptance conditions. The criteria contain the candidate role instructions. Generic startup instructions and available tools describe the environment. Investigation or validation performed as part of an authorized change does not turn it into a research-only or review-only task. "

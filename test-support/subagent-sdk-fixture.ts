@@ -189,7 +189,12 @@ export async function createSdkFixture(options: SdkFixtureOptions): Promise<SdkF
     }
     options.routing?.(routing);
     await fsp.writeFile(path.join(agentDir, "subagent-routing.toml"), stringify(routing));
-    await fsp.writeFile(path.join(agentDir, "harness.json"), JSON.stringify(options.config ?? {}));
+    // Fresh routing takes classifier candidates from harness.json; keep the
+    // fixture independent of the developer's real user config.
+    await fsp.writeFile(path.join(agentDir, "harness.json"), JSON.stringify({
+      classifier: { models: [{ provider: "openrouter", id: "~typesafe/jev-latest" }] },
+      ...options.config,
+    }));
     const childManagers: WeakRef<SessionManager>[] = [];
     if (scenario === "memory-owners") SessionManager.open = (...args: Parameters<typeof originalSessionOpen>): SessionManager => {
       const manager = originalSessionOpen(...args);

@@ -5,13 +5,12 @@ import { basename, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { parse, stringify } from 'smol-toml';
 import { validatePresetDocument } from '../src/preset/config.ts';
-import { validateRoutingConfig } from '../src/subagent/routing.ts';
+import { assertRoutingCandidateOrder, validateLegacyRoutingConfig } from './lib/routing-v4-migration.ts';
 
 const usage = 'Usage: npm run migrate:config-toml -- [--apply] <presets.json|subagent-routing.json>...\n'
   + 'Default: validate the conversion without writing. Apply creates new TOML files and retains the JSON sources.';
 
-function validate(source, document) {
-  if (basename(source) === 'subagent-routing.json') return validateRoutingConfig(document);
+function validatePresets(source, document) {
   const { catalog, warnings } = validatePresetDocument(source, document);
   if (warnings.length > 0) throw new Error(warnings.join('\n'));
   return Object.fromEntries(catalog);
@@ -24,10 +23,17 @@ function plan(file) {
   }
   try {
     const legacy = JSON.parse(readFileSync(source, 'utf8'));
-    const expected = validate(source, legacy);
+    const routing = basename(source) === 'subagent-routing.json';
+    const expected = routing ? validateLegacyRoutingConfig(legacy) : validatePresets(source, legacy);
     const output = stringify(expected);
     const reparsed = parse(output);
-    assert.deepStrictEqual(validate(source, reparsed), expected, 'TOML changed the configuration semantics');
+    if (routing) {
+      const actual = validateLegacyRoutingConfig(reparsed);
+      assert.deepStrictEqual(actual, expected, 'TOML changed the configuration semantics');
+      assertRoutingCandidateOrder(expected, actual);
+    } else {
+      assert.deepStrictEqual(validatePresets(source, reparsed), expected, 'TOML changed the configuration semantics');
+    }
     return { source, target: source.replace(/\.json$/, '.toml'), output };
   } catch (error) {
     throw new Error(`${source}: conversion failed (${error.message})`, { cause: error });

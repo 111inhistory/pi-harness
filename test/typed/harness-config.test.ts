@@ -109,6 +109,7 @@ test('absent config files resolve to the built-in defaults', async (t) => {
   const { agentDir, cwd } = await tempRoots(t);
   const config = loadHarnessConfig({ cwd, agentDir, projectTrusted: true });
   assert.deepEqual(config, DEFAULT_HARNESS_CONFIG);
+  assert.deepEqual(config.classifier.models, []);
   assert.equal(config.subagent.maxDepth, 2);
   assert.equal(config.subagent.maxActiveBatches, 4);
   assert.equal(config.subagent.maxActiveSubagents, 7);
@@ -626,4 +627,40 @@ test('capability.lazySchemas rejects non-list and empty ref values', () => {
   for (const value of ['mcp://x', [''], ['  '], [1], [null], { ref: 'mcp://x' }]) {
     expectError(bad(value), 'global', 'capability.lazySchemas');
   }
+});
+
+test('classifier.models defaults to empty and replaces as a whole list across layers', async (t) => {
+  const { agentDir, cwd } = await tempRoots(t);
+  assert.deepEqual(DEFAULT_HARNESS_CONFIG.classifier.models, []);
+  assert.deepEqual(loadHarnessConfig({ cwd, agentDir, projectTrusted: true }).classifier.models, []);
+
+  await writeJson(path.join(agentDir, 'harness.json'), {
+    classifier: { models: [{ provider: 'fake-provider', id: 'fake-primary' }] },
+  });
+  assert.deepEqual(loadHarnessConfig({ cwd, agentDir, projectTrusted: true }).classifier.models,
+    [{ provider: 'fake-provider', id: 'fake-primary' }]);
+
+  await writeJson(path.join(cwd, '.pi', 'harness.json'), {
+    classifier: { models: [{ provider: 'fake-provider', id: 'fake-project' }] },
+  });
+  const trusted = loadHarnessConfig({ cwd, agentDir, projectTrusted: true });
+  assert.deepEqual(trusted.classifier.models, [{ provider: 'fake-provider', id: 'fake-project' }],
+    'the trusted project list replaces the global list rather than appending to it');
+  const untrusted = loadHarnessConfig({ cwd, agentDir, projectTrusted: false });
+  assert.deepEqual(untrusted.classifier.models, [{ provider: 'fake-provider', id: 'fake-primary' }],
+    'an untrusted project list is ignored');
+});
+
+test('classifier.models rejects non-list and malformed model identities', () => {
+  const bad = (value: unknown) => resolveError([{ source: 'global', value: { classifier: { models: value } } }]);
+  for (const value of [null, 'fake-provider/fake-model', { provider: 'fake-provider', id: 'fake-model' }]) {
+    expectError(bad(value), 'global', 'classifier.models');
+  }
+  for (const value of [[null], [{}], [{ provider: 'fake-provider' }], [{ id: 'fake-model' }],
+    [{ provider: ' ', id: 'fake-model' }], [{ provider: 'fake-provider', id: ' ' }],
+    [{ provider: 'fake-provider', id: 'fake-model', api: 'fake-api' }]]) {
+    expectError(bad(value), 'global', 'classifier.models.0');
+  }
+  expectError(bad([{ provider: 'fake-provider', id: 'fake-model' }, { provider: 1, id: 'fake-other' }]),
+    'global', 'classifier.models.1');
 });

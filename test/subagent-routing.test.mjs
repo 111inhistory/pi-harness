@@ -9,12 +9,12 @@ import { stringify } from "smol-toml";
 import { SubagentRoutingError, routeSubagent, loadSubagentRoutingConfig } from "../src/subagent/routing.ts";
 
 const CLASSIFIER = { type: "classifier", provider: "openrouter", id: "~typesafe/jev-latest" };
+const BACKUP_CLASSIFIER = { type: "classifier", provider: "openrouter", id: "~perplexity/pplx-decider-latest" };
 const GEMINI = { type: "chat", provider: "openrouter", id: "~google/gemini-pro-latest" };
 const DEEPSEEK = { type: "chat", provider: "openrouter", id: "~deepseek/deepseek-pro-latest" };
 
 const CONFIG = {
-  version: 3,
-  classifier: { provider: "openrouter", id: "~typesafe/jev-latest" },
+  version: 4,
   instructions: {
     role: "Select the role for delegated_assignment.",
     model: "Select the model for delegated_assignment under selected_role.",
@@ -43,14 +43,13 @@ function failed(message) {
   return { api: "typesafe-system-one", provider: "openrouter", model: "~typesafe/jev-latest", answers: {}, stopReason: "error", errorMessage: message, timestamp: 0 };
 }
 
-function createRegistry({ classifier = CLASSIFIER, models = new Map([["~google/gemini-pro-latest", GEMINI], ["~deepseek/deepseek-pro-latest", DEEPSEEK]]), responses = [] } = {}) {
+function createRegistry({ classifiers = [CLASSIFIER], models = new Map([["~google/gemini-pro-latest", GEMINI], ["~deepseek/deepseek-pro-latest", DEEPSEEK]]), responses = [] } = {}) {
   const calls = [];
   return {
     calls,
     findOfType(type, provider, id) {
       if (type !== "classifier") return undefined;
-      if (!classifier || classifier.provider !== provider || classifier.id !== id) return undefined;
-      return classifier;
+      return classifiers.find((candidate) => candidate.provider === provider && candidate.id === id);
     },
     find(provider, id) {
       return models.get(id);
@@ -79,6 +78,12 @@ function routingError(code) {
   return (error) => error instanceof SubagentRoutingError && error.code === code;
 }
 
+const MODELS = [{ provider: CLASSIFIER.provider, id: CLASSIFIER.id }];
+
+function route(input) {
+  return routeSubagent({ models: MODELS, ...input });
+}
+
 test("routes with exactly two classifier calls over the full assignment", async () => {
   const registry = createRegistry({
     responses: [
@@ -87,7 +92,7 @@ test("routes with exactly two classifier calls over the full assignment", async 
     ],
   });
   const budget = createBudget();
-  const result = await routeSubagent({ registry, budget, task: "TASK", context: "CONTEXT", config: CONFIG });
+  const result = await route({ registry, budget, task: "TASK", context: "CONTEXT", config: CONFIG });
 
   assert.equal(registry.calls.length, 2);
   assert.deepEqual(budget.debits, [1, 2]);
@@ -131,10 +136,10 @@ test("keeps batch context bytes; a blank context falls back to the task alone", 
       stopped({ model: choice("deepseek", { gemini: 0.1, deepseek: 0.9 }) }),
     ],
   });
-  await routeSubagent({ registry, budget: createBudget(), task: "TASK", context: "  padded  ", config: CONFIG });
+  await route({ registry, budget: createBudget(), task: "TASK", context: "  padded  ", config: CONFIG });
   assert.equal(registry.calls[0].context.state.delegated_assignment, "# Batch context\n\n  padded  \n\n# Goal\n\nTASK");
 
-  await routeSubagent({ registry, budget: createBudget(), task: "TASK", context: "  \n ", config: CONFIG });
+  await route({ registry, budget: createBudget(), task: "TASK", context: "  \n ", config: CONFIG });
   assert.equal(registry.calls[2].context.state.delegated_assignment, "TASK");
 });
 
@@ -147,11 +152,11 @@ test("selects the probability argmax and keeps ties in the configured criteria o
       stopped({ model: choice("deepseek", { gemini: 0.4, deepseek: 0.6 }) }),
     ],
   });
-  const first = await routeSubagent({ registry, budget: createBudget(), task: "TASK", config: CONFIG });
+  const first = await route({ registry, budget: createBudget(), task: "TASK", config: CONFIG });
   assert.equal(first.roleId, "reviewer");
   assert.equal(registry.calls[1].context.state.selected_role.instructions, "REVIEWER INSTRUCTIONS");
 
-  const second = await routeSubagent({ registry, budget: createBudget(), task: "TASK", config: CONFIG });
+  const second = await route({ registry, budget: createBudget(), task: "TASK", config: CONFIG });
   assert.equal(second.roleId, "researcher");
   assert.equal(registry.calls[3].context.state.selected_role.id, "researcher");
 });
@@ -163,7 +168,7 @@ test("uses the selected candidate's direct thinking level", async () => {
       stopped({ model: choice("gemini", { gemini: 0.9, deepseek: 0.1 }) }),
     ],
   });
-  const result = await routeSubagent({ registry, budget: createBudget(), task: "TASK", config: CONFIG });
+  const result = await route({ registry, budget: createBudget(), task: "TASK", config: CONFIG });
   assert.equal(result.model, GEMINI);
   assert.equal(result.thinkingLevel, "medium", "the selected candidate's direct level is authoritative");
 });
@@ -175,7 +180,7 @@ test("the chosen candidate's direct level decides thinking for a multi-model poo
     stopped({ role: choice("executor", { researcher: 0.1, executor: 0.8, reviewer: 0.1 }) }),
     stopped({ model: choice("deepseek", { gemini: 0.2, deepseek: 0.8 }) }),
   ] });
-  const result = await routeSubagent({ registry, budget: createBudget(), task: "TASK", config });
+  const result = await route({ registry, budget: createBudget(), task: "TASK", config });
   assert.equal(result.model, DEEPSEEK);
   assert.equal(result.thinkingLevel, "high", "selecting deepseek also selects its direct candidate thinking");
   assert.equal(registry.calls[1].context.questions.model.criteria.deepseek, "DEEPSEEK PREFERENCE");
@@ -191,7 +196,7 @@ test("routes unsupported thinking requests to Pi's session fallback", async () =
         stopped({ model: choice("deepseek", { gemini: 0.1, deepseek: 0.9 }) }),
       ],
     });
-    const result = await routeSubagent({ registry, budget: createBudget(), task: "TASK", config: CONFIG });
+    const result = await route({ registry, budget: createBudget(), task: "TASK", config: CONFIG });
     assert.equal(result.model, restricted);
     assert.equal(result.thinkingLevel, "high", "routing passes the requested level to the SDK");
   }
@@ -204,7 +209,7 @@ test("an aborted signal stops before any provider dispatch", async () => {
   const budget = createBudget();
 
   await assert.rejects(
-    routeSubagent({ registry, budget, task: "TASK", signal: controller.signal, config: CONFIG }),
+    route({ registry, budget, task: "TASK", signal: controller.signal, config: CONFIG }),
     routingError("routing_aborted"),
   );
   assert.equal(registry.calls.length, 0);
@@ -225,7 +230,7 @@ test("an abort inside the first classification suppresses the second call", asyn
   const budget = createBudget();
 
   await assert.rejects(
-    routeSubagent({ registry, budget, task: "TASK", signal: controller.signal, config: CONFIG }),
+    route({ registry, budget, task: "TASK", signal: controller.signal, config: CONFIG }),
     routingError("routing_aborted"),
   );
   assert.equal(registry.calls.length, 1);
@@ -235,7 +240,7 @@ test("an abort inside the first classification suppresses the second call", asyn
 test("a native aborted result is reported as an abort, not as a selection", async () => {
   const registry = createRegistry({ responses: [{ api: "typesafe-system-one", answers: {}, stopReason: "aborted", timestamp: 0 }] });
   await assert.rejects(
-    routeSubagent({ registry, budget: createBudget(), task: "TASK", config: CONFIG }),
+    route({ registry, budget: createBudget(), task: "TASK", config: CONFIG }),
     routingError("routing_aborted"),
   );
   assert.equal(registry.calls.length, 1);
@@ -254,7 +259,7 @@ test("a refused budget debit stops the route before the second call is dispatche
   const budget = createBudget([null, refusal]);
 
   await assert.rejects(
-    routeSubagent({ registry, budget, task: "TASK", config: CONFIG }),
+    route({ registry, budget, task: "TASK", config: CONFIG }),
     routingError("budget_exceeded"),
   );
   assert.deepEqual(budget.debits, [1, 2]);
@@ -264,7 +269,7 @@ test("a refused budget debit stops the route before the second call is dispatche
 test("classifier errors surface explicitly and can never become a selection", async () => {
   const registry = createRegistry({ responses: [failed("401 Unauthorized: provider has no credentials")] });
   await assert.rejects(
-    routeSubagent({ registry, budget: createBudget(), task: "TASK", config: CONFIG }),
+    route({ registry, budget: createBudget(), task: "TASK", config: CONFIG }),
     (error) =>
       error instanceof SubagentRoutingError &&
       error.code === "routing_classification_failed" &&
@@ -281,31 +286,133 @@ test("classifier errors surface explicitly and can never become a selection", as
     ],
   });
   await assert.rejects(
-    routeSubagent({ registry: thrown, budget: createBudget(), task: "TASK", config: CONFIG }),
+    route({ registry: thrown, budget: createBudget(), task: "TASK", config: CONFIG }),
     routingError("routing_classification_failed"),
   );
 });
 
 test("a missing classifier fails before any call is attempted", async () => {
-  const registry = createRegistry({ classifier: null });
+  const registry = createRegistry({ classifiers: [] });
+  const budget = createBudget();
   await assert.rejects(
-    routeSubagent({ registry, budget: createBudget(), task: "TASK", config: CONFIG }),
+    route({ registry, budget, task: "TASK", config: CONFIG }),
     routingError("routing_classifier_unavailable"),
   );
   assert.equal(registry.calls.length, 0);
+  assert.deepEqual(budget.debits, [], "a missing catalog entry is never charged");
+});
+
+const SINGLE_ROLE_CONFIG = {
+  ...CONFIG,
+  roles: [{
+    id: "executor",
+    instructions: "EXECUTOR INSTRUCTIONS",
+    candidates: { only: { model: { provider: DEEPSEEK.provider, id: DEEPSEEK.id }, description: "ONLY PREFERENCE" } },
+  }],
+};
+
+const TWO_CANDIDATES = [
+  { provider: CLASSIFIER.provider, id: CLASSIFIER.id },
+  { provider: BACKUP_CLASSIFIER.provider, id: BACKUP_CLASSIFIER.id },
+];
+
+test('a structured unavailable status advances to the next classifier', async () => {
+  const registry = createRegistry({ classifiers: [CLASSIFIER, BACKUP_CLASSIFIER], responses: [
+    () => { throw Object.assign(new Error('Access denied'), { status: 403 }); },
+    stopped({ role: choice('executor', { executor: 1 }) }),
+  ] });
+  const budget = createBudget();
+  const result = await route({ registry, budget, task: 'TASK', config: SINGLE_ROLE_CONFIG, models: TWO_CANDIDATES });
+  assert.equal(result.roleId, 'executor');
+  assert.deepEqual(registry.calls.map(call => call.model), [CLASSIFIER, BACKUP_CLASSIFIER]);
+  assert.deepEqual(budget.debits, [1, 2]);
+});
+
+test("classifier candidates skip a model missing from the catalog without a debit", async () => {
+  const missing = { provider: "openrouter", id: "~typesafe/missing" };
+  const registry = createRegistry({ classifiers: [BACKUP_CLASSIFIER], responses: [
+    stopped({ role: choice("executor", { executor: 1 }) }),
+  ] });
+  const budget = createBudget();
+  const result = await route({
+    registry, budget, task: "TASK", config: SINGLE_ROLE_CONFIG,
+    models: [missing, { provider: BACKUP_CLASSIFIER.provider, id: BACKUP_CLASSIFIER.id }],
+  });
+  assert.equal(registry.calls.length, 1);
+  assert.equal(registry.calls[0].model, BACKUP_CLASSIFIER);
+  assert.deepEqual(budget.debits, [1], "the missing candidate is never charged");
+  assert.equal(result.roleId, "executor");
+});
+
+test("a classifier candidate advances after its transient retries are exhausted", async () => {
+  const registry = createRegistry({ classifiers: [CLASSIFIER, BACKUP_CLASSIFIER], responses: [
+    failed("fetch failed"),
+    stopped({ role: choice("executor", { executor: 1 }) }),
+  ] });
+  const budget = createBudget();
+  const result = await route({
+    registry, budget, task: "TASK", config: SINGLE_ROLE_CONFIG, models: TWO_CANDIDATES,
+    retry: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 },
+  });
+  assert.deepEqual(registry.calls.map((call) => call.model), [CLASSIFIER, BACKUP_CLASSIFIER]);
+  assert.deepEqual(budget.debits, [1, 2]);
+  assert.equal(result.roleId, "executor");
+});
+
+test("an abort does not advance to the next classifier candidate", async () => {
+  const controller = new AbortController();
+  const registry = createRegistry({ classifiers: [CLASSIFIER, BACKUP_CLASSIFIER], responses: [
+    ({ options }) => {
+      assert.equal(options.signal, controller.signal);
+      controller.abort();
+      return stopped({ role: choice("executor", { executor: 1 }) });
+    },
+  ] });
+  const budget = createBudget();
+  await assert.rejects(
+    route({ registry, budget, task: "TASK", config: SINGLE_ROLE_CONFIG, models: TWO_CANDIDATES, signal: controller.signal }),
+    routingError("routing_aborted"),
+  );
+  assert.equal(registry.calls.length, 1);
+  assert.equal(registry.calls[0].model, CLASSIFIER);
+  assert.deepEqual(budget.debits, [1]);
+});
+
+test("permanent failures and invalid answers do not advance to the next classifier candidate", async () => {
+  const permanent = createRegistry({ classifiers: [CLASSIFIER, BACKUP_CLASSIFIER], responses: [
+    failed("400 Bad Request: invalid request"),
+  ] });
+  const permanentBudget = createBudget();
+  await assert.rejects(
+    route({ registry: permanent, budget: permanentBudget, task: "TASK", config: SINGLE_ROLE_CONFIG, models: TWO_CANDIDATES }),
+    routingError("routing_classification_failed"),
+  );
+  assert.deepEqual(permanent.calls.map((call) => call.model), [CLASSIFIER]);
+  assert.deepEqual(permanentBudget.debits, [1]);
+
+  const invalid = createRegistry({ classifiers: [CLASSIFIER, BACKUP_CLASSIFIER], responses: [
+    stopped({ role: choice("root", { executor: 1 }) }),
+  ] });
+  const invalidBudget = createBudget();
+  await assert.rejects(
+    route({ registry: invalid, budget: invalidBudget, task: "TASK", config: SINGLE_ROLE_CONFIG, models: TWO_CANDIDATES }),
+    routingError("routing_invalid_answer"),
+  );
+  assert.deepEqual(invalid.calls.map((call) => call.model), [CLASSIFIER]);
+  assert.deepEqual(invalidBudget.debits, [1]);
 });
 
 test("answers outside the configured criteria or without a full distribution are rejected", async () => {
   const unknownLabel = createRegistry({ responses: [stopped({ role: choice("root", { researcher: 0.1, executor: 0.8, reviewer: 0.1 }) })] });
   await assert.rejects(
-    routeSubagent({ registry: unknownLabel, budget: createBudget(), task: "TASK", config: CONFIG }),
+    route({ registry: unknownLabel, budget: createBudget(), task: "TASK", config: CONFIG }),
     routingError("routing_invalid_answer"),
   );
   assert.equal(unknownLabel.calls.length, 1);
 
   const partial = createRegistry({ responses: [stopped({ role: { type: "choice", choice: "executor", probabilities: { executor: 1 } } })] });
   await assert.rejects(
-    routeSubagent({ registry: partial, budget: createBudget(), task: "TASK", config: CONFIG }),
+    route({ registry: partial, budget: createBudget(), task: "TASK", config: CONFIG }),
     routingError("routing_invalid_answer"),
   );
 });
@@ -319,7 +426,7 @@ test("a selected candidate missing from the catalog or not a chat model fails in
     ],
   });
   await assert.rejects(
-    routeSubagent({ registry, budget: createBudget(), task: "TASK", config: CONFIG }),
+    route({ registry, budget: createBudget(), task: "TASK", config: CONFIG }),
     routingError("routing_model_unavailable"),
   );
 
@@ -331,7 +438,7 @@ test("a selected candidate missing from the catalog or not a chat model fails in
     ],
   });
   await assert.rejects(
-    routeSubagent({ registry: wrongType, budget: createBudget(), task: "TASK", config: CONFIG }),
+    route({ registry: wrongType, budget: createBudget(), task: "TASK", config: CONFIG }),
     routingError("routing_model_invalid"),
   );
 });
@@ -341,10 +448,10 @@ test("malformed temporary presets and retired routing fields fail before classif
   bad.roles[0].candidates.gemini.thinkingLevel = 'invented';
   const retired = structuredClone(CONFIG);
   retired.roles[0].excludeTools = [];
-  for (const config of [bad, retired, { ...CONFIG, version: 2 }, { ...CONFIG, models: [] },
+  for (const config of [bad, retired, { ...CONFIG, version: 3 }, { ...CONFIG, classifier: { provider: 'openrouter', id: '~typesafe/jev-latest' } },
     { ...CONFIG, roles: [{ id: 'executor', instructions: 'Run', candidates: {} }] }]) {
     const registry = createRegistry();
-    await assert.rejects(routeSubagent({ registry, budget: createBudget(), task: 'TASK', config }), routingError('routing_invalid_config'));
+    await assert.rejects(route({ registry, budget: createBudget(), task: 'TASK', config }), routingError('routing_invalid_config'));
     assert.equal(registry.calls.length, 0);
   }
 });
@@ -355,11 +462,10 @@ test("the shipped template loads and singleton roles skip model classification",
   const role = config.roles.find(role => role.id === 'reviewer');
   const preset = Object.values(role.candidates)[0];
   const model = { type: 'chat', ...preset.model };
-  const classifier = { type: 'classifier', ...config.classifier };
-  const registry = createRegistry({ classifier, models: new Map([[model.id, model]]), responses: [
+  const registry = createRegistry({ models: new Map([[model.id, model]]), responses: [
     stopped({ role: choice('reviewer', { researcher: .1, executor: .1, reviewer: .8 }) }),
   ] });
-  const result = await routeSubagent({ registry, budget: createBudget(), task: 'Review', configPath });
+  const result = await route({ registry, budget: createBudget(), task: 'Review', configPath });
   assert.equal(registry.calls.length, 1);
   assert.equal(result.model, model);
   assert.equal(result.thinkingLevel, 'high');
@@ -372,11 +478,11 @@ test("Pi user routing config is re-read and never falls back to the bundled temp
   const configPath = join(dir, 'subagent-routing.toml');
   const legacyPath = join(dir, 'subagent-routing.json');
   const registry = createRegistry();
-  await assert.rejects(routeSubagent({ registry, budget: createBudget(), task: 'TASK', configPath }),
+  await assert.rejects(route({ registry, budget: createBudget(), task: 'TASK', configPath }),
     error => error.code === 'routing_invalid_config' && error.message.includes(configPath));
   // A legacy JSON document is not a runtime fallback for the TOML path.
   writeFileSync(legacyPath, JSON.stringify(CONFIG));
-  await assert.rejects(routeSubagent({ registry, budget: createBudget(), task: 'TASK', configPath }),
+  await assert.rejects(route({ registry, budget: createBudget(), task: 'TASK', configPath }),
     error => error.code === 'routing_invalid_config' && error.message.includes(configPath));
   writeFileSync(configPath, stringify(CONFIG));
   assert.equal(loadSubagentRoutingConfig(configPath).roles[0].candidates.gemini.thinkingLevel, 'medium');
@@ -399,7 +505,7 @@ test("named Presets and temporary Presets share selection and carry the full con
     stopped({ role: choice('executor', { researcher: .1, executor: .8, reviewer: .1 }) }),
     stopped({ model: choice('shared', { shared: .9, temporary: .1 }) }),
   ] });
-  const result = await routeSubagent({ registry, budget: createBudget(), task: 'Code', config, presets: new Map([['coding', preset]]) });
+  const result = await route({ registry, budget: createBudget(), task: 'Code', config, presets: new Map([['coding', preset]]) });
   assert.deepEqual(registry.calls[1].context.questions.model.criteria, { shared: 'CODE PREFERENCE', temporary: 'GEMINI PREFERENCE' });
   assert.equal(result.instructions, 'EXECUTOR INSTRUCTIONS');
   assert.equal(result.model, DEEPSEEK);
@@ -411,7 +517,7 @@ test("missing named Presets and model-free Presets fail without choosing another
   for (const definition of ['missing', { thinkingLevel: 'high' }]) {
     const config = { ...CONFIG, roles: [{ id: 'executor', instructions: 'Run', candidates: { only: definition } }] };
     const registry = createRegistry({ responses: [stopped({ role: choice('executor', { executor: 1 }) })] });
-    await assert.rejects(routeSubagent({ registry, budget: createBudget(), task: 'Run', config }), routingError('routing_invalid_config'));
+    await assert.rejects(route({ registry, budget: createBudget(), task: 'Run', config }), routingError('routing_invalid_config'));
     assert.equal(registry.calls.length, 1);
   }
 });

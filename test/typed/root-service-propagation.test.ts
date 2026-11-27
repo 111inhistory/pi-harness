@@ -68,9 +68,11 @@ test('a live root denial reaches a grandchild loadout created after it', { timeo
   assert.ok(model);
   runtime.getAuth = async () => ({ auth: { apiKey: 'offline-fixture' }, env: {} });
   runtime.hasConfiguredAuth = () => true;
+  await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
+    classifier: { models: [{ provider: 'openrouter', id: '~typesafe/jev-latest' }] },
+  }));
   await writeFile(path.join(agentDir, 'subagent-routing.toml'), stringify({
-    version: 3,
-    classifier: { provider: 'openrouter', id: '~typesafe/jev-latest' },
+    version: 4,
     instructions: { role: 'Select the executor role.', model: 'Select the only configured model.' },
     roles: [{
       id: 'executor',
@@ -252,11 +254,11 @@ test('child-only tools are usable when not denied, while root prefix/namespace/s
   runtime.hasConfiguredAuth = () => true;
 
   await writeFile(path.join(agentDir, 'harness.json'), JSON.stringify({
+    classifier: { models: [{ provider: 'openrouter', id: '~typesafe/jev-latest' }] },
     capability: { blacklist: ['startup_blocked_*'] },
   }));
   await writeFile(path.join(agentDir, 'subagent-routing.toml'), stringify({
-    version: 3,
-    classifier: { provider: 'openrouter', id: '~typesafe/jev-latest' },
+    version: 4,
     instructions: { role: 'Select the executor role.', model: 'Select the only configured model.' },
     roles: [{
       id: 'executor',

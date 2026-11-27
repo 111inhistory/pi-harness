@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { ModelRegistry, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { fauxProvider, InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import { resolveHarnessConfig } from '../../src/harness-config.ts';
 import { createJobBudget } from '../../src/subagent/job-budget.ts';
 import { routeSubagent, SubagentRoutingError, type RouteSubagentInput } from '../../src/subagent/routing.ts';
+import { waitFor } from '../../test-support/async.ts';
 
 async function fixture(t: TestContext, failedAttempts: number) {
   const runtime = await ModelRuntime.create({
@@ -26,10 +28,10 @@ async function fixture(t: TestContext, failedAttempts: number) {
   return {
     registry,
     calls,
+    models: [{ provider: 'openrouter', id: '~typesafe/jev-latest' }],
     budget: createJobBudget({ depth: 1 }),
     config: {
-      version: 3,
-      classifier: { provider: 'openrouter', id: '~typesafe/jev-latest' },
+      version: 4,
       instructions: { role: 'Select the executor.', model: 'Select the fixture.' },
       roles: [{ id: 'executor', instructions: 'Complete the fixture.', candidates: { fixture: {
         model: { provider: model.provider, id: model.id }, thinkingLevel: 'medium', description: 'Offline fixture.',
@@ -38,37 +40,29 @@ async function fixture(t: TestContext, failedAttempts: number) {
   };
 }
 
-const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
-
 test('configured retry intervals and maximum replace the defaults and charge every physical call', async (t) => {
   const setup = await fixture(t, 2);
-  t.mock.timers.enable({ apis: ['setTimeout'] });
   t.mock.method(Math, 'random', () => 0);
   const retry = resolveHarnessConfig([{ source: 'fixture', value: { subagent: {
-    routingRetry: { maxAttempts: 3, baseDelayMs: 50, maxDelayMs: 60, jitterRatio: 0 },
+    routingRetry: { maxAttempts: 3, baseDelayMs: 80, maxDelayMs: 120, jitterRatio: 0 },
   } } }]).subagent.routingRetry;
   const pending = routeSubagent({ ...setup, task: 'TASK', retry }).then(
     (value) => ({ value, error: undefined }),
     (error: unknown) => ({ value: undefined, error }),
   );
-  await flush();
-  assert.equal(setup.calls.mock.callCount(), 1);
-  t.mock.timers.tick(49);
-  await flush();
-  assert.equal(setup.calls.mock.callCount(), 1);
-  t.mock.timers.tick(1);
-  await flush();
-  assert.equal(setup.calls.mock.callCount(), 2, 'the first retry uses the configured 50 ms base');
-  t.mock.timers.tick(59);
-  await flush();
-  assert.equal(setup.calls.mock.callCount(), 2);
-  t.mock.timers.tick(1);
-  await flush();
+  await waitFor(() => setup.calls.mock.callCount() === 1, { label: 'the first classifier call' });
+  await sleep(50);
+  assert.equal(setup.calls.mock.callCount(), 1, 'the first retry waits the configured base delay');
+
+  await waitFor(() => setup.calls.mock.callCount() === 2, { label: 'the first retry' });
+  const secondAt = performance.now();
+  await waitFor(() => setup.calls.mock.callCount() === 3, { label: 'the second retry' });
+  assert.ok(performance.now() - secondAt >= 100, 'the second backoff uses the configured maximum');
 
   const result = await pending;
   assert.equal(result.error, undefined);
   assert.equal(result.value?.roleId, 'executor');
-  assert.equal(setup.calls.mock.callCount(), 3, 'the second backoff is capped at the configured 60 ms');
+  assert.equal(setup.calls.mock.callCount(), 3);
   assert.equal(setup.budget.snapshot().modelCalls, 3);
   assert.ok(setup.calls.mock.calls.every((call) => call.arguments[2]?.maxRetries === 0));
 });

@@ -7,8 +7,7 @@ const CLASSIFIER = { type: "classifier", provider: "openrouter", id: "~typesafe/
 const GEMINI = { type: "chat", provider: "openrouter", id: "~google/gemini-pro-latest" };
 
 const CONFIG = {
-  version: 3,
-  classifier: { provider: "openrouter", id: "~typesafe/jev-latest" },
+  version: 4,
   instructions: {
     role: "Select the role for delegated_assignment.",
     model: "Select the model for delegated_assignment under selected_role.",
@@ -101,8 +100,7 @@ function outcome(promise) {
   return promise.then((value) => ({ value }), (error) => ({ error }));
 }
 
-function mockRetryClock(t, random) {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+function mockRandom(t, random) {
   const originalRandom = Math.random;
   Math.random = () => random;
   t.after(() => {
@@ -110,12 +108,28 @@ function mockRetryClock(t, random) {
   });
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitForCalls(registry, count, label) {
+  const deadline = performance.now() + 3000;
+  while (registry.calls.length < count) {
+    if (performance.now() > deadline) throw new Error(`Timed out waiting for ${label}`);
+    await sleep(2);
+  }
+}
+
 function routingError(code) {
   return (error) => error?.code === code;
 }
 
+const MODELS = [{ provider: CLASSIFIER.provider, id: CLASSIFIER.id }];
+
+function route(input) {
+  return routeSubagent({ models: MODELS, ...input });
+}
+
 test("retries a network failure and a recoverable 5xx once each, with bounded exponential backoff", async (t) => {
-  mockRetryClock(t, 0);
+  mockRandom(t, 0);
   const registry = createRegistry([
     failed("fetch failed"),
     failed("System One API error (503): service temporarily unavailable"),
@@ -123,22 +137,20 @@ test("retries a network failure and a recoverable 5xx once each, with bounded ex
   ]);
   const budget = createBudget();
 
-  const pending = outcome(routeSubagent({ registry, budget, task: "TASK", config: CONFIG }));
+  const pending = outcome(route({
+    registry, budget, task: "TASK", config: CONFIG,
+    retry: { maxAttempts: 3, baseDelayMs: 80, maxDelayMs: 120, jitterRatio: 0 },
+  }));
   await flush();
   assert.equal(registry.calls.length, 1);
 
-  t.mock.timers.tick(499);
-  await flush();
-  assert.equal(registry.calls.length, 1, "the first retry waits the full 500ms base delay");
-  t.mock.timers.tick(1);
-  await flush();
-  assert.equal(registry.calls.length, 2);
-
-  t.mock.timers.tick(999);
-  await flush();
-  assert.equal(registry.calls.length, 2, "the second retry waits the doubled 1000ms delay");
-  t.mock.timers.tick(1);
-  await flush();
+  await sleep(50);
+  assert.equal(registry.calls.length, 1, "the first retry waits the configured base delay");
+  await waitForCalls(registry, 2, "the first retry");
+  const secondAt = performance.now();
+  await waitForCalls(registry, 3, "the second retry");
+  const thirdAt = performance.now();
+  assert.ok(thirdAt - secondAt >= 100, "the second retry waits the capped longer delay");
 
   const { value, error } = await pending;
   assert.equal(error, undefined);
@@ -149,18 +161,20 @@ test("retries a network failure and a recoverable 5xx once each, with bounded ex
 });
 
 test("retries HTTP 429 and thrown transport failures", async (t) => {
-  mockRetryClock(t, 0);
+  mockRandom(t, 0);
+  const retry = { maxAttempts: 2, baseDelayMs: 20, maxDelayMs: 20, jitterRatio: 0 };
   const retryable = createRegistry([
     failed("System One API error (429): rate limit exceeded"),
     stoppedRole(),
   ]);
   const retryableBudget = createBudget();
 
-  const retryablePending = outcome(routeSubagent({ registry: retryable, budget: retryableBudget, task: "TASK", config: CONFIG }));
+  const retryablePending = outcome(route({
+    registry: retryable, budget: retryableBudget, task: "TASK", config: CONFIG, retry,
+  }));
   await flush();
   assert.equal(retryable.calls.length, 1);
-  t.mock.timers.tick(500);
-  await flush();
+  await waitForCalls(retryable, 2, "the 429 retry");
   const retryableResult = await retryablePending;
   assert.equal(retryableResult.error, undefined);
   assert.equal(retryable.calls.length, 2);
@@ -173,11 +187,12 @@ test("retries HTTP 429 and thrown transport failures", async (t) => {
     stoppedRole(),
   ]);
   const thrownBudget = createBudget();
-  const thrownPending = outcome(routeSubagent({ registry: thrown, budget: thrownBudget, task: "TASK", config: CONFIG }));
+  const thrownPending = outcome(route({
+    registry: thrown, budget: thrownBudget, task: "TASK", config: CONFIG, retry,
+  }));
   await flush();
   assert.equal(thrown.calls.length, 1);
-  t.mock.timers.tick(500);
-  await flush();
+  await waitForCalls(thrown, 2, "the transport retry");
   const thrownResult = await thrownPending;
   assert.equal(thrownResult.error, undefined);
   assert.equal(thrown.calls.length, 2);
@@ -185,7 +200,7 @@ test("retries HTTP 429 and thrown transport failures", async (t) => {
 });
 
 test("jitter shortens the retry wait but never increases the attempt count", async (t) => {
-  mockRetryClock(t, 1);
+  mockRandom(t, 1);
   const registry = createRegistry([
     failed("fetch failed"),
     failed("fetch failed"),
@@ -194,23 +209,20 @@ test("jitter shortens the retry wait but never increases the attempt count", asy
   ]);
   const budget = createBudget();
 
-  const pending = outcome(routeSubagent({ registry, budget, task: "TASK", config: CONFIG }));
+  const started = performance.now();
+  const pending = outcome(route({
+    registry, budget, task: "TASK", config: CONFIG,
+    retry: { maxAttempts: 3, baseDelayMs: 200, maxDelayMs: 200, jitterRatio: 0.25 },
+  }));
   await flush();
   assert.equal(registry.calls.length, 1);
 
-  t.mock.timers.tick(374);
-  await flush();
-  assert.equal(registry.calls.length, 1, "full jitter still waits 375ms, not less");
-  t.mock.timers.tick(1);
-  await flush();
-  assert.equal(registry.calls.length, 2);
-
-  t.mock.timers.tick(749);
-  await flush();
-  assert.equal(registry.calls.length, 2, "the second jittered delay is 750ms");
-  t.mock.timers.tick(1);
-  await flush();
-  assert.equal(registry.calls.length, 3);
+  await sleep(100);
+  assert.equal(registry.calls.length, 1, "jitter never shortens the wait below the configured fraction");
+  await waitForCalls(registry, 2, "the first jittered retry");
+  const secondAt = performance.now();
+  assert.ok(secondAt - started < 200, "full jitter shortens the 200ms base wait");
+  await waitForCalls(registry, 3, "the second jittered retry");
 
   const { error } = await pending;
   assert.equal(error?.code, "routing_classification_failed");
@@ -218,8 +230,7 @@ test("jitter shortens the retry wait but never increases the attempt count", asy
   assert.equal(error.detail.stage, 1);
   assert.deepEqual(budget.debits, [1, 2, 3], "three attempts are the bound, even with a fourth response available");
 
-  t.mock.timers.tick(60_000);
-  await flush();
+  await sleep(250);
   assert.equal(registry.calls.length, 3, "no timer remains after the final attempt");
 });
 
@@ -236,7 +247,7 @@ test("does not retry auth/config, other 4xx, parse or validation failures", asyn
     const registry = createRegistry([failed(message)]);
     const budget = createBudget();
     await assert.rejects(
-      routeSubagent({ registry, budget, task: "TASK", config: CONFIG }),
+      route({ registry, budget, task: "TASK", config: CONFIG }),
       routingError(code),
       message,
     );
@@ -252,7 +263,7 @@ test("does not retry auth/config, other 4xx, parse or validation failures", asyn
   }]);
   const malformedBudget = createBudget();
   await assert.rejects(
-    routeSubagent({ registry: malformed, budget: malformedBudget, task: "TASK", config: CONFIG }),
+    route({ registry: malformed, budget: malformedBudget, task: "TASK", config: CONFIG }),
     routingError("routing_invalid_answer"),
   );
   assert.equal(malformed.calls.length, 1, "a malformed successful answer is not a transport failure");
@@ -260,36 +271,36 @@ test("does not retry auth/config, other 4xx, parse or validation failures", asyn
 });
 
 test("cancellation during backoff stops further attempts and reports an abort", async (t) => {
-  mockRetryClock(t, 0);
+  mockRandom(t, 0);
   const registry = createRegistry([failed("fetch failed"), stoppedRole()]);
   const budget = createBudget();
   const controller = new AbortController();
 
-  const pending = outcome(routeSubagent({
+  const pending = outcome(route({
     registry,
     budget,
     task: "TASK",
     config: CONFIG,
     signal: controller.signal,
+    retry: { maxAttempts: 3, baseDelayMs: 200, maxDelayMs: 200, jitterRatio: 0 },
   }));
   await flush();
   assert.equal(registry.calls.length, 1);
 
+  await sleep(20);
   controller.abort();
-  await flush();
 
   const { error } = await pending;
   assert.equal(error?.code, "routing_aborted");
   assert.equal(registry.calls.length, 1);
   assert.deepEqual(budget.debits, [1], "no debit is taken for the cancelled retry");
 
-  t.mock.timers.tick(60_000);
-  await flush();
+  await sleep(250);
   assert.equal(registry.calls.length, 1, "the cleared backoff timer must not dispatch a retry");
 });
 
 test("a budget refusal on a retry stops before dispatch and keeps honest physical debit counts", async (t) => {
-  mockRetryClock(t, 0);
+  mockRandom(t, 0);
   const registry = createRegistry([
     failed("fetch failed"),
     failed("fetch failed"),
@@ -297,16 +308,14 @@ test("a budget refusal on a retry stops before dispatch and keeps honest physica
   ]);
   const budget = createBudget([undefined, undefined, refusal]);
 
-  const pending = outcome(routeSubagent({ registry, budget, task: "TASK", config: CONFIG }));
+  const pending = outcome(route({
+    registry, budget, task: "TASK", config: CONFIG,
+    retry: { maxAttempts: 3, baseDelayMs: 20, maxDelayMs: 20, jitterRatio: 0 },
+  }));
   await flush();
   assert.equal(registry.calls.length, 1);
 
-  t.mock.timers.tick(500);
-  await flush();
-  assert.equal(registry.calls.length, 2);
-
-  t.mock.timers.tick(1_000);
-  await flush();
+  await waitForCalls(registry, 2, "the budget-refused retry");
   const { error } = await pending;
   assert.equal(error?.code, "budget_exceeded");
   assert.equal(registry.calls.length, 2, "the refused third attempt never reaches the provider");

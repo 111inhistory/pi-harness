@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { parse } from 'smol-toml';
 import { loadPresets } from '../../src/preset/config.ts';
-import { loadSubagentRoutingConfig } from '../../src/subagent/routing.ts';
+import { validateLegacyRoutingConfig } from '../../scripts/lib/routing-v4-migration.ts';
 
 const script = fileURLToPath(new URL('../../scripts/migrate-config-toml.mjs', import.meta.url));
 
@@ -29,7 +30,7 @@ test('offline TOML migration keeps Unicode, dotted names and routing order, and 
     classifier: { provider: 'fake-provider', id: 'fake-classifier' },
     instructions: { role: 'Pick a role', model: 'Pick a preset' },
     roles: [
-      { id: 'z-last', instructions: 'First', candidates: { 'inline.v2': { thinkingLevel: 'high' }, named: 'fast.v2 中文' } },
+      { id: 'z-last', instructions: 'First', candidates: { named: 'fast.v2 中文', 'inline.v2': { thinkingLevel: 'high' } } },
       { id: 'a-first', instructions: 'Second', candidates: { named: 'fast.v2 中文' } },
     ],
   });
@@ -47,8 +48,9 @@ test('offline TOML migration keeps Unicode, dotted names and routing order, and 
   assert.deepEqual(loadPresets({ agentDir: directory, cwd, projectTrusted: true }).presets.get('fast.v2 中文'), {
     instructions: '第一行\n第二行\n', tools: [],
   });
-  const routing = loadSubagentRoutingConfig(routingToml);
+  const routing = validateLegacyRoutingConfig(parse(readFileSync(routingToml, 'utf8')));
   assert.deepEqual(routing.roles.map(role => role.id), ['z-last', 'a-first']);
+  assert.deepEqual(Object.keys(routing.roles[0]!.candidates), ['named', 'inline.v2']);
   assert.deepEqual(routing.roles[0]?.candidates['inline.v2'], { thinkingLevel: 'high' });
   assert.equal(routing.roles[0]?.candidates['named'], 'fast.v2 中文');
   assert.equal(readFileSync(presetPath, 'utf8'), legacyPresets);

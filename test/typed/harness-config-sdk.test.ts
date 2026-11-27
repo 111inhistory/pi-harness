@@ -165,7 +165,12 @@ async function startScenario(options: ScenarioOptions): Promise<Scenario> {
 
   const globalPath = path.join(agentDir, 'harness.json');
   const projectPath = path.join(cwd, '.pi', 'harness.json');
-  await writeFile(globalPath, JSON.stringify(options.config.global));
+  // The root snapshot supplies Fresh-routing candidates; keep the fixture
+  // independent of the developer's real user config.
+  await writeFile(globalPath, JSON.stringify({
+    classifier: { models: [{ provider: 'openrouter', id: '~typesafe/jev-latest' }] },
+    ...options.config.global,
+  }));
   await writeFile(projectPath, JSON.stringify(options.config.project));
 
   const oldAgentDir = process.env['PI_CODING_AGENT_DIR'];
@@ -185,8 +190,7 @@ async function startScenario(options: ScenarioOptions): Promise<Scenario> {
   runtime.hasConfiguredAuth = () => true;
 
   await writeFile(path.join(agentDir, 'subagent-routing.toml'), stringify({
-    version: 3,
-    classifier: { provider: 'openrouter', id: '~typesafe/jev-latest' },
+    version: 4,
     instructions: { role: 'Select the executor role.', model: 'Select the only configured model.' },
     roles: [{
       id: 'executor',
