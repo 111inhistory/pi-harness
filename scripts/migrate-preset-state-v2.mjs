@@ -9,7 +9,7 @@
  * Where v2 would change the old branch's base membership, the converter
  * inserts a standard capability-tool-base entry and reattaches direct children.
  *
- * The tool never reads `presets.json`, so a preset that was renamed or deleted
+ * The tool never reads `presets.toml`, so a preset that was renamed or deleted
  * still converts losslessly. It refuses files that mix v1 and v2 records, and it
  * refuses to apply while a managed session record names a live process for the
  * same session. Close Pi for that session first, and keep the backup until the

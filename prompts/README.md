@@ -31,7 +31,7 @@ JSON 仅为存储格式，不改变面向模型的排版、空白或装配方式
 - 宿主上下文固定：`subagent-turns.json` 中的 `context` 字符串只含两个固定占位符：`{agentAddress}`、`{creatorAddress}`，都是完整逻辑地址。代码逐项替换为真实字符串，不解释替换值中的占位符或代码。
 - 批次上下文按 Job 渲染一次：单成员批次只输出共享 `context`（自身地址与目标已在身份段和执行目标中，不重复），多成员批次输出名册（地址、可选名称、各自目标）与一条正向协作提示。结果不写入持久化的格式化副本。
 - 目标组装（`composeAssignment`）、续跑控制（`continuationControlPrompt`）与中断说明（`interruptionNotice`）保持固定格式；`msgWriteReminder` 由执行侧在正常收尾、且最近工具轮次没有 `msg_write` 时使用一次。
-- 角色说明与偏好：来自用户的 `subagent-routing.json`。仓库示例在 `config/subagent-routing.json`，不另设内部角色正文。
+- 角色说明与偏好：来自用户的 `subagent-routing.toml`。仓库示例在 `config/subagent-routing.toml`，不另设内部角色正文。
 - 提示词定制边界：`harness.json` 仅开放 `subagent.prompts.common` 与 `subagent.prompts.inherited` 两段，支持逐层 `replace` 与 `append`，详见 [Harness 提示词定制](../docs/harness-configuration.md#提示词定制)。`common` 内置默认值为空字符串；`inherited` 内置默认值取自 `subagent-turns.json` 的 `inheritedContext`。
 - 子会话装配顺序：依次为路由角色指引、宿主身份段（`childContext`）、非空 `common`，以及仅用于 Inherited 模式的非空 `inherited`。`common` 默认为空时，装配顺序保持为角色、宿主身份与继承指引。
 - 提示词段落装配不改写已捕获的历史，也不把历史重写为新的任务正文。快照捕获仍会移除 Harness 内部条目和末尾尚未完成的工具调用，并为子会话分配独立 session ID。

@@ -90,7 +90,7 @@ type TaskBatch = {
 
 角色配置必填 `excludeTools` 黑名单（可为空），可选 `enableTools` 额外启用列表。两者使用完整工具名，不支持 glob；旧角色 `tools` 白名单不再接受。迁移后的实际用户配置与模板保留原有原生权限：researcher／reviewer 禁止 edit、write、grep、find、ls，并启用 msg_write；executor 禁止 grep、find、ls，不额外启用 msg_write。启用不越过直接父级资格或角色黑名单。Inherited／复活保留实际工具 loadout；旧 checkpoint 的工具快照兼容与配置白名单是不同职责。
 
-运行配置放在 Pi 用户目录 `<agentDir>/subagent-routing.json`，随 Pi agentDir／PI_CODING_AGENT_DIR 生效。仓库 [`config/subagent-routing.json`](../../config/subagent-routing.json) 仅是模板，不参与运行时回退。每次新建 Fresh Agent 都重新读取该用户文件；改文件无需重载扩展，缺失／非法配置显式失败。Inherited 与已完成路由的 Actor 复活仍沿用既有模型，不重新选择。v2 配置将全局 models（模型绑定和通用 Preference）与 roles[].candidates（该角色允许的模型引用及 thinking 区间）分开。先选角色，再仅在其池内选模型；单候选池直接采用该模型，多候选池的第二次 Jev 请求必须读到第一次实际选中的完整角色定义。
+运行配置放在 Pi 用户目录 `<agentDir>/subagent-routing.json`，随 Pi agentDir／PI_CODING_AGENT_DIR 生效。仓库 `config/subagent-routing.json` 仅是模板，不参与运行时回退。每次新建 Fresh Agent 都重新读取该用户文件；改文件无需重载扩展，缺失／非法配置显式失败。Inherited 与已完成路由的 Actor 复活仍沿用既有模型，不重新选择。v2 配置将全局 models（模型绑定和通用 Preference）与 roles[].candidates（该角色允许的模型引用及 thinking 区间）分开。先选角色，再仅在其池内选模型；单候选池直接采用该模型，多候选池的第二次 Jev 请求必须读到第一次实际选中的完整角色定义。
 
 ```mermaid
 flowchart TD

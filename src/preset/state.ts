@@ -9,7 +9,7 @@
  *
  * The snapshot is a version pack, not a diff. `contentHash` is computed from the
  * semantic fields only (see `presetContentHash`), so a later edit to
- * `presets.json` or a change to the session tool baseline can be detected with a
+ * `presets.toml` or a change to the session tool baseline can be detected with a
  * single comparison instead of field-by-field guessing.
  *
  * `toolSelection` is the normalized intent: `none` (the preset declared no

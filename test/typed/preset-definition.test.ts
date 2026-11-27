@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import { stringify } from 'smol-toml';
 
 import { parsePresetCommand } from '../../src/preset/command.ts';
 import { loadPresets, type PresetConfig, type PresetFileReader } from '../../src/preset/config.ts';
 import { parseToolModifiers } from '../../src/preset/modifiers.ts';
 import { resolvePreset, type PresetCatalogView } from '../../src/preset/resolve.ts';
 
-// The three modules tested here form one definition pipeline: JSON config is
+// The three modules tested here form one definition pipeline: TOML config is
 // loaded and validated, tool modifiers are parsed, and resolution derives the
 // plan applied to a session. The stable base the modifier and resolve cases use
 // is the catalog's default active set.
@@ -34,8 +36,8 @@ const agentDir = path.resolve('/agent');
 const cwd = path.resolve('/project');
 // The injected reader stands in for the file system, so it is keyed by the
 // native absolute paths the loader asks for, not by POSIX spellings.
-const globalPath = path.join(agentDir, 'presets.json');
-const projectPath = path.join(cwd, '.pi', 'presets.json');
+const globalPath = path.join(agentDir, 'presets.toml');
+const projectPath = path.join(cwd, '.pi', 'presets.toml');
 
 function load(files: Record<string, string>, projectTrusted = true) {
   return loadPresets({ cwd, agentDir, projectTrusted, read: readerFrom(files) });
@@ -43,7 +45,7 @@ function load(files: Record<string, string>, projectTrusted = true) {
 
 test('loads global presets', () => {
   const { presets, warnings } = load({
-    [globalPath]: JSON.stringify({ fast: { model: { provider: 'p', id: 'm' }, thinkingLevel: 'low' } }),
+    [globalPath]: stringify({ fast: { model: { provider: 'p', id: 'm' }, thinkingLevel: 'low' } }),
   });
   assert.equal(warnings.length, 0);
   const fast = presets.get('fast');
@@ -54,8 +56,8 @@ test('loads global presets', () => {
 
 test('project preset replaces a same-named global preset wholesale', () => {
   const { presets } = load({
-    [globalPath]: JSON.stringify({ fast: { thinkingLevel: 'low', tools: ['+read'] } }),
-    [projectPath]: JSON.stringify({ fast: { instructions: 'project' } }),
+    [globalPath]: stringify({ fast: { thinkingLevel: 'low', tools: ['+read'] } }),
+    [projectPath]: stringify({ fast: { instructions: 'project' } }),
   });
   const fast = presets.get('fast');
   assert.ok(fast);
@@ -67,47 +69,74 @@ test('project preset replaces a same-named global preset wholesale', () => {
 
 test('project preset is ignored when the project is not trusted', () => {
   const { presets } = load({
-    [globalPath]: JSON.stringify({ fast: { thinkingLevel: 'low' } }),
-    [projectPath]: JSON.stringify({ fast: { thinkingLevel: 'high' } }),
+    [globalPath]: stringify({ fast: { thinkingLevel: 'low' } }),
+    [projectPath]: stringify({ fast: { thinkingLevel: 'high' } }),
   }, false);
   assert.equal(presets.get('fast')?.thinkingLevel, 'low');
 });
 
-test('invalid JSON in one file is a warning, not a crash', () => {
-  const { presets, warnings, invalidDocument } = load({ [globalPath]: '{ not json' });
+test('invalid TOML in one file is a warning, not a crash', () => {
+  const { presets, warnings, invalidDocument } = load({ [globalPath]: '[fast' });
   assert.equal(invalidDocument, true);
   assert.equal(presets.size, 0);
   assert.equal(warnings.length, 1);
-  assert.match(warnings[0] ?? '', /invalid JSON/);
+  assert.match(warnings[0] ?? '', /invalid TOML/);
+});
+
+test('the shipped preset example loads through the production validator', () => {
+  const example = readFileSync(new URL('../../config/presets.toml', import.meta.url), 'utf8');
+  const { presets, warnings, invalidDocument } = load({ [globalPath]: example });
+  assert.equal(invalidDocument, false);
+  assert.equal(warnings.length, 0);
+  assert.deepEqual(presets.get('fast'), {
+    description: '日常模型配置（示例，使用合成占位数据）',
+    model: { provider: 'fake-provider', id: 'fast-model' },
+    thinkingLevel: 'medium',
+    tools: ['+codemode', '-bash'],
+    codemode: { mode: 'only' },
+    instructions: '该模型的专属调用指引（示例）。',
+  });
+  assert.deepEqual(presets.get('deep')?.model, { provider: 'fake-provider', id: 'deep-model' });
+});
+
+test('a presets.json document is not a runtime fallback', () => {
+  const legacyPath = path.join(agentDir, 'presets.json');
+  const { presets, invalidDocument } = load({ [legacyPath]: JSON.stringify({ fast: {} }) });
+  assert.equal(invalidDocument, false);
+  assert.equal(presets.size, 0, 'the loader only requests presets.toml');
 });
 
 test('invalid trusted project entries shadow the same global name without hiding valid neighbors', () => {
   const { presets, invalidNames, invalidDocument } = load({
-    [globalPath]: JSON.stringify({ fast: {}, light: {} }),
-    [projectPath]: JSON.stringify({ fast: { tools: false } }),
+    [globalPath]: stringify({ fast: {}, light: {} }),
+    [projectPath]: stringify({ fast: { tools: false } }),
   });
   assert.equal(invalidDocument, false);
   assert.deepEqual([...invalidNames], ['fast']);
   assert.deepEqual([...presets.keys()], ['light']);
 });
 
-test('a preset with an unknown field is skipped with a warning', () => {
+test('invalid entries are skipped with warnings', () => {
   const { presets, warnings } = load({
-    [globalPath]: JSON.stringify({ bad: { thinkingLevel: 'low', surprise: true }, good: { thinkingLevel: 'high' } }),
+    // A TOML date parses to a TomlDate object, which is not a Preset record.
+    [globalPath]: 'dated = 1979-05-27\n'
+      + stringify({ bad: { thinkingLevel: 'low', surprise: true }, good: { thinkingLevel: 'high' } }),
   });
+  assert.equal(presets.has('dated'), false);
   assert.equal(presets.has('bad'), false);
   assert.equal(presets.get('good')?.thinkingLevel, 'high');
+  assert.ok(warnings.some((warning) => warning.includes('"dated"') && warning.includes('preset must be an object')));
   assert.ok(warnings.some((warning) => warning.includes('"bad"') && warning.includes('unknown field')));
 });
 
 test('a malformed model field is rejected', () => {
-  const { presets, warnings } = load({ [globalPath]: JSON.stringify({ bad: { model: { provider: 'p' } } }) });
+  const { presets, warnings } = load({ [globalPath]: stringify({ bad: { model: { provider: 'p' } } }) });
   assert.equal(presets.has('bad'), false);
   assert.ok(warnings.some((warning) => warning.includes('model.provider')));
 });
 
 test('an invalid codemode mode is rejected', () => {
-  const { presets, warnings } = load({ [globalPath]: JSON.stringify({ bad: { codemode: { mode: 'both' } } }) });
+  const { presets, warnings } = load({ [globalPath]: stringify({ bad: { codemode: { mode: 'both' } } }) });
   assert.equal(presets.has('bad'), false);
   assert.ok(warnings.some((warning) => warning.includes('codemode.mode')));
 });

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { stringify } from "smol-toml";
 
 import { SubagentRoutingError, routeSubagent, loadSubagentRoutingConfig } from "../src/subagent/routing.ts";
 
@@ -349,7 +350,7 @@ test("malformed temporary presets and retired routing fields fail before classif
 });
 
 test("the shipped template loads and singleton roles skip model classification", async () => {
-  const configPath = fileURLToPath(new URL('../config/subagent-routing.json', import.meta.url));
+  const configPath = fileURLToPath(new URL('../config/subagent-routing.toml', import.meta.url));
   const config = loadSubagentRoutingConfig(configPath);
   const role = config.roles.find(role => role.id === 'reviewer');
   const preset = Object.values(role.candidates)[0];
@@ -368,17 +369,24 @@ test("the shipped template loads and singleton roles skip model classification",
 test("Pi user routing config is re-read and never falls back to the bundled template", async t => {
   const dir = mkdtempSync(join(tmpdir(), 'pi-user-routing-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const configPath = join(dir, 'subagent-routing.json');
+  const configPath = join(dir, 'subagent-routing.toml');
+  const legacyPath = join(dir, 'subagent-routing.json');
   const registry = createRegistry();
   await assert.rejects(routeSubagent({ registry, budget: createBudget(), task: 'TASK', configPath }),
     error => error.code === 'routing_invalid_config' && error.message.includes(configPath));
-  writeFileSync(configPath, JSON.stringify(CONFIG));
+  // A legacy JSON document is not a runtime fallback for the TOML path.
+  writeFileSync(legacyPath, JSON.stringify(CONFIG));
+  await assert.rejects(routeSubagent({ registry, budget: createBudget(), task: 'TASK', configPath }),
+    error => error.code === 'routing_invalid_config' && error.message.includes(configPath));
+  writeFileSync(configPath, stringify(CONFIG));
   assert.equal(loadSubagentRoutingConfig(configPath).roles[0].candidates.gemini.thinkingLevel, 'medium');
   const changed = structuredClone(CONFIG);
   changed.roles[0].candidates.gemini.thinkingLevel = 'max';
-  writeFileSync(configPath, JSON.stringify(changed));
+  writeFileSync(configPath, stringify(changed));
   assert.equal(loadSubagentRoutingConfig(configPath).roles[0].candidates.gemini.thinkingLevel, 'max');
-  writeFileSync(configPath, '{');
+  writeFileSync(legacyPath, JSON.stringify(CONFIG));
+  assert.equal(loadSubagentRoutingConfig(configPath).roles[0].candidates.gemini.thinkingLevel, 'max');
+  writeFileSync(configPath, '[broken');
   assert.throws(() => loadSubagentRoutingConfig(configPath), routingError('routing_invalid_config'));
 });
 

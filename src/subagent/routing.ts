@@ -4,6 +4,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { parse } from 'smol-toml';
 import { DEFAULT_HARNESS_CONFIG, type RoutingRetryConfig } from '../harness-config.ts';
 import { composeAssignment } from './prompt.ts';
 import { isRetryableAssistantError, retryDelayMs, type Api, type Model, type ClassifierApi, type ClassifierModel, type ClassifierContext, type ClassifierChoiceQuestion } from '@earendil-works/pi-ai';
@@ -68,7 +69,7 @@ function filled(value: unknown): value is string {
 /** Routing owns role selection; all execution fields use the Preset schema. */
 export function validateRoutingConfig(value: unknown): RoutingConfig {
   const config = record(value);
-  if (config === null || config.version !== 3) invalid("must be a version 3 JSON object");
+  if (config === null || config.version !== 3) invalid("must be a version 3 routing config");
   for (const key of Object.keys(config)) {
     if (!['version', 'classifier', 'instructions', 'roles'].includes(key)) invalid(
       'unknown routing field "' + key + '"');
@@ -167,10 +168,10 @@ function validateConfig(value: unknown): RoutingConfig {
 
 /** Read the explicit Pi user config for each new Fresh route; no bundled fallback. */
 export function loadSubagentRoutingConfig(path: string | undefined): RoutingConfig {
-  if (!filled(path)) throw invalidConfigError("configPath must name the Pi user's subagent-routing.json");
+  if (!filled(path)) throw invalidConfigError("configPath must name the Pi user's subagent-routing.toml");
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    parsed = parse(readFileSync(path, "utf8"));
   } catch (error) {
     throw invalidConfigError(`cannot read ${path}: ${messageOf(error)}`);
   }

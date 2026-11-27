@@ -783,7 +783,7 @@ export class RootService implements ManagedWriteHost {
       ...input,
       presets: loaded.presets,
       registry: this.#registry,
-      configPath: path.join(this.#options.agentDir, 'subagent-routing.json'),
+      configPath: path.join(this.#options.agentDir, 'subagent-routing.toml'),
       retry: this.#options.config.subagent.routingRetry,
     });
   }

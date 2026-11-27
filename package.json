@@ -33,6 +33,7 @@
     "test:shell-preflight": "node --import tsx --test test/shell-preflight.test.mjs test/shell-preflight-extension.test.mjs",
     "migrate:tool-permissions": "node --import tsx scripts/migrate-tool-permissions.mjs",
     "migrate:preset-state": "node --import tsx scripts/migrate-preset-state-v2.mjs",
+    "migrate:config-toml": "node --import tsx scripts/migrate-config-toml.mjs",
     "check:rpc-schema": "node --import tsx scripts/check-rpc-schema.mjs",
     "schema:rpc": "node --import tsx scripts/check-rpc-schema.mjs --write",
     "bench:common": "node --import tsx scripts/common-path-bench.mjs",
@@ -40,7 +41,8 @@
   },
   "dependencies": {
     "@earendil-works/pi-codemode": "1.6.1",
-    "minisearch": "7.2.0"
+    "minisearch": "7.2.0",
+    "smol-toml": "1.9.1"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": ">=1.6.0 <1.7.0",

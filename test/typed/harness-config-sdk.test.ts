@@ -25,6 +25,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { stringify } from 'smol-toml';
 
 import {
   createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
@@ -183,7 +184,7 @@ async function startScenario(options: ScenarioOptions): Promise<Scenario> {
   runtime.getAuth = async () => ({ auth: { apiKey: 'offline-fixture' }, env: {} });
   runtime.hasConfiguredAuth = () => true;
 
-  await writeFile(path.join(agentDir, 'subagent-routing.json'), JSON.stringify({
+  await writeFile(path.join(agentDir, 'subagent-routing.toml'), stringify({
     version: 3,
     classifier: { provider: 'openrouter', id: '~typesafe/jev-latest' },
     instructions: { role: 'Select the executor role.', model: 'Select the only configured model.' },

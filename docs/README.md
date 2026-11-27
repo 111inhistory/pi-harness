@@ -23,7 +23,7 @@
 | [测试架构与设计关联](testing.md) | design／regression 两类依据、测试价值评审、`test/contracts.json` 登记与提交前关联检查 |
 | [文档写作约定](writing-guide.md) | 术语、事实分类、代码注释与写作规则 |
 
-配置示例见 [harness.json](../config/harness.json)、[subagent-routing.json](../config/subagent-routing.json) 和 [presets.json](../config/presets.json)。前二者配置执行限额、指定提示词段落与角色路由；`presets.json` 配置模型 Preset。Pi 模型认证与原生设置继续由 Pi 管理。
+配置示例见 [harness.json](../config/harness.json)、[subagent-routing.toml](../config/subagent-routing.toml) 和 [presets.toml](../config/presets.toml)。前二者配置执行限额、指定提示词段落与角色路由；`presets.toml` 配置模型 Preset。Pi 模型认证与原生设置继续由 Pi 管理。
 
 ## 历史与实验
 

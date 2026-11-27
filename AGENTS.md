@@ -21,7 +21,7 @@
   - 开发工作流：[docs/development-workflow.md](docs/development-workflow.md)；按变更规模执行，资源／平台专项只在相关路径触发
   - 测试架构与文档关联：[docs/testing.md](docs/testing.md)、[test/contracts.json](test/contracts.json)
   - 已知问题与待验收边界：[docs/known-issues.md](docs/known-issues.md)
-- **资产与配置入口**：工具链与脚本以 `package.json`、`tsconfig.json` 为准；模型提示词正文统一存于 `prompts/*.json`（由 `src/prompt-text.ts` 加载），路由示例见 `config/subagent-routing.json`，不在业务代码中硬编码额外副本。
+- **资产与配置入口**：工具链与脚本以 `package.json`、`tsconfig.json` 为准；模型提示词正文统一存于 `prompts/*.json`（由 `src/prompt-text.ts` 加载），路由示例见 `config/subagent-routing.toml`，不在业务代码中硬编码额外副本。
 
 ## 2. 不可破坏的系统不变量
 

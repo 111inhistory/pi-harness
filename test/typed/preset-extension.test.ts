@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { stringify } from 'smol-toml';
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
@@ -47,7 +48,7 @@ function setup(options: SetupOptions = {}): Harness {
   const agentDir = mkdtempSync(path.join(tmpdir(), 'preset-agent-'));
   const cwd = mkdtempSync(path.join(tmpdir(), 'preset-cwd-'));
   process.env['PI_CODING_AGENT_DIR'] = agentDir;
-  if (options.presets) writeFileSync(path.join(agentDir, 'presets.json'), JSON.stringify(options.presets));
+  if (options.presets) writeFileSync(path.join(agentDir, 'presets.toml'), stringify(options.presets));
 
   const caps: Captured = { commands: {}, handlers: {} };
   const branch: unknown[] = [];
@@ -208,7 +209,7 @@ test('/preset clear succeeds despite unreadable catalog source after apply persi
   assert.equal(beforeOptions.sections['preset-instructions'], undefined);
 
   // 2. Obstruct the private catalog on disk with an unreadable directory (EISDIR).
-  const catalogPath = path.join(process.env['PI_CODING_AGENT_DIR']!, 'presets.json');
+  const catalogPath = path.join(process.env['PI_CODING_AGENT_DIR']!, 'presets.toml');
   rmSync(catalogPath);
   mkdirSync(catalogPath);
   assert.throws(() => readFileSync(catalogPath, 'utf8'), { code: 'EISDIR' });
@@ -302,8 +303,8 @@ test('clear reports a loadout sync failure instead of claiming the loadout was u
 test('version prompts are TUI-only and skipping applies to the candidate seen on the branch', async () => {
   const h = setup({ presets: { writer: { instructions: 'v1' } } });
   await applyOnStart(h, 'writer');
-  const file = path.join(process.env['PI_CODING_AGENT_DIR']!, 'presets.json');
-  writeFileSync(file, JSON.stringify({ writer: { instructions: 'v2' } }));
+  const file = path.join(process.env['PI_CODING_AGENT_DIR']!, 'presets.toml');
+  writeFileSync(file, stringify({ writer: { instructions: 'v2' } }));
   let prompts = 0;
   let useUpdate = false;
   (h.ctx.ui as { select: unknown }).select = async (_title: string, choices: string[]) => {
@@ -320,7 +321,7 @@ test('version prompts are TUI-only and skipping applies to the candidate seen on
   assert.deepEqual(h.calls.appended.slice(before).map(entry => entry.customType), ['preset-version-skipped']);
   await h.fire('session_start', { reason: 'resume' });
   assert.equal(prompts, 1);
-  writeFileSync(file, JSON.stringify({ writer: { instructions: 'v3' } }));
+  writeFileSync(file, stringify({ writer: { instructions: 'v3' } }));
   useUpdate = true;
   await h.fire('session_start', { reason: 'resume' });
   assert.equal(prompts, 2);
@@ -333,11 +334,11 @@ test('version prompts are TUI-only and skipping applies to the candidate seen on
 test('tree marks invalid and missing Presets and the picker can clear an empty catalog', async () => {
   const h = setup({ presets: { writer: { instructions: 'v1' } } });
   await applyOnStart(h, 'writer');
-  const file = path.join(process.env['PI_CODING_AGENT_DIR']!, 'presets.json');
-  writeFileSync(file, JSON.stringify({ writer: { instructions: false } }));
+  const file = path.join(process.env['PI_CODING_AGENT_DIR']!, 'presets.toml');
+  writeFileSync(file, stringify({ writer: { instructions: false } }));
   await h.fire('session_tree', {});
   assert.equal(h.calls.status.at(-1), 'preset:writer (invalid)');
-  writeFileSync(file, '{}');
+  writeFileSync(file, '');
   await h.fire('session_tree', {});
   assert.equal(h.calls.status.at(-1), 'preset:writer (missing)');
   (h.ctx.ui as { select: unknown }).select = async (_title: string, choices: string[]) => {

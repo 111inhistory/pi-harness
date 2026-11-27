@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { stringify } from 'smol-toml';
 import { fileURLToPath } from 'node:url';
 import {
   AgentSession, createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
@@ -52,7 +53,7 @@ async function runBoundary({ rejectWrite = false, unlistedModel = false, childre
   const model = faux.models[0];
   assert.ok(model);
   if (packageRegistration) {
-    await writeFile(path.join(agentDir, 'subagent-routing.json'), JSON.stringify({
+    await writeFile(path.join(agentDir, 'subagent-routing.toml'), stringify({
       version: 3,
       classifier: { provider: model.provider, id: model.id },
       instructions: { role: 'Select the executor.', model: 'Use the fixture model.' },
